@@ -4,20 +4,21 @@ use bitcoin::absolute::Height;
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::transaction::Version;
 use bitcoin::{Amount, Block, Transaction, TxOut};
+use enforcer_proto::validator::{GetDepositsRequest, GetDepositsResponse};
 use miette::Result;
 use tonic::{Request, Response, Status};
 
-use bip300::validator_server::Validator;
-use bip300::{ConnectBlockRequest, ConnectBlockResponse};
-use bip300::{DisconnectBlockRequest, DisconnectBlockResponse};
-use bip300::{IsValidRequest, IsValidResponse};
+use validator::validator_server::Validator;
+use validator::{ConnectBlockRequest, ConnectBlockResponse};
+use validator::{DisconnectBlockRequest, DisconnectBlockResponse};
+use validator::{IsValidRequest, IsValidResponse};
 
 pub use crate::bip300::Bip300;
 
-use self::bip300::{AckBundlesEnum, GetCoinbasePsbtRequest, GetCoinbasePsbtResponse};
+use self::validator::{AckBundlesEnum, GetCoinbasePsbtRequest, GetCoinbasePsbtResponse};
 use crate::messages::{CoinbaseMessage, M4AckBundles};
 
-pub use enforcer_proto::bip300;
+pub use enforcer_proto::validator;
 
 #[tonic::async_trait]
 impl Validator for Bip300 {
@@ -136,5 +137,9 @@ impl Validator for Bip300 {
 
         let response = GetCoinbasePsbtResponse { psbt };
         Ok(Response::new(response))
+    }
+
+    async fn get_deposits(&self, request: Request<GetDepositsRequest>) -> Result<Response<GetDepositsResponse>, Status> {
+        todo!();
     }
 }

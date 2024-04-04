@@ -1,7 +1,9 @@
 mod messages;
+mod server;
+mod types;
+mod bip300;
 
-use std::time::SystemTime;
-
+use std::{time::SystemTime, path::Path};
 use bitcoin::{
     absolute::{Height, LockTime},
     block::Header,
@@ -9,12 +11,7 @@ use bitcoin::{
     Block, BlockHash, CompactTarget, Transaction, TxMerkleNode,
 };
 use miette::{IntoDiagnostic, Result};
-
-mod server;
-mod types;
-mod bip300;
-
-use server::{bip300::validator_server::ValidatorServer, Bip300};
+use server::{validator::validator_server::ValidatorServer, Bip300};
 use tonic::transport::Server;
 
 #[tokio::main]
@@ -47,7 +44,7 @@ async fn main() -> Result<()> {
     let addr = "[::1]:50051".parse().into_diagnostic()?;
     println!("Listening for gRPC on {addr}");
 
-    let bip300 = Bip300::new()?;
+    let bip300 = Bip300::new(Path::new("./"))?;
 
     Server::builder()
         .add_service(ValidatorServer::new(bip300))
