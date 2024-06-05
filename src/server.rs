@@ -1,35 +1,31 @@
 use std::io::Cursor;
 
+use bip300_messages::bitcoin;
+
 use bitcoin::absolute::Height;
 use bitcoin::consensus::{Decodable, Encodable};
-use bitcoin::transaction::Version;
-use bitcoin::{Amount, Block, Transaction, TxOut};
-use enforcer_proto::validator::{GetDepositsRequest, GetDepositsResponse};
+use bitcoin::{Block, Transaction, TxOut};
+use enforcer_proto::validator::{
+    GetDepositsRequest, GetDepositsResponse, GetSidechainProposalsRequest,
+    GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
+};
 use miette::Result;
 use tonic::{Request, Response, Status};
 
 use validator::validator_server::Validator;
 use validator::{ConnectBlockRequest, ConnectBlockResponse};
 use validator::{DisconnectBlockRequest, DisconnectBlockResponse};
-use validator::{IsValidRequest, IsValidResponse};
 
 pub use crate::bip300::Bip300;
+use crate::types;
 
 use self::validator::{AckBundlesEnum, GetCoinbasePsbtRequest, GetCoinbasePsbtResponse};
-use crate::messages::{CoinbaseMessage, M4AckBundles};
+use bip300_messages::{CoinbaseMessage, M4AckBundles};
 
 pub use enforcer_proto::validator;
 
 #[tonic::async_trait]
 impl Validator for Bip300 {
-    async fn is_valid(
-        &self,
-        _request: Request<IsValidRequest>,
-    ) -> Result<Response<IsValidResponse>, Status> {
-        let response = IsValidResponse { valid: true };
-        Ok(Response::new(response))
-    }
-
     async fn connect_block(
         &self,
         request: Request<ConnectBlockRequest>,
@@ -122,7 +118,7 @@ impl Validator for Bip300 {
         let output = messages
             .into_iter()
             .map(|message| TxOut {
-                value: Amount::from_sat(0),
+                value: 0,
                 script_pubkey: message.into(),
             })
             .collect();
@@ -130,7 +126,7 @@ impl Validator for Bip300 {
             output,
             input: vec![],
             lock_time: bitcoin::absolute::LockTime::Blocks(Height::ZERO),
-            version: Version::TWO,
+            version: 2,
         };
         let mut psbt = vec![];
         transasction.consensus_encode(&mut psbt).unwrap();
@@ -139,7 +135,75 @@ impl Validator for Bip300 {
         Ok(Response::new(response))
     }
 
-    async fn get_deposits(&self, request: Request<GetDepositsRequest>) -> Result<Response<GetDepositsResponse>, Status> {
+    async fn get_deposits(
+        &self,
+        request: Request<GetDepositsRequest>,
+    ) -> Result<Response<GetDepositsResponse>, Status> {
         todo!();
+    }
+
+    async fn get_sidechain_proposals(
+        &self,
+        request: tonic::Request<GetSidechainProposalsRequest>,
+    ) -> std::result::Result<tonic::Response<GetSidechainProposalsResponse>, tonic::Status> {
+        let sidechain_proposals = self.get_sidechain_proposals().unwrap();
+
+        let sidechain_proposals = sidechain_proposals
+            .into_iter()
+            .map(
+                |(
+                    data_hash,
+                    types::SidechainProposal {
+                        sidechain_number,
+                        data,
+                        vote_count,
+                        proposal_height,
+                    },
+                )| {
+                    SidechainProposal {
+                        sidechain_number: sidechain_number as u32,
+                        data,
+                        data_hash: data_hash.to_vec(),
+                        vote_count: vote_count as u32,
+                        proposal_height,
+                        proposal_age: 0,
+                    }
+                },
+            )
+            .collect();
+        let response = GetSidechainProposalsResponse {
+            sidechain_proposals,
+        };
+        Ok(Response::new(response))
+    }
+
+    async fn get_sidechains(
+        &self,
+        request: tonic::Request<GetSidechainsRequest>,
+    ) -> std::result::Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
+        let sidechains = self.get_sidechains().unwrap();
+
+        let sidechains = sidechains
+            .into_iter()
+            .map(
+                |types::Sidechain {
+                     sidechain_number,
+                     data,
+                     vote_count,
+                     proposal_height,
+                     activation_height,
+                 }| {
+                    enforcer_proto::validator::Sidechain {
+                        sidechain_number: sidechain_number as u32,
+                        data,
+                        vote_count: vote_count as u32,
+                        proposal_height,
+                        activation_height,
+                    }
+                },
+            )
+            .collect();
+        let response = GetSidechainsResponse { sidechains };
+        Ok(Response::new(response))
     }
 }

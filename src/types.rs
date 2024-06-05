@@ -1,4 +1,4 @@
-use bitcoin::OutPoint;
+use bip300_messages::bitcoin::OutPoint;
 use serde::{Deserialize, Serialize};
 
 pub type Hash256 = [u8; 32];

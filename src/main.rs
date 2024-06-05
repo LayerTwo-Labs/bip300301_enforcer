@@ -1,56 +1,46 @@
-mod messages;
+mod bip300;
 mod server;
 mod types;
-mod bip300;
 
-use std::{time::SystemTime, path::Path};
-use bitcoin::{
-    absolute::{Height, LockTime},
-    block::Header,
-    hashes::Hash,
-    Block, BlockHash, CompactTarget, Transaction, TxMerkleNode,
-};
-use miette::{IntoDiagnostic, Result};
+use bip300_messages::bitcoin;
+use miette::{miette, IntoDiagnostic, Result};
 use server::{validator::validator_server::ValidatorServer, Bip300};
+use std::{net::SocketAddr, path::Path};
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let coinbase = Transaction {
-        input: vec![],
-        output: vec![],
-        version: bitcoin::transaction::Version(0),
-        lock_time: LockTime::Blocks(Height::ZERO),
-    };
-
-    let now = std::time::SystemTime::now();
-
-    let txdata = vec![coinbase];
-    let header = Header {
-        bits: CompactTarget::from_consensus(0),
-        prev_blockhash: BlockHash::all_zeros(),
-        merkle_root: TxMerkleNode::all_zeros(),
-        nonce: 0,
-        time: now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .into_diagnostic()?
-            .as_secs() as u32,
-        version: bitcoin::block::Version::NO_SOFT_FORK_SIGNALLING,
-    };
-
-    let block = Block { header, txdata };
-    dbg!(block);
-
-    let addr = "[::1]:50051".parse().into_diagnostic()?;
-    println!("Listening for gRPC on {addr}");
-
     let bip300 = Bip300::new(Path::new("./"))?;
-
+    bip300.run().await;
+    let addr: SocketAddr = "[::1]:50051".parse().into_diagnostic()?;
+    println!("Listening for gRPC on {addr}");
     Server::builder()
         .add_service(ValidatorServer::new(bip300))
         .serve(addr)
         .await
         .into_diagnostic()?;
-
     Ok(())
+}
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ureq_jsonrpc::{json, Client};
+
+fn create_client(main_datadir: &Path) -> Result<Client> {
+    let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
+    let mut auth = auth.split(":");
+    let user = auth
+        .next()
+        .ok_or(miette!("failed to get rpcuser"))?
+        .to_string();
+    let password = auth
+        .next()
+        .ok_or(miette!("failed to get rpcpassword"))?
+        .to_string();
+    Ok(Client {
+        host: "localhost".into(),
+        port: 18443,
+        user,
+        password,
+        id: "mainchain".into(),
+    })
 }

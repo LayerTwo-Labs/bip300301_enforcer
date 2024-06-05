@@ -1,18 +1,24 @@
 use std::path::Path;
 
-use crate::messages::{
+use crate::types::*;
+use bip300_messages::bitcoin::{self, Script};
+use bip300_messages::{
     parse_coinbase_script, sha256d, CoinbaseMessage, M4AckBundles, ABSTAIN_ONE_BYTE,
     ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES, OP_DRIVECHAIN,
 };
-use crate::types::*;
+use bitcoin::consensus::Decodable;
 use bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_RETURN};
 use bitcoin::opcodes::OP_TRUE;
+use bitcoin::BlockHash;
 use bitcoin::{Block, OutPoint, Transaction};
 use miette::{miette, IntoDiagnostic, Result};
+use std::io::Cursor;
+use std::str::FromStr;
 
 use heed::Database;
 use heed::{types::*, Env, EnvOpenOptions};
 
+#[derive(Clone)]
 pub struct Bip300 {
     env: Env,
 
@@ -66,13 +72,77 @@ impl Bip300 {
         })
     }
 
+    pub async fn run(&self) {
+        let bip300 = self.clone();
+        tokio::task::spawn(async move {
+            let main_datadir = Path::new("../../data/bitcoin/");
+            let main_client = create_client(main_datadir).unwrap();
+            let mut current_block_height: u32 = main_client
+                .send_request("getblockcount", &[])
+                .unwrap()
+                .ok_or(miette!("failed to get block count"))
+                .unwrap();
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let block_height: u32 = main_client
+                    .send_request("getblockcount", &[])
+                    .unwrap()
+                    .ok_or(miette!("failed to get block count"))
+                    .unwrap();
+
+                if block_height == current_block_height {
+                    continue;
+                }
+                println!("Block height: {block_height}");
+
+                for height in current_block_height..block_height {
+                    let block_hash: String = main_client
+                        .send_request("getblockhash", &[json!(height)])
+                        .unwrap()
+                        .ok_or(miette!("failed to get block hash"))
+                        .unwrap();
+                    let prev_blockhash = BlockHash::from_str(&block_hash).unwrap();
+
+                    println!("Mainchain tip: {prev_blockhash}");
+
+                    let block: String = main_client
+                        .send_request("getblock", &[json!(block_hash), json!(0)])
+                        .unwrap()
+                        .ok_or(miette!("failed to get block"))
+                        .unwrap();
+                    let block_bytes = hex::decode(&block).unwrap();
+                    let mut cursor = Cursor::new(block_bytes);
+                    let block = Block::consensus_decode(&mut cursor).unwrap();
+
+                    // dbg!(block);
+
+                    bip300.connect_block(&block, height).unwrap();
+                    println!();
+
+                    // check for new block
+                    // validate block
+                    // if invalid invalidate
+                    // if valid connect
+                    // wait 1 second
+                }
+                current_block_height = block_height;
+            }
+        });
+    }
+
     pub fn connect_block(&self, block: &Block, height: u32) -> Result<()> {
         println!("connect block");
         // TODO: Check that there are no duplicate M2s.
         let coinbase = &block.txdata[0];
 
         let mut txn = self.env.write_txn().into_diagnostic()?;
+        let mut initial_ctip: Option<u8> = None;
+        let mut sidechain_activation: Option<u8> = None;
         for output in &coinbase.output {
+            if let Ok(sidechain_number) = parse_op_drivechain(&output.script_pubkey) {
+                initial_ctip = Some(sidechain_number);
+            }
             match &parse_coinbase_script(&output.script_pubkey) {
                 Ok((_, message)) => {
                     match message {
@@ -80,6 +150,10 @@ impl Bip300 {
                             sidechain_number,
                             data,
                         } => {
+                            println!(
+                                "Propose sidechain number {sidechain_number} with data \"{}\"",
+                                String::from_utf8(data.clone()).into_diagnostic()?,
+                            );
                             let data_hash: Hash256 = sha256d(&data);
                             if self
                                 .data_hash_to_sidechain_proposal
@@ -103,6 +177,10 @@ impl Bip300 {
                             sidechain_number,
                             data_hash,
                         } => {
+                            println!(
+                                "Ack sidechain number {sidechain_number} with hash {}",
+                                hex::encode(data_hash)
+                            );
                             let sidechain_proposal = self
                                 .data_hash_to_sidechain_proposal
                                 .get(&txn, data_hash)
@@ -116,11 +194,19 @@ impl Bip300 {
                                         .put(&mut txn, data_hash, &sidechain_proposal)
                                         .into_diagnostic()?;
 
+                                    /*
                                     const USED_MAX_AGE: u16 = 26_300;
-                                    const USED_THRESHOLD: u16 = 13_150;
+                                    const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
 
                                     const UNUSED_MAX_AGE: u16 = 2016;
                                     const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 201;
+                                    */
+
+                                    const USED_MAX_AGE: u16 = 50;
+                                    const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
+
+                                    const UNUSED_MAX_AGE: u16 = 25;
+                                    const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 5;
 
                                     let sidechain_proposal_age =
                                         height - sidechain_proposal.proposal_height;
@@ -148,6 +234,7 @@ impl Bip300 {
                                             .delete(&mut txn, data_hash)
                                             .into_diagnostic()?;
                                     } else if succeeded {
+                                        // scan for OP_DRIVECHAIN
                                         if sidechain_proposal.vote_count > USED_THRESHOLD {
                                             let sidechain = Sidechain {
                                                 sidechain_number: sidechain_proposal
@@ -167,6 +254,7 @@ impl Bip300 {
                                             self.data_hash_to_sidechain_proposal
                                                 .delete(&mut txn, &data_hash)
                                                 .into_diagnostic()?;
+                                            sidechain_activation = Some(sidechain.sidechain_number);
                                         }
                                     };
                                 }
@@ -253,37 +341,52 @@ impl Bip300 {
                         },
                     }
                 }
-                Err(err) => {
-                    return Err(miette!("failed to parse coinbase script: {err}"));
-                }
+                Err(_) => {}
             }
         }
 
+        match (sidechain_activation, initial_ctip) {
+            (Some(sidechain_number), None) => {
+                return Err(miette!(
+                    "no OP_DRIVECHAIN output in coinbase of block activating sidechain {}",
+                    sidechain_number
+                ));
+            }
+            (None, Some(sidechain_number)) => {
+                return Err(miette!(
+                    "no OP_DRIVECHAIN output in coinbase of block activating sidechain {}",
+                    sidechain_number
+                ));
+            }
+            (Some(activation_sidechain_number), Some(initial_ctip_sidechain_number)) => {
+                if activation_sidechain_number != initial_ctip_sidechain_number {
+                    return Err(miette!("activated sidechain number {} doesn't match  sidechain number in OP_DRIVECHAIN output {}", activation_sidechain_number, initial_ctip_sidechain_number));
+                }
+            }
+            (None, None) => {}
+        };
+
         for transaction in &block.txdata[1..] {
-            // TODO: Check that there is only onen OP_DRIVECHAIN.
+            // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
             let mut new_ctip = None;
             let mut sidechain_number = None;
             let mut new_total_value = None;
             let mut address = None;
             {
                 let output = &transaction.output[0];
-                let script = output.script_pubkey.to_bytes();
-                if script[0] == OP_DRIVECHAIN.to_u8() {
+                // If OP_DRIVECHAIN script is invalid,
+                // for example if it is missing OP_TRUE at the end,
+                // it will just be ignored.
+                if let Ok(number) = parse_op_drivechain(&output.script_pubkey) {
                     if new_ctip.is_some() {
                         return Err(miette!("more than one OP_DRIVECHAIN output"));
                     }
-                    if script[1] != OP_PUSHBYTES_1.to_u8() {
-                        return Err(miette!("invalid OP_DRIVECHAIN output"));
-                    }
-                    if script[3] != OP_TRUE.to_u8() {
-                        return Err(miette!("invalid OP_DRIVECHAIN output"));
-                    }
-                    sidechain_number = Some(script[2]);
+                    sidechain_number = Some(number);
                     new_ctip = Some(OutPoint {
                         txid: transaction.txid(),
                         vout: 0 as u32,
                     });
-                    new_total_value = Some(output.value.to_sat());
+                    new_total_value = Some(output.value);
                 }
             }
             {
@@ -293,7 +396,6 @@ impl Bip300 {
                     address = Some(script[1..].to_vec());
                 }
             }
-            for (vout, output) in transaction.output.iter().enumerate() {}
             if let (Some(new_ctip), Some(sidechain_number), Some(new_total_value), Some(address)) =
                 (new_ctip, sidechain_number, new_total_value, address)
             {
@@ -356,12 +458,78 @@ impl Bip300 {
         todo!();
     }
 
-    pub fn is_block_valid(&self, block: &Block) -> Result<()> {
-        // validate a block
-        todo!();
-    }
-
     pub fn is_transaction_valid(&self, transaction: &Transaction) -> Result<()> {
         todo!();
     }
+
+    pub fn get_sidechain_proposals(&self) -> Result<Vec<(Hash256, SidechainProposal)>> {
+        let txn = self.env.read_txn().into_diagnostic()?;
+        let mut sidechain_proposals = vec![];
+        for sidechain_proposal in self
+            .data_hash_to_sidechain_proposal
+            .iter(&txn)
+            .into_diagnostic()?
+        {
+            let (data_hash, sidechain_proposal) = sidechain_proposal.into_diagnostic()?;
+            sidechain_proposals.push((data_hash, sidechain_proposal));
+        }
+        Ok(sidechain_proposals)
+    }
+
+    pub fn get_sidechains(&self) -> Result<Vec<Sidechain>> {
+        let txn = self.env.read_txn().into_diagnostic()?;
+        let mut sidechains = vec![];
+        for sidechain in self
+            .sidechain_number_to_sidechain
+            .iter(&txn)
+            .into_diagnostic()?
+        {
+            let (_sidechain_number, sidechain) = sidechain.into_diagnostic()?;
+            sidechains.push(sidechain);
+        }
+        Ok(sidechains)
+    }
+}
+
+fn parse_op_drivechain(script_pubkey: &Script) -> Result<u8> {
+    let script = script_pubkey.to_bytes();
+    if script[0] == OP_DRIVECHAIN.to_u8() {
+        if script[1] != OP_PUSHBYTES_1.to_u8() {
+            return Err(miette!("invalid OP_DRIVECHAIN output"));
+        }
+        if script[3] != OP_TRUE.to_u8() {
+            return Err(miette!("invalid OP_DRIVECHAIN output"));
+        }
+        return Ok(script[2]);
+    } else {
+        return Err(miette!("not OP_DRIVECHAIN"));
+    }
+}
+
+// connect block
+// is_block_valid
+// is_transaction_valid
+//
+// get data for sidechain
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ureq_jsonrpc::{json, Client};
+fn create_client(main_datadir: &Path) -> Result<Client> {
+    let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
+    let mut auth = auth.split(":");
+    let user = auth
+        .next()
+        .ok_or(miette!("failed to get rpcuser"))?
+        .to_string();
+    let password = auth
+        .next()
+        .ok_or(miette!("failed to get rpcpassword"))?
+        .to_string();
+    Ok(Client {
+        host: "localhost".into(),
+        port: 18443,
+        user,
+        password,
+        id: "mainchain".into(),
+    })
 }
