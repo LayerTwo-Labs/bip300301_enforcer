@@ -172,9 +172,9 @@ name = "bip300301_enforcer"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bip300301_enforcer_proto",
  "bip300_messages",
  "byteorder",
- "enforcer_proto",
  "heed",
  "hex",
  "miette 7.1.0",
@@ -185,6 +185,16 @@ dependencies = [
  "tokio",
  "tonic",
  "ureq-jsonrpc",
+]
+
+[[package]]
+name = "bip300301_enforcer_proto"
+version = "0.1.0"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer_proto#caae8f963278fd7ce7e803269fa0e1dc9004eae1"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -331,15 +341,6 @@ name = "either"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11157ac094ffbdde99aa67b23417ebdd801842852b500e395a45a9c0aac03e4a"
-
-[[package]]
-name = "enforcer_proto"
-version = "0.1.0"
-dependencies = [
- "prost",
- "tonic",
- "tonic-build",
-]
 
 [[package]]
 name = "equivalent"

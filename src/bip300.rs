@@ -1,18 +1,16 @@
 use std::path::Path;
 
 use crate::types::*;
-use bip300_messages::bitcoin::{self, Script};
+use bip300_messages::bitcoin;
 use bip300_messages::{
     parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage, M4AckBundles,
-    ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES, OP_DRIVECHAIN,
+    ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES,
 };
 use bitcoin::consensus::Decodable;
-use bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_RETURN};
-use bitcoin::opcodes::OP_TRUE;
+use bitcoin::opcodes::all::OP_RETURN;
 use bitcoin::BlockHash;
 use bitcoin::{Block, OutPoint, Transaction};
 use miette::{miette, IntoDiagnostic, Result};
-use nom::combinator::fail;
 use std::io::Cursor;
 use std::str::FromStr;
 
@@ -410,6 +408,7 @@ impl Bip300 {
                 // for example if it is missing OP_TRUE at the end,
                 // it will just be ignored.
                 if let Ok((input, number)) = parse_op_drivechain(&output.script_pubkey.to_bytes()) {
+                    dbg!(&output.script_pubkey);
                     if new_ctip.is_some() {
                         return Err(miette!("more than one OP_DRIVECHAIN output"));
                     }

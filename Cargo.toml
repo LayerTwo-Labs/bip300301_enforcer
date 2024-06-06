@@ -18,7 +18,7 @@ tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 prost = "0.12.3"
 tonic = "0.11.0"
 
-enforcer_proto = { path = "../enforcer_proto" }
+bip300301_enforcer_proto = { git = "https://github.com/LayerTwo-Labs/bip300301_enforcer_proto" }
 
 bip300_messages = { path = "../bip300_messages" }
 

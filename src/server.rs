@@ -6,7 +6,7 @@ use bip300_messages::bitcoin::hashes::Hash;
 use bitcoin::absolute::Height;
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::{Block, Transaction, TxOut};
-use enforcer_proto::validator::{
+use bip300301_enforcer_proto::validator::{
     GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
     GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
     GetSidechainsResponse, SidechainProposal,
@@ -24,7 +24,7 @@ use crate::types;
 use self::validator::{AckBundlesEnum, GetCoinbasePsbtRequest, GetCoinbasePsbtResponse};
 use bip300_messages::{CoinbaseMessage, M4AckBundles};
 
-pub use enforcer_proto::validator;
+pub use bip300301_enforcer_proto::validator;
 
 #[tonic::async_trait]
 impl Validator for Bip300 {
@@ -195,7 +195,7 @@ impl Validator for Bip300 {
                      proposal_height,
                      activation_height,
                  }| {
-                    enforcer_proto::validator::Sidechain {
+                    bip300301_enforcer_proto::validator::Sidechain {
                         sidechain_number: sidechain_number as u32,
                         data,
                         vote_count: vote_count as u32,
