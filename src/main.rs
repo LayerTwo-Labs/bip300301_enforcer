@@ -2,7 +2,7 @@ mod bip300;
 mod server;
 mod types;
 
-use bip300_messages::bitcoin;
+use bip300301_messages::bitcoin;
 use miette::{miette, IntoDiagnostic, Result};
 use server::{validator::validator_server::ValidatorServer, Bip300};
 use std::{net::SocketAddr, path::Path};

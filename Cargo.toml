@@ -18,9 +18,8 @@ tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 prost = "0.12.3"
 tonic = "0.11.0"
 
-bip300301_enforcer_proto = { git = "https://github.com/LayerTwo-Labs/bip300301_enforcer_proto" }
-
-bip300_messages = { path = "../bip300_messages" }
-
 ureq-jsonrpc = { git = "https://github.com/nchashch/ureq-jsonrpc" }
 hex = "0.4.3"
+
+bip300301_enforcer_proto = { git = "https://github.com/LayerTwo-Labs/bip300301_enforcer_proto" }
+bip300301_messages = { git = "https://github.com/LayerTwo-Labs/bip300301_messages" }

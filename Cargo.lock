@@ -173,7 +173,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bip300301_enforcer_proto",
- "bip300_messages",
+ "bip300301_messages",
  "byteorder",
  "heed",
  "hex",
@@ -198,8 +198,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "bip300_messages"
+name = "bip300301_messages"
 version = "0.1.0"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#c2d6c363edd89413d8896d8128fbad726dd51507"
 dependencies = [
  "bitcoin",
  "byteorder",

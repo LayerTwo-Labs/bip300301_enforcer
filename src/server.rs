@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
-use bip300_messages::bitcoin;
+use bip300301_messages::bitcoin;
 
-use bip300_messages::bitcoin::hashes::Hash;
+use bip300301_messages::bitcoin::hashes::Hash;
 use bitcoin::absolute::Height;
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::{Block, Transaction, TxOut};
@@ -22,7 +22,7 @@ pub use crate::bip300::Bip300;
 use crate::types;
 
 use self::validator::{AckBundlesEnum, GetCoinbasePsbtRequest, GetCoinbasePsbtResponse};
-use bip300_messages::{CoinbaseMessage, M4AckBundles};
+use bip300301_messages::{CoinbaseMessage, M4AckBundles};
 
 pub use bip300301_enforcer_proto::validator;
 
