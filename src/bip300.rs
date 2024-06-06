@@ -3,8 +3,8 @@ use std::path::Path;
 use crate::types::*;
 use bip300_messages::bitcoin::{self, Script};
 use bip300_messages::{
-    parse_coinbase_script, sha256d, CoinbaseMessage, M4AckBundles, ABSTAIN_ONE_BYTE,
-    ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES, OP_DRIVECHAIN,
+    parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage, M4AckBundles,
+    ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES, OP_DRIVECHAIN,
 };
 use bitcoin::consensus::Decodable;
 use bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_RETURN};
@@ -12,11 +12,26 @@ use bitcoin::opcodes::OP_TRUE;
 use bitcoin::BlockHash;
 use bitcoin::{Block, OutPoint, Transaction};
 use miette::{miette, IntoDiagnostic, Result};
+use nom::combinator::fail;
 use std::io::Cursor;
 use std::str::FromStr;
 
 use heed::Database;
 use heed::{types::*, Env, EnvOpenOptions};
+
+/*
+const USED_MAX_AGE: u16 = 26_300;
+const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
+
+const UNUSED_MAX_AGE: u16 = 2016;
+const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 201;
+*/
+
+const USED_MAX_AGE: u16 = 50;
+const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
+
+const UNUSED_MAX_AGE: u16 = 25;
+const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 5;
 
 #[derive(Clone)]
 pub struct Bip300 {
@@ -137,15 +152,19 @@ impl Bip300 {
         let coinbase = &block.txdata[0];
 
         let mut txn = self.env.write_txn().into_diagnostic()?;
-        let mut initial_ctip: Option<u8> = None;
+        let mut initial_ctip: Option<(u8, OutPoint)> = None;
         let mut sidechain_activation: Option<u8> = None;
-        for output in &coinbase.output {
-            if let Ok(sidechain_number) = parse_op_drivechain(&output.script_pubkey) {
-                initial_ctip = Some(sidechain_number);
-            }
+        for (vout, output) in coinbase.output.iter().enumerate() {
             match &parse_coinbase_script(&output.script_pubkey) {
                 Ok((_, message)) => {
                     match message {
+                        CoinbaseMessage::OpDrivechain { sidechain_number } => {
+                            let ctip_outpoint = OutPoint {
+                                txid: coinbase.txid(),
+                                vout: vout as u32,
+                            };
+                            initial_ctip = Some((*sidechain_number, ctip_outpoint));
+                        }
                         CoinbaseMessage::M1ProposeSidechain {
                             sidechain_number,
                             data,
@@ -194,20 +213,6 @@ impl Bip300 {
                                         .put(&mut txn, data_hash, &sidechain_proposal)
                                         .into_diagnostic()?;
 
-                                    /*
-                                    const USED_MAX_AGE: u16 = 26_300;
-                                    const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
-
-                                    const UNUSED_MAX_AGE: u16 = 2016;
-                                    const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 201;
-                                    */
-
-                                    const USED_MAX_AGE: u16 = 50;
-                                    const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
-
-                                    const UNUSED_MAX_AGE: u16 = 25;
-                                    const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 5;
-
                                     let sidechain_proposal_age =
                                         height - sidechain_proposal.proposal_height;
 
@@ -217,45 +222,34 @@ impl Bip300 {
                                         .into_diagnostic()?
                                         .is_some();
 
-                                    let failed = used
-                                        && sidechain_proposal_age > USED_MAX_AGE as u32
-                                        && sidechain_proposal.vote_count <= USED_THRESHOLD
-                                        || !used
-                                            && sidechain_proposal_age > UNUSED_MAX_AGE as u32
-                                            && sidechain_proposal.vote_count <= UNUSED_THRESHOLD;
-
                                     let succeeded = used
                                         && sidechain_proposal.vote_count > USED_THRESHOLD
+                                        && sidechain_proposal_age <= USED_MAX_AGE as u32
                                         || !used
-                                            && sidechain_proposal.vote_count > UNUSED_THRESHOLD;
+                                            && sidechain_proposal.vote_count > UNUSED_THRESHOLD
+                                            && sidechain_proposal_age < UNUSED_MAX_AGE as u32;
 
-                                    if failed {
-                                        self.data_hash_to_sidechain_proposal
-                                            .delete(&mut txn, data_hash)
+                                    if succeeded {
+                                        println!(
+                                            "sidechain {} in slot {} was activated",
+                                            String::from_utf8(sidechain_proposal.data.clone())
+                                                .into_diagnostic()?,
+                                            sidechain_proposal.sidechain_number
+                                        );
+                                        let sidechain = Sidechain {
+                                            sidechain_number: sidechain_proposal.sidechain_number,
+                                            data: sidechain_proposal.data,
+                                            proposal_height: sidechain_proposal.proposal_height,
+                                            activation_height: height,
+                                            vote_count: sidechain_proposal.vote_count,
+                                        };
+                                        self.sidechain_number_to_sidechain
+                                            .put(&mut txn, &sidechain.sidechain_number, &sidechain)
                                             .into_diagnostic()?;
-                                    } else if succeeded {
-                                        // scan for OP_DRIVECHAIN
-                                        if sidechain_proposal.vote_count > USED_THRESHOLD {
-                                            let sidechain = Sidechain {
-                                                sidechain_number: sidechain_proposal
-                                                    .sidechain_number,
-                                                data: sidechain_proposal.data,
-                                                proposal_height: sidechain_proposal.proposal_height,
-                                                activation_height: height,
-                                                vote_count: sidechain_proposal.vote_count,
-                                            };
-                                            self.sidechain_number_to_sidechain
-                                                .put(
-                                                    &mut txn,
-                                                    &sidechain.sidechain_number,
-                                                    &sidechain,
-                                                )
-                                                .into_diagnostic()?;
-                                            self.data_hash_to_sidechain_proposal
-                                                .delete(&mut txn, &data_hash)
-                                                .into_diagnostic()?;
-                                            sidechain_activation = Some(sidechain.sidechain_number);
-                                        }
+                                        self.data_hash_to_sidechain_proposal
+                                            .delete(&mut txn, &data_hash)
+                                            .into_diagnostic()?;
+                                        sidechain_activation = Some(sidechain.sidechain_number);
                                     };
                                 }
                             }
@@ -345,6 +339,34 @@ impl Bip300 {
             }
         }
 
+        let mut failed_proposals = vec![];
+        for sidechain_proposal in self
+            .data_hash_to_sidechain_proposal
+            .iter(&txn)
+            .into_diagnostic()?
+        {
+            let (data_hash, sidechain_proposal) = sidechain_proposal.into_diagnostic()?;
+            let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
+
+            let used = self
+                .sidechain_number_to_sidechain
+                .get(&txn, &sidechain_proposal.sidechain_number)
+                .into_diagnostic()?
+                .is_some();
+
+            let failed = used && sidechain_proposal_age > USED_MAX_AGE as u32
+                || !used && sidechain_proposal_age > UNUSED_MAX_AGE as u32;
+            if failed {
+                failed_proposals.push(data_hash);
+            }
+        }
+        for failed_proposal_data_hash in &failed_proposals {
+            self.data_hash_to_sidechain_proposal
+                .delete(&mut txn, &failed_proposal_data_hash)
+                .into_diagnostic()?;
+        }
+
+        dbg!(sidechain_activation, initial_ctip);
         match (sidechain_activation, initial_ctip) {
             (Some(sidechain_number), None) => {
                 return Err(miette!(
@@ -352,16 +374,26 @@ impl Bip300 {
                     sidechain_number
                 ));
             }
-            (None, Some(sidechain_number)) => {
+            (None, Some((sidechain_number, _))) => {
                 return Err(miette!(
-                    "no OP_DRIVECHAIN output in coinbase of block activating sidechain {}",
+                    "OP_DRIVECHAIN output present in coinbase of block that doesn't activate sidechain {}",
                     sidechain_number
                 ));
             }
-            (Some(activation_sidechain_number), Some(initial_ctip_sidechain_number)) => {
+            (
+                Some(activation_sidechain_number),
+                Some((initial_ctip_sidechain_number, initial_ctip_outpoint)),
+            ) => {
                 if activation_sidechain_number != initial_ctip_sidechain_number {
                     return Err(miette!("activated sidechain number {} doesn't match  sidechain number in OP_DRIVECHAIN output {}", activation_sidechain_number, initial_ctip_sidechain_number));
                 }
+                let ctip = Ctip {
+                    outpoint: initial_ctip_outpoint,
+                    value: 0,
+                };
+                self.sidechain_number_to_ctip
+                    .put(&mut txn, &activation_sidechain_number, &ctip)
+                    .into_diagnostic()?;
             }
             (None, None) => {}
         };
@@ -377,7 +409,7 @@ impl Bip300 {
                 // If OP_DRIVECHAIN script is invalid,
                 // for example if it is missing OP_TRUE at the end,
                 // it will just be ignored.
-                if let Ok(number) = parse_op_drivechain(&output.script_pubkey) {
+                if let Ok((input, number)) = parse_op_drivechain(&output.script_pubkey.to_bytes()) {
                     if new_ctip.is_some() {
                         return Err(miette!("more than one OP_DRIVECHAIN output"));
                     }
@@ -489,20 +521,14 @@ impl Bip300 {
         }
         Ok(sidechains)
     }
-}
 
-fn parse_op_drivechain(script_pubkey: &Script) -> Result<u8> {
-    let script = script_pubkey.to_bytes();
-    if script[0] == OP_DRIVECHAIN.to_u8() {
-        if script[1] != OP_PUSHBYTES_1.to_u8() {
-            return Err(miette!("invalid OP_DRIVECHAIN output"));
-        }
-        if script[3] != OP_TRUE.to_u8() {
-            return Err(miette!("invalid OP_DRIVECHAIN output"));
-        }
-        return Ok(script[2]);
-    } else {
-        return Err(miette!("not OP_DRIVECHAIN"));
+    pub fn get_ctip(&self, sidechain_number: u8) -> Result<Option<Ctip>> {
+        let txn = self.env.read_txn().into_diagnostic()?;
+        let ctip = self
+            .sidechain_number_to_ctip
+            .get(&txn, &sidechain_number)
+            .into_diagnostic()?;
+        Ok(ctip)
     }
 }
 

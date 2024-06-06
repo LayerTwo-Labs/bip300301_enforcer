@@ -2,12 +2,14 @@ use std::io::Cursor;
 
 use bip300_messages::bitcoin;
 
+use bip300_messages::bitcoin::hashes::Hash;
 use bitcoin::absolute::Height;
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::{Block, Transaction, TxOut};
 use enforcer_proto::validator::{
-    GetDepositsRequest, GetDepositsResponse, GetSidechainProposalsRequest,
-    GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
+    GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
+    GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+    GetSidechainsResponse, SidechainProposal,
 };
 use miette::Result;
 use tonic::{Request, Response, Status};
@@ -204,6 +206,19 @@ impl Validator for Bip300 {
             )
             .collect();
         let response = GetSidechainsResponse { sidechains };
+        Ok(Response::new(response))
+    }
+
+    async fn get_ctip(
+        &self,
+        request: tonic::Request<GetCtipRequest>,
+    ) -> std::result::Result<tonic::Response<GetCtipResponse>, tonic::Status> {
+        let sidechain_number = request.into_inner().sidechain_number;
+        let ctip = self.get_ctip(sidechain_number as u8).unwrap().unwrap();
+        let txid = ctip.outpoint.txid.as_byte_array().into();
+        let vout = ctip.outpoint.vout as u32;
+        let value = ctip.value;
+        let response = GetCtipResponse { txid, vout, value };
         Ok(Response::new(response))
     }
 }
