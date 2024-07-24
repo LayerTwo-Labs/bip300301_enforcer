@@ -8,9 +8,9 @@ edition = "2021"
 [dependencies]
 bincode = "1.3.3"
 byteorder = "1.5.0"
+heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
 miette = { version = "7.1.0", features = ["fancy"] }
 nom = "7.1.3"
-heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
 serde = { version = "1.0.197", features = ["derive"] }
 sha2 = "0.10.8"
 tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
@@ -18,8 +18,17 @@ tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 prost = "0.12.3"
 tonic = "0.11.0"
 
-ureq-jsonrpc = { git = "https://github.com/nchashch/ureq-jsonrpc" }
 hex = "0.4.3"
+ureq-jsonrpc = { git = "https://github.com/nchashch/ureq-jsonrpc" }
 
 bip300301_enforcer_proto = { git = "https://github.com/LayerTwo-Labs/bip300301_enforcer_proto" }
 bip300301_messages = { git = "https://github.com/LayerTwo-Labs/bip300301_messages" }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+assertions_on_result_states = "allow"
+let_unit_value = "allow"
+wildcard_imports = "deny"
+
+[lints.rust]
+let_underscore_drop = "deny"

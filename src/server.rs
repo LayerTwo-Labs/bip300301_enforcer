@@ -1,29 +1,31 @@
 use std::io::Cursor;
 
-use bip300301_messages::bitcoin;
-
-use bip300301_messages::bitcoin::hashes::Hash;
-use bitcoin::absolute::Height;
-use bitcoin::consensus::{Decodable, Encodable};
-use bitcoin::{Block, Transaction, TxOut};
 use bip300301_enforcer_proto::validator::{
     GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
     GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
     GetSidechainsResponse, SidechainProposal,
 };
+use bip300301_messages::{
+    bitcoin::{
+        self,
+        absolute::Height,
+        consensus::{Decodable, Encodable},
+        hashes::Hash,
+        Block, Transaction, TxOut,
+    },
+    CoinbaseMessage, M4AckBundles,
+};
 use miette::Result;
 use tonic::{Request, Response, Status};
 
-use validator::validator_server::Validator;
-use validator::{ConnectBlockRequest, ConnectBlockResponse};
-use validator::{DisconnectBlockRequest, DisconnectBlockResponse};
+use validator::{
+    validator_server::Validator, AckBundlesEnum, ConnectBlockRequest, ConnectBlockResponse,
+    DisconnectBlockRequest, DisconnectBlockResponse, GetCoinbasePsbtRequest,
+    GetCoinbasePsbtResponse,
+};
 
 pub use crate::bip300::Bip300;
 use crate::types;
-
-use self::validator::{AckBundlesEnum, GetCoinbasePsbtRequest, GetCoinbasePsbtResponse};
-use bip300301_messages::{CoinbaseMessage, M4AckBundles};
-
 pub use bip300301_enforcer_proto::validator;
 
 #[tonic::async_trait]
@@ -69,7 +71,7 @@ impl Validator for Bip300 {
             let data_hash: &[u8; 32] = ack_sidechain.data_hash.as_slice().try_into().unwrap();
             let message = CoinbaseMessage::M2AckSidechain {
                 sidechain_number,
-                data_hash: data_hash.clone(),
+                data_hash: *data_hash,
             };
             messages.push(message);
         }
@@ -78,7 +80,7 @@ impl Validator for Bip300 {
             let bundle_txid: &[u8; 32] = &propose_bundle.bundle_txid.as_slice().try_into().unwrap();
             let message = CoinbaseMessage::M3ProposeBundle {
                 sidechain_number,
-                bundle_txid: bundle_txid.clone(),
+                bundle_txid: *bundle_txid,
             };
             messages.push(message);
         }
@@ -100,14 +102,14 @@ impl Validator for Bip300 {
                         let upvotes = ack_bundles
                             .upvotes
                             .iter()
-                            .map(|upvote| upvote.clone().try_into().unwrap())
+                            .map(|upvote| (*upvote).try_into().unwrap())
                             .collect();
                         M4AckBundles::TwoBytes { upvotes }
                     } else {
                         let upvotes = ack_bundles
                             .upvotes
                             .iter()
-                            .map(|upvote| upvote.clone().try_into().unwrap())
+                            .map(|upvote| (*upvote).try_into().unwrap())
                             .collect();
                         M4AckBundles::OneByte { upvotes }
                     }
@@ -139,14 +141,14 @@ impl Validator for Bip300 {
 
     async fn get_deposits(
         &self,
-        request: Request<GetDepositsRequest>,
+        _request: Request<GetDepositsRequest>,
     ) -> Result<Response<GetDepositsResponse>, Status> {
         todo!();
     }
 
     async fn get_sidechain_proposals(
         &self,
-        request: tonic::Request<GetSidechainProposalsRequest>,
+        _request: tonic::Request<GetSidechainProposalsRequest>,
     ) -> std::result::Result<tonic::Response<GetSidechainProposalsResponse>, tonic::Status> {
         let sidechain_proposals = self.get_sidechain_proposals().unwrap();
 
@@ -181,7 +183,7 @@ impl Validator for Bip300 {
 
     async fn get_sidechains(
         &self,
-        request: tonic::Request<GetSidechainsRequest>,
+        _request: tonic::Request<GetSidechainsRequest>,
     ) -> std::result::Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
         let sidechains = self.get_sidechains().unwrap();
 
@@ -216,7 +218,7 @@ impl Validator for Bip300 {
         let sidechain_number = request.into_inner().sidechain_number;
         let ctip = self.get_ctip(sidechain_number as u8).unwrap().unwrap();
         let txid = ctip.outpoint.txid.as_byte_array().into();
-        let vout = ctip.outpoint.vout as u32;
+        let vout = ctip.outpoint.vout;
         let value = ctip.value;
         let response = GetCtipResponse { txid, vout, value };
         Ok(Response::new(response))
