@@ -8,12 +8,15 @@ edition = "2021"
 [dependencies]
 bincode = "1.3.3"
 byteorder = "1.5.0"
+fallible-iterator = "0.3.0"
+futures = "0.3.30"
 heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
 miette = { version = "7.1.0", features = ["fancy"] }
 nom = "7.1.3"
 serde = { version = "1.0.197", features = ["derive"] }
 sha2 = "0.10.8"
 tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+tokio-stream = "0.1.15"
 
 prost = "0.12.3"
 tonic = "0.11.0"
