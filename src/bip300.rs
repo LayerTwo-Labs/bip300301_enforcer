@@ -1,21 +1,21 @@
-use std::path::Path;
+use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
-use crate::types::*;
-use bip300301_messages::bitcoin;
 use bip300301_messages::{
-    parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage, M4AckBundles,
+    bitcoin, parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage, M4AckBundles,
     ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES,
 };
-use bitcoin::consensus::Decodable;
-use bitcoin::opcodes::all::OP_RETURN;
-use bitcoin::BlockHash;
-use bitcoin::{Block, OutPoint, Transaction};
-use miette::{miette, IntoDiagnostic, Result};
-use std::io::Cursor;
-use std::str::FromStr;
-
+use bitcoin::{
+    consensus::Decodable, opcodes::all::OP_RETURN, Block, BlockHash, OutPoint, Transaction,
+};
 use heed::Database;
-use heed::{types::*, Env, EnvOpenOptions};
+use heed::{
+    types::{SerdeBincode, Unit},
+    Env, EnvOpenOptions,
+};
+use miette::{miette, IntoDiagnostic, Result};
+use ureq_jsonrpc::{json, Client};
+
+use crate::types::{Bundle, Ctip, Deposit, Hash256, Sidechain, SidechainProposal};
 
 /*
 const USED_MAX_AGE: u16 = 26_300;
@@ -40,8 +40,8 @@ pub struct Bip300 {
     sidechain_number_to_bundles: Database<SerdeBincode<u8>, SerdeBincode<Vec<Bundle>>>,
     sidechain_number_to_sidechain: Database<SerdeBincode<u8>, SerdeBincode<Sidechain>>,
     sidechain_number_to_ctip: Database<SerdeBincode<u8>, SerdeBincode<Ctip>>,
-    previous_votes: Database<Unit, SerdeBincode<Vec<Hash256>>>,
-    leading_by_50: Database<Unit, SerdeBincode<Vec<Hash256>>>,
+    _previous_votes: Database<Unit, SerdeBincode<Vec<Hash256>>>,
+    _leading_by_50: Database<Unit, SerdeBincode<Vec<Hash256>>>,
 
     deposits: Database<SerdeBincode<(u8, OutPoint)>, SerdeBincode<Deposit>>,
 }
@@ -79,8 +79,8 @@ impl Bip300 {
             sidechain_number_to_bundles,
             sidechain_number_to_sidechain,
             sidechain_number_to_ctip,
-            previous_votes,
-            leading_by_50,
+            _previous_votes: previous_votes,
+            _leading_by_50: leading_by_50,
             deposits,
         })
     }
@@ -171,7 +171,7 @@ impl Bip300 {
                                 "Propose sidechain number {sidechain_number} with data \"{}\"",
                                 String::from_utf8(data.clone()).into_diagnostic()?,
                             );
-                            let data_hash: Hash256 = sha256d(&data);
+                            let data_hash: Hash256 = sha256d(data);
                             if self
                                 .data_hash_to_sidechain_proposal
                                 .get(&txn, &data_hash)
@@ -245,7 +245,7 @@ impl Bip300 {
                                             .put(&mut txn, &sidechain.sidechain_number, &sidechain)
                                             .into_diagnostic()?;
                                         self.data_hash_to_sidechain_proposal
-                                            .delete(&mut txn, &data_hash)
+                                            .delete(&mut txn, data_hash)
                                             .into_diagnostic()?;
                                         sidechain_activation = Some(sidechain.sidechain_number);
                                     };
@@ -258,7 +258,7 @@ impl Bip300 {
                         } => {
                             let bundles = self
                                 .sidechain_number_to_bundles
-                                .get(&txn, &sidechain_number)
+                                .get(&txn, sidechain_number)
                                 .into_diagnostic()?;
                             if let Some(mut bundles) = bundles {
                                 let bundle = Bundle {
@@ -267,7 +267,7 @@ impl Bip300 {
                                 };
                                 bundles.push(bundle);
                                 self.sidechain_number_to_bundles
-                                    .put(&mut txn, &sidechain_number, &bundles)
+                                    .put(&mut txn, sidechain_number, &bundles)
                                     .into_diagnostic()?;
                             }
                         }
@@ -360,7 +360,7 @@ impl Bip300 {
         }
         for failed_proposal_data_hash in &failed_proposals {
             self.data_hash_to_sidechain_proposal
-                .delete(&mut txn, &failed_proposal_data_hash)
+                .delete(&mut txn, failed_proposal_data_hash)
                 .into_diagnostic()?;
         }
 
@@ -407,7 +407,8 @@ impl Bip300 {
                 // If OP_DRIVECHAIN script is invalid,
                 // for example if it is missing OP_TRUE at the end,
                 // it will just be ignored.
-                if let Ok((input, number)) = parse_op_drivechain(&output.script_pubkey.to_bytes()) {
+                if let Ok((_input, number)) = parse_op_drivechain(&output.script_pubkey.to_bytes())
+                {
                     dbg!(&output.script_pubkey);
                     if new_ctip.is_some() {
                         return Err(miette!("more than one OP_DRIVECHAIN output"));
@@ -415,7 +416,7 @@ impl Bip300 {
                     sidechain_number = Some(number);
                     new_ctip = Some(OutPoint {
                         txid: transaction.txid(),
-                        vout: 0 as u32,
+                        vout: 0,
                     });
                     new_total_value = Some(output.value);
                 }
@@ -485,11 +486,11 @@ impl Bip300 {
         Ok(())
     }
 
-    pub fn disconnect_block(&self, block: &Block) -> Result<()> {
+    pub fn _disconnect_block(&self, _block: &Block) -> Result<()> {
         todo!();
     }
 
-    pub fn is_transaction_valid(&self, transaction: &Transaction) -> Result<()> {
+    pub fn _is_transaction_valid(&self, _transaction: &Transaction) -> Result<()> {
         todo!();
     }
 
@@ -537,11 +538,9 @@ impl Bip300 {
 //
 // get data for sidechain
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use ureq_jsonrpc::{json, Client};
 fn create_client(main_datadir: &Path) -> Result<Client> {
     let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
-    let mut auth = auth.split(":");
+    let mut auth = auth.split(':');
     let user = auth
         .next()
         .ok_or(miette!("failed to get rpcuser"))?
