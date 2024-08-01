@@ -290,33 +290,7 @@ impl Bip300 {
             .into_diagnostic()
     }
 
-    fn handle_m4_one_byte(&self, rwtxn: &mut RwTxn, upvotes: &[u8]) -> Result<()> {
-        for (sidechain_number, vote) in upvotes.iter().enumerate() {
-            if *vote == ABSTAIN_ONE_BYTE {
-                continue;
-            }
-            let bundles = self
-                .sidechain_number_to_bundles
-                .get(rwtxn, &(sidechain_number as u8))
-                .into_diagnostic()?;
-            let Some(mut bundles) = bundles else { continue };
-            if *vote == ALARM_ONE_BYTE {
-                for bundle in &mut bundles {
-                    if bundle.vote_count > 0 {
-                        bundle.vote_count -= 1;
-                    }
-                }
-            } else if let Some(bundle) = bundles.get_mut(*vote as usize) {
-                bundle.vote_count += 1;
-            }
-            self.sidechain_number_to_bundles
-                .put(rwtxn, &(sidechain_number as u8), &bundles)
-                .into_diagnostic()?;
-        }
-        Ok(())
-    }
-
-    fn handle_m4_two_bytes(&self, rwtxn: &mut RwTxn, upvotes: &[u16]) -> Result<()> {
+    fn handle_m4_votes(&self, rwtxn: &mut RwTxn, upvotes: &[u16]) -> Result<()> {
         for (sidechain_number, vote) in upvotes.iter().enumerate() {
             if *vote == ABSTAIN_TWO_BYTES {
                 continue;
@@ -350,8 +324,11 @@ impl Bip300 {
             M4AckBundles::RepeatPrevious => {
                 todo!();
             }
-            M4AckBundles::OneByte { upvotes } => self.handle_m4_one_byte(rwtxn, upvotes),
-            M4AckBundles::TwoBytes { upvotes } => self.handle_m4_two_bytes(rwtxn, upvotes),
+            M4AckBundles::OneByte { upvotes } => {
+                let upvotes: Vec<u16> = upvotes.iter().map(|vote| *vote as u16).collect();
+                self.handle_m4_votes(rwtxn, &upvotes)
+            },
+            M4AckBundles::TwoBytes { upvotes } => self.handle_m4_votes(rwtxn, upvotes),
         }
     }
 
