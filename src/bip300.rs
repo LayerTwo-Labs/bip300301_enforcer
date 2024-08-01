@@ -333,15 +333,6 @@ impl Bip300 {
         }
     }
 
-    fn handle_coinbase(
-        &self,
-        rwtxn: &mut RwTxn,
-        height: u32,
-        coinbase: &Transaction,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     fn handle_failed_proposals(&self, rwtxn: &mut RwTxn, height: u32) -> Result<()> {
         let failed_proposals: Vec<_> = self
             .data_hash_to_sidechain_proposal
