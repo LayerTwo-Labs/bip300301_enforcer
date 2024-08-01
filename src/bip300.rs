@@ -198,6 +198,13 @@ impl Bip300 {
             .into_diagnostic()?
             .is_some()
         {
+            // If a proposal with the same data_hash already exists,
+            // we ignore this M1.
+            //
+            // Having the same data_hash means that data is the same as well.
+            //
+            // Without this rule it would be possible for the miners to reset the vote count for
+            // any sidechain proposal at any point.
             return Ok(());
         }
         let sidechain_proposal = SidechainProposal {
@@ -292,7 +299,8 @@ impl Bip300 {
 
     fn handle_m4_votes(&self, rwtxn: &mut RwTxn, upvotes: &[u16]) -> Result<()> {
         for (sidechain_number, vote) in upvotes.iter().enumerate() {
-            if *vote == ABSTAIN_TWO_BYTES {
+            let vote = *vote;
+            if vote == ABSTAIN_TWO_BYTES {
                 continue;
             }
             let bundles = self
@@ -300,13 +308,13 @@ impl Bip300 {
                 .get(rwtxn, &(sidechain_number as u8))
                 .into_diagnostic()?;
             let Some(mut bundles) = bundles else { continue };
-            if *vote == ALARM_TWO_BYTES {
+            if vote == ALARM_TWO_BYTES {
                 for bundle in &mut bundles {
                     if bundle.vote_count > 0 {
                         bundle.vote_count -= 1;
                     }
                 }
-            } else if let Some(bundle) = bundles.get_mut(*vote as usize) {
+            } else if let Some(bundle) = bundles.get_mut(vote as usize) {
                 bundle.vote_count += 1;
             }
             self.sidechain_number_to_bundles
