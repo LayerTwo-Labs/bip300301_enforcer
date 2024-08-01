@@ -21,18 +21,29 @@ use ureq_jsonrpc::{json, Client};
 use crate::types::{Bundle, Ctip, Deposit, Hash256, Sidechain, SidechainProposal};
 
 /*
-const USED_MAX_AGE: u16 = 26_300;
-const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
+const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 26_300;
+const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 13_150
 
-const UNUSED_MAX_AGE: u16 = 2016;
-const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 201;
+const USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = WITHDRAWAL_BUNDLE_MAX_AGE; // 26_300
+const USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE / 2;
+
+const UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 2016;
+const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - 201;
+
+const UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 2016;
+const UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS: u16 = 201;
+const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS; // 1815;
 */
 
-const USED_MAX_AGE: u16 = 50;
-const USED_THRESHOLD: u16 = USED_MAX_AGE / 2;
+const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
+const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
 
-const UNUSED_MAX_AGE: u16 = 25;
-const UNUSED_THRESHOLD: u16 = UNUSED_MAX_AGE - 5;
+const USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = WITHDRAWAL_BUNDLE_MAX_AGE; // 5
+const USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE / 2;
+
+const UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 10;
+const UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS: u16 = 5;
+const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS;
 
 /// Unit key. LMDB can't use zero-sized keys, so this encodes to a single byte
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -229,11 +240,11 @@ impl Bip300 {
             .into_diagnostic()?
             .is_some();
         let succeeded = used
-            && sidechain_proposal.vote_count > USED_THRESHOLD
-            && sidechain_proposal_age <= USED_MAX_AGE as u32
+            && sidechain_proposal.vote_count > USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
+            && sidechain_proposal_age <= USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
             || !used
-                && sidechain_proposal.vote_count > UNUSED_THRESHOLD
-                && sidechain_proposal_age < UNUSED_MAX_AGE as u32;
+                && sidechain_proposal.vote_count > UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
+                && sidechain_proposal_age < UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
         if !succeeded {
             return Ok(false);
         }
@@ -419,8 +430,8 @@ impl Bip300 {
                     .get(rwtxn, &sidechain_proposal.sidechain_number)
                     .into_diagnostic()?
                     .is_some();
-                let failed = used && sidechain_proposal_age > USED_MAX_AGE as u32
-                    || !used && sidechain_proposal_age > UNUSED_MAX_AGE as u32;
+                let failed = used && sidechain_proposal_age > USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
+                    || !used && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
                 if failed {
                     Ok(Some(data_hash))
                 } else {
