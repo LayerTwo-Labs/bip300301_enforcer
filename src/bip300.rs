@@ -71,13 +71,6 @@ impl Serialize for UnitKey {
     }
 }
 
-/// Result from [`Bip300::handle_coinbase`]
-#[derive(Debug, Default)]
-struct CoinbaseOutcome {
-    initial_ctip: Option<(u8, OutPoint)>,
-    sidechain_activation: Option<u8>,
-}
-
 /// Result from [`tx_first_output_outcome`]
 #[derive(Debug)]
 struct TxFirstOutputOutcome {
@@ -335,7 +328,7 @@ impl Bip300 {
             M4AckBundles::OneByte { upvotes } => {
                 let upvotes: Vec<u16> = upvotes.iter().map(|vote| *vote as u16).collect();
                 self.handle_m4_votes(rwtxn, &upvotes)
-            },
+            }
             M4AckBundles::TwoBytes { upvotes } => self.handle_m4_votes(rwtxn, upvotes),
         }
     }
@@ -346,47 +339,6 @@ impl Bip300 {
         height: u32,
         coinbase: &Transaction,
     ) -> Result<()> {
-        for (vout, output) in coinbase.output.iter().enumerate() {
-            let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
-                continue;
-            };
-            match message {
-                CoinbaseMessage::M1ProposeSidechain {
-                    sidechain_number,
-                    data,
-                } => {
-                    println!(
-                        "Propose sidechain number {sidechain_number} with data \"{}\"",
-                        String::from_utf8(data.clone()).into_diagnostic()?,
-                    );
-                    let () = self.handle_m1_propose_sidechain(
-                        rwtxn,
-                        height,
-                        sidechain_number,
-                        data.clone(),
-                    )?;
-                }
-                CoinbaseMessage::M2AckSidechain {
-                    sidechain_number,
-                    data_hash,
-                } => {
-                    println!(
-                        "Ack sidechain number {sidechain_number} with hash {}",
-                        hex::encode(data_hash)
-                    );
-                    self.handle_m2_ack_sidechain(rwtxn, height, sidechain_number, data_hash)?;
-                }
-                CoinbaseMessage::M3ProposeBundle {
-                    sidechain_number,
-                    bundle_txid,
-                } => {
-                    let () = self.handle_m3_propose_bundle(rwtxn, sidechain_number, bundle_txid)?;
-                }
-                CoinbaseMessage::M4AckBundles(m4) => {
-                    let () = self.handle_m4_ack_bundles(rwtxn, &m4)?;
-                }
-            }
-        }
         Ok(())
     }
 
@@ -492,7 +444,47 @@ impl Bip300 {
         let coinbase = &block.txdata[0];
 
         let mut rwtxn = self.env.write_txn().into_diagnostic()?;
-        self.handle_coinbase(&mut rwtxn, height, coinbase)?;
+        for (vout, output) in coinbase.output.iter().enumerate() {
+            let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
+                continue;
+            };
+            match message {
+                CoinbaseMessage::M1ProposeSidechain {
+                    sidechain_number,
+                    data,
+                } => {
+                    println!(
+                        "Propose sidechain number {sidechain_number} with data \"{}\"",
+                        String::from_utf8(data.clone()).into_diagnostic()?,
+                    );
+                    self.handle_m1_propose_sidechain(
+                        &mut rwtxn,
+                        height,
+                        sidechain_number,
+                        data.clone(),
+                    )?;
+                }
+                CoinbaseMessage::M2AckSidechain {
+                    sidechain_number,
+                    data_hash,
+                } => {
+                    println!(
+                        "Ack sidechain number {sidechain_number} with hash {}",
+                        hex::encode(data_hash)
+                    );
+                    self.handle_m2_ack_sidechain(&mut rwtxn, height, sidechain_number, data_hash)?;
+                }
+                CoinbaseMessage::M3ProposeBundle {
+                    sidechain_number,
+                    bundle_txid,
+                } => {
+                    self.handle_m3_propose_bundle(&mut rwtxn, sidechain_number, bundle_txid)?;
+                }
+                CoinbaseMessage::M4AckBundles(m4) => {
+                    self.handle_m4_ack_bundles(&mut rwtxn, &m4)?;
+                }
+            }
+        }
 
         let () = self.handle_failed_proposals(&mut rwtxn, height)?;
 
