@@ -225,7 +225,6 @@ impl Bip300 {
         let Some(mut sidechain_proposal) = sidechain_proposal else {
             return Ok(());
         };
-        // Does it make sense to check for sidechain number?
         if sidechain_proposal.sidechain_number != sidechain_number {
             return Ok(());
         }
@@ -233,18 +232,25 @@ impl Bip300 {
         self.data_hash_to_sidechain_proposal
             .put(rwtxn, &data_hash, &sidechain_proposal)
             .into_diagnostic()?;
+
         let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
+
         let sidechain_slot_is_used = self
             .sidechain_number_to_sidechain
             .get(rwtxn, &sidechain_number)
             .into_diagnostic()?
             .is_some();
-        let new_sidechain_activated = sidechain_slot_is_used
-            && sidechain_proposal.vote_count > USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
-            && sidechain_proposal_age <= USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
-            || !sidechain_slot_is_used
+
+        let new_sidechain_activated = {
+            sidechain_slot_is_used
+                && sidechain_proposal.vote_count > USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
+                && sidechain_proposal_age <= USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
+        } || {
+            !sidechain_slot_is_used
                 && sidechain_proposal.vote_count > UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
-                && sidechain_proposal_age < UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
+                && sidechain_proposal_age < UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
+        };
+
         if new_sidechain_activated {
             println!(
                 "sidechain {sidechain_number} in slot {} was activated",
