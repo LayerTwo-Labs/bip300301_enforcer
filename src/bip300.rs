@@ -248,7 +248,7 @@ impl Bip300 {
         } || {
             !sidechain_slot_is_used
                 && sidechain_proposal.vote_count > UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
-                && sidechain_proposal_age < UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
+                && sidechain_proposal_age <= UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
         };
 
         if new_sidechain_activated {
