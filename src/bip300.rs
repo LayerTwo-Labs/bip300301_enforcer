@@ -177,6 +177,7 @@ impl Bip300 {
         })
     }
 
+    // See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m1-1
     fn handle_m1_propose_sidechain(
         &self,
         rwtxn: &mut RwTxn,
@@ -211,6 +212,7 @@ impl Bip300 {
             .into_diagnostic()
     }
 
+    // See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-1
     fn handle_m2_ack_sidechain(
         &self,
         rwtxn: &mut RwTxn,
