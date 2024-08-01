@@ -43,7 +43,8 @@ const USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = USED_SIDECHAIN_SLOT_PROPOS
 
 const UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 10;
 const UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS: u16 = 5;
-const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS;
+const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 =
+    UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS;
 
 /// Unit key. LMDB can't use zero-sized keys, so this encodes to a single byte
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -210,62 +211,60 @@ impl Bip300 {
             .into_diagnostic()
     }
 
-    /// Returns true IFF sidechain was activated
     fn handle_m2_ack_sidechain(
         &self,
         rwtxn: &mut RwTxn,
         height: u32,
         sidechain_number: u8,
         data_hash: [u8; 32],
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let sidechain_proposal = self
             .data_hash_to_sidechain_proposal
             .get(rwtxn, &data_hash)
             .into_diagnostic()?;
         let Some(mut sidechain_proposal) = sidechain_proposal else {
-            return Ok(false);
+            return Ok(());
         };
         // Does it make sense to check for sidechain number?
         if sidechain_proposal.sidechain_number != sidechain_number {
-            return Ok(false);
+            return Ok(());
         }
         sidechain_proposal.vote_count += 1;
         self.data_hash_to_sidechain_proposal
             .put(rwtxn, &data_hash, &sidechain_proposal)
             .into_diagnostic()?;
         let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
-        let used = self
+        let sidechain_slot_is_used = self
             .sidechain_number_to_sidechain
             .get(rwtxn, &sidechain_number)
             .into_diagnostic()?
             .is_some();
-        let succeeded = used
+        let new_sidechain_activated = sidechain_slot_is_used
             && sidechain_proposal.vote_count > USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
             && sidechain_proposal_age <= USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
-            || !used
+            || !sidechain_slot_is_used
                 && sidechain_proposal.vote_count > UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
                 && sidechain_proposal_age < UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
-        if !succeeded {
-            return Ok(false);
+        if new_sidechain_activated {
+            println!(
+                "sidechain {sidechain_number} in slot {} was activated",
+                String::from_utf8(sidechain_proposal.data.clone()).into_diagnostic()?,
+            );
+            let sidechain = Sidechain {
+                sidechain_number,
+                data: sidechain_proposal.data,
+                proposal_height: sidechain_proposal.proposal_height,
+                activation_height: height,
+                vote_count: sidechain_proposal.vote_count,
+            };
+            self.sidechain_number_to_sidechain
+                .put(rwtxn, &sidechain_number, &sidechain)
+                .into_diagnostic()?;
+            self.data_hash_to_sidechain_proposal
+                .delete(rwtxn, &data_hash)
+                .into_diagnostic()?;
         }
-        println!(
-            "sidechain {sidechain_number} in slot {} was activated",
-            String::from_utf8(sidechain_proposal.data.clone()).into_diagnostic()?,
-        );
-        let sidechain = Sidechain {
-            sidechain_number,
-            data: sidechain_proposal.data,
-            proposal_height: sidechain_proposal.proposal_height,
-            activation_height: height,
-            vote_count: sidechain_proposal.vote_count,
-        };
-        self.sidechain_number_to_sidechain
-            .put(rwtxn, &sidechain_number, &sidechain)
-            .into_diagnostic()?;
-        self.data_hash_to_sidechain_proposal
-            .delete(rwtxn, &data_hash)
-            .into_diagnostic()?;
-        Ok(true)
+        Ok(())
     }
 
     fn handle_m3_propose_bundle(
@@ -420,8 +419,10 @@ impl Bip300 {
                     .get(rwtxn, &sidechain_proposal.sidechain_number)
                     .into_diagnostic()?
                     .is_some();
-                let failed = sidechain_slot_is_used && sidechain_proposal_age > USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
-                    || !sidechain_slot_is_used && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
+                let failed = sidechain_slot_is_used
+                    && sidechain_proposal_age > USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
+                    || !sidechain_slot_is_used
+                        && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
                 if failed {
                     Ok(Some(data_hash))
                 } else {
@@ -629,12 +630,6 @@ impl Bip300 {
         Ok(ctip)
     }
 }
-
-// connect block
-// is_block_valid
-// is_transaction_valid
-//
-// get data for sidechain
 
 fn create_client(main_datadir: &Path) -> Result<Client> {
     let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
