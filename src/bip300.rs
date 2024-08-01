@@ -437,7 +437,7 @@ impl Bip300 {
         let coinbase = &block.txdata[0];
 
         let mut rwtxn = self.env.write_txn().into_diagnostic()?;
-        for (vout, output) in coinbase.output.iter().enumerate() {
+        for output in &coinbase.output {
             let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
                 continue;
             };
