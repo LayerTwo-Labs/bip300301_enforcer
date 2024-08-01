@@ -361,20 +361,12 @@ impl Bip300 {
         rwtxn: &mut RwTxn,
         height: u32,
         coinbase: &Transaction,
-    ) -> Result<CoinbaseOutcome> {
-        let mut res = CoinbaseOutcome::default();
+    ) -> Result<()> {
         for (vout, output) in coinbase.output.iter().enumerate() {
             let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
                 continue;
             };
             match message {
-                CoinbaseMessage::OpDrivechain { sidechain_number } => {
-                    let ctip_outpoint = OutPoint {
-                        txid: coinbase.txid(),
-                        vout: vout as u32,
-                    };
-                    res.initial_ctip = Some((sidechain_number, ctip_outpoint));
-                }
                 CoinbaseMessage::M1ProposeSidechain {
                     sidechain_number,
                     data,
@@ -398,9 +390,7 @@ impl Bip300 {
                         "Ack sidechain number {sidechain_number} with hash {}",
                         hex::encode(data_hash)
                     );
-                    if self.handle_m2_ack_sidechain(rwtxn, height, sidechain_number, data_hash)? {
-                        res.sidechain_activation = Some(sidechain_number);
-                    }
+                    self.handle_m2_ack_sidechain(rwtxn, height, sidechain_number, data_hash)?;
                 }
                 CoinbaseMessage::M3ProposeBundle {
                     sidechain_number,
@@ -413,7 +403,7 @@ impl Bip300 {
                 }
             }
         }
-        Ok(res)
+        Ok(())
     }
 
     fn handle_failed_proposals(&self, rwtxn: &mut RwTxn, height: u32) -> Result<()> {
@@ -425,13 +415,13 @@ impl Bip300 {
             .transpose_into_fallible()
             .filter_map(|(data_hash, sidechain_proposal)| {
                 let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
-                let used = self
+                let sidechain_slot_is_used = self
                     .sidechain_number_to_sidechain
                     .get(rwtxn, &sidechain_proposal.sidechain_number)
                     .into_diagnostic()?
                     .is_some();
-                let failed = used && sidechain_proposal_age > USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
-                    || !used && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
+                let failed = sidechain_slot_is_used && sidechain_proposal_age > USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
+                    || !sidechain_slot_is_used && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
                 if failed {
                     Ok(Some(data_hash))
                 } else {
@@ -445,45 +435,6 @@ impl Bip300 {
                 .into_diagnostic()?;
         }
         Ok(())
-    }
-
-    fn handle_coinbase_outcome(
-        &self,
-        rwtxn: &mut RwTxn,
-        coinbase_outcome: &CoinbaseOutcome,
-    ) -> Result<()> {
-        let CoinbaseOutcome {
-            initial_ctip,
-            sidechain_activation,
-        } = coinbase_outcome;
-        match (sidechain_activation, initial_ctip) {
-            (Some(sidechain_number), None) =>
-                Err(miette!(
-                    "no OP_DRIVECHAIN output in coinbase of block activating sidechain {}",
-                    sidechain_number
-                )),
-            (None, Some((sidechain_number, _))) =>
-                Err(miette!(
-                    "OP_DRIVECHAIN output present in coinbase of block that doesn't activate sidechain {}",
-                    sidechain_number
-                )),
-            (
-                Some(activation_sidechain_number),
-                Some((initial_ctip_sidechain_number, initial_ctip_outpoint)),
-            ) => {
-                if activation_sidechain_number != initial_ctip_sidechain_number {
-                    return Err(miette!("activated sidechain number {activation_sidechain_number} doesn't match  sidechain number in OP_DRIVECHAIN output {initial_ctip_sidechain_number}"))
-                }
-                let ctip = Ctip {
-                    outpoint: *initial_ctip_outpoint,
-                    value: 0,
-                };
-                self.sidechain_number_to_ctip
-                    .put(rwtxn, activation_sidechain_number, &ctip)
-                    .into_diagnostic()
-            }
-            (None, None) => Ok(())
-        }
     }
 
     fn get_old_ctip(&self, rotxn: &RoTxn, sidechain_number: u8) -> Result<Ctip> {
@@ -555,12 +506,9 @@ impl Bip300 {
         let coinbase = &block.txdata[0];
 
         let mut rwtxn = self.env.write_txn().into_diagnostic()?;
-        let coinbase_outcome = self.handle_coinbase(&mut rwtxn, height, coinbase)?;
+        self.handle_coinbase(&mut rwtxn, height, coinbase)?;
 
         let () = self.handle_failed_proposals(&mut rwtxn, height)?;
-
-        let _ = dbg!(&coinbase_outcome);
-        let () = self.handle_coinbase_outcome(&mut rwtxn, &coinbase_outcome)?;
 
         for transaction in &block.txdata[1..] {
             let () = self.handle_tx(&mut rwtxn, transaction)?;
