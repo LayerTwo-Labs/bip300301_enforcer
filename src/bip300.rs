@@ -356,6 +356,8 @@ impl Bip300 {
                     .get(rwtxn, &sidechain_proposal.sidechain_number)
                     .into_diagnostic()?
                     .is_some();
+                // FIXME: Do we need to check that the vote_count is below the threshold, or is it
+                // enough to check that the max age was exceeded?
                 let failed = sidechain_slot_is_used
                     && sidechain_proposal_age > USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
                     || !sidechain_slot_is_used
