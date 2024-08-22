@@ -1,8 +1,8 @@
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
 use bip300301_messages::{
-    bitcoin, parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage, M4AckBundles,
-    ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES,
+    bitcoin, m6_to_id, parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage,
+    M4AckBundles, ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES,
 };
 use bitcoin::{
     consensus::Decodable, opcodes::all::OP_RETURN, Block, BlockHash, OutPoint, Transaction,
@@ -18,7 +18,9 @@ use tokio::time::{interval, Instant};
 use tokio_stream::wrappers::IntervalStream;
 use ureq_jsonrpc::{json, Client};
 
-use crate::types::{Bundle, Ctip, Deposit, Hash256, Sidechain, SidechainProposal};
+use crate::types::{
+    Ctip, Deposit, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
+};
 
 /*
 const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 26_300;
@@ -129,13 +131,12 @@ pub struct Bip300 {
 
     data_hash_to_sidechain_proposal:
         Database<SerdeBincode<Hash256>, SerdeBincode<SidechainProposal>>,
-    sidechain_number_to_bundles: Database<SerdeBincode<u8>, SerdeBincode<Vec<Bundle>>>,
+    sidechain_number_to_pending_m6ids: Database<SerdeBincode<u8>, SerdeBincode<Vec<PendingM6id>>>,
     sidechain_number_to_sidechain: Database<SerdeBincode<u8>, SerdeBincode<Sidechain>>,
     sidechain_number_to_ctip: Database<SerdeBincode<u8>, SerdeBincode<Ctip>>,
     _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
-
-    deposits: Database<SerdeBincode<(u8, OutPoint)>, SerdeBincode<Deposit>>,
+    sequence_number_to_treasury_utxo: Database<SerdeBincode<u64>, SerdeBincode<TreasuryUtxo>>,
 }
 
 impl Bip300 {
@@ -149,8 +150,8 @@ impl Bip300 {
         let data_hash_to_sidechain_proposal = env
             .create_database(Some("data_hash_to_sidechain_proposal"))
             .into_diagnostic()?;
-        let sidechain_number_to_bundles = env
-            .create_database(Some("sidechain_number_to_bundles"))
+        let sidechain_number_to_pending_m6ids = env
+            .create_database(Some("sidechain_number_to_pending_m6ids"))
             .into_diagnostic()?;
         let sidechain_number_to_sidechain = env
             .create_database(Some("sidechain_number_to_sidechain"))
@@ -164,16 +165,18 @@ impl Bip300 {
         let leading_by_50 = env
             .create_database(Some("leading_by_50"))
             .into_diagnostic()?;
-        let deposits = env.create_database(Some("deposits")).into_diagnostic()?;
+        let sequence_number_to_treasury_utxo = env
+            .create_database(Some("sequence_number_to_treasury_utxo"))
+            .into_diagnostic()?;
         Ok(Self {
             env,
             data_hash_to_sidechain_proposal,
-            sidechain_number_to_bundles,
+            sidechain_number_to_pending_m6ids,
             sidechain_number_to_sidechain,
             sidechain_number_to_ctip,
             _previous_votes: previous_votes,
             _leading_by_50: leading_by_50,
-            deposits,
+            sequence_number_to_treasury_utxo,
         })
     }
 
@@ -275,73 +278,7 @@ impl Bip300 {
         Ok(())
     }
 
-    fn handle_m3_propose_bundle(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: u8,
-        bundle_txid: [u8; 32],
-    ) -> Result<()> {
-        let bundles = self
-            .sidechain_number_to_bundles
-            .get(rwtxn, &sidechain_number)
-            .into_diagnostic()?;
-        let Some(mut bundles) = bundles else {
-            return Ok(());
-        };
-        let bundle = Bundle {
-            bundle_txid,
-            vote_count: 0,
-        };
-        bundles.push(bundle);
-        self.sidechain_number_to_bundles
-            .put(rwtxn, &sidechain_number, &bundles)
-            .into_diagnostic()
-    }
-
-    fn handle_m4_votes(&self, rwtxn: &mut RwTxn, upvotes: &[u16]) -> Result<()> {
-        for (sidechain_number, vote) in upvotes.iter().enumerate() {
-            let vote = *vote;
-            if vote == ABSTAIN_TWO_BYTES {
-                continue;
-            }
-            let bundles = self
-                .sidechain_number_to_bundles
-                .get(rwtxn, &(sidechain_number as u8))
-                .into_diagnostic()?;
-            let Some(mut bundles) = bundles else { continue };
-            if vote == ALARM_TWO_BYTES {
-                for bundle in &mut bundles {
-                    if bundle.vote_count > 0 {
-                        bundle.vote_count -= 1;
-                    }
-                }
-            } else if let Some(bundle) = bundles.get_mut(vote as usize) {
-                bundle.vote_count += 1;
-            }
-            self.sidechain_number_to_bundles
-                .put(rwtxn, &(sidechain_number as u8), &bundles)
-                .into_diagnostic()?;
-        }
-        Ok(())
-    }
-
-    fn handle_m4_ack_bundles(&self, rwtxn: &mut RwTxn, m4: &M4AckBundles) -> Result<()> {
-        match m4 {
-            M4AckBundles::LeadingBy50 => {
-                todo!();
-            }
-            M4AckBundles::RepeatPrevious => {
-                todo!();
-            }
-            M4AckBundles::OneByte { upvotes } => {
-                let upvotes: Vec<u16> = upvotes.iter().map(|vote| *vote as u16).collect();
-                self.handle_m4_votes(rwtxn, &upvotes)
-            }
-            M4AckBundles::TwoBytes { upvotes } => self.handle_m4_votes(rwtxn, upvotes),
-        }
-    }
-
-    fn handle_failed_proposals(&self, rwtxn: &mut RwTxn, height: u32) -> Result<()> {
+    fn handle_failed_sidechain_proposals(&self, rwtxn: &mut RwTxn, height: u32) -> Result<()> {
         let failed_proposals: Vec<_> = self
             .data_hash_to_sidechain_proposal
             .iter(rwtxn)
@@ -376,6 +313,85 @@ impl Bip300 {
         Ok(())
     }
 
+    fn handle_m3_propose_bundle(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: u8,
+        m6id: [u8; 32],
+    ) -> Result<()> {
+        if self
+            .sidechain_number_to_sidechain
+            .get(rwtxn, &sidechain_number)
+            .into_diagnostic()?
+            .is_none()
+        {
+            return Err(miette!(
+                "can't propose bundle, sidechain slot {sidechain_number} is inactive"
+            ));
+        }
+        let pending_m6ids = self
+            .sidechain_number_to_pending_m6ids
+            .get(rwtxn, &sidechain_number)
+            .into_diagnostic()?;
+        let mut pending_m6ids = match pending_m6ids {
+            Some(pending_m6ids) => pending_m6ids,
+            None => vec![],
+        };
+        let pending_m6id = PendingM6id {
+            m6id,
+            vote_count: 0,
+        };
+        pending_m6ids.push(pending_m6id);
+        self.sidechain_number_to_pending_m6ids
+            .put(rwtxn, &sidechain_number, &pending_m6ids)
+            .into_diagnostic()
+    }
+
+    fn handle_m4_votes(&self, rwtxn: &mut RwTxn, upvotes: &[u16]) -> Result<()> {
+        for (sidechain_number, vote) in upvotes.iter().enumerate() {
+            let vote = *vote;
+            if vote == ABSTAIN_TWO_BYTES {
+                continue;
+            }
+            let pending_m6ids = self
+                .sidechain_number_to_pending_m6ids
+                .get(rwtxn, &(sidechain_number as u8))
+                .into_diagnostic()?;
+            let Some(mut pending_m6ids) = pending_m6ids else {
+                continue;
+            };
+            if vote == ALARM_TWO_BYTES {
+                for pending_m6id in &mut pending_m6ids {
+                    if pending_m6id.vote_count > 0 {
+                        pending_m6id.vote_count -= 1;
+                    }
+                }
+            } else if let Some(pending_m6id) = pending_m6ids.get_mut(vote as usize) {
+                pending_m6id.vote_count += 1;
+            }
+            self.sidechain_number_to_pending_m6ids
+                .put(rwtxn, &(sidechain_number as u8), &pending_m6ids)
+                .into_diagnostic()?;
+        }
+        Ok(())
+    }
+
+    fn handle_m4_ack_bundles(&self, rwtxn: &mut RwTxn, m4: &M4AckBundles) -> Result<()> {
+        match m4 {
+            M4AckBundles::LeadingBy50 => {
+                todo!();
+            }
+            M4AckBundles::RepeatPrevious => {
+                todo!();
+            }
+            M4AckBundles::OneByte { upvotes } => {
+                let upvotes: Vec<u16> = upvotes.iter().map(|vote| *vote as u16).collect();
+                self.handle_m4_votes(rwtxn, &upvotes)
+            }
+            M4AckBundles::TwoBytes { upvotes } => self.handle_m4_votes(rwtxn, upvotes),
+        }
+    }
+
     fn get_old_ctip(&self, rotxn: &RoTxn, sidechain_number: u8) -> Result<Ctip> {
         self.sidechain_number_to_ctip
             .get(rotxn, &sidechain_number)
@@ -385,20 +401,44 @@ impl Bip300 {
 
     fn handle_tx(&self, rwtxn: &mut RwTxn, transaction: &Transaction) -> Result<()> {
         // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
-        let (
-            Some(TxFirstOutputOutcome {
-                new_ctip,
-                new_total_value,
-                sidechain_number,
-            }),
-            Some(TxSecondOutputOutcome { address }),
-        ) = (
-            tx_first_output_outcome(transaction),
-            tx_second_output_outcome(transaction),
-        )
-        else {
-            return Ok(());
+        let (sidechain_number, new_ctip, new_total_value) = {
+            let output = &transaction.output[0];
+            // If OP_DRIVECHAIN script is invalid,
+            // for example if it is missing OP_TRUE at the end,
+            // it will just be ignored.
+            if let Ok((_input, sidechain_number)) =
+                parse_op_drivechain(&output.script_pubkey.to_bytes())
+            {
+                dbg!(&output.script_pubkey);
+                // FIXME: this check will never succeed
+                /*
+                if new_ctip.is_some() {
+                    return Err(miette!("more than one OP_DRIVECHAIN output"));
+                }
+                */
+
+                let new_ctip = OutPoint {
+                    txid: transaction.txid(),
+                    vout: 0,
+                };
+                let new_total_value = output.value;
+
+                (sidechain_number, new_ctip, new_total_value)
+            } else {
+                return Ok(());
+            }
         };
+
+        let address = {
+            let output = &transaction.output[1];
+            let script = output.script_pubkey.to_bytes();
+            if script[0] == OP_RETURN.to_u8() {
+                Some(script[1..].to_vec())
+            } else {
+                None
+            }
+        };
+
         let old_total_value = {
             let old_ctip = self.get_old_ctip(rwtxn, sidechain_number)?;
             let old_ctip_found = transaction
@@ -412,31 +452,58 @@ impl Bip300 {
             }
             old_ctip.value
         };
-        if new_total_value >= old_total_value {
-            // M5
-            // deposit
-            // What would happen if new CTIP value is equal to old CTIP value?
-            // for now it is treated as a deposit of 0.
-            let deposit = Deposit {
-                address,
-                value: new_total_value - old_total_value,
-                total_value: new_total_value,
-            };
-            self.deposits
-                .put(rwtxn, &(sidechain_number, new_ctip), &deposit)
-                .into_diagnostic()?;
-        } else {
-            // M6
-            // set correspondidng withdrawal bundle hash as spent
-            todo!();
+        let treasury_utxo = TreasuryUtxo {
+            outpoint: new_ctip,
+            address,
+            total_value: new_total_value,
+            previous_total_value: old_total_value,
+        };
+
+        // M6
+        if new_total_value < old_total_value {
+            let mut m6_valid = false;
+            let m6id = m6_to_id(transaction, old_total_value);
+            if let Some(pending_m6ids) = self
+                .sidechain_number_to_pending_m6ids
+                .get(rwtxn, &sidechain_number)
+                .into_diagnostic()?
+            {
+                for pending_m6id in pending_m6ids {
+                    // IMPORTANT FIXME: The block must be considered invalid if a pending m6id reaches a
+                    // vote_count greater than WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD and a
+                    // corresponding m6 is not included.
+                    //
+                    // So we must scan through all pending m6ids and then scan through all the
+                    // transactions in the block?
+                    if pending_m6id.m6id == m6id
+                        && pending_m6id.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD
+                    {
+                        m6_valid = true;
+                    }
+                }
+            }
+            if !m6_valid {
+                return Err(miette!("m6 is invalid"));
+            }
         }
+
+        // Sequence numbers begin at 0, so the total number of treasury utxos in the database
+        // gives us the *next* sequence number.
+        let sequence_number = self
+            .sequence_number_to_treasury_utxo
+            .len(rwtxn)
+            .into_diagnostic()? as u64;
+        self.sequence_number_to_treasury_utxo
+            .put(rwtxn, &sequence_number, &treasury_utxo)
+            .into_diagnostic()?;
         let new_ctip = Ctip {
             outpoint: new_ctip,
             value: new_total_value,
         };
         self.sidechain_number_to_ctip
             .put(rwtxn, &sidechain_number, &new_ctip)
-            .into_diagnostic()
+            .into_diagnostic()?;
+        Ok(())
     }
 
     pub fn connect_block(&self, block: &Block, height: u32) -> Result<()> {
@@ -487,10 +554,10 @@ impl Bip300 {
             }
         }
 
-        let () = self.handle_failed_proposals(&mut rwtxn, height)?;
+        self.handle_failed_sidechain_proposals(&mut rwtxn, height)?;
 
         for transaction in &block.txdata[1..] {
-            let () = self.handle_tx(&mut rwtxn, transaction)?;
+            self.handle_tx(&mut rwtxn, transaction)?;
             dbg!(transaction);
         }
         rwtxn.commit().into_diagnostic()?;

@@ -34,7 +34,15 @@ pub struct SidechainProposal {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Bundle {
-    pub bundle_txid: Hash256,
+pub struct PendingM6id {
+    pub m6id: Hash256,
     pub vote_count: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TreasuryUtxo {
+    pub outpoint: OutPoint,
+    pub address: Option<Vec<u8>>,
+    pub total_value: u64,
+    pub previous_total_value: u64,
 }
