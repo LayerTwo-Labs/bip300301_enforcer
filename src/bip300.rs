@@ -19,7 +19,7 @@ use tokio_stream::wrappers::IntervalStream;
 use ureq_jsonrpc::{json, Client};
 
 use crate::types::{
-    Ctip, Deposit, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
+    Ctip, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
 };
 
 /*
@@ -70,58 +70,6 @@ impl Serialize for UnitKey {
     {
         // Always serialize to the same arbitrary byte
         serializer.serialize_u8(0x69)
-    }
-}
-
-/// Result from [`tx_first_output_outcome`]
-#[derive(Debug)]
-struct TxFirstOutputOutcome {
-    new_ctip: OutPoint,
-    new_total_value: u64,
-    sidechain_number: u8,
-}
-
-fn tx_first_output_outcome(transaction: &Transaction) -> Option<TxFirstOutputOutcome> {
-    let output = &transaction.output[0];
-    // If OP_DRIVECHAIN script is invalid,
-    // for example if it is missing OP_TRUE at the end,
-    // it will just be ignored.
-    if let Ok((_input, sidechain_number)) = parse_op_drivechain(&output.script_pubkey.to_bytes()) {
-        dbg!(&output.script_pubkey);
-        // FIXME: this check will never succeed
-        /*
-        if new_ctip.is_some() {
-            return Err(miette!("more than one OP_DRIVECHAIN output"));
-        }
-        */
-        Some(TxFirstOutputOutcome {
-            new_ctip: OutPoint {
-                txid: transaction.txid(),
-                vout: 0,
-            },
-            new_total_value: output.value,
-            sidechain_number,
-        })
-    } else {
-        None
-    }
-}
-
-/// Result from [`tx_second_output_outcome`]
-#[derive(Debug)]
-struct TxSecondOutputOutcome {
-    address: Vec<u8>,
-}
-
-fn tx_second_output_outcome(transaction: &Transaction) -> Option<TxSecondOutputOutcome> {
-    let output = &transaction.output[1];
-    let script = output.script_pubkey.to_bytes();
-    if script[0] == OP_RETURN.to_u8() {
-        Some(TxSecondOutputOutcome {
-            address: script[1..].to_vec(),
-        })
-    } else {
-        None
     }
 }
 
