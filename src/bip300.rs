@@ -374,7 +374,7 @@ impl Bip300 {
             .ok_or_else(|| miette!("ctip missing for sidechain {sidechain_number}"))
     }
 
-    fn handle_tx(&self, rwtxn: &mut RwTxn, transaction: &Transaction) -> Result<()> {
+    fn handle_m5_m6(&self, rwtxn: &mut RwTxn, transaction: &Transaction) -> Result<()> {
         // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
         let (sidechain_number, new_ctip, new_total_value) = {
             let output = &transaction.output[0];
@@ -384,14 +384,6 @@ impl Bip300 {
             if let Ok((_input, sidechain_number)) =
                 parse_op_drivechain(&output.script_pubkey.to_bytes())
             {
-                dbg!(&output.script_pubkey);
-                // FIXME: this check will never succeed
-                /*
-                if new_ctip.is_some() {
-                    return Err(miette!("more than one OP_DRIVECHAIN output"));
-                }
-                */
-
                 let new_ctip = OutPoint {
                     txid: transaction.txid(),
                     vout: 0,
@@ -536,7 +528,7 @@ impl Bip300 {
         self.handle_failed_m6ids(&mut rwtxn)?;
 
         for transaction in &block.txdata[1..] {
-            self.handle_tx(&mut rwtxn, transaction)?;
+            self.handle_m5_m6(&mut rwtxn, transaction)?;
             dbg!(transaction);
         }
         rwtxn.commit().into_diagnostic()?;
