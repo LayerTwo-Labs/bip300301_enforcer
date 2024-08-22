@@ -18,9 +18,7 @@ use tokio::time::{interval, Instant};
 use tokio_stream::wrappers::IntervalStream;
 use ureq_jsonrpc::{json, Client};
 
-use crate::types::{
-    Ctip, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
-};
+use crate::types::{Ctip, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo};
 
 /*
 const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 26_300;
@@ -411,23 +409,23 @@ impl Bip300 {
         if new_total_value < old_total_value {
             let mut m6_valid = false;
             let m6id = m6_to_id(transaction, old_total_value);
-            if let Some(pending_m6ids) = self
+            if let Some(mut pending_m6ids) = self
                 .sidechain_number_to_pending_m6ids
                 .get(rwtxn, &sidechain_number)
                 .into_diagnostic()?
             {
-                for pending_m6id in pending_m6ids {
-                    // IMPORTANT FIXME: The block must be considered invalid if a pending m6id reaches a
-                    // vote_count greater than WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD and a
-                    // corresponding m6 is not included.
-                    //
-                    // So we must scan through all pending m6ids and then scan through all the
-                    // transactions in the block?
+                for pending_m6id in &pending_m6ids {
                     if pending_m6id.m6id == m6id
                         && pending_m6id.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD
                     {
                         m6_valid = true;
                     }
+                }
+                if m6_valid {
+                    let pending_m6ids: Vec<_> = pending_m6ids
+                        .into_iter()
+                        .filter(|pending_m6id| pending_m6id.m6id != m6id)
+                        .collect();
                 }
             }
             if !m6_valid {
