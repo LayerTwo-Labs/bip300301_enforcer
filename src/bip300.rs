@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
 use bip300301_messages::{
-    bitcoin, m6_to_id, parse_coinbase_script, parse_op_drivechain, sha256d, CoinbaseMessage,
-    M4AckBundles, ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE, ALARM_TWO_BYTES,
+    bitcoin, m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
+    CoinbaseMessage, M4AckBundles, ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE,
+    ALARM_TWO_BYTES,
 };
 use bitcoin::{
     consensus::Decodable, opcodes::all::OP_RETURN, Block, BlockHash, OutPoint, Transaction,
@@ -476,12 +477,30 @@ impl Bip300 {
         Ok(())
     }
 
+    fn handle_m8(
+        transaction: &Transaction,
+        accepted_sidechain_block_hashes: &HashSet<[u8; 32]>,
+    ) -> Result<()> {
+        let output = &transaction.output[0];
+        let script = output.script_pubkey.to_bytes();
+
+        if let Ok((_input, bmm_request)) = parse_m8_bmm_request(&script) {
+            if !accepted_sidechain_block_hashes.contains(&bmm_request.sidechain_block_hash) {
+                return Err(miette!(
+                    "can't include a BMM request that was not accepted by the miners"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn connect_block(&self, block: &Block, height: u32) -> Result<()> {
         println!("connect block");
         // TODO: Check that there are no duplicate M2s.
         let coinbase = &block.txdata[0];
 
         let mut rwtxn = self.env.write_txn().into_diagnostic()?;
+        let mut accepted_sidechain_block_hashes = HashSet::new();
         for output in &coinbase.output {
             let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
                 continue;
@@ -524,7 +543,7 @@ impl Bip300 {
                 CoinbaseMessage::M7BmmAccept {
                     sidechain_block_hash,
                 } => {
-                    todo!();
+                    accepted_sidechain_block_hashes.insert(sidechain_block_hash);
                 }
             }
         }
@@ -534,6 +553,7 @@ impl Bip300 {
 
         for transaction in &block.txdata[1..] {
             self.handle_m5_m6(&mut rwtxn, transaction)?;
+            Self::handle_m8(transaction, &accepted_sidechain_block_hashes)?;
             dbg!(transaction);
         }
         rwtxn.commit().into_diagnostic()?;
