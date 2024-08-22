@@ -571,6 +571,8 @@ impl Bip300 {
         Ok(())
     }
 
+    // TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
+    // operations.
     pub fn _disconnect_block(&self, _block: &Block) -> Result<()> {
         todo!();
     }
