@@ -521,6 +521,11 @@ impl Bip300 {
                 CoinbaseMessage::M4AckBundles(m4) => {
                     self.handle_m4_ack_bundles(&mut rwtxn, &m4)?;
                 }
+                CoinbaseMessage::M7BmmAccept {
+                    sidechain_block_hash,
+                } => {
+                    todo!();
+                }
             }
         }
 
