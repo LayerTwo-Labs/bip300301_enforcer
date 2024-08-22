@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
+use bip300301_messages::bitcoin::hashes::Hash;
 use bip300301_messages::{
     bitcoin, m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
     CoinbaseMessage, M4AckBundles, ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE,
@@ -480,6 +481,7 @@ impl Bip300 {
     fn handle_m8(
         transaction: &Transaction,
         accepted_sidechain_block_hashes: &HashSet<[u8; 32]>,
+        prev_mainchain_block_hash: &[u8; 32],
     ) -> Result<()> {
         let output = &transaction.output[0];
         let script = output.script_pubkey.to_bytes();
@@ -489,6 +491,9 @@ impl Bip300 {
                 return Err(miette!(
                     "can't include a BMM request that was not accepted by the miners"
                 ));
+            }
+            if bmm_request.prev_mainchain_block_hash != *prev_mainchain_block_hash {
+                return Err(miette!("BMM request expired"));
             }
         }
         Ok(())
@@ -551,9 +556,15 @@ impl Bip300 {
         self.handle_failed_sidechain_proposals(&mut rwtxn, height)?;
         self.handle_failed_m6ids(&mut rwtxn)?;
 
+        let prev_mainchain_block_hash = block.header.prev_blockhash.as_byte_array();
+
         for transaction in &block.txdata[1..] {
             self.handle_m5_m6(&mut rwtxn, transaction)?;
-            Self::handle_m8(transaction, &accepted_sidechain_block_hashes)?;
+            Self::handle_m8(
+                transaction,
+                &accepted_sidechain_block_hashes,
+                prev_mainchain_block_hash,
+            )?;
             dbg!(transaction);
         }
         rwtxn.commit().into_diagnostic()?;
