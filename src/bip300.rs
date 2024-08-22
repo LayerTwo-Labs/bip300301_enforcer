@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
 use bip300301_messages::{
@@ -338,6 +339,34 @@ impl Bip300 {
         }
     }
 
+    fn handle_failed_m6ids(&self, rwtxn: &mut RwTxn) -> Result<()> {
+        let mut updated_slots = HashMap::new();
+        for item in self
+            .sidechain_number_to_pending_m6ids
+            .iter(rwtxn)
+            .into_diagnostic()?
+        {
+            let (sidechain_number, pending_m6ids) = item.into_diagnostic()?;
+            let mut failed_m6ids = HashSet::new();
+            for pending_m6id in &pending_m6ids {
+                if pending_m6id.vote_count > WITHDRAWAL_BUNDLE_MAX_AGE {
+                    failed_m6ids.insert(pending_m6id.m6id);
+                }
+            }
+            let pending_m6ids: Vec<_> = pending_m6ids
+                .into_iter()
+                .filter(|pending_m6id| !failed_m6ids.contains(&pending_m6id.m6id))
+                .collect();
+            updated_slots.insert(sidechain_number, pending_m6ids);
+        }
+        for (sidechain_number, pending_m6ids) in updated_slots {
+            self.sidechain_number_to_pending_m6ids
+                .put(rwtxn, &sidechain_number, &pending_m6ids)
+                .into_diagnostic()?;
+        }
+        Ok(())
+    }
+
     fn get_old_ctip(&self, rotxn: &RoTxn, sidechain_number: u8) -> Result<Ctip> {
         self.sidechain_number_to_ctip
             .get(rotxn, &sidechain_number)
@@ -426,6 +455,9 @@ impl Bip300 {
                         .into_iter()
                         .filter(|pending_m6id| pending_m6id.m6id != m6id)
                         .collect();
+                    self.sidechain_number_to_pending_m6ids
+                        .put(rwtxn, &sidechain_number, &pending_m6ids)
+                        .into_diagnostic()?;
                 }
             }
             if !m6_valid {
@@ -501,6 +533,7 @@ impl Bip300 {
         }
 
         self.handle_failed_sidechain_proposals(&mut rwtxn, height)?;
+        self.handle_failed_m6ids(&mut rwtxn)?;
 
         for transaction in &block.txdata[1..] {
             self.handle_tx(&mut rwtxn, transaction)?;
