@@ -88,6 +88,8 @@ pub struct Bip300 {
     _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
 
+    current_block_height: Database<SerdeBincode<UnitKey>, SerdeBincode<u32>>,
+
     // Encode sidechain number as most significant byte of the u64
     // Encode the sequence number as the remaining 7 bytes.
     sidechain_number_sequence_number_to_treasury_utxo:
@@ -96,7 +98,7 @@ pub struct Bip300 {
 }
 
 impl Bip300 {
-    const NUM_DBS: u32 = 8;
+    const NUM_DBS: u32 = 9;
 
     pub fn new(datadir: &Path) -> Result<Self> {
         let env = EnvOpenOptions::new()
@@ -121,6 +123,9 @@ impl Bip300 {
         let leading_by_50 = env
             .create_database(Some("leading_by_50"))
             .into_diagnostic()?;
+        let current_block_height = env
+            .create_database(Some("current_block_height"))
+            .into_diagnostic()?;
         let sidechain_number_sequence_number_to_treasury_utxo = env
             .create_database(Some("sidechain_number_sequence_number_to_treasury_utxo"))
             .into_diagnostic()?;
@@ -135,6 +140,7 @@ impl Bip300 {
             sidechain_number_to_ctip,
             _previous_votes: previous_votes,
             _leading_by_50: leading_by_50,
+            current_block_height,
             sidechain_number_sequence_number_to_treasury_utxo,
             sidechain_number_to_treasury_utxo_count,
         })
@@ -380,11 +386,11 @@ impl Bip300 {
         Ok(())
     }
 
-    fn get_old_ctip(&self, rotxn: &RoTxn, sidechain_number: u8) -> Result<Ctip> {
-        self.sidechain_number_to_ctip
+    fn get_old_ctip(&self, rotxn: &RoTxn, sidechain_number: u8) -> Result<Option<Ctip>> {
+        Ok(self
+            .sidechain_number_to_ctip
             .get(rotxn, &sidechain_number)
-            .into_diagnostic()?
-            .ok_or_else(|| miette!("ctip missing for sidechain {sidechain_number}"))
+            .into_diagnostic()?)
     }
 
     fn handle_m5_m6(&self, rwtxn: &mut RwTxn, transaction: &Transaction) -> Result<()> {
@@ -420,17 +426,20 @@ impl Bip300 {
         };
 
         let old_total_value = {
-            let old_ctip = self.get_old_ctip(rwtxn, sidechain_number)?;
-            let old_ctip_found = transaction
-                .input
-                .iter()
-                .any(|input| input.previous_output == old_ctip.outpoint);
-            if !old_ctip_found {
-                return Err(miette!(
-                    "old ctip wasn't spent for sidechain {sidechain_number}"
-                ));
+            if let Some(old_ctip) = self.get_old_ctip(rwtxn, sidechain_number)? {
+                let old_ctip_found = transaction
+                    .input
+                    .iter()
+                    .any(|input| input.previous_output == old_ctip.outpoint);
+                if !old_ctip_found {
+                    return Err(miette!(
+                        "old ctip wasn't spent for sidechain {sidechain_number}"
+                    ));
+                }
+                old_ctip.value
+            } else {
+                0
             }
-            old_ctip.value
         };
         let treasury_utxo = TreasuryUtxo {
             outpoint: new_ctip,
@@ -438,6 +447,7 @@ impl Bip300 {
             total_value: new_total_value,
             previous_total_value: old_total_value,
         };
+        dbg!(&treasury_utxo);
 
         // M6
         if new_total_value < old_total_value {
@@ -515,12 +525,9 @@ impl Bip300 {
         Ok(())
     }
 
-    pub fn connect_block(&self, block: &Block, height: u32) -> Result<()> {
-        println!("connect block");
+    pub fn connect_block(&self, rwtxn: &mut RwTxn, block: &Block, height: u32) -> Result<()> {
         // TODO: Check that there are no duplicate M2s.
         let coinbase = &block.txdata[0];
-
-        let mut rwtxn = self.env.write_txn().into_diagnostic()?;
         let mut accepted_sidechain_block_hashes = HashSet::new();
         for output in &coinbase.output {
             let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
@@ -531,12 +538,14 @@ impl Bip300 {
                     sidechain_number,
                     data,
                 } => {
+                    /*
                     println!(
                         "Propose sidechain number {sidechain_number} with data \"{}\"",
                         String::from_utf8(data.clone()).into_diagnostic()?,
                     );
+                    */
                     self.handle_m1_propose_sidechain(
-                        &mut rwtxn,
+                        rwtxn,
                         height,
                         sidechain_number,
                         data.clone(),
@@ -546,20 +555,22 @@ impl Bip300 {
                     sidechain_number,
                     data_hash,
                 } => {
+                    /*
                     println!(
                         "Ack sidechain number {sidechain_number} with hash {}",
                         hex::encode(data_hash)
                     );
-                    self.handle_m2_ack_sidechain(&mut rwtxn, height, sidechain_number, data_hash)?;
+                    */
+                    self.handle_m2_ack_sidechain(rwtxn, height, sidechain_number, data_hash)?;
                 }
                 CoinbaseMessage::M3ProposeBundle {
                     sidechain_number,
                     bundle_txid,
                 } => {
-                    self.handle_m3_propose_bundle(&mut rwtxn, sidechain_number, bundle_txid)?;
+                    self.handle_m3_propose_bundle(rwtxn, sidechain_number, bundle_txid)?;
                 }
                 CoinbaseMessage::M4AckBundles(m4) => {
-                    self.handle_m4_ack_bundles(&mut rwtxn, &m4)?;
+                    self.handle_m4_ack_bundles(rwtxn, &m4)?;
                 }
                 CoinbaseMessage::M7BmmAccept {
                     sidechain_block_hash,
@@ -569,21 +580,19 @@ impl Bip300 {
             }
         }
 
-        self.handle_failed_sidechain_proposals(&mut rwtxn, height)?;
-        self.handle_failed_m6ids(&mut rwtxn)?;
+        self.handle_failed_sidechain_proposals(rwtxn, height)?;
+        self.handle_failed_m6ids(rwtxn)?;
 
         let prev_mainchain_block_hash = block.header.prev_blockhash.as_byte_array();
 
         for transaction in &block.txdata[1..] {
-            self.handle_m5_m6(&mut rwtxn, transaction)?;
+            self.handle_m5_m6(rwtxn, transaction)?;
             Self::handle_m8(
                 transaction,
                 &accepted_sidechain_block_hashes,
                 prev_mainchain_block_hash,
             )?;
-            dbg!(transaction);
         }
-        rwtxn.commit().into_diagnostic()?;
         Ok(())
     }
 
@@ -597,18 +606,66 @@ impl Bip300 {
         todo!();
     }
 
-    /// Single iteration of the task loop
-    fn task_loop_once(&self, main_client: &Client, current_block_height: &mut u32) -> Result<()> {
-        let block_height: u32 = main_client
+    fn initial_sync(&self, main_client: &Client) -> Result<()> {
+        let mut txn = self.env.write_txn().into_diagnostic()?;
+        let mut height = self
+            .current_block_height
+            .get(&txn, &UnitKey)
+            .into_diagnostic()?
+            .unwrap_or(0);
+        let main_block_height: u32 = main_client
             .send_request("getblockcount", &[])
             .into_diagnostic()?
             .ok_or(miette!("failed to get block count"))?;
-        if block_height == *current_block_height {
+        while height < main_block_height {
+            let block_hash: String = main_client
+                .send_request("getblockhash", &[json!(height)])
+                .into_diagnostic()?
+                .ok_or(miette!("failed to get block hash"))?;
+            let block: String = main_client
+                .send_request("getblock", &[json!(block_hash), json!(0)])
+                .into_diagnostic()?
+                .ok_or(miette!("failed to get block"))?;
+            let block_bytes = hex::decode(&block).unwrap();
+            let mut cursor = Cursor::new(block_bytes);
+            let block = Block::consensus_decode(&mut cursor).unwrap();
+            self.connect_block(&mut txn, &block, height)?;
+            {
+                /*
+                main_client
+                    .send_request("invalidateblock", &[json!(block_hash)])
+                    .into_diagnostic()?
+                    .ok_or(miette!("failed to invalidate block"))?;
+                */
+            }
+            height += 1;
+        }
+        self.current_block_height
+            .put(&mut txn, &UnitKey, &height)
+            .into_diagnostic()?;
+        txn.commit().into_diagnostic()?;
+        Ok(())
+    }
+
+    // FIXME: Rewrite all of this to be more readable.
+    /// Single iteration of the task loop
+    fn task_loop_once(&self, main_client: &Client) -> Result<()> {
+        let mut txn = self.env.write_txn().into_diagnostic()?;
+        let mut height = self
+            .current_block_height
+            .get(&txn, &UnitKey)
+            .into_diagnostic()?
+            .unwrap_or(0);
+        let main_block_height: u32 = main_client
+            .send_request("getblockcount", &[])
+            .into_diagnostic()?
+            .ok_or(miette!("failed to get block count"))?;
+        if main_block_height == height {
             return Ok(());
         }
-        println!("Block height: {block_height}");
+        println!("Block height: {main_block_height}");
 
-        for height in *current_block_height..block_height {
+        while height < main_block_height {
             let block_hash: String = main_client
                 .send_request("getblockhash", &[json!(height)])
                 .into_diagnostic()?
@@ -625,9 +682,14 @@ impl Bip300 {
             let mut cursor = Cursor::new(block_bytes);
             let block = Block::consensus_decode(&mut cursor).unwrap();
 
-            // dbg!(block);
-
-            self.connect_block(&block, height)?;
+            if self.connect_block(&mut txn, &block, height).is_err() {
+                /*
+                main_client
+                    .send_request("invalidateblock", &[json!(block_hash)])
+                    .into_diagnostic()?
+                    .ok_or(miette!("failed to invalidate block"))?;
+                */
+            }
             println!();
 
             // check for new block
@@ -635,24 +697,23 @@ impl Bip300 {
             // if invalid invalidate
             // if valid connect
             // wait 1 second
+            height += 1;
         }
-        *current_block_height = block_height;
+        self.current_block_height
+            .put(&mut txn, &UnitKey, &height)
+            .into_diagnostic()?;
+        txn.commit().into_diagnostic()?;
         Ok(())
     }
 
     async fn task(&self) -> Result<()> {
         let main_datadir = Path::new("../../data/bitcoin/");
         let main_client = &create_client(main_datadir)?;
-        let mut current_block_height: u32 = main_client
-            .send_request("getblockcount", &[])
-            .into_diagnostic()?
-            .ok_or(miette!("failed to get block count"))?;
+        self.initial_sync(&main_client)?;
         let interval = interval(Duration::from_secs(1));
         IntervalStream::new(interval)
             .map(Ok)
-            .try_for_each(move |_: Instant| async move {
-                self.task_loop_once(main_client, &mut current_block_height)
-            })
+            .try_for_each(move |_: Instant| async move { self.task_loop_once(main_client) })
             .await
     }
 

@@ -3,7 +3,7 @@ use std::io::Cursor;
 use bip300301_enforcer_proto::validator::{
     Deposit, GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
     GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-    GetSidechainsResponse, SidechainProposal,
+    GetSidechainsResponse, SidechainProposal, Ctip,
 };
 use bip300301_messages::{
     bitcoin::{
@@ -34,13 +34,17 @@ impl Validator for Bip300 {
         &self,
         request: Request<ConnectBlockRequest>,
     ) -> Result<Response<ConnectBlockResponse>, Status> {
+        todo!();
+        /*
         // println!("REQUEST = {:?}", request);
         let request = request.into_inner();
         let mut cursor = Cursor::new(request.block);
         let block = Block::consensus_decode(&mut cursor).unwrap();
+        let txn = self.env.write_txn().unwrap();
         self.connect_block(&block, request.height).unwrap();
         let response = ConnectBlockResponse {};
         Ok(Response::new(response))
+        */
     }
 
     async fn disconnect_block(
@@ -228,11 +232,17 @@ impl Validator for Bip300 {
         request: tonic::Request<GetCtipRequest>,
     ) -> std::result::Result<tonic::Response<GetCtipResponse>, tonic::Status> {
         let sidechain_number = request.into_inner().sidechain_number;
-        let ctip = self.get_ctip(sidechain_number as u8).unwrap().unwrap();
-        let txid = ctip.outpoint.txid.as_byte_array().into();
-        let vout = ctip.outpoint.vout;
-        let value = ctip.value;
-        let response = GetCtipResponse { txid, vout, value };
-        Ok(Response::new(response))
+        if let Some(ctip) = self.get_ctip(sidechain_number as u8).unwrap() {
+            let ctip = Ctip {
+                txid: ctip.outpoint.txid.as_byte_array().into(),
+                vout: ctip.outpoint.vout,
+                value: ctip.value,
+            };
+            let response = GetCtipResponse { ctip: Some(ctip) };
+            Ok(Response::new(response))
+        } else {
+            let response = GetCtipResponse { ctip: None };
+            Ok(Response::new(response))
+        }
     }
 }
