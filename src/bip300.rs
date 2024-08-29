@@ -21,7 +21,9 @@ use tokio::time::{interval, Instant};
 use tokio_stream::wrappers::IntervalStream;
 use ureq_jsonrpc::{json, Client};
 
-use crate::types::{Ctip, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo};
+use crate::types::{
+    Ctip, Deposit, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
+};
 
 /*
 const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 26_300;
@@ -85,11 +87,16 @@ pub struct Bip300 {
     sidechain_number_to_ctip: Database<SerdeBincode<u8>, SerdeBincode<Ctip>>,
     _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
-    sequence_number_to_treasury_utxo: Database<SerdeBincode<u64>, SerdeBincode<TreasuryUtxo>>,
+
+    // Encode sidechain number as most significant byte of the u64
+    // Encode the sequence number as the remaining 7 bytes.
+    sidechain_number_sequence_number_to_treasury_utxo:
+        Database<SerdeBincode<(u8, u64)>, SerdeBincode<TreasuryUtxo>>,
+    sidechain_number_to_treasury_utxo_count: Database<SerdeBincode<u8>, SerdeBincode<u64>>,
 }
 
 impl Bip300 {
-    const NUM_DBS: u32 = 7;
+    const NUM_DBS: u32 = 8;
 
     pub fn new(datadir: &Path) -> Result<Self> {
         let env = EnvOpenOptions::new()
@@ -114,8 +121,11 @@ impl Bip300 {
         let leading_by_50 = env
             .create_database(Some("leading_by_50"))
             .into_diagnostic()?;
-        let sequence_number_to_treasury_utxo = env
-            .create_database(Some("sequence_number_to_treasury_utxo"))
+        let sidechain_number_sequence_number_to_treasury_utxo = env
+            .create_database(Some("sidechain_number_sequence_number_to_treasury_utxo"))
+            .into_diagnostic()?;
+        let sidechain_number_to_treasury_utxo_count = env
+            .create_database(Some("sidechain_number_to_treasury_utxo_count"))
             .into_diagnostic()?;
         Ok(Self {
             env,
@@ -125,7 +135,8 @@ impl Bip300 {
             sidechain_number_to_ctip,
             _previous_votes: previous_votes,
             _leading_by_50: leading_by_50,
-            sequence_number_to_treasury_utxo,
+            sidechain_number_sequence_number_to_treasury_utxo,
+            sidechain_number_to_treasury_utxo_count,
         })
     }
 
@@ -432,7 +443,7 @@ impl Bip300 {
         if new_total_value < old_total_value {
             let mut m6_valid = false;
             let m6id = m6_to_id(transaction, old_total_value);
-            if let Some(mut pending_m6ids) = self
+            if let Some(pending_m6ids) = self
                 .sidechain_number_to_pending_m6ids
                 .get(rwtxn, &sidechain_number)
                 .into_diagnostic()?
@@ -458,15 +469,20 @@ impl Bip300 {
                 return Err(miette!("m6 is invalid"));
             }
         }
-
+        let mut treasury_utxo_count = self
+            .sidechain_number_to_treasury_utxo_count
+            .get(rwtxn, &sidechain_number)
+            .into_diagnostic()?
+            .unwrap_or(0);
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
-        let sequence_number = self
-            .sequence_number_to_treasury_utxo
-            .len(rwtxn)
-            .into_diagnostic()? as u64;
-        self.sequence_number_to_treasury_utxo
-            .put(rwtxn, &sequence_number, &treasury_utxo)
+        let sequence_number = treasury_utxo_count;
+        self.sidechain_number_sequence_number_to_treasury_utxo
+            .put(rwtxn, &(sidechain_number, sequence_number), &treasury_utxo)
+            .into_diagnostic()?;
+        treasury_utxo_count += 1;
+        self.sidechain_number_to_treasury_utxo_count
+            .put(rwtxn, &sidechain_number, &treasury_utxo_count)
             .into_diagnostic()?;
         let new_ctip = Ctip {
             outpoint: new_ctip,
@@ -682,6 +698,29 @@ impl Bip300 {
             .get(&txn, &sidechain_number)
             .into_diagnostic()?;
         Ok(ctip)
+    }
+
+    pub fn get_deposits(&self, sidechain_number: u8) -> Result<Vec<Deposit>> {
+        let txn = self.env.read_txn().into_diagnostic()?;
+        let treasury_utxos_range = self
+            .sidechain_number_sequence_number_to_treasury_utxo
+            .range(&txn, &((sidechain_number, 0)..(sidechain_number, u64::MAX)))
+            .into_diagnostic()?;
+        let mut deposits = vec![];
+        for item in treasury_utxos_range {
+            let ((_, sequence_number), treasury_utxo) = item.into_diagnostic()?;
+            if treasury_utxo.total_value > treasury_utxo.previous_total_value
+                && treasury_utxo.address.is_some()
+            {
+                let deposit = Deposit {
+                    sequence_number,
+                    address: treasury_utxo.address.unwrap(),
+                    value: treasury_utxo.total_value - treasury_utxo.previous_total_value,
+                };
+                deposits.push(deposit);
+            }
+        }
+        Ok(deposits)
     }
 }
 

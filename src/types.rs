@@ -39,3 +39,10 @@ pub struct TreasuryUtxo {
     pub total_value: u64,
     pub previous_total_value: u64,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Deposit {
+    pub sequence_number: u64,
+    pub address: Vec<u8>,
+    pub value: u64,
+}

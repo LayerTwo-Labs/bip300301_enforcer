@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use bip300301_enforcer_proto::validator::{
-    GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
+    Deposit, GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
     GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
     GetSidechainsResponse, SidechainProposal,
 };
@@ -141,9 +141,21 @@ impl Validator for Bip300 {
 
     async fn get_deposits(
         &self,
-        _request: Request<GetDepositsRequest>,
+        request: Request<GetDepositsRequest>,
     ) -> Result<Response<GetDepositsResponse>, Status> {
-        todo!();
+        let request = request.into_inner();
+        let sidechain_number = request.sidechain_number as u8;
+        let deposits = self.get_deposits(sidechain_number).unwrap();
+        let mut response = GetDepositsResponse { deposits: vec![] };
+        for deposit in deposits {
+            let deposit = Deposit {
+                address: deposit.address,
+                value: deposit.value,
+                sequence_number: deposit.sequence_number,
+            };
+            response.deposits.push(deposit);
+        }
+        Ok(Response::new(response))
     }
 
     async fn get_sidechain_proposals(
