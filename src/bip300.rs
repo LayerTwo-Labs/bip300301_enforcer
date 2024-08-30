@@ -87,11 +87,7 @@ pub struct Bip300 {
     sidechain_number_to_ctip: Database<SerdeBincode<u8>, SerdeBincode<Ctip>>,
     _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
-
     current_block_height: Database<SerdeBincode<UnitKey>, SerdeBincode<u32>>,
-
-    // Encode sidechain number as most significant byte of the u64
-    // Encode the sequence number as the remaining 7 bytes.
     sidechain_number_sequence_number_to_treasury_utxo:
         Database<SerdeBincode<(u8, u64)>, SerdeBincode<TreasuryUtxo>>,
     sidechain_number_to_treasury_utxo_count: Database<SerdeBincode<u8>, SerdeBincode<u64>>,
@@ -752,6 +748,23 @@ impl Bip300 {
         Ok(sidechains)
     }
 
+    pub fn get_ctip_sequence_number(&self, sidechain_number: u8) -> Result<Option<u64>> {
+        let rotxn = self.env.read_txn().into_diagnostic()?;
+        let treasury_utxo_count = self
+            .sidechain_number_to_treasury_utxo_count
+            .get(&rotxn, &sidechain_number)
+            .into_diagnostic()?;
+        let sequence_number = match treasury_utxo_count {
+            // Sequence numbers begin at 0, so the total number of treasury utxos in the database
+            // gives us the *next* sequence number.
+            //
+            // In order to get the current sequence number we decrement it by one.
+            Some(treasury_utxo_count) => Some(treasury_utxo_count - 1),
+            None => None,
+        };
+        Ok(sequence_number)
+    }
+
     pub fn get_ctip(&self, sidechain_number: u8) -> Result<Option<Ctip>> {
         let txn = self.env.read_txn().into_diagnostic()?;
         let ctip = self
@@ -759,6 +772,16 @@ impl Bip300 {
             .get(&txn, &sidechain_number)
             .into_diagnostic()?;
         Ok(ctip)
+    }
+
+    pub fn get_main_block_height(&self) -> Result<u32> {
+        let txn = self.env.read_txn().into_diagnostic()?;
+        let height = self
+            .current_block_height
+            .get(&txn, &UnitKey)
+            .into_diagnostic()?
+            .unwrap_or(0);
+        Ok(height)
     }
 
     pub fn get_deposits(&self, sidechain_number: u8) -> Result<Vec<Deposit>> {

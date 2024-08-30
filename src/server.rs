@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use bip300301_enforcer_proto::validator::{
-    Deposit, GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
-    GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-    GetSidechainsResponse, SidechainProposal, Ctip,
+    Ctip, Deposit, GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
+    GetMainBlockHeightRequest, GetMainBlockHeightResponse, GetSidechainProposalsRequest,
+    GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
 };
 use bip300301_messages::{
     bitcoin::{
@@ -233,10 +233,17 @@ impl Validator for Bip300 {
     ) -> std::result::Result<tonic::Response<GetCtipResponse>, tonic::Status> {
         let sidechain_number = request.into_inner().sidechain_number;
         if let Some(ctip) = self.get_ctip(sidechain_number as u8).unwrap() {
+            let sequence_number = self
+                .get_ctip_sequence_number(sidechain_number as u8)
+                .unwrap();
+            // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
+            // return Some, so we just unwrap it.
+            let sequence_number = sequence_number.unwrap();
             let ctip = Ctip {
                 txid: ctip.outpoint.txid.as_byte_array().into(),
                 vout: ctip.outpoint.vout,
                 value: ctip.value,
+                sequence_number,
             };
             let response = GetCtipResponse { ctip: Some(ctip) };
             Ok(Response::new(response))
@@ -244,5 +251,14 @@ impl Validator for Bip300 {
             let response = GetCtipResponse { ctip: None };
             Ok(Response::new(response))
         }
+    }
+
+    async fn get_main_block_height(
+        &self,
+        _request: tonic::Request<GetMainBlockHeightRequest>,
+    ) -> std::result::Result<tonic::Response<GetMainBlockHeightResponse>, tonic::Status> {
+        let height = self.get_main_block_height().unwrap();
+        let response = GetMainBlockHeightResponse { height };
+        Ok(Response::new(response))
     }
 }
