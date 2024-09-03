@@ -12,6 +12,7 @@ use bitcoin::{
 };
 use fallible_iterator::{FallibleIterator, IteratorExt as _};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use heed::types::Unit;
 use heed::{types::SerdeBincode, Env, EnvOpenOptions};
 use heed::{Database, RoTxn, RwTxn};
 use miette::{miette, IntoDiagnostic, Result};
@@ -88,13 +89,16 @@ pub struct Bip300 {
     _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     current_block_height: Database<SerdeBincode<UnitKey>, SerdeBincode<u32>>,
+    current_chain_tip: Database<SerdeBincode<UnitKey>, SerdeBincode<Hash256>>,
     sidechain_number_sequence_number_to_treasury_utxo:
         Database<SerdeBincode<(u8, u64)>, SerdeBincode<TreasuryUtxo>>,
     sidechain_number_to_treasury_utxo_count: Database<SerdeBincode<u8>, SerdeBincode<u64>>,
+    block_height_to_accepted_bmm_block_hashes:
+        Database<SerdeBincode<u32>, SerdeBincode<Vec<Hash256>>>,
 }
 
 impl Bip300 {
-    const NUM_DBS: u32 = 9;
+    const NUM_DBS: u32 = 11;
 
     pub fn new(datadir: &Path) -> Result<Self> {
         let env = EnvOpenOptions::new()
@@ -122,11 +126,17 @@ impl Bip300 {
         let current_block_height = env
             .create_database(Some("current_block_height"))
             .into_diagnostic()?;
+        let current_chain_tip = env
+            .create_database(Some("current_chain_tip"))
+            .into_diagnostic()?;
         let sidechain_number_sequence_number_to_treasury_utxo = env
             .create_database(Some("sidechain_number_sequence_number_to_treasury_utxo"))
             .into_diagnostic()?;
         let sidechain_number_to_treasury_utxo_count = env
             .create_database(Some("sidechain_number_to_treasury_utxo_count"))
+            .into_diagnostic()?;
+        let block_height_to_accepted_bmm_block_hashes = env
+            .create_database(Some("block_height_to_accepted_bmm_block_hashes"))
             .into_diagnostic()?;
         Ok(Self {
             env,
@@ -137,8 +147,11 @@ impl Bip300 {
             _previous_votes: previous_votes,
             _leading_by_50: leading_by_50,
             current_block_height,
+            current_chain_tip,
             sidechain_number_sequence_number_to_treasury_utxo,
             sidechain_number_to_treasury_utxo_count,
+
+            block_height_to_accepted_bmm_block_hashes,
         })
     }
 
@@ -502,14 +515,14 @@ impl Bip300 {
 
     fn handle_m8(
         transaction: &Transaction,
-        accepted_sidechain_block_hashes: &HashSet<[u8; 32]>,
+        accepted_bmm_block_hashes: &HashSet<[u8; 32]>,
         prev_mainchain_block_hash: &[u8; 32],
     ) -> Result<()> {
         let output = &transaction.output[0];
         let script = output.script_pubkey.to_bytes();
 
         if let Ok((_input, bmm_request)) = parse_m8_bmm_request(&script) {
-            if !accepted_sidechain_block_hashes.contains(&bmm_request.sidechain_block_hash) {
+            if !accepted_bmm_block_hashes.contains(&bmm_request.sidechain_block_hash) {
                 return Err(miette!(
                     "can't include a BMM request that was not accepted by the miners"
                 ));
@@ -524,7 +537,7 @@ impl Bip300 {
     pub fn connect_block(&self, rwtxn: &mut RwTxn, block: &Block, height: u32) -> Result<()> {
         // TODO: Check that there are no duplicate M2s.
         let coinbase = &block.txdata[0];
-        let mut accepted_sidechain_block_hashes = HashSet::new();
+        let mut accepted_bmm_block_hashes = HashSet::new();
         for output in &coinbase.output {
             let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
                 continue;
@@ -571,8 +584,32 @@ impl Bip300 {
                 CoinbaseMessage::M7BmmAccept {
                     sidechain_block_hash,
                 } => {
-                    accepted_sidechain_block_hashes.insert(sidechain_block_hash);
+                    accepted_bmm_block_hashes.insert(sidechain_block_hash);
                 }
+            }
+        }
+
+        {
+            let accepted_bmm_block_hashes: Vec<_> =
+                accepted_bmm_block_hashes.iter().map(|hash| *hash).collect();
+            self.block_height_to_accepted_bmm_block_hashes
+                .put(rwtxn, &height, &accepted_bmm_block_hashes)
+                .into_diagnostic()?;
+            const MAX_BMM_BLOCK_DEPTH: usize = 6 * 24 * 7; // 1008 blocks = ~1 week of time
+            if self
+                .block_height_to_accepted_bmm_block_hashes
+                .len(rwtxn)
+                .into_diagnostic()?
+                > MAX_BMM_BLOCK_DEPTH
+            {
+                let (block_height, _) = self
+                    .block_height_to_accepted_bmm_block_hashes
+                    .first(rwtxn)
+                    .into_diagnostic()?
+                    .unwrap();
+                self.block_height_to_accepted_bmm_block_hashes
+                    .delete(rwtxn, &block_height)
+                    .into_diagnostic()?;
             }
         }
 
@@ -585,7 +622,7 @@ impl Bip300 {
             self.handle_m5_m6(rwtxn, transaction)?;
             Self::handle_m8(
                 transaction,
-                &accepted_sidechain_block_hashes,
+                &accepted_bmm_block_hashes,
                 prev_mainchain_block_hash,
             )?;
         }
@@ -635,6 +672,13 @@ impl Bip300 {
                 */
             }
             height += 1;
+            let block_hash = hex::decode(block_hash)
+                .into_diagnostic()?
+                .try_into()
+                .unwrap();
+            self.current_chain_tip
+                .put(&mut txn, &UnitKey, &block_hash)
+                .into_diagnostic()?;
         }
         self.current_block_height
             .put(&mut txn, &UnitKey, &height)
@@ -694,6 +738,13 @@ impl Bip300 {
             // if valid connect
             // wait 1 second
             height += 1;
+            let block_hash = hex::decode(block_hash)
+                .into_diagnostic()?
+                .try_into()
+                .unwrap();
+            self.current_chain_tip
+                .put(&mut txn, &UnitKey, &block_hash)
+                .into_diagnostic()?;
         }
         self.current_block_height
             .put(&mut txn, &UnitKey, &height)
@@ -782,6 +833,16 @@ impl Bip300 {
             .into_diagnostic()?
             .unwrap_or(0);
         Ok(height)
+    }
+
+    pub fn get_main_chain_tip(&self) -> Result<[u8; 32]> {
+        let txn = self.env.read_txn().into_diagnostic()?;
+        let block_hash = self
+            .current_chain_tip
+            .get(&txn, &UnitKey)
+            .into_diagnostic()?
+            .unwrap_or([0; 32]);
+        Ok(block_hash)
     }
 
     pub fn get_deposits(&self, sidechain_number: u8) -> Result<Vec<Deposit>> {

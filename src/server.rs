@@ -2,8 +2,9 @@ use std::io::Cursor;
 
 use bip300301_enforcer_proto::validator::{
     Ctip, Deposit, GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
-    GetMainBlockHeightRequest, GetMainBlockHeightResponse, GetSidechainProposalsRequest,
-    GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
+    GetMainBlockHeightRequest, GetMainBlockHeightResponse, GetMainChainTipRequest,
+    GetMainChainTipResponse, GetSidechainProposalsRequest, GetSidechainProposalsResponse,
+    GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
 };
 use bip300301_messages::{
     bitcoin::{
@@ -259,6 +260,17 @@ impl Validator for Bip300 {
     ) -> std::result::Result<tonic::Response<GetMainBlockHeightResponse>, tonic::Status> {
         let height = self.get_main_block_height().unwrap();
         let response = GetMainBlockHeightResponse { height };
+        Ok(Response::new(response))
+    }
+
+    async fn get_main_chain_tip(
+        &self,
+        _request: tonic::Request<GetMainChainTipRequest>,
+    ) -> std::result::Result<tonic::Response<GetMainChainTipResponse>, tonic::Status> {
+        let block_hash = self.get_main_chain_tip().unwrap();
+        let response = GetMainChainTipResponse {
+            block_hash: block_hash.to_vec(),
+        };
         Ok(Response::new(response))
     }
 }
