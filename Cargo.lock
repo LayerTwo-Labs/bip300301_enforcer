@@ -202,7 +202,7 @@ dependencies = [
 [[package]]
 name = "bip300301_messages"
 version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#a9d852f0d5e8c0aa780d49ddc60bce831566e1ab"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#398b224981c7c236c8354704e655996d33685149"
 dependencies = [
  "bitcoin",
  "byteorder",
