@@ -4,15 +4,13 @@ use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 use bip300301_messages::bitcoin::hashes::Hash;
 use bip300301_messages::{
     bitcoin, m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
-    CoinbaseMessage, M4AckBundles, ABSTAIN_ONE_BYTE, ABSTAIN_TWO_BYTES, ALARM_ONE_BYTE,
-    ALARM_TWO_BYTES,
+    CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
 };
 use bitcoin::{
     consensus::Decodable, opcodes::all::OP_RETURN, Block, BlockHash, OutPoint, Transaction,
 };
 use fallible_iterator::{FallibleIterator, IteratorExt as _};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
-use heed::types::Unit;
 use heed::{types::SerdeBincode, Env, EnvOpenOptions};
 use heed::{Database, RoTxn, RwTxn};
 use miette::{miette, IntoDiagnostic, Result};
