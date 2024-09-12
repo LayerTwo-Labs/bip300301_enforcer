@@ -101,9 +101,11 @@ impl Bip300 {
     const NUM_DBS: u32 = 11;
 
     pub fn new(datadir: &Path) -> Result<Self> {
+        let db_dir = datadir.join("./bip300301_enforcer.mdb");
+        std::fs::create_dir_all(&db_dir).into_diagnostic()?;
         let env = EnvOpenOptions::new()
             .max_dbs(Self::NUM_DBS)
-            .open(datadir.join("./bip300.mdb"))
+            .open(db_dir)
             .into_diagnostic()?;
         let data_hash_to_sidechain_proposal = env
             .create_database(Some("data_hash_to_sidechain_proposal"))
@@ -866,6 +868,20 @@ impl Bip300 {
             }
         }
         Ok(deposits)
+    }
+
+    pub fn get_accepted_bmm_hashes(&self) -> Result<Vec<(u32, Vec<[u8; 32]>)>> {
+        let mut block_height_accepted_bmm_hashes = vec![];
+        let txn = self.env.read_txn().into_diagnostic()?;
+        for item in self
+            .block_height_to_accepted_bmm_block_hashes
+            .iter(&txn)
+            .into_diagnostic()?
+        {
+            let (block_height, accepted_bmm_hashes) = item.into_diagnostic()?;
+            block_height_accepted_bmm_hashes.push((block_height, accepted_bmm_hashes.to_vec()));
+        }
+        Ok(block_height_accepted_bmm_hashes)
     }
 }
 

@@ -199,7 +199,6 @@ dependencies = [
 [[package]]
 name = "bip300301_enforcer_proto"
 version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer_proto#f1f6635d67e387e52e36c38e7d12eb489b90286e"
 dependencies = [
  "prost",
  "tonic",

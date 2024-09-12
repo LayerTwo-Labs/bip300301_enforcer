@@ -1,7 +1,8 @@
 use std::io::Cursor;
 
 use bip300301_enforcer_proto::validator::{
-    Ctip, Deposit, GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
+    BlockHeightBmmHashes, Ctip, Deposit, GetAcceptedBmmHashesRequest, GetAcceptedBmmHashesResponse,
+    GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
     GetMainBlockHeightRequest, GetMainBlockHeightResponse, GetMainChainTipRequest,
     GetMainChainTipResponse, GetSidechainProposalsRequest, GetSidechainProposalsResponse,
     GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
@@ -270,6 +271,30 @@ impl Validator for Bip300 {
         let block_hash = self.get_main_chain_tip().unwrap();
         let response = GetMainChainTipResponse {
             block_hash: block_hash.to_vec(),
+        };
+        Ok(Response::new(response))
+    }
+
+    async fn get_accepted_bmm_hashes(
+        &self,
+        _request: Request<GetAcceptedBmmHashesRequest>,
+    ) -> std::result::Result<tonic::Response<GetAcceptedBmmHashesResponse>, tonic::Status> {
+        let accepted_bmm_hashes = self.get_accepted_bmm_hashes().unwrap();
+        let accepted_bmm_hashes = accepted_bmm_hashes
+            .into_iter()
+            .map(|(block_height, bmm_hashes)| {
+                let bmm_hashes = bmm_hashes
+                    .into_iter()
+                    .map(|bmm_hash| bmm_hash.to_vec())
+                    .collect();
+                BlockHeightBmmHashes {
+                    block_height,
+                    bmm_hashes,
+                }
+            })
+            .collect();
+        let response = GetAcceptedBmmHashesResponse {
+            accepted_bmm_hashes,
         };
         Ok(Response::new(response))
     }
