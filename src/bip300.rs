@@ -515,14 +515,17 @@ impl Bip300 {
 
     fn handle_m8(
         transaction: &Transaction,
-        accepted_bmm_block_hashes: &HashSet<[u8; 32]>,
+        accepted_bmm_requests: &HashSet<(u8, [u8; 32])>,
         prev_mainchain_block_hash: &[u8; 32],
     ) -> Result<()> {
         let output = &transaction.output[0];
         let script = output.script_pubkey.to_bytes();
 
         if let Ok((_input, bmm_request)) = parse_m8_bmm_request(&script) {
-            if !accepted_bmm_block_hashes.contains(&bmm_request.sidechain_block_hash) {
+            if !accepted_bmm_requests.contains(&(
+                bmm_request.sidechain_number,
+                bmm_request.sidechain_block_hash,
+            )) {
                 return Err(miette!(
                     "can't include a BMM request that was not accepted by the miners"
                 ));
@@ -537,7 +540,8 @@ impl Bip300 {
     pub fn connect_block(&self, rwtxn: &mut RwTxn, block: &Block, height: u32) -> Result<()> {
         // TODO: Check that there are no duplicate M2s.
         let coinbase = &block.txdata[0];
-        let mut accepted_bmm_block_hashes = HashSet::new();
+        let mut bmmed_sidechain_slots = HashSet::new();
+        let mut accepted_bmm_requests = HashSet::new();
         for output in &coinbase.output {
             let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
                 continue;
@@ -582,16 +586,25 @@ impl Bip300 {
                     self.handle_m4_ack_bundles(rwtxn, &m4)?;
                 }
                 CoinbaseMessage::M7BmmAccept {
+                    sidechain_number,
                     sidechain_block_hash,
                 } => {
-                    accepted_bmm_block_hashes.insert(sidechain_block_hash);
+                    if bmmed_sidechain_slots.contains(&sidechain_number) {
+                        return Err(miette!(
+                            "more than one block bmmed in siidechain slot {sidechain_number}"
+                        ));
+                    }
+                    bmmed_sidechain_slots.insert(sidechain_number);
+                    accepted_bmm_requests.insert((sidechain_number, sidechain_block_hash));
                 }
             }
         }
 
         {
-            let accepted_bmm_block_hashes: Vec<_> =
-                accepted_bmm_block_hashes.iter().map(|hash| *hash).collect();
+            let accepted_bmm_block_hashes: Vec<_> = accepted_bmm_requests
+                .iter()
+                .map(|(_sidechain_number, hash)| *hash)
+                .collect();
             self.block_height_to_accepted_bmm_block_hashes
                 .put(rwtxn, &height, &accepted_bmm_block_hashes)
                 .into_diagnostic()?;
@@ -622,7 +635,7 @@ impl Bip300 {
             self.handle_m5_m6(rwtxn, transaction)?;
             Self::handle_m8(
                 transaction,
-                &accepted_bmm_block_hashes,
+                &accepted_bmm_requests,
                 prev_mainchain_block_hash,
             )?;
         }
