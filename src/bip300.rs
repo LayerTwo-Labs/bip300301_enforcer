@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
 use bip300301_messages::bitcoin::hashes::Hash;
@@ -763,9 +765,8 @@ impl Bip300 {
         Ok(())
     }
 
-    async fn task(&self) -> Result<()> {
-        let main_datadir = Path::new("../../data/bitcoin/");
-        let main_client = &create_client(main_datadir)?;
+    async fn task(&self, main_datadir: PathBuf, main_address: SocketAddr) -> Result<()> {
+        let main_client = &create_client(main_datadir, main_address)?;
         self.initial_sync(&main_client)?;
         let interval = interval(Duration::from_secs(1));
         IntervalStream::new(interval)
@@ -774,11 +775,15 @@ impl Bip300 {
             .await
     }
 
-    pub fn run(&self) -> JoinHandle<()> {
+    pub fn run(&self, main_datadir: &Path, main_address: SocketAddr) -> JoinHandle<()> {
+        let main_datadir = main_datadir.to_owned();
+        let main_address = main_address.to_owned();
         let this = self.clone();
-        tokio::task::spawn(
-            async move { this.task().unwrap_or_else(|err| eprintln!("{err:#}")).await },
-        )
+        tokio::task::spawn(async move {
+            this.task(main_datadir, main_address)
+                .unwrap_or_else(|err| eprintln!("{err:#}"))
+                .await
+        })
     }
 
     pub fn get_sidechain_proposals(&self) -> Result<Vec<(Hash256, SidechainProposal)>> {
@@ -893,8 +898,16 @@ impl Bip300 {
     }
 }
 
-fn create_client(main_datadir: &Path) -> Result<Client> {
-    let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
+fn create_client(main_datadir: PathBuf, main_address: SocketAddr) -> Result<Client> {
+    let cookie_path = main_datadir.join("regtest/.cookie");
+    let auth = std::fs::read_to_string(cookie_path.clone()).map_err(|err| {
+        miette!(
+            "unable to read bitcoind cookie at {}: {}",
+            cookie_path.display(),
+            err
+        )
+    })?;
+
     let mut auth = auth.split(':');
     let user = auth
         .next()
@@ -905,7 +918,7 @@ fn create_client(main_datadir: &Path) -> Result<Client> {
         .ok_or(miette!("failed to get rpcpassword"))?
         .to_string();
     Ok(Client {
-        host: "localhost".into(),
+        host: main_address.ip().to_string(),
         port: 18443,
         user,
         password,
