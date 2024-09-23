@@ -17,6 +17,7 @@ serde = { version = "1.0.197", features = ["derive"] }
 sha2 = "0.10.8"
 tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 tokio-stream = "0.1.15"
+clap = { version = "4.5.18", features = ["derive"] }
 
 prost = "0.12.3"
 tonic = "0.11.0"
