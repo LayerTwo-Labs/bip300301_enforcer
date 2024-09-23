@@ -1,12 +1,8 @@
 use std::io::Cursor;
 
-use bip300301_enforcer_proto::validator::{
-    BlockHeightBmmHashes, Ctip, Deposit, GetAcceptedBmmHashesRequest, GetAcceptedBmmHashesResponse,
-    GetCtipRequest, GetCtipResponse, GetDepositsRequest, GetDepositsResponse,
-    GetMainBlockHeightRequest, GetMainBlockHeightResponse, GetMainChainTipRequest,
-    GetMainChainTipResponse, GetSidechainProposalsRequest, GetSidechainProposalsResponse,
-    GetSidechainsRequest, GetSidechainsResponse, SidechainProposal,
-};
+use crate::gen::validator::validator_server::Validator;
+use crate::gen::validator::*;
+
 use bip300301_messages::{
     bitcoin::{
         self,
@@ -20,21 +16,14 @@ use bip300301_messages::{
 use miette::Result;
 use tonic::{Request, Response, Status};
 
-use validator::{
-    validator_server::Validator, AckBundlesEnum, ConnectBlockRequest, ConnectBlockResponse,
-    DisconnectBlockRequest, DisconnectBlockResponse, GetCoinbasePsbtRequest,
-    GetCoinbasePsbtResponse,
-};
-
 pub use crate::bip300::Bip300;
 use crate::types;
-pub use bip300301_enforcer_proto::validator;
 
 #[tonic::async_trait]
 impl Validator for Bip300 {
     async fn connect_block(
         &self,
-        request: Request<ConnectBlockRequest>,
+        _: Request<ConnectBlockRequest>,
     ) -> Result<Response<ConnectBlockResponse>, Status> {
         todo!();
         /*
@@ -215,7 +204,7 @@ impl Validator for Bip300 {
                      proposal_height,
                      activation_height,
                  }| {
-                    bip300301_enforcer_proto::validator::Sidechain {
+                    Sidechain {
                         sidechain_number: sidechain_number as u32,
                         data,
                         vote_count: vote_count as u32,
@@ -275,27 +264,29 @@ impl Validator for Bip300 {
         Ok(Response::new(response))
     }
 
-    async fn get_accepted_bmm_hashes(
-        &self,
-        _request: Request<GetAcceptedBmmHashesRequest>,
-    ) -> std::result::Result<tonic::Response<GetAcceptedBmmHashesResponse>, tonic::Status> {
-        let accepted_bmm_hashes = self.get_accepted_bmm_hashes().unwrap();
-        let accepted_bmm_hashes = accepted_bmm_hashes
-            .into_iter()
-            .map(|(block_height, bmm_hashes)| {
-                let bmm_hashes = bmm_hashes
-                    .into_iter()
-                    .map(|bmm_hash| bmm_hash.to_vec())
-                    .collect();
-                BlockHeightBmmHashes {
-                    block_height,
-                    bmm_hashes,
-                }
-            })
-            .collect();
-        let response = GetAcceptedBmmHashesResponse {
-            accepted_bmm_hashes,
-        };
-        Ok(Response::new(response))
-    }
+    // This is commented out for now, because it references Protobuf messages that
+    // does not exist.
+    // async fn get_accepted_bmm_hashes(
+    //     &self,
+    //     _request: Request<GetAcceptedBmmHashesRequest>,
+    // ) -> std::result::Result<tonic::Response<GetAcceptedBmmHashesResponse>, tonic::Status> {
+    //     let accepted_bmm_hashes = self.get_accepted_bmm_hashes().unwrap();
+    //     let accepted_bmm_hashes = accepted_bmm_hashes
+    //         .into_iter()
+    //         .map(|(block_height, bmm_hashes)| {
+    //             let bmm_hashes = bmm_hashes
+    //                 .into_iter()
+    //                 .map(|bmm_hash| bmm_hash.to_vec())
+    //                 .collect();
+    //             BlockHeightBmmHashes {
+    //                 block_height,
+    //                 bmm_hashes,
+    //             }
+    //         })
+    //         .collect();
+    //     let response = GetAcceptedBmmHashesResponse {
+    //         accepted_bmm_hashes,
+    //     };
+    //     Ok(Response::new(response))
+    // }
 }
