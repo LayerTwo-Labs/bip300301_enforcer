@@ -2,6 +2,7 @@ use std::{net::SocketAddr, path::Path};
 
 mod bip300;
 mod cli;
+mod gen;
 mod server;
 mod types;
 
@@ -10,8 +11,9 @@ use futures::{
     future::{self, Either},
     FutureExt, TryFutureExt,
 };
+use gen::validator::validator_server::ValidatorServer;
 use miette::{miette, IntoDiagnostic, Result};
-use server::{validator::validator_server::ValidatorServer, Bip300};
+use server::Bip300;
 use tonic::transport::Server;
 use ureq_jsonrpc::Client;
 
