@@ -26,11 +26,7 @@ $ buf curl  --schema 'https://github.com/LayerTwo-Labs/bip300301_enforcer_proto.
 Regenerating Protobuf/gRPC code:
 
 ```bash
-# Generate from remote repository
-$ buf generate --path proto https://github.com/LayerTwo-Labs/bip300301_enforcer_proto.git
-
-# Can also pass in a local path
-$ buf generate ../bip300301_enforcer_proto/proto/
+$ buf generate 
 ```
 
 # Notes on generated Protobuf/gRPC code
