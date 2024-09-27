@@ -48,18 +48,19 @@ async fn run_server(bip300: Bip300, addr: SocketAddr) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = cli::Cli::parse();
+    let cli = cli::Config::parse();
+    let serve_rpc_addr = cli.serve_rpc_addr;
 
     let bip300 = Bip300::new(Path::new("./"))?;
 
     let task = bip300
-        .run(&cli.node_rpc_datadir, cli.node_rpc_addr)
+        .run(cli)
         .map(|res| res.into_diagnostic())
         .map_err(|err| miette!("unable to initialize bip300 handler: {}", err))
         .unwrap_or_else(|err| eprintln!("{err:#}"));
 
     //let ((), ()) = future::try_join(task.map(Ok), run_server(bip300, addr)).await?;
-    match future::select(task, run_server(bip300, cli.serve_rpc_addr).boxed()).await {
+    match future::select(task, run_server(bip300, serve_rpc_addr).boxed()).await {
         Either::Left(((), server_task)) => {
             // continue to run server task
             server_task.await
