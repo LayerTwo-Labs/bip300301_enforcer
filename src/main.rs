@@ -2,7 +2,6 @@ use std::{net::SocketAddr, path::Path};
 
 mod bip300;
 mod cli;
-#[allow(clippy::wildcard_imports)]
 mod gen;
 mod server;
 mod types;
@@ -12,7 +11,7 @@ use futures::{
     future::{self, Either},
     FutureExt, TryFutureExt,
 };
-use gen::validator::validator_server::ValidatorServer;
+use gen::validator::validator_service_server::ValidatorServiceServer;
 use miette::{miette, IntoDiagnostic, Result};
 use server::Bip300;
 use tonic::transport::Server;
@@ -41,7 +40,7 @@ fn _create_client(main_datadir: &Path) -> Result<Client> {
 async fn run_server(bip300: Bip300, addr: SocketAddr) -> Result<()> {
     println!("Listening for gRPC on {addr}");
     Server::builder()
-        .add_service(ValidatorServer::new(bip300))
+        .add_service(ValidatorServiceServer::new(bip300))
         .serve(addr)
         .map(|res| res.into_diagnostic())
         .await
