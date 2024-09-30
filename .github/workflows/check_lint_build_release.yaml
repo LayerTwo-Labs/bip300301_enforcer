@@ -1,0 +1,235 @@
+on: [pull_request, push]
+
+name: Check, Lint, Build, Release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-lint-build-release-linux:
+    name: Check, Lint, Build, Release (ubuntu stable)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    # env:
+    #  RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+      
+      # Disabled, since buf format is not configurable
+      #- name: Buf format
+      #  run: buf format -d --exit-code
+      
+      - name: Buf lint
+        run: buf lint --error-format github-actions
+
+      - name: Install latest stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+        with:
+          prefix-key: "ubuntu-stable"
+
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+      
+      - name: Cargo check
+        run: cargo check
+      
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
+      
+      - name: Build
+        run: cargo build --release
+
+      - name: 'Set environment variables: version number and output filenames'
+        run: |
+          APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
+          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-x86_64-unknown-linux-gnu"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
+
+      - name: 'Set filenames for release binaries'
+        run: |
+          pushd "target/release"
+          ln -fs "bip300301_enforcer" "${APP_FILENAME}"
+          popd
+
+      - name: 'Upload artifacts'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_FILENAME }}
+          if-no-files-found: error
+          path: |
+            target/release/${{ env.APP_FILENAME }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: github.ref == 'refs/heads/master'
+        with:
+          files: |
+            target/release/${{ env.APP_FILENAME }}
+          fail_on_unmatched_files: true
+
+  build-release-macos:
+    name: Build, Release (macos-x86_64)
+    # macos-latest is ARM64, macos-latest-large is x86-64
+    runs-on: macos-latest-large
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    # env:
+    #  RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+        with:
+          prefix-key: "macos-x86_64"
+
+      - name: Build
+        run: cargo build --release
+
+      - name: 'Set environment variables: version number and output filenames'
+        run: |
+          APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
+          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-x86_64-apple-darwin"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
+
+      - name: 'Set filenames for release binaries'
+        run: |
+          pushd "target/release"
+          ln -fs "bip300301_enforcer" "${APP_FILENAME}"
+          popd
+
+      - name: 'Upload artifacts'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_FILENAME }}
+          if-no-files-found: error
+          path: |
+            target/release/${{ env.APP_FILENAME }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: github.ref == 'refs/heads/master'
+        with:
+          files: |
+            target/release/${{ env.APP_FILENAME }}
+          fail_on_unmatched_files: true
+  
+  build-release-windows:
+    name: Build, Release (x86_64-pc-windows-gnu)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    # env:
+    #  RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-gnu
+        
+      - name: Install mingw-w64
+        run: sudo apt install mingw-w64
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+        with:
+          prefix-key: "x86_64-pc-windows-gnu"
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-gnu
+        env:
+          RUSTFLAGS: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+
+      - name: 'Set environment variables: version number and output filenames'
+        run: |
+          APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
+          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-x86_64-pc-windows-gnu.exe"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
+
+
+      - name: 'Set filenames for release binaries'
+        run: |
+          pushd "target/x86_64-pc-windows-gnu/release"
+          ln -fs "bip300301_enforcer.exe" "${APP_FILENAME}"
+          popd
+
+      - name: 'Upload Artifacts'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_FILENAME }}
+          if-no-files-found: error
+          path: |
+            target/x86_64-pc-windows-gnu/release/${{ env.APP_FILENAME }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: github.ref == 'refs/heads/master'
+        with:
+          files: |
+            target/x86_64-pc-windows-gnu/release/${{ env.APP_FILENAME }}
+          fail_on_unmatched_files: true
+
+  upload-releases-to-releases-drivechain-info:
+    name: Upload releases to releases.drivechain.info
+    runs-on: ubuntu-latest
+    needs: [
+      check-lint-build-release-linux,
+      build-release-macos,
+      build-release-windows
+    ]
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - name: Download release assets
+        uses: robinraju/release-downloader@v1.9
+        with:
+          tag: ${{ github.ref_name }}
+
+      - name: Create zip files for releases.drivechain.info
+        run: |
+          shopt -s extglob
+          mv bip300301_enforcer-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin bip300301-enforcer-latest-x86_64-apple-darwin
+          zip bip300301-enforcer-latest-x86_64-apple-darwin.zip \
+            bip300301-enforcer-latest-x86_64-apple-darwin
+          mv bip300301_enforcer-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe bip300301-enforcer-latest-x86_64-pc-windows-gnu.exe
+          zip bip300301-enforcer-latest-x86_64-pc-windows-gnu.zip \
+            bip300301-enforcer-latest-x86_64-pc-windows-gnu.exe
+          mv bip300301_enforcer-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu bip300301-enforcer-latest-x86_64-unknown-linux-gnu
+          zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip \
+            bip300301-enforcer-latest-x86_64-unknown-linux-gnu \
+
+      - name: Upload release assets to releases.drivechain.info
+        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+        with:
+          host: 45.33.96.47
+          user: root
+          pass: ${{ secrets.RELEASES_SERVER_PW }}
+          port: 22
+          scp: |
+            'bip300301-enforcer-latest-*.zip' => '/var/www/html/'
