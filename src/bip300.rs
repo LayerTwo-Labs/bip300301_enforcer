@@ -307,10 +307,7 @@ impl Bip300 {
             .sidechain_number_to_pending_m6ids
             .get(rwtxn, &sidechain_number)
             .into_diagnostic()?;
-        let mut pending_m6ids = match pending_m6ids {
-            Some(pending_m6ids) => pending_m6ids,
-            None => vec![],
-        };
+        let mut pending_m6ids = pending_m6ids.unwrap_or_default();
         let pending_m6id = PendingM6id {
             m6id,
             vote_count: 0,
@@ -395,10 +392,9 @@ impl Bip300 {
     }
 
     fn get_old_ctip(&self, rotxn: &RoTxn, sidechain_number: u8) -> Result<Option<Ctip>> {
-        Ok(self
-            .sidechain_number_to_ctip
+        self.sidechain_number_to_ctip
             .get(rotxn, &sidechain_number)
-            .into_diagnostic()?)
+            .into_diagnostic()
     }
 
     fn handle_m5_m6(&self, rwtxn: &mut RwTxn, transaction: &Transaction) -> Result<()> {
@@ -767,7 +763,7 @@ impl Bip300 {
 
     async fn task(&self, main_datadir: PathBuf, main_address: SocketAddr) -> Result<()> {
         let main_client = &create_client(main_datadir, main_address)?;
-        self.initial_sync(&main_client)?;
+        let () = self.initial_sync(main_client)?;
         let interval = interval(Duration::from_secs(1));
         IntervalStream::new(interval)
             .map(Ok)
@@ -820,14 +816,11 @@ impl Bip300 {
             .sidechain_number_to_treasury_utxo_count
             .get(&rotxn, &sidechain_number)
             .into_diagnostic()?;
-        let sequence_number = match treasury_utxo_count {
-            // Sequence numbers begin at 0, so the total number of treasury utxos in the database
-            // gives us the *next* sequence number.
-            //
-            // In order to get the current sequence number we decrement it by one.
-            Some(treasury_utxo_count) => Some(treasury_utxo_count - 1),
-            None => None,
-        };
+        // Sequence numbers begin at 0, so the total number of treasury utxos in the database
+        // gives us the *next* sequence number.
+        // In order to get the current sequence number we decrement it by one.
+        let sequence_number =
+            treasury_utxo_count.map(|treasury_utxo_count| treasury_utxo_count - 1);
         Ok(sequence_number)
     }
 
@@ -883,6 +876,7 @@ impl Bip300 {
         Ok(deposits)
     }
 
+    /*
     pub fn get_accepted_bmm_hashes(&self) -> Result<Vec<(u32, Vec<[u8; 32]>)>> {
         let mut block_height_accepted_bmm_hashes = vec![];
         let txn = self.env.read_txn().into_diagnostic()?;
@@ -896,6 +890,7 @@ impl Bip300 {
         }
         Ok(block_height_accepted_bmm_hashes)
     }
+    */
 }
 
 fn create_client(main_datadir: PathBuf, main_address: SocketAddr) -> Result<Client> {

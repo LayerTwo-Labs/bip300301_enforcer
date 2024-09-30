@@ -2,6 +2,7 @@ use std::{net::SocketAddr, path::Path};
 
 mod bip300;
 mod cli;
+#[allow(clippy::wildcard_imports)]
 mod gen;
 mod server;
 mod types;
