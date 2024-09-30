@@ -1,7 +1,7 @@
 syntax = "proto3";
-package validator;
+package validator.v1;
 
-service Validator {
+service ValidatorService {
   rpc ConnectBlock(ConnectBlockRequest) returns (ConnectBlockResponse);
   rpc DisconnectBlock(DisconnectBlockRequest) returns (DisconnectBlockResponse);
   rpc GetCoinbasePSBT(GetCoinbasePSBTRequest) returns (GetCoinbasePSBTResponse);
@@ -43,7 +43,8 @@ service Validator {
   */
 }
 
-message GetSidechainProposalsRequest {}
+message GetSidechainProposalsRequest {
+}
 message GetSidechainProposalsResponse {
   repeated SidechainProposal sidechain_proposals = 1;
 }
@@ -57,8 +58,11 @@ message SidechainProposal {
   uint32 proposal_age = 6;
 }
 
-message GetSidechainsRequest {}
-message GetSidechainsResponse { repeated Sidechain sidechains = 1; }
+message GetSidechainsRequest {
+}
+message GetSidechainsResponse {
+  repeated Sidechain sidechains = 1;
+}
 
 message Sidechain {
   uint32 sidechain_number = 1;
@@ -72,10 +76,14 @@ message ConnectBlockRequest {
   uint32 height = 1;
   bytes block = 2;
 }
-message ConnectBlockResponse {}
+message ConnectBlockResponse {
+}
 
-message DisconnectBlockRequest { bytes block = 1; }
-message DisconnectBlockResponse {}
+message DisconnectBlockRequest {
+  bytes block = 1;
+}
+message DisconnectBlockResponse {
+}
 
 message GetCoinbasePSBTRequest {
   repeated ProposeSidechain propose_sidechains = 1;
@@ -83,17 +91,20 @@ message GetCoinbasePSBTRequest {
   repeated ProposeBundle propose_bundles = 3;
   AckBundles ack_bundles = 4;
 };
-message GetCoinbasePSBTResponse { bytes psbt = 1; };
+message GetCoinbasePSBTResponse {
+  bytes psbt = 1;
+};
 
-message AckBundles {
-  AckBundlesEnum tag = 1;
-  repeated uint32 upvotes = 2;
+enum AckBundlesTag {
+  ACK_BUNDLES_TAG_UNSPECIFIED = 0;
+  ACK_BUNDLES_TAG_REPEAT_PREVIOUS = 1;
+  ACK_BUNDLES_TAG_LEADING_BY_50 = 2;
+  ACK_BUNDLES_TAG_UPVOTES = 3;
 }
 
-enum AckBundlesEnum {
-  RepeatPrevious = 0;
-  LeadingBy50 = 1;
-  Upvotes = 2;
+message AckBundles {
+  AckBundlesTag tag = 1;
+  repeated uint32 upvotes = 2;
 }
 
 message AckSidechain {
@@ -111,9 +122,13 @@ message ProposeBundle {
   bytes bundle_txid = 2;
 }
 
-message GetDepositsRequest { uint32 sidechain_number = 1; }
+message GetDepositsRequest {
+  uint32 sidechain_number = 1;
+}
 
-message GetDepositsResponse { repeated Deposit deposits = 1; }
+message GetDepositsResponse {
+  repeated Deposit deposits = 1;
+}
 
 message Deposit {
   bytes address = 1;
@@ -121,9 +136,13 @@ message Deposit {
   uint64 sequence_number = 3;
 }
 
-message GetCtipRequest { uint32 sidechain_number = 1; }
+message GetCtipRequest {
+  uint32 sidechain_number = 1;
+}
 
-message GetCtipResponse { optional Ctip ctip = 1; }
+message GetCtipResponse {
+  optional Ctip ctip = 1;
+}
 
 message Ctip {
   bytes txid = 1;
@@ -132,10 +151,16 @@ message Ctip {
   uint64 sequence_number = 4;
 }
 
-message GetMainBlockHeightRequest {}
+message GetMainBlockHeightRequest {
+}
 
-message GetMainBlockHeightResponse { uint32 height = 1; }
+message GetMainBlockHeightResponse {
+  uint32 height = 1;
+}
 
-message GetMainChainTipRequest {}
+message GetMainChainTipRequest {
+}
 
-message GetMainChainTipResponse { bytes block_hash = 1; }
+message GetMainChainTipResponse {
+  bytes block_hash = 1;
+}
