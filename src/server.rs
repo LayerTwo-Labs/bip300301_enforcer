@@ -1,16 +1,15 @@
-use std::io::Cursor;
-
-use crate::gen::validator::validator_server::Validator;
-use crate::gen::validator::*;
+use crate::gen::validator::{
+    validator_server::Validator, AckBundlesEnum, ConnectBlockRequest, ConnectBlockResponse, Ctip,
+    Deposit, DisconnectBlockRequest, DisconnectBlockResponse, GetCoinbasePsbtRequest,
+    GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetDepositsRequest,
+    GetDepositsResponse, GetMainBlockHeightRequest, GetMainBlockHeightResponse,
+    GetMainChainTipRequest, GetMainChainTipResponse, GetSidechainProposalsRequest,
+    GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse, Sidechain,
+    SidechainProposal,
+};
 
 use bip300301_messages::{
-    bitcoin::{
-        self,
-        absolute::Height,
-        consensus::{Decodable, Encodable},
-        hashes::Hash,
-        Block, Transaction, TxOut,
-    },
+    bitcoin::{self, absolute::Height, consensus::Encodable, hashes::Hash, Transaction, TxOut},
     CoinbaseMessage, M4AckBundles,
 };
 use miette::Result;
