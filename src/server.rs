@@ -1,8 +1,8 @@
 use crate::gen::validator::{
-    validator_server::Validator, AckBundlesEnum, ConnectBlockRequest, ConnectBlockResponse, Ctip,
-    Deposit, DisconnectBlockRequest, DisconnectBlockResponse, GetCoinbasePsbtRequest,
-    GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetDepositsRequest,
-    GetDepositsResponse, GetMainBlockHeightRequest, GetMainBlockHeightResponse,
+    validator_service_server::ValidatorService, AckBundles, AckBundlesTag, ConnectBlockRequest,
+    ConnectBlockResponse, Ctip, Deposit, DisconnectBlockRequest, DisconnectBlockResponse,
+    GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+    GetDepositsRequest, GetDepositsResponse, GetMainBlockHeightRequest, GetMainBlockHeightResponse,
     GetMainChainTipRequest, GetMainChainTipResponse, GetSidechainProposalsRequest,
     GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse, Sidechain,
     SidechainProposal,
@@ -18,8 +18,21 @@ use tonic::{Request, Response, Status};
 pub use crate::bip300::Bip300;
 use crate::types;
 
+fn invalid_enum_variant<Message>(field_name: &str, variant_name: &str) -> tonic::Status
+where
+    Message: prost::Name,
+{
+    let err_msg = format!(
+        "Invalid enum variant in field `{}` of message `{}`: `{}`",
+        field_name,
+        Message::full_name(),
+        variant_name
+    );
+    tonic::Status::invalid_argument(err_msg)
+}
+
 #[tonic::async_trait]
-impl Validator for Bip300 {
+impl ValidatorService for Bip300 {
     async fn connect_block(
         &self,
         _: Request<ConnectBlockRequest>,
@@ -80,9 +93,12 @@ impl Validator for Bip300 {
         }
         if let Some(ack_bundles) = &request.ack_bundles {
             let message = match ack_bundles.tag() {
-                AckBundlesEnum::RepeatPrevious => M4AckBundles::RepeatPrevious,
-                AckBundlesEnum::LeadingBy50 => M4AckBundles::LeadingBy50,
-                AckBundlesEnum::Upvotes => {
+                AckBundlesTag::Unspecified => {
+                    return Err(invalid_enum_variant::<AckBundles>("tag", "Unspecified"))
+                }
+                AckBundlesTag::RepeatPrevious => M4AckBundles::RepeatPrevious,
+                AckBundlesTag::LeadingBy50 => M4AckBundles::LeadingBy50,
+                AckBundlesTag::Upvotes => {
                     let mut two_bytes = false;
                     for upvote in &ack_bundles.upvotes {
                         if *upvote > u8::MAX as u32 {
