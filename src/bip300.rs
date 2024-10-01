@@ -1,6 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
 use bip300301_messages::bitcoin::hashes::Hash;
@@ -22,6 +20,7 @@ use tokio::time::{interval, Instant};
 use tokio_stream::wrappers::IntervalStream;
 use ureq_jsonrpc::{json, Client};
 
+use crate::cli::Config;
 use crate::types::{
     Ctip, Deposit, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
 };
@@ -761,8 +760,8 @@ impl Bip300 {
         Ok(())
     }
 
-    async fn task(&self, main_datadir: PathBuf, main_address: SocketAddr) -> Result<()> {
-        let main_client = &create_client(main_datadir, main_address)?;
+    async fn task(&self, conf: Config) -> Result<()> {
+        let main_client = &create_client(conf)?;
         let () = self.initial_sync(main_client)?;
         let interval = interval(Duration::from_secs(1));
         IntervalStream::new(interval)
@@ -771,12 +770,10 @@ impl Bip300 {
             .await
     }
 
-    pub fn run(&self, main_datadir: &Path, main_address: SocketAddr) -> JoinHandle<()> {
-        let main_datadir = main_datadir.to_owned();
-        let main_address = main_address.to_owned();
+    pub fn run(&self, conf: Config) -> JoinHandle<()> {
         let this = self.clone();
         tokio::task::spawn(async move {
-            this.task(main_datadir, main_address)
+            this.task(conf)
                 .unwrap_or_else(|err| eprintln!("{err:#}"))
                 .await
         })
@@ -893,30 +890,44 @@ impl Bip300 {
     */
 }
 
-fn create_client(main_datadir: PathBuf, main_address: SocketAddr) -> Result<Client> {
-    let cookie_path = main_datadir.join("regtest/.cookie");
-    let auth = std::fs::read_to_string(cookie_path.clone()).map_err(|err| {
-        miette!(
-            "unable to read bitcoind cookie at {}: {}",
-            cookie_path.display(),
-            err
-        )
-    })?;
+fn create_client(conf: Config) -> Result<Client> {
+    if conf.node_rpc_user.is_none() != conf.node_rpc_password.is_none() {
+        return Err(miette!("RPC user and password must be set together"));
+    }
 
-    let mut auth = auth.split(':');
-    let user = auth
-        .next()
-        .ok_or(miette!("failed to get rpcuser"))?
-        .to_string();
-    let password = auth
-        .next()
-        .ok_or(miette!("failed to get rpcpassword"))?
-        .to_string();
+    if conf.node_rpc_user.is_none() == conf.node_rpc_cookie_path.is_none() {
+        return Err(miette!("precisely one of RPC user and cookie must be set"));
+    }
+
+    let mut conf_user = conf.node_rpc_user.clone().unwrap_or_default();
+    let mut conf_password = conf.node_rpc_password.clone().unwrap_or_default();
+
+    if conf.node_rpc_cookie_path.is_some() {
+        let cookie_path = conf.node_rpc_cookie_path.clone().unwrap();
+        let auth = std::fs::read_to_string(cookie_path.clone())
+            .map_err(|err| miette!("unable to read bitcoind cookie at {}: {}", cookie_path, err))?;
+
+        let mut auth = auth.split(':');
+
+        conf_user = auth
+            .next()
+            .ok_or(miette!("failed to get rpcuser"))?
+            .to_string()
+            .clone();
+
+        conf_password = auth
+            .next()
+            .ok_or(miette!("failed to get rpcpassword"))?
+            .to_string()
+            .to_string()
+            .clone();
+    }
+
     Ok(Client {
-        host: main_address.ip().to_string(),
-        port: 18443,
-        user,
-        password,
+        host: conf.node_rpc_host.to_string(),
+        port: conf.node_rpc_port,
+        user: conf_user.to_string(),
+        password: conf_password.to_string(),
         id: "mainchain".into(),
     })
 }
