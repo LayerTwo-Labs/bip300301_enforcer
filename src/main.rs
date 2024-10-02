@@ -1,103 +1,103 @@
-use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::Path, time::Duration};
+
+use clap::Parser;
+use futures::{future::TryFutureExt, FutureExt, StreamExt};
+use miette::{miette, IntoDiagnostic, Result};
+use tokio::{spawn, task::JoinHandle, time::interval};
+use tonic::transport::Server;
+use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 mod cli;
-mod gen;
-mod jsonrpc;
+mod proto;
+mod rpc_client;
 mod server;
 mod types;
 mod validator;
 mod wallet;
+mod zmq;
 
-use clap::Parser;
-
-use futures::{future::try_join_all, TryFutureExt};
-use gen::validator::validator_service_server::ValidatorServiceServer;
-use miette::{miette, Result};
-
+use proto::validator::Server as ValidatorServiceServer;
 use server::Validator;
-
-use tonic::transport::Server;
 use wallet::Wallet;
 
-async fn run_server(bip300: &Validator, addr: SocketAddr) -> Result<()> {
-    log::info!("Listening for gRPC on {addr}");
+// Configure logger.
+fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
+    let targets_filter = tracing_filter::EnvFilter::builder()
+        .with_default_directive(tracing_filter::LevelFilter::from_level(log_level).into())
+        .from_env()
+        .into_diagnostic()?;
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_file(true)
+        .with_line_number(true);
+    let tracing_subscriber = tracing_subscriber::registry()
+        .with(targets_filter)
+        .with(stdout_layer);
+    tracing::subscriber::set_global_default(tracing_subscriber)
+        .into_diagnostic()
+        .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
+}
+
+async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
+    tracing::info!("Listening for gRPC on {addr}");
     Server::builder()
-        .add_service(ValidatorServiceServer::new(bip300.clone()))
+        .add_service(ValidatorServiceServer::new(validator))
         .serve(addr)
         .map_err(|err| miette!("error in validator server: {err:#}"))
         .await
 }
 
+// TODO: return `Result<!, _>` once `never_type` is stabilized
+async fn wallet_task(mut wallet: Wallet) -> Result<(), miette::Report> {
+    const SYNC_INTERVAL: Duration = Duration::from_secs(15);
+    let mut interval_stream = tokio_stream::wrappers::IntervalStream::new(interval(SYNC_INTERVAL));
+    while let Some(_tick) = interval_stream.next().await {
+        let () = wallet.sync()?;
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    let cli = cli::Config::parse();
+    set_tracing_subscriber(cli.log_level)?;
 
-    let cli = Arc::new(cli::Config::parse());
+    let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
+    let (err_tx, err_rx) = futures::channel::oneshot::channel();
+    let validator = Validator::new(
+        mainchain_client.clone(),
+        cli.node_zmq_addr_sequence,
+        Path::new("./"),
+        |err| async {
+            let _send_err: Result<(), _> = err_tx.send(err);
+        },
+    )
+    .into_diagnostic()?;
 
-    let validator = Validator::new(Path::new("./")).map(Arc::new)?;
-
-    // Takes in data from the blockchain and updates the validator state
-    let run_validator_task = tokio::spawn({
-        log::info!("spawning validator task");
-
-        let validator = Arc::clone(&validator);
-        let cli = Arc::clone(&cli);
-        async move { validator.run(&cli).await }
-    });
-
-    let mut tasks: Vec<tokio::task::JoinHandle<Result<(), miette::Error>>> = Vec::new();
-    tasks.push(run_validator_task);
-
-    let run_validator_server_task = tokio::spawn({
-        log::info!("spawning validator server task");
-
-        let validator = Arc::clone(&validator);
-        let cli = Arc::clone(&cli);
-        async move { run_server(&validator, cli.serve_rpc_addr).await }
-    });
-    tasks.push(run_validator_server_task);
-
-    // "Start" the wallet. We're going to add a server here, and run this in a spawned task.
-    // That requires a bit more:
-    // 1. Proper configuration for connecting the wallet to the blockchain
-    // 2. A server for the wallet
-    //
-    // The point here is to prove that we can conditionally start a task.
-    if cli.enable_wallet {
-        let validator = Arc::clone(&validator);
-        let mut wallet = Wallet::new(&cli, &validator)
+    let wallet: Option<Wallet> = if cli.enable_wallet {
+        Some(
+            Wallet::new(
+                cli.data_dir,
+                &cli.wallet_opts,
+                mainchain_client,
+                validator.clone(),
+            )
             .map_err(|e| miette!("failed to create wallet: {:?}", e))
-            .await?;
+            .await?,
+        )
+    } else {
+        None
+    };
 
-        // The idea is to keep the wallet synced periodically, such that wallet operations
-        // can be executed without having to sync first.
-        let run_wallet_sync_task = tokio::spawn({
-            log::info!("spawning wallet sync task");
-            async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(15));
-                loop {
-                    interval.tick().await;
-
-                    if let Err(e) = wallet.sync() {
-                        log::error!("failed to sync wallet: {e}");
-                    }
-                }
+    let _handle_validator_errors: JoinHandle<()> = spawn({
+        err_rx.map(|err| {
+            if let Ok(err) = err {
+                tracing::error!("{err:#}");
             }
-        });
-
-        tasks.push(run_wallet_sync_task);
-    }
-
-    // Wait for the first error or for all tasks to complete
-    let result = try_join_all(tasks.into_iter().map(|t| {
-        Box::pin(async move {
-            t.await
-                .unwrap_or_else(|e| Err(miette!("Task panicked: {}", e)))
         })
-    }))
-    .await;
+    });
+    let _sync_wallet: Option<JoinHandle<()>> = wallet
+        .map(|wallet| spawn(wallet_task(wallet).unwrap_or_else(|err| tracing::error!("{err:#}"))));
 
-    // Check if there was an error
-    result?;
-    Ok(())
+    run_server(validator, cli.serve_rpc_addr).await
 }
