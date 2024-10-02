@@ -1,45 +1,41 @@
 syntax = "proto3";
 package validator.v1;
 
+import "google/protobuf/wrappers.proto";
+
 service ValidatorService {
   rpc ConnectBlock(ConnectBlockRequest) returns (ConnectBlockResponse);
   rpc DisconnectBlock(DisconnectBlockRequest) returns (DisconnectBlockResponse);
   rpc GetCoinbasePSBT(GetCoinbasePSBTRequest) returns (GetCoinbasePSBTResponse);
   rpc GetDeposits(GetDepositsRequest) returns (GetDepositsResponse);
 
-  rpc GetSidechainProposals(GetSidechainProposalsRequest)
-      returns (GetSidechainProposalsResponse);
+  rpc GetSidechainProposals(GetSidechainProposalsRequest) 
+    returns (GetSidechainProposalsResponse);
 
   rpc GetSidechains(GetSidechainsRequest) returns (GetSidechainsResponse);
 
+  // Fetch the chain tip (ctip) for a specific sidechain.
   rpc GetCtip(GetCtipRequest) returns (GetCtipResponse);
 
-  rpc GetMainBlockHeight(GetMainBlockHeightRequest)
-      returns (GetMainBlockHeightResponse);
+  rpc GetMainBlockHeight(GetMainBlockHeightRequest) 
+    returns (GetMainBlockHeightResponse);
 
   rpc GetMainChainTip(GetMainChainTipRequest) returns (GetMainChainTipResponse);
-
   /*
-    rpc ListSidechainProposals(ListSidechainProposalsRequest) returns
-    (ListSidechainProposalsResponse); rpc
-    ListActiveSidechains(ListActiveSidechainsRequest) returns
-    (ListActiveSidechainsResponse);
 
-    rpc ListProposedWithdrawalBundleIds(ListProposedWithdrawalBundleIdsRequest)
-    returns (ListProposedWithdrawalBundleIdsResponse); rpc
-    ListFailedWithdrawalBundleIds(ListFailedWithdrawalBundleIdsRequest) returns
-    (ListFailedWithdrawalBundleIdsResponse); rpc
-    ListSuccededWithdrawalBundleIds(ListSuccededWithdrawalBundleIdsRequest)
-    returns (ListSuccededWithdrawalBundleIdsResponse);
+     rpc ListProposedWithdrawalBundleIds(ListProposedWithdrawalBundleIdsRequest)
+     returns (ListProposedWithdrawalBundleIdsResponse); rpc
+     ListFailedWithdrawalBundleIds(ListFailedWithdrawalBundleIdsRequest) returns
+     (ListFailedWithdrawalBundleIdsResponse); rpc
+     ListSuccededWithdrawalBundleIds(ListSuccededWithdrawalBundleIdsRequest)
+     returns (ListSuccededWithdrawalBundleIdsResponse);
 
-    rpc GetWithdrawalBundle(GetWithdrawalBundleRequest) returns
-    (GetWithdrawalBundleResponse);
+     rpc GetWithdrawalBundle(GetWithdrawalBundleRequest) returns
+     (GetWithdrawalBundleResponse);
 
-    rpc ListDeposits(ListDepositsRequest) returns (ListDepositsResponse);
-
-    rpc IsBlockValid(IsBlockValidRequest) returns (IsBlockValidResponse);
-    rpc IsTransactionValid(IsTransactionValidRequest) returns
-    (IsTransactionValidResponse);
+     rpc IsBlockValid(IsBlockValidRequest) returns (IsBlockValidResponse);
+     rpc IsTransactionValid(IsTransactionValidRequest) returns
+     (IsTransactionValidResponse);
   */
 }
 
@@ -90,10 +86,10 @@ message GetCoinbasePSBTRequest {
   repeated AckSidechain ack_sidechains = 2;
   repeated ProposeBundle propose_bundles = 3;
   AckBundles ack_bundles = 4;
-};
+}
 message GetCoinbasePSBTResponse {
   bytes psbt = 1;
-};
+}
 
 enum AckBundlesTag {
   ACK_BUNDLES_TAG_UNSPECIFIED = 0;
@@ -137,7 +133,10 @@ message Deposit {
 }
 
 message GetCtipRequest {
-  uint32 sidechain_number = 1;
+  // Sidechain number to fetch chain tip for. This argument is in fact
+  // NOT optional! It is marked as such to clearly differentiate it
+  // from passing in 0, which is a valid sidechain number.
+  google.protobuf.UInt32Value sidechain_number = 1;
 }
 
 message GetCtipResponse {
