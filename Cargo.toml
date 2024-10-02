@@ -12,6 +12,7 @@ protox = "0.7.1"
 tonic-build = "0.12.3"
 
 [dependencies]
+async-broadcast = "0.7.1"
 bdk = { version = "0.29.0", features = ["all-keys", "sqlite"] }
 bincode = "1.3.3"
 bip300301_messages = { git = "https://github.com/LayerTwo-Labs/bip300301_messages" }
@@ -21,26 +22,35 @@ byteorder = "1.5.0"
 clap = { version = "4.5.18", features = ["derive"] }
 cusf_sidechain_types = { git = "https://github.com/LayerTwo-Labs/cusf_sidechain_types" }
 ed25519-dalek-bip32 = "0.3.0"
-env_logger = "0.11.5"
+either = "1.13.0"
 fallible-iterator = "0.3.0"
 futures = "0.3.30"
-heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
+hashlink = { version = "0.9.1", features = ["serde_impl"] }
+heed = "0.20.5"
 hex = "0.4.3"
-log = "0.4.22"
 miette = { version = "7.1.0", features = ["fancy"] }
+num-traits = "0.2.19"
 nom = "7.1.3"
 prost = "0.13.2"
 rusqlite = { version = "0.28.0", features = ["bundled"] }
 rusqlite_migration = "1.0.2"
 serde = { version = "1.0.197", features = ["derive"] }
 sha2 = "0.10.8"
+thiserror = "1.0.64"
 tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 tokio-stream = "0.1.15"
 tonic = "0.12.3"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 ureq-jsonrpc = { git = "https://github.com/nchashch/ureq-jsonrpc" }
+zeromq = "0.4.0"
+
+[dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug"]
 
 [lints.clippy]
-
 all = { level = "deny", priority = -1 }
 assertions_on_result_states = "allow"
 let_unit_value = "allow"
@@ -50,3 +60,10 @@ print_stderr = "deny"
 
 [lints.rust]
 let_underscore_drop = "deny"
+
+# Remove once the issue is resolved: 
+# https://github.com/zeromq/zmq.rs/issues/199,
+# https://github.com/zeromq/zmq.rs/pull/198
+[patch.crates-io.zeromq]
+git = "https://github.com/PaoloPana/zmq.rs.git"
+rev = "cf71ae341e67bccc6b45ac634a45718ea0a1adb4"

@@ -1,13 +1,27 @@
 # Requirements
 
-1. Bitcoin Core
-1. Rust
+1. Bitcoin Core, with ZMQ support. This needs be be running with the following flags:
+
+    ```
+    user=user
+    password=password
+    signetblocktime=60
+    signetchallenge=00141f61d57873d70d28bd28b3c9f9d6bf818b5a0d6a
+
+    # this can also be set to a different address, as long
+    # as you set the CLI arg for bip300301_enforcer
+    zmqpubsequence=tcp://0.0.0.0:29000
+    ```
+
+1. Rustc & Cargo, version 1.77.0 or higher. Installing via Rustup is recommended.
 
 # Getting started
 
 Building/running:
 
 ```bash
+# Check out git submodules
+$ git submodule update --init --recursive
 # Compiles the project
 $ cargo build
 
@@ -20,7 +34,8 @@ $ cargo run -- --help
 $ cargo run -- \
   --node-rpc-port=38332 \
   --node-rpc-user=user \
-  --node-rpc-password=password
+  --node-rpc-password=password \
+  --node-zmq-addr-sequence=tcp://0.0.0.0:29000
 
 # You should now be able to fetch data from the server!
 $ buf curl  --schema 'https://github.com/LayerTwo-Labs/bip300301_enforcer_proto.git' \
@@ -33,13 +48,17 @@ $ buf curl  --schema 'https://github.com/LayerTwo-Labs/bip300301_enforcer_proto.
 
 # Logging
 
-The application uses the `env_logger` crate for logging. Logging is configured
-through setting the `RUST_LOG` environment variable. Some examples:
+The application uses the `tracing` crate for logging. Logging is configured
+through setting the `--log-level` argument. Some examples:
 
 ```bash
 # Prints ALL debug logs
-$ RUST_LOG=debug cargo run ...
+$ cargo run ... --log-level DEBUG
+```
 
+Logs can also be configured via env vars, which take precedence over CLI args.
+
+```
 # Prints logs at the "info" level and above, plus our logs the "debug" level and above
 $ RUST_LOG=info,bip300301_enforcer=debug cargo run ...
 ```
