@@ -17,7 +17,7 @@ $ cargo run -- --help
 # Starts the gRPC server at localhost:50001
 # Adjust these parameters to match your local Bitcoin
 # Core instance
-$ cargo run -- cargo run -- \
+$ cargo run -- \
   --node-rpc-port=38332 \
   --node-rpc-user=user \
   --node-rpc-password=password
