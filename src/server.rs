@@ -237,11 +237,13 @@ impl ValidatorService for Bip300 {
         &self,
         request: tonic::Request<GetCtipRequest>,
     ) -> std::result::Result<tonic::Response<GetCtipResponse>, tonic::Status> {
-        let sidechain_number = request.into_inner().sidechain_number;
-        if let Some(ctip) = self.get_ctip(sidechain_number as u8).unwrap() {
-            let sequence_number = self
-                .get_ctip_sequence_number(sidechain_number as u8)
-                .unwrap();
+        let sidechain_number = match request.into_inner().sidechain_number {
+            Some(sidechain_number) => sidechain_number as u8,
+            None => return Err(Status::invalid_argument("must provide sidechain number")),
+        };
+
+        if let Some(ctip) = self.get_ctip(sidechain_number).unwrap() {
+            let sequence_number = self.get_ctip_sequence_number(sidechain_number).unwrap();
             // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
             // return Some, so we just unwrap it.
             let sequence_number = sequence_number.unwrap();
@@ -254,8 +256,10 @@ impl ValidatorService for Bip300 {
             let response = GetCtipResponse { ctip: Some(ctip) };
             Ok(Response::new(response))
         } else {
-            let response = GetCtipResponse { ctip: None };
-            Ok(Response::new(response))
+            Err(Status::not_found(format!(
+                "no chain tip found for sidechain number {}",
+                sidechain_number
+            )))
         }
     }
 
