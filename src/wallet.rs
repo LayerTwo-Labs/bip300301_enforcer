@@ -47,7 +47,7 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub async fn new<P: AsRef<Path>>(datadir: P, validator: Validator) -> Result<Self> {
+    pub async fn new<P: AsRef<Path>>(datadir: P, validator: &Validator) -> Result<Self> {
         let network = Network::Regtest; // Or this can be Network::Bitcoin, Network::Signet or Network::Regtest
                                         // Generate fresh mnemonic
 
@@ -206,7 +206,7 @@ impl Wallet {
 
         let mut wallet = Self {
             main_client,
-            validator,
+            validator: validator.clone(),
             sidechain_clients,
             bitcoin_wallet,
             db_connection,
@@ -422,7 +422,8 @@ impl Wallet {
     pub fn get_balance(&self) -> Result<()> {
         self.bitcoin_wallet
             .sync(&self.bitcoin_blockchain, SyncOptions::default())
-            .into_diagnostic()?;
+            .map_err(|e| miette!("failed to sync wallet: {e}"))?;
+
         let balance = self.bitcoin_wallet.get_balance().into_diagnostic()?;
         let immature = Amount::from_sat(balance.immature);
         let untrusted_pending = Amount::from_sat(balance.untrusted_pending);

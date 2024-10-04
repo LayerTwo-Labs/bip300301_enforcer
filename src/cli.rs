@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use clap::Parser;
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct Config {
     #[arg(default_value = "localhost", long)]
     pub node_rpc_host: String,
@@ -26,4 +26,7 @@ pub struct Config {
 
     #[arg(default_value_t = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_051)), long)]
     pub serve_rpc_addr: SocketAddr,
+
+    #[arg(long)]
+    pub enable_wallet: bool,
 }

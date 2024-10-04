@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+
 use std::{io::Cursor, path::Path, str::FromStr, time::Duration};
 
 use bip300301_messages::bitcoin::hashes::Hash;
@@ -9,18 +10,21 @@ use bip300301_messages::{
 use bitcoin::{
     consensus::Decodable, opcodes::all::OP_RETURN, Block, BlockHash, OutPoint, Transaction,
 };
+
 use fallible_iterator::{FallibleIterator, IteratorExt as _};
+
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use heed::{types::SerdeBincode, Env, EnvOpenOptions};
 use heed::{Database, RoTxn, RwTxn};
 use miette::{miette, IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
-use tokio::time::{interval, Instant};
+
+use tokio::time::{interval, timeout, Instant};
 use tokio_stream::wrappers::IntervalStream;
 use ureq_jsonrpc::{json, Client};
 
 use crate::cli::Config;
+
 use crate::types::{
     Ctip, Deposit, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
 };
@@ -653,19 +657,27 @@ impl Validator {
             .get(&txn, &UnitKey)
             .into_diagnostic()?
             .unwrap_or(0);
+
+        println!("Validator: syncing to block {height}");
+
         let main_block_height: u32 = main_client
             .send_request("getblockcount", &[])
             .into_diagnostic()?
             .ok_or(miette!("failed to get block count"))?;
+
+        println!("Validator: mainchain block height: {main_block_height}");
+
         while height < main_block_height {
             let block_hash: String = main_client
                 .send_request("getblockhash", &[json!(height)])
                 .into_diagnostic()?
                 .ok_or(miette!("failed to get block hash"))?;
+
             let block: String = main_client
                 .send_request("getblock", &[json!(block_hash), json!(0)])
                 .into_diagnostic()?
                 .ok_or(miette!("failed to get block"))?;
+
             let block_bytes = hex::decode(&block).unwrap();
             let mut cursor = Cursor::new(block_bytes);
             let block = Block::consensus_decode(&mut cursor).unwrap();
@@ -687,6 +699,7 @@ impl Validator {
                 .put(&mut txn, &UnitKey, &block_hash)
                 .into_diagnostic()?;
         }
+
         self.current_block_height
             .put(&mut txn, &UnitKey, &height)
             .into_diagnostic()?;
@@ -760,23 +773,35 @@ impl Validator {
         Ok(())
     }
 
-    async fn task(&self, conf: Config) -> Result<()> {
+    pub async fn run(&self, conf: &Config) -> Result<()> {
         let main_client = &create_client(conf)?;
+
+        let block_count_future = async move {
+            main_client
+                .send_request::<u64>("getblockcount", &[])
+                .map_err(|err| miette!("failed to connect to mainchain: {err}"))
+        };
+
+        let with_timeout = timeout(Duration::from_secs(3), block_count_future);
+        match with_timeout.await {
+            Ok(Ok(Some(block_count))) => {
+                println!("Validator: mainchain block count: {block_count}");
+            }
+            Ok(Err(err)) => return Err(err),
+            Err(err) => return Err(miette!("timed out: {err}")),
+            _ => unreachable!(),
+        }
+
+        println!("Validator: starting initial sync");
         let () = self.initial_sync(main_client)?;
+
+        println!("Validator: starting task loop");
         let interval = interval(Duration::from_secs(1));
         IntervalStream::new(interval)
             .map(Ok)
             .try_for_each(move |_: Instant| async move { self.task_loop_once(main_client) })
+            .map_err(|err| miette!("error in validator task loop: {err:#}"))
             .await
-    }
-
-    pub fn run(&self, conf: Config) -> JoinHandle<()> {
-        let this = self.clone();
-        tokio::task::spawn(async move {
-            this.task(conf)
-                .unwrap_or_else(|err| eprintln!("{err:#}"))
-                .await
-        })
     }
 
     pub fn get_sidechain_proposals(&self) -> Result<Vec<(Hash256, SidechainProposal)>> {
@@ -890,7 +915,7 @@ impl Validator {
     */
 }
 
-fn create_client(conf: Config) -> Result<Client> {
+fn create_client(conf: &Config) -> Result<Client> {
     if conf.node_rpc_user.is_none() != conf.node_rpc_password.is_none() {
         return Err(miette!("RPC user and password must be set together"));
     }
@@ -922,6 +947,11 @@ fn create_client(conf: Config) -> Result<Client> {
             .to_string()
             .clone();
     }
+
+    println!(
+        "Validator: creating JSON-RPC client for {}:{}",
+        conf.node_rpc_host, conf.node_rpc_port
+    );
 
     Ok(Client {
         host: conf.node_rpc_host.to_string(),
