@@ -15,8 +15,8 @@ use bip300301_messages::{
 use miette::Result;
 use tonic::{Request, Response, Status};
 
-pub use crate::bip300::Bip300;
 use crate::types;
+pub use crate::validator::Validator;
 
 fn invalid_enum_variant<Message>(field_name: &str, variant_name: &str) -> tonic::Status
 where
@@ -32,7 +32,7 @@ where
 }
 
 #[tonic::async_trait]
-impl ValidatorService for Bip300 {
+impl ValidatorService for Validator {
     async fn connect_block(
         &self,
         _: Request<ConnectBlockRequest>,

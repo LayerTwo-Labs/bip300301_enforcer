@@ -3,8 +3,13 @@ use std::{env, fs, path::PathBuf};
 use prost::Message;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let protos: &[&str] = &["proto/validator/v1/validator.proto"];
-    let includes: &[&str] = &["proto/validator/v1"];
+    let protos: &[&str] = &[
+        "proto/validator/v1/validator.proto",
+        "cusf_sidechain_proto/proto/sidechain.proto",
+    ];
+
+    let includes: &[&str] = &["proto/validator/v1", "cusf_sidechain_proto/proto"];
+
     let file_descriptors = protox::compile(protos, includes)?;
     let file_descriptor_path =
         PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set"))
@@ -16,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .skip_protoc_run()
         .file_descriptor_set_path(file_descriptor_path)
-        .build_client(false)
+        .build_client(true) // Needed for sidechain client
         .compile_protos_with_config(config, protos, includes)?;
     Ok(())
 }

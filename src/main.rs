@@ -1,10 +1,11 @@
 use std::{net::SocketAddr, path::Path};
 
-mod bip300;
 mod cli;
 mod gen;
 mod server;
 mod types;
+mod validator;
+mod wallet;
 
 use clap::Parser;
 use futures::{
@@ -13,7 +14,7 @@ use futures::{
 };
 use gen::validator::validator_service_server::ValidatorServiceServer;
 use miette::{miette, IntoDiagnostic, Result};
-use server::Bip300;
+use server::Validator;
 use tonic::transport::Server;
 use ureq_jsonrpc::Client;
 
@@ -37,7 +38,7 @@ fn _create_client(main_datadir: &Path) -> Result<Client> {
     })
 }
 
-async fn run_server(bip300: Bip300, addr: SocketAddr) -> Result<()> {
+async fn run_server(bip300: Validator, addr: SocketAddr) -> Result<()> {
     println!("Listening for gRPC on {addr}");
     Server::builder()
         .add_service(ValidatorServiceServer::new(bip300))
@@ -51,7 +52,7 @@ async fn main() -> Result<()> {
     let cli = cli::Config::parse();
     let serve_rpc_addr = cli.serve_rpc_addr;
 
-    let bip300 = Bip300::new(Path::new("./"))?;
+    let bip300 = Validator::new(Path::new("./"))?;
 
     let task = bip300
         .run(cli)
