@@ -204,7 +204,7 @@ impl Wallet {
 
         let sidechain_clients = HashMap::new();
 
-        let mut wallet = Self {
+        let wallet = Self {
             main_client,
             validator: validator.clone(),
             sidechain_clients,
@@ -214,12 +214,14 @@ impl Wallet {
             bitcoin_blockchain,
             mnemonic,
         };
+        /*
         let sidechains = wallet.get_sidechains().await?;
         for sidechain in &sidechains {
             let endpoint = format!("http://[::1]:{}", 50052 + sidechain.sidechain_number as u32);
             let sidechain_client = SidechainClient::connect(endpoint).await.into_diagnostic()?;
             wallet.sidechain_clients.insert(0, sidechain_client);
         }
+        */
         Ok(wallet)
     }
 
