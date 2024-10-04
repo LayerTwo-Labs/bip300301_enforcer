@@ -5,10 +5,15 @@ use prost::Message;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protos: &[&str] = &[
         "proto/validator/v1/validator.proto",
+        "proto/mainchain/v1/mainchain.proto",
         "cusf_sidechain_proto/proto/sidechain.proto",
     ];
 
-    let includes: &[&str] = &["proto/validator/v1", "cusf_sidechain_proto/proto"];
+    let includes: &[&str] = &[
+        "proto/validator/v1",
+        "proto/mainchain/v1",
+        "cusf_sidechain_proto/proto",
+    ];
 
     let file_descriptors = protox::compile(protos, includes)?;
     let file_descriptor_path =
