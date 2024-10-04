@@ -43,3 +43,19 @@ To lint the files, run:
 ```bash
 $ protolint lint --fix proto/validator/v1/validator.proto
 ```
+
+# Code formatting
+
+Rust code is formatted with [rustfmt](https://github.com/rust-lang/rustfmt).
+
+Markdown and YAML files are formatted with [Prettier](https://prettier.io/). The
+easiest way to run it is to install the
+[Prettier VSCode extension](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode).
+
+To run it from the command line, install the
+[Prettier CLI](https://prettier.io/docs/en/cli.html) and run it from the root of
+the repo:
+
+```bash
+$ prettier --write .
+```
