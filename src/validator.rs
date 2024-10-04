@@ -74,7 +74,7 @@ impl Serialize for UnitKey {
 }
 
 #[derive(Clone)]
-pub struct Bip300 {
+pub struct Validator {
     env: Env,
 
     data_hash_to_sidechain_proposal:
@@ -93,7 +93,7 @@ pub struct Bip300 {
         Database<SerdeBincode<u32>, SerdeBincode<Vec<Hash256>>>,
 }
 
-impl Bip300 {
+impl Validator {
     const NUM_DBS: u32 = 11;
 
     pub fn new(datadir: &Path) -> Result<Self> {
