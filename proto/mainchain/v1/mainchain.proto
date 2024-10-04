@@ -89,7 +89,8 @@ message BroadcastWithdrawalBundleRequest {
   uint32 sidechain_id = 1;
   bytes transaction = 2;
 }
-message BroadcastWithdrawalBundleResponse {}
+message BroadcastWithdrawalBundleResponse {
+}
 
 message CreateBmmCriticalDataTransactionRequest {
   uint32 sidechain_id = 1;
@@ -98,7 +99,9 @@ message CreateBmmCriticalDataTransactionRequest {
   bytes critical_hash = 4;
   bytes prev_bytes = 5;
 }
-message CreateBmmCriticalDataTransactionResponse { bytes txid = 1; }
+message CreateBmmCriticalDataTransactionResponse {
+  bytes txid = 1;
+}
 
 message CreateDepositTransactionRequest {
   uint32 sidechain_id = 1;
@@ -106,19 +109,30 @@ message CreateDepositTransactionRequest {
   uint64 value_sats = 3;
   uint64 fee_sats = 4;
 }
-message CreateDepositTransactionResponse { bytes txid = 1; }
+message CreateDepositTransactionResponse {
+  bytes txid = 1;
+}
 
 message CreateNewAddressRequest {
   optional string label = 1;
   AddressType address_type = 2;
 }
-message CreateNewAddressResponse { string address = 1; }
+message CreateNewAddressResponse {
+  string address = 1;
+}
 
-message GenerateBlocksRequest { uint32 blocks = 1; }
-message GenerateBlocksResponse {}
+message GenerateBlocksRequest {
+  uint32 blocks = 1;
+}
+message GenerateBlocksResponse {
+}
 
-message GetBlockHeaderInfoRequest { bytes block_hash = 1; }
-message GetBlockHeaderInfoResponse { BlockHeaderInfo header_info = 1; }
+message GetBlockHeaderInfoRequest {
+  bytes block_hash = 1;
+}
+message GetBlockHeaderInfoResponse {
+  BlockHeaderInfo header_info = 1;
+}
 
 message GetBlockInfoRequest {
   bytes block_hash = 1;
@@ -134,19 +148,29 @@ message GetBmmHStarCommitmentsRequest {
   uint32 sidechain_id = 2;
 }
 message GetBmmHStarCommitmentsResponse {
-  message BlockNotFoundError { bytes block_hash = 1; }
-  message Commitments { repeated bytes commitments = 1; }
+  message BlockNotFoundError {
+    bytes block_hash = 1;
+  }
+  message Commitments {
+    repeated bytes commitments = 1;
+  }
   oneof result {
     BlockNotFoundError block_not_found = 1;
     Commitments commitments = 2;
   }
 }
 
-message GetChainInfoRequest {}
-message GetChainInfoResponse { Network network = 1; }
+message GetChainInfoRequest {
+}
+message GetChainInfoResponse {
+  Network network = 1;
+}
 
-message GetChainTipRequest {}
-message GetChainTipResponse { BlockHeaderInfo block_header_info = 1; }
+message GetChainTipRequest {
+}
+message GetChainTipResponse {
+  BlockHeaderInfo block_header_info = 1;
+}
 
 message GetTwoWayPegDataRequest {
   uint32 sidechain_id = 1;
@@ -161,14 +185,18 @@ message GetTwoWayPegDataResponse {
   repeated ResponseItem blocks = 1;
 }
 
-message SubscribeEventsRequest { uint32 sidechain_id = 1; }
+message SubscribeEventsRequest {
+  uint32 sidechain_id = 1;
+}
 message SubscribeEventsResponse {
   message Event {
     message ConnectBlock {
       BlockHeaderInfo header_info = 1;
       BlockInfo block_info = 2;
     }
-    message DisconnectBlock { bytes block_hash = 1; }
+    message DisconnectBlock {
+      bytes block_hash = 1;
+    }
     oneof event {
       ConnectBlock connect_block = 1;
       DisconnectBlock disconnect_block = 2;
