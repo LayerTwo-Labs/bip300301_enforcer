@@ -48,8 +48,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features
 
-      - name: Check formatting
+      - name: Check Rust formatting
         run: cargo fmt --all -- --check
+
+      - name: Check Prettier formatting
+        uses: actionsx/prettier@v2
+        with:
+          args: --check .
 
   build-release:
     strategy:
