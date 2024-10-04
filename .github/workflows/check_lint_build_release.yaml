@@ -6,17 +6,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-lint-build-release-linux:
-    name: Check, Lint, Build, Release (ubuntu stable)
+  check-lint:
+    name: Check, Lint
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    timeout-minutes: 20
-    # env:
-    #  RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
-      
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
       - name: run protolint
         uses: plexsystems/protolint-action@v0.7.0
         with:
@@ -27,189 +34,104 @@ jobs:
         uses: bufbuild/buf-action@v1
         with:
           setup_only: true
-      
+
       # Disabled, since buf format is not configurable
       #- name: Buf format
       #  run: buf format -d --exit-code
-      
+
       - name: Buf lint
         run: buf lint --error-format github-actions
 
-      - name: Install latest stable toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
-        with:
-          prefix-key: "ubuntu-stable"
-
-      - name: Rustfmt
-        run: cargo fmt --all -- --check
-      
       - name: Cargo check
         run: cargo check
-      
+
       - name: Clippy
         run: cargo clippy --all-targets --all-features
-      
-      - name: Build
-        run: cargo build --release
 
-      - name: 'Set environment variables: version number and output filenames'
-        run: |
-          APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
-          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-x86_64-unknown-linux-gnu"
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
-          echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/release"
-          ln -fs "bip300301_enforcer" "${APP_FILENAME}"
-          popd
+  build-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86_64-unknown-linux-gnu
+            binary-suffix: ""
+            rustflags: ""
 
-      - name: 'Upload artifacts'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_FILENAME }}
-          if-no-files-found: error
-          path: |
-            target/release/${{ env.APP_FILENAME }}
+          - os: macos-latest-large
+            name: x86_64-apple-darwin
+            binary-suffix: ""
+            rustflags: ""
 
-      - name: Release
-        uses: softprops/action-gh-release@v2.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/release/${{ env.APP_FILENAME }}
-          fail_on_unmatched_files: true
+          - os: ubuntu-latest
+            name: x86_64-pc-windows-gnu
+            binary-suffix: .exe
+            rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
 
-  build-release-macos:
-    name: Build, Release (macos-x86_64)
-    # macos-latest is ARM64, macos-latest-large is x86-64
-    runs-on: macos-latest-large
+    name: Build, Release (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    needs: [check-lint]
     permissions:
       contents: write
     timeout-minutes: 20
-    # env:
-    #  RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
+
       - name: Install latest stable toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          target: ${{ matrix.name }}
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
+        uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "macos-x86_64"
+          key: ${{ matrix.name }}
 
-      - name: Build
-        run: cargo build --release
-
-      - name: 'Set environment variables: version number and output filenames'
-        run: |
-          APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
-          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-x86_64-apple-darwin"
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
-          echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
-
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/release"
-          ln -fs "bip300301_enforcer" "${APP_FILENAME}"
-          popd
-
-      - name: 'Upload artifacts'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_FILENAME }}
-          if-no-files-found: error
-          path: |
-            target/release/${{ env.APP_FILENAME }}
-
-      - name: Release
-        uses: softprops/action-gh-release@v2.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/release/${{ env.APP_FILENAME }}
-          fail_on_unmatched_files: true
-  
-  build-release-windows:
-    name: Build, Release (x86_64-pc-windows-gnu)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    timeout-minutes: 20
-    # env:
-    #  RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install latest stable toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          target: x86_64-pc-windows-gnu
-        
       - name: Install mingw-w64
         run: sudo apt install mingw-w64
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
-        with:
-          prefix-key: "x86_64-pc-windows-gnu"
+        if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
 
       - name: Build
-        run: cargo build --release --target x86_64-pc-windows-gnu
+        run: cargo build --release --target ${{ matrix.name }}
         env:
-          RUSTFLAGS: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
-      - name: 'Set environment variables: version number and output filenames'
+      - name: "Set environment variables: version number and output filenames"
         run: |
           APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
-          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-x86_64-pc-windows-gnu.exe"
+          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
 
+      - run: |
+          mkdir release
+          cp target/${{ matrix.name }}/release/bip300301_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
 
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/x86_64-pc-windows-gnu/release"
-          ln -fs "bip300301_enforcer.exe" "${APP_FILENAME}"
-          popd
-
-      - name: 'Upload Artifacts'
+      - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_FILENAME }}
           if-no-files-found: error
           path: |
-            target/x86_64-pc-windows-gnu/release/${{ env.APP_FILENAME }}
+            release/${{ env.APP_FILENAME }}
 
       - name: Release
         uses: softprops/action-gh-release@v2.0.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            target/x86_64-pc-windows-gnu/release/${{ env.APP_FILENAME }}
+            release/${{ env.APP_FILENAME }}
           fail_on_unmatched_files: true
 
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [
-      check-lint-build-release-linux,
-      build-release-macos,
-      build-release-windows
-    ]
+    needs: [build-release]
     if: github.ref == 'refs/heads/master'
     steps:
       - name: Download artifacts
