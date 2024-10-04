@@ -1,2 +1,5 @@
 # rust build artifacts
 target
+
+# git submodule
+cusf_sidechain_proto
