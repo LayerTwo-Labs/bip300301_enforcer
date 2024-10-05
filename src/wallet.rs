@@ -1,8 +1,10 @@
+use crate::cli::Config;
 use crate::gen::sidechain::sidechain_client::SidechainClient;
 use crate::gen::sidechain::{
     CollectTransactionsRequest, ConnectMainBlockRequest, GetChainTipRequest,
     GetWithdrawalBundleRequest, SubmitBlockRequest,
 };
+use crate::jsonrpc::create_client;
 use crate::types::SidechainProposal;
 use crate::validator::Validator;
 use bdk::blockchain::ElectrumBlockchain;
@@ -23,7 +25,7 @@ use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
-use std::path::Path;
+
 use std::str::FromStr;
 use tonic::transport::Channel;
 
@@ -43,9 +45,8 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub async fn new<P: AsRef<Path>>(datadir: P, validator: &Validator) -> Result<Self> {
-        let network = Network::Regtest; // Or this can be Network::Bitcoin, Network::Signet or Network::Regtest
-                                        // Generate fresh mnemonic
+    pub async fn new(config: &Config, validator: &Validator) -> Result<Self> {
+        // Generate fresh mnemonic
 
         /*
         let mnemonic: GeneratedKey<_, miniscript::Segwitv0> =
@@ -65,23 +66,42 @@ impl Wallet {
         let xkey: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
         // Get xprv from the extended key
         let xprv = xkey
-            .into_xprv(network)
+            .into_xprv(config.wallet_network)
             .ok_or(miette!("couldn't get xprv"))?;
 
-        std::fs::create_dir_all(&datadir).into_diagnostic()?;
+        // Ensure that the data directory exists
+        match std::fs::create_dir_all(&config.data_dir) {
+            Ok(_) => (),
+            Err(e) => {
+                return Err(miette!(
+                    "failed to create data dir {}: {e}",
+                    config.data_dir.display()
+                ));
+            }
+        }
+        println!(
+            "Ensured data directory exists: {}",
+            config.data_dir.display()
+        );
 
+        let wallet_database = SqliteDatabase::new(config.data_dir.join("wallet.sqlite"));
         // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
         let bitcoin_wallet = bdk::Wallet::new(
             Bip84(xprv, KeychainKind::External),
             Some(Bip84(xprv, KeychainKind::Internal)),
-            network,
-            SqliteDatabase::new(datadir.as_ref().join("wallet.sqlite")),
-        )
-        .into_diagnostic()?;
+            config.wallet_network,
+            wallet_database,
+        );
 
-        let bitcoin_wallet_client =
-            bdk::electrum_client::Client::new("127.0.0.1:60401").into_diagnostic()?;
-        let bitcoin_blockchain = ElectrumBlockchain::from(bitcoin_wallet_client);
+        let electrum_url = format!(
+            "{}:{}",
+            config.wallet_electrum_host, config.wallet_electrum_port
+        );
+
+        let electrum_client = bdk::electrum_client::Client::new(&electrum_url).into_diagnostic()?;
+        let bitcoin_blockchain = ElectrumBlockchain::from(electrum_client);
+
+        println!("Created electrum client: {}", electrum_url);
 
         use rusqlite_migration::{Migrations, M};
 
@@ -126,15 +146,19 @@ impl Wallet {
                 ),
             ]);
 
+            let db_name = "db.sqlite";
             let mut db_connection =
-                Connection::open(datadir.as_ref().join("db.sqlite")).into_diagnostic()?;
+                Connection::open(config.data_dir.join(db_name)).into_diagnostic()?;
+
+            println!("Created database connection to {}", db_name);
 
             migrations.to_latest(&mut db_connection).into_diagnostic()?;
+
+            println!("Ran migrations on {}", db_name);
             db_connection
         };
 
-        let main_datadir = Path::new("../../data/bitcoin/");
-        let main_client = create_client(main_datadir)?;
+        let main_client = create_client("wallet", config)?;
 
         let sidechain_clients = HashMap::new();
 
@@ -142,7 +166,7 @@ impl Wallet {
             main_client,
             validator: validator.clone(),
             sidechain_clients,
-            bitcoin_wallet,
+            bitcoin_wallet: bitcoin_wallet.into_diagnostic()?,
             db_connection,
             bitcoin_blockchain,
             mnemonic,
@@ -518,7 +542,6 @@ impl Wallet {
         ];
         let op_drivechain = ScriptBuf::from_bytes(message.into());
 
-        let sequence_number = self.validator.get_ctip_sequence_number(sidechain_number)?;
         let address = base58::decode(address).into_diagnostic()?;
         if address.len() != 20 {
             return Err(miette!(
@@ -763,26 +786,6 @@ pub struct Sidechain {
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq_jsonrpc::{json, Client};
-
-pub fn create_client(main_datadir: &Path) -> Result<Client> {
-    let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
-    let mut auth = auth.split(':');
-    let user = auth
-        .next()
-        .ok_or(miette!("failed to get rpcuser"))?
-        .to_string();
-    let password = auth
-        .next()
-        .ok_or(miette!("failed to get rpcpassword"))?
-        .to_string();
-    Ok(Client {
-        host: "localhost".into(),
-        port: 18443,
-        user,
-        password,
-        id: "mainchain".into(),
-    })
-}
 
 use bdk::bitcoin::constants::SUBSIDY_HALVING_INTERVAL;
 use bdk::bitcoin::{self, base58};

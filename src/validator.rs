@@ -25,6 +25,7 @@ use ureq_jsonrpc::{json, Client};
 
 use crate::cli::Config;
 
+use crate::jsonrpc::create_client;
 use crate::types::{
     Ctip, Deposit, Hash256, PendingM6id, Sidechain, SidechainProposal, TreasuryUtxo,
 };
@@ -774,7 +775,7 @@ impl Validator {
     }
 
     pub async fn run(&self, conf: &Config) -> Result<()> {
-        let main_client = &create_client(conf)?;
+        let main_client = &create_client("validator", conf)?;
 
         let block_count_future = async move {
             main_client
@@ -913,51 +914,4 @@ impl Validator {
         Ok(block_height_accepted_bmm_hashes)
     }
     */
-}
-
-fn create_client(conf: &Config) -> Result<Client> {
-    if conf.node_rpc_user.is_none() != conf.node_rpc_password.is_none() {
-        return Err(miette!("RPC user and password must be set together"));
-    }
-
-    if conf.node_rpc_user.is_none() == conf.node_rpc_cookie_path.is_none() {
-        return Err(miette!("precisely one of RPC user and cookie must be set"));
-    }
-
-    let mut conf_user = conf.node_rpc_user.clone().unwrap_or_default();
-    let mut conf_password = conf.node_rpc_password.clone().unwrap_or_default();
-
-    if conf.node_rpc_cookie_path.is_some() {
-        let cookie_path = conf.node_rpc_cookie_path.clone().unwrap();
-        let auth = std::fs::read_to_string(cookie_path.clone())
-            .map_err(|err| miette!("unable to read bitcoind cookie at {}: {}", cookie_path, err))?;
-
-        let mut auth = auth.split(':');
-
-        conf_user = auth
-            .next()
-            .ok_or(miette!("failed to get rpcuser"))?
-            .to_string()
-            .clone();
-
-        conf_password = auth
-            .next()
-            .ok_or(miette!("failed to get rpcpassword"))?
-            .to_string()
-            .to_string()
-            .clone();
-    }
-
-    println!(
-        "Validator: creating JSON-RPC client for {}:{}",
-        conf.node_rpc_host, conf.node_rpc_port
-    );
-
-    Ok(Client {
-        host: conf.node_rpc_host.to_string(),
-        port: conf.node_rpc_port,
-        user: conf_user.to_string(),
-        password: conf_password.to_string(),
-        id: "mainchain".into(),
-    })
 }
