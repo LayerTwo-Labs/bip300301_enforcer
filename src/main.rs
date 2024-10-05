@@ -20,7 +20,7 @@ use tonic::transport::Server;
 use wallet::Wallet;
 
 async fn run_server(bip300: &Validator, addr: SocketAddr) -> Result<()> {
-    println!("Listening for gRPC on {addr}");
+    log::info!("Listening for gRPC on {addr}");
     Server::builder()
         .add_service(ValidatorServiceServer::new(bip300.clone()))
         .serve(addr)
@@ -30,12 +30,16 @@ async fn run_server(bip300: &Validator, addr: SocketAddr) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
+
     let cli = Arc::new(cli::Config::parse());
 
     let validator = Validator::new(Path::new("./")).map(Arc::new)?;
 
     // Takes in data from the blockchain and updates the validator state
     let run_validator_task = tokio::spawn({
+        log::info!("spawning validator task");
+
         let validator = Arc::clone(&validator);
         let cli = Arc::clone(&cli);
         async move { validator.run(&cli).await }
@@ -45,6 +49,8 @@ async fn main() -> Result<()> {
     tasks.push(run_validator_task);
 
     let run_validator_server_task = tokio::spawn({
+        log::info!("spawning validator server task");
+
         let validator = Arc::clone(&validator);
         let cli = Arc::clone(&cli);
         async move { run_server(&validator, cli.serve_rpc_addr).await }
@@ -64,6 +70,7 @@ async fn main() -> Result<()> {
             .await?;
 
         let run_wallet_task = tokio::spawn({
+            log::info!("spawning wallet task");
             async move {
                 // this prints the wallet balance
                 // TODO: take the print statements ouf of the wallet, and into a return value

@@ -235,7 +235,7 @@ impl Validator {
         };
 
         if new_sidechain_activated {
-            println!(
+            log::info!(
                 "sidechain {sidechain_number} in slot {} was activated",
                 String::from_utf8(sidechain_proposal.data.clone()).into_diagnostic()?,
             );
@@ -550,12 +550,11 @@ impl Validator {
                     sidechain_number,
                     data,
                 } => {
-                    /*
-                    println!(
+                    log::info!(
                         "Propose sidechain number {sidechain_number} with data \"{}\"",
                         String::from_utf8(data.clone()).into_diagnostic()?,
                     );
-                    */
+
                     self.handle_m1_propose_sidechain(
                         rwtxn,
                         height,
@@ -567,12 +566,10 @@ impl Validator {
                     sidechain_number,
                     data_hash,
                 } => {
-                    /*
-                    println!(
+                    log::info!(
                         "Ack sidechain number {sidechain_number} with hash {}",
                         hex::encode(data_hash)
                     );
-                    */
                     self.handle_m2_ack_sidechain(rwtxn, height, sidechain_number, data_hash)?;
                 }
                 CoinbaseMessage::M3ProposeBundle {
@@ -659,14 +656,14 @@ impl Validator {
             .into_diagnostic()?
             .unwrap_or(0);
 
-        println!("Validator: syncing to block {height}");
+        log::debug!("Validator: syncing to block {height}");
 
         let main_block_height: u32 = main_client
             .send_request("getblockcount", &[])
             .into_diagnostic()?
             .ok_or(miette!("failed to get block count"))?;
 
-        println!("Validator: mainchain block height: {main_block_height}");
+        log::debug!("Validator: mainchain block height: {main_block_height}");
 
         while height < main_block_height {
             let block_hash: String = main_client
@@ -724,7 +721,8 @@ impl Validator {
         if main_block_height == height {
             return Ok(());
         }
-        println!("Block height: {main_block_height}");
+
+        log::debug!("Block height: {main_block_height}");
 
         while height < main_block_height {
             let block_hash: String = main_client
@@ -733,7 +731,7 @@ impl Validator {
                 .ok_or(miette!("failed to get block hash"))?;
             let prev_blockhash = BlockHash::from_str(&block_hash).unwrap();
 
-            println!("Mainchain tip: {prev_blockhash}");
+            log::debug!("Mainchain tip: {prev_blockhash}");
 
             let block: String = main_client
                 .send_request("getblock", &[json!(block_hash), json!(0)])
@@ -751,7 +749,6 @@ impl Validator {
                     .ok_or(miette!("failed to invalidate block"))?;
                 */
             }
-            println!();
 
             // check for new block
             // validate block
@@ -786,17 +783,17 @@ impl Validator {
         let with_timeout = timeout(Duration::from_secs(3), block_count_future);
         match with_timeout.await {
             Ok(Ok(Some(block_count))) => {
-                println!("Validator: mainchain block count: {block_count}");
+                log::debug!("Validator: mainchain block count: {block_count}");
             }
             Ok(Err(err)) => return Err(err),
             Err(err) => return Err(miette!("timed out: {err}")),
             _ => unreachable!(),
         }
 
-        println!("Validator: starting initial sync");
-        let () = self.initial_sync(main_client)?;
+        log::info!("Validator: starting initial sync");
+        self.initial_sync(main_client)?;
 
-        println!("Validator: starting task loop");
+        log::info!("Validator: starting task loop");
         let interval = interval(Duration::from_secs(1));
         IntervalStream::new(interval)
             .map(Ok)
