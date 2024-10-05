@@ -9,6 +9,7 @@ use crate::types::SidechainProposal;
 use crate::validator::Validator;
 use bdk::blockchain::ElectrumBlockchain;
 use bdk::database::SqliteDatabase;
+use bdk::electrum_client::ConfigBuilder;
 use bdk::keys::bip39::{Language, Mnemonic};
 use bdk::keys::{DerivableKey, ExtendedKey};
 use bdk::template::Bip84;
@@ -42,6 +43,7 @@ pub struct Wallet {
     // index
     // address (20 byte hash of public key)
     // utxos
+    last_sync: Option<SystemTime>,
 }
 
 impl Wallet {
@@ -93,15 +95,23 @@ impl Wallet {
             wallet_database,
         );
 
-        let electrum_url = format!(
-            "{}:{}",
-            config.wallet_electrum_host, config.wallet_electrum_port
-        );
+        let bitcoin_blockchain = {
+            let electrum_url = format!(
+                "{}:{}",
+                config.wallet_electrum_host, config.wallet_electrum_port
+            );
 
-        let electrum_client = bdk::electrum_client::Client::new(&electrum_url).into_diagnostic()?;
-        let bitcoin_blockchain = ElectrumBlockchain::from(electrum_client);
+            log::debug!("creating electrum client: {}", electrum_url);
 
-        log::debug!("Created electrum client: {}", electrum_url);
+            // Apply a reasonably short timeout to prevent the wallet from hanging
+            let timeout = 5;
+            let config = ConfigBuilder::new().timeout(Some(timeout)).build();
+
+            let electrum_client = bdk::electrum_client::Client::from_config(&electrum_url, config)
+                .map_err(|err| miette!("failed to create electrum client: {err}"))?;
+
+            ElectrumBlockchain::from(electrum_client)
+        };
 
         use rusqlite_migration::{Migrations, M};
 
@@ -170,6 +180,8 @@ impl Wallet {
             db_connection,
             bitcoin_blockchain,
             mnemonic,
+
+            last_sync: None,
         };
         /*
         let sidechains = wallet.get_sidechains().await?;
@@ -343,9 +355,9 @@ impl Wallet {
     }
 
     pub fn get_balance(&self) -> Result<()> {
-        self.bitcoin_wallet
-            .sync(&self.bitcoin_blockchain, SyncOptions::default())
-            .map_err(|e| miette!("failed to sync wallet: {e}"))?;
+        if self.last_sync.is_none() {
+            return Err(miette!("get balance: wallet not synced"));
+        }
 
         let balance = self.bitcoin_wallet.get_balance().into_diagnostic()?;
         let immature = Amount::from_sat(balance.immature);
@@ -360,10 +372,29 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_utxos(&self) -> Result<()> {
+    pub fn sync(&mut self) -> Result<()> {
+        let start = SystemTime::now();
+        log::trace!("starting wallet sync");
+
         self.bitcoin_wallet
             .sync(&self.bitcoin_blockchain, SyncOptions::default())
             .into_diagnostic()?;
+
+        log::debug!(
+            "wallet sync complete in {:?}",
+            start.elapsed().unwrap_or_default(),
+        );
+
+        self.last_sync = Some(SystemTime::now());
+
+        Ok(())
+    }
+
+    pub fn get_utxos(&self) -> Result<()> {
+        if self.last_sync.is_none() {
+            return Err(miette!("get utxos: wallet not synced"));
+        }
+
         let utxos = self.bitcoin_wallet.list_unspent().into_diagnostic()?;
         for utxo in &utxos {
             log::debug!(
