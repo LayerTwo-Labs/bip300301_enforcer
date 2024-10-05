@@ -31,6 +31,19 @@ $ buf curl  --schema 'https://github.com/LayerTwo-Labs/bip300301_enforcer_proto.
 }
 ```
 
+# Logging
+
+The application uses the `env_logger` crate for logging. Logging is configured
+through setting the `RUST_LOG` environment variable. Some examples:
+
+```bash
+# Prints ALL debug logs
+$ RUST_LOG=debug cargo run ...
+
+# Prints logs at the "info" level and above, plus our logs the "debug" level and above
+$ RUST_LOG=info,bip300301_enforcer=debug cargo run ...
+```
+
 # Working with the proto files
 
 Code is generated with [protox](https://github.com/andrewhickman/protox), and

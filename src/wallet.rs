@@ -79,7 +79,7 @@ impl Wallet {
                 ));
             }
         }
-        println!(
+        log::debug!(
             "Ensured data directory exists: {}",
             config.data_dir.display()
         );
@@ -101,7 +101,7 @@ impl Wallet {
         let electrum_client = bdk::electrum_client::Client::new(&electrum_url).into_diagnostic()?;
         let bitcoin_blockchain = ElectrumBlockchain::from(electrum_client);
 
-        println!("Created electrum client: {}", electrum_url);
+        log::debug!("Created electrum client: {}", electrum_url);
 
         use rusqlite_migration::{Migrations, M};
 
@@ -150,11 +150,11 @@ impl Wallet {
             let mut db_connection =
                 Connection::open(config.data_dir.join(db_name)).into_diagnostic()?;
 
-            println!("Created database connection to {}", db_name);
+            log::debug!("Created database connection to {}", db_name);
 
             migrations.to_latest(&mut db_connection).into_diagnostic()?;
 
-            println!("Ran migrations on {}", db_name);
+            log::debug!("Ran migrations on {}", db_name);
             db_connection
         };
 
@@ -202,7 +202,8 @@ impl Wallet {
             .into_diagnostic()?;
         let script_pubkey = addr.script_pubkey();
         let block_height = self.get_block_height()?;
-        println!("Block height: {block_height}");
+
+        log::debug!("Block height: {block_height}");
         let block_hash: String = self
             .main_client
             .send_request("getblockhash", &[json!(block_height)])
@@ -351,10 +352,11 @@ impl Wallet {
         let untrusted_pending = Amount::from_sat(balance.untrusted_pending);
         let trusted_pending = Amount::from_sat(balance.trusted_pending);
         let confirmed = Amount::from_sat(balance.confirmed);
-        println!("Confirmed: {confirmed}");
-        println!("Immature: {immature}");
-        println!("Untrusted pending: {untrusted_pending}");
-        println!("Trusted pending: {trusted_pending}");
+
+        log::debug!("Confirmed: {confirmed}");
+        log::debug!("Immature: {immature}");
+        log::debug!("Untrusted pending: {untrusted_pending}");
+        log::debug!("Trusted pending: {trusted_pending}");
         Ok(())
     }
 
@@ -364,9 +366,10 @@ impl Wallet {
             .into_diagnostic()?;
         let utxos = self.bitcoin_wallet.list_unspent().into_diagnostic()?;
         for utxo in &utxos {
-            println!(
+            log::debug!(
                 "address: {}, value: {}",
-                utxo.txout.script_pubkey, utxo.txout.value
+                utxo.txout.script_pubkey,
+                utxo.txout.value
             );
         }
         Ok(())
@@ -720,12 +723,12 @@ impl Wallet {
             prev_side_block_hash,
             merkle_root,
         };
-        println!("header: {}", hex::encode(header.hash()));
-        println!(
+        log::debug!("header: {}", hex::encode(header.hash()));
+        log::debug!(
             "prev_side_block_hash: {}",
             hex::encode(header.prev_side_block_hash)
         );
-        println!("merkle_root: {}", hex::encode(header.merkle_root));
+        log::debug!("merkle_root: {}", hex::encode(header.merkle_root));
         let block = (header, coinbase, transactions);
         Ok(block)
     }

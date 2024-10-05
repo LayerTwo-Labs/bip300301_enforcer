@@ -35,9 +35,11 @@ pub fn create_client(id: &str, conf: &Config) -> Result<Client> {
             .clone();
     }
 
-    println!(
+    log::debug!(
         "Creating {} JSON-RPC client for {}:{}",
-        id, conf.node_rpc_host, conf.node_rpc_port
+        id,
+        conf.node_rpc_host,
+        conf.node_rpc_port
     );
 
     Ok(Client {
