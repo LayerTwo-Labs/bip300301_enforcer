@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 mod cli;
 mod gen;
@@ -65,23 +65,27 @@ async fn main() -> Result<()> {
     // The point here is to prove that we can conditionally start a task.
     if cli.enable_wallet {
         let validator = Arc::clone(&validator);
-        let wallet = Wallet::new(&cli, &validator)
+        let mut wallet = Wallet::new(&cli, &validator)
             .map_err(|e| miette!("failed to create wallet: {:?}", e))
             .await?;
 
-        let run_wallet_task = tokio::spawn({
-            log::info!("spawning wallet task");
+        // The idea is to keep the wallet synced periodically, such that wallet operations
+        // can be executed without having to sync first.
+        let run_wallet_sync_task = tokio::spawn({
+            log::info!("spawning wallet sync task");
             async move {
-                // this prints the wallet balance
-                // TODO: take the print statements ouf of the wallet, and into a return value
-                wallet
-                    .get_balance()
-                    .map_err(|e| miette!("failed to get wallet balance: {:?}", e))?;
-                Ok(())
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+
+                    if let Err(e) = wallet.sync() {
+                        log::error!("failed to sync wallet: {e}");
+                    }
+                }
             }
         });
 
-        tasks.push(run_wallet_task);
+        tasks.push(run_wallet_sync_task);
     }
 
     // Wait for the first error or for all tasks to complete
