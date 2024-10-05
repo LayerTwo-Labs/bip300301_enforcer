@@ -2,6 +2,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 mod cli;
 mod gen;
+mod jsonrpc;
 mod server;
 mod types;
 mod validator;
@@ -9,35 +10,14 @@ mod wallet;
 
 use clap::Parser;
 
-use futures::{future::select_all, TryFutureExt};
+use futures::{future::try_join_all, TryFutureExt};
 use gen::validator::validator_service_server::ValidatorServiceServer;
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{miette, Result};
 
 use server::Validator;
 
 use tonic::transport::Server;
-use ureq_jsonrpc::Client;
 use wallet::Wallet;
-
-fn _create_client(main_datadir: &Path) -> Result<Client> {
-    let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
-    let mut auth = auth.split(':');
-    let user = auth
-        .next()
-        .ok_or(miette!("failed to get rpcuser"))?
-        .to_string();
-    let password = auth
-        .next()
-        .ok_or(miette!("failed to get rpcpassword"))?
-        .to_string();
-    Ok(Client {
-        host: "localhost".into(),
-        port: 18443,
-        user,
-        password,
-        id: "mainchain".into(),
-    })
-}
 
 async fn run_server(bip300: &Validator, addr: SocketAddr) -> Result<()> {
     println!("Listening for gRPC on {addr}");
@@ -50,21 +30,14 @@ async fn run_server(bip300: &Validator, addr: SocketAddr) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = cli::Config::parse();
-    let serve_rpc_addr = cli.serve_rpc_addr;
+    let cli = Arc::new(cli::Config::parse());
 
-    let enabled_wallet = cli.enable_wallet;
-
-    let validator = match Validator::new(Path::new("./")) {
-        Ok(validator) => Arc::new(validator),
-        Err(err) => {
-            return Err(err);
-        }
-    };
+    let validator = Validator::new(Path::new("./")).map(Arc::new)?;
 
     // Takes in data from the blockchain and updates the validator state
     let run_validator_task = tokio::spawn({
         let validator = Arc::clone(&validator);
+        let cli = Arc::clone(&cli);
         async move { validator.run(&cli).await }
     });
 
@@ -73,7 +46,8 @@ async fn main() -> Result<()> {
 
     let run_validator_server_task = tokio::spawn({
         let validator = Arc::clone(&validator);
-        async move { run_server(&validator, serve_rpc_addr).await }
+        let cli = Arc::clone(&cli);
+        async move { run_server(&validator, cli.serve_rpc_addr).await }
     });
     tasks.push(run_validator_server_task);
 
@@ -83,9 +57,9 @@ async fn main() -> Result<()> {
     // 2. A server for the wallet
     //
     // The point here is to prove that we can conditionally start a task.
-    if enabled_wallet {
+    if cli.enable_wallet {
         let validator = Arc::clone(&validator);
-        let wallet = Wallet::new(Path::new("./wallet-db"), &validator)
+        let wallet = Wallet::new(&cli, &validator)
             .map_err(|e| miette!("failed to create wallet: {:?}", e))
             .await?;
 
@@ -104,7 +78,7 @@ async fn main() -> Result<()> {
     }
 
     // Wait for the first error or for all tasks to complete
-    let result = select_all(tasks.into_iter().map(|t| {
+    let result = try_join_all(tasks.into_iter().map(|t| {
         Box::pin(async move {
             t.await
                 .unwrap_or_else(|e| Err(miette!("Task panicked: {}", e)))
@@ -113,23 +87,6 @@ async fn main() -> Result<()> {
     .await;
 
     // Check if there was an error
-    if let (Err(e), _, _) = result {
-        return Err(e);
-    }
+    result?;
     Ok(())
-
-    /*
-    match try_join_all(tasks.into_iter()).await {
-        Ok(_) => {
-            println!("Validator: tasks completed");
-            Ok(())
-        }
-        Err(err) => {
-            return Err(miette!("unable to run tasks: {err:#}"));
-        }
-        hm => {
-            println!("hm: {:?}", hm);
-            Ok(())
-        }
-    }*/
 }

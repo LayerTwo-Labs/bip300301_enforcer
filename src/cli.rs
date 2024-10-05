@@ -1,9 +1,18 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    path::PathBuf,
+};
 
+use bdk::bitcoin::Network;
 use clap::Parser;
 
 #[derive(Parser, Clone)]
 pub struct Config {
+    /// Directory to store wallet + drivechain data.
+    /// TODO: find a sensible default outside of the repo.
+    #[arg(default_value = "./datadir", long)]
+    pub data_dir: PathBuf,
+
     #[arg(default_value = "localhost", long)]
     pub node_rpc_host: String,
 
@@ -29,4 +38,13 @@ pub struct Config {
 
     #[arg(long)]
     pub enable_wallet: bool,
+
+    #[arg(long, default_value = "signet")]
+    pub wallet_network: Network,
+
+    #[arg(long, default_value = "drivechain.live")]
+    pub wallet_electrum_host: String,
+
+    #[arg(long, default_value = "50001")]
+    pub wallet_electrum_port: u16,
 }
