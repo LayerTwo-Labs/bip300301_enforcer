@@ -3,18 +3,18 @@
 1. Bitcoin Core, with ZMQ support. This needs be be running with the following
    flags:
 
-    ```
-    user=user
-    password=password
-    signetblocktime=60
-    signetchallenge=00141f61d57873d70d28bd28b3c9f9d6bf818b5a0d6a
+   ```
+   user=user
+   password=password
+   signetblocktime=60
+   signetchallenge=00141f61d57873d70d28bd28b3c9f9d6bf818b5a0d6a
 
-    # this can also be set to a different address, as long
-    # as you set the CLI arg for bip300301_enforcer
-    zmqpubsequence=tcp://0.0.0.0:29000
-    ```
+   # this can also be set to a different address, as long
+   # as you set the CLI arg for bip300301_enforcer
+   zmqpubsequence=tcp://0.0.0.0:29000
+   ```
 
-1. Rustc & Cargo, version 1.77.0 or higher. Installing via Rustup is 
+1. Rustc & Cargo, version 1.77.0 or higher. Installing via Rustup is
    recommended.
 
 # Getting started
