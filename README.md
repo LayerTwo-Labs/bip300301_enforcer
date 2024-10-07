@@ -1,6 +1,7 @@
 # Requirements
 
-1. Bitcoin Core, with ZMQ support. This needs be be running with the following flags:
+1. Bitcoin Core, with ZMQ support. This needs be be running with the following
+   flags:
 
     ```
     user=user
@@ -13,7 +14,8 @@
     zmqpubsequence=tcp://0.0.0.0:29000
     ```
 
-1. Rustc & Cargo, version 1.77.0 or higher. Installing via Rustup is recommended.
+1. Rustc & Cargo, version 1.77.0 or higher. Installing via Rustup is 
+   recommended.
 
 # Getting started
 
@@ -58,7 +60,7 @@ $ cargo run ... --log-level DEBUG
 
 Logs can also be configured via env vars, which take precedence over CLI args.
 
-```
+```bash
 # Prints logs at the "info" level and above, plus our logs the "debug" level and above
 $ RUST_LOG=info,bip300301_enforcer=debug cargo run ...
 ```
