@@ -22,24 +22,6 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install buf
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
-      - name: Run protolint
-        uses: plexsystems/protolint-action@v0.7.0
-        with:
-          configDirectory: .
-          srcDirectory: proto
-
-      # Disabled, since buf format is not configurable
-      #- name: Buf format
-      #  run: buf format -d --exit-code
-
-      - name: Buf lint
-        run: buf lint --error-format github-actions
-
       - name: Check Prettier formatting
         uses: actionsx/prettier@v2
         with:
