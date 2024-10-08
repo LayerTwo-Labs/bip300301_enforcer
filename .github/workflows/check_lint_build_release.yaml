@@ -55,9 +55,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check Prettier formatting
-        uses: actionsx/prettier@v2
-        with:
-          args: --check .
+        run: |
+          npx --yes prettier@v3.3.3 --write . 
+
+          # Print any changes, to make it easier to see what's wrong. 
+          git diff --exit-code
 
   build-release:
     strategy:
