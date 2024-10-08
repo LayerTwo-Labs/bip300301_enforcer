@@ -804,9 +804,13 @@ fn initial_sync(
         })?
         .ok_or(InitialSyncError::GetBlockCount)?;
     tracing::debug!("mainchain block height: {main_block_height}");
+
     if height < main_block_height {
-        tracing::debug!("syncing to block height {main_block_height}");
+        tracing::debug!("syncing to block height: {height} -> {main_block_height}");
+    } else {
+        tracing::debug!("already synced to block height {height}");
     }
+
     while height < main_block_height {
         let block_hash_hex: String = main_client
             .send_request("getblockhash", &[json!(height)])
@@ -849,7 +853,10 @@ fn initial_sync(
         height += 1;
         dbs.current_chain_tip
             .put(&mut rwtxn, &UnitKey, &block_hash)?;
+
+        tracing::trace!("updated current chain tip to {block_hash}");
     }
+
     dbs.current_block_height
         .put(&mut rwtxn, &UnitKey, &height)?;
     let () = rwtxn.commit()?;
