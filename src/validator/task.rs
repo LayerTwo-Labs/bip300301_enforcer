@@ -800,9 +800,13 @@ fn initial_sync(
         })?
         .ok_or(InitialSyncError::GetBlockCount)?;
     tracing::debug!("mainchain block height: {main_block_height}");
+
     if height < main_block_height {
-        tracing::debug!("syncing to block height {main_block_height}");
+        tracing::debug!("syncing to block height: {height} -> {main_block_height}");
+    } else {
+        tracing::debug!("already synced to block height {height}");
     }
+
     while height < main_block_height {
         let block_hash: String = main_client
             .send_request("getblockhash", &[json!(height)])
@@ -811,6 +815,9 @@ fn initial_sync(
                 source: Box::new(err),
             })?
             .ok_or(InitialSyncError::GetBlockHash { height })?;
+
+        tracing::trace!("fetched block hash at height {height}: {block_hash}");
+
         let block: String = main_client
             .send_request("getblock", &[json!(block_hash), json!(0)])
             .map_err(|err| InitialSyncError::Rpc {
@@ -820,15 +827,19 @@ fn initial_sync(
             .ok_or_else(|| InitialSyncError::GetBlock {
                 block_hash: block_hash.clone(),
             })?;
+
         let block = bitcoin::consensus::encode::deserialize_hex(&block).unwrap();
-        let () = connect_block(&mut rwtxn, dbs, event_tx, &block, height)?;
-        {
-            /*
-            main_client
-                .send_request("invalidateblock", &[json!(block_hash)])
-                .into_diagnostic()?
-                .ok_or(miette!("failed to invalidate block"))?;
-            */
+        match connect_block(&mut rwtxn, dbs, event_tx, &block, height) {
+            Ok(_) => tracing::trace!("connected block at height {height}: {block_hash}"),
+            Err(err) => {
+                /*
+                main_client
+                    .send_request("invalidateblock", &[json!(block_hash)])
+                    .into_diagnostic()?
+                    .ok_or(miette!("failed to invalidate block"))?;
+                */
+                return Err(InitialSyncError::ConnectBlock(err));
+            }
         }
         height += 1;
         let block_hash = {
@@ -845,9 +856,13 @@ fn initial_sync(
             .map(BlockHash::from_byte_array)
             .unwrap()
         };
+
         dbs.current_chain_tip
             .put(&mut rwtxn, &UnitKey, &block_hash)?;
+
+        tracing::trace!("updated current chain tip to {block_hash}");
     }
+
     dbs.current_block_height
         .put(&mut rwtxn, &UnitKey, &height)?;
     let () = rwtxn.commit()?;
