@@ -16,9 +16,16 @@ mod validator;
 mod wallet;
 mod zmq;
 
-use proto::validator::Server as ValidatorServiceServer;
+use proto::validator::{
+    validator_service_server::SERVICE_NAME as VALIDATOR_SERVICE_NAME,
+    Server as ValidatorServiceServer,
+};
 use server::Validator;
 use wallet::Wallet;
+
+/// Encoded file descriptor set, for gRPC reflection
+pub static ENCODED_FILE_DESCRIPTOR_SET: &[u8] =
+    tonic::include_file_descriptor_set!("file_descriptor_set");
 
 // Configure logger.
 fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
@@ -39,8 +46,15 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
 }
 
 async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
-    tracing::info!("Listening for gRPC on {addr}");
+    let reflection_service = tonic_reflection::server::Builder::configure()
+        .with_service_name(VALIDATOR_SERVICE_NAME)
+        .register_encoded_file_descriptor_set(ENCODED_FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .into_diagnostic()?;
+
+    tracing::info!("Listening for gRPC on {addr} with reflection");
     Server::builder()
+        .add_service(reflection_service)
         .add_service(ValidatorServiceServer::new(validator))
         .serve(addr)
         .map_err(|err| miette!("error in validator server: {err:#}"))
