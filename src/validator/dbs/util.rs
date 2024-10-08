@@ -176,8 +176,9 @@ pub mod db_error {
 
     #[derive(Debug, Error)]
     #[error(
-        "Failed to read from db `{db_name}` at `{db_path}` ({})",
-        display_key_bytes(.key_bytes)
+        "Failed to read from db `{db_name}` at `{db_path}` ({}): {}",
+        display_key_bytes(.key_bytes),
+        .source
     )]
     pub struct TryGet {
         pub(super) db_name: &'static str,
