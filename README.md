@@ -40,11 +40,10 @@ $ cargo run -- \
   --node-zmq-addr-sequence=tcp://0.0.0.0:29000
 
 # You should now be able to fetch data from the server!
-$ buf curl  --schema 'https://github.com/LayerTwo-Labs/bip300301_enforcer_proto.git' \
-            --http2-prior-knowledge --protocol grpc \
-      http://localhost:50051/validator.Validator/GetMainBlockHeight
+$ buf curl  --http2-prior-knowledge --protocol grpc \
+        http://localhost:50051/cusf.validator.v1.ValidatorService/GetChainInfo
 {
-  "height": 2
+  "network": "NETWORK_SIGNET"
 }
 ```
 
