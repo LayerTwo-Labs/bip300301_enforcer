@@ -46,6 +46,8 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 ureq-jsonrpc = { git = "https://github.com/nchashch/ureq-jsonrpc" }
 zeromq = "0.4.0"
+tower = "0.5.1"
+tower-http = { version = "0.6.1", features = ["trace"] }
 
 [dependencies.educe]
 version = "0.6.0"
