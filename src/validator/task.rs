@@ -752,7 +752,7 @@ fn connect_block(
             block_hash,
             prev_block_hash: prev_mainchain_block_hash,
             height,
-            work: block.header.work().to_le_bytes(),
+            work: block.header.work(),
         };
         Event::ConnectBlock {
             header_info,

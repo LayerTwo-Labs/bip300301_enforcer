@@ -1,22 +1,17 @@
 use crate::{
     proto::{
         self,
-        validator::{
+        mainchain::{
             get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo, server::ValidatorService,
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
-            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateNewAddressResponse, GenerateBlocksRequest,
-            GenerateBlocksResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
-            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
-            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
-            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, SubscribeEventsRequest,
-            SubscribeEventsResponse,
+            get_sidechains_response::SidechainInfo, server::ValidatorService, ConsensusHex,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
+            ReverseHex, SubscribeEventsRequest, SubscribeEventsResponse,
         },
     },
     types::SidechainNumber,
@@ -52,46 +47,6 @@ where
 
 #[tonic::async_trait]
 impl ValidatorService for Validator {
-    async fn broadcast_withdrawal_bundle(
-        &self,
-        _request: tonic::Request<BroadcastWithdrawalBundleRequest>,
-    ) -> Result<tonic::Response<BroadcastWithdrawalBundleResponse>, tonic::Status> {
-        // FIXME: implement
-        todo!()
-    }
-
-    async fn create_bmm_critical_data_transaction(
-        &self,
-        _request: tonic::Request<CreateBmmCriticalDataTransactionRequest>,
-    ) -> Result<tonic::Response<CreateBmmCriticalDataTransactionResponse>, tonic::Status> {
-        // FIXME: implement
-        todo!()
-    }
-
-    async fn create_deposit_transaction(
-        &self,
-        _request: tonic::Request<CreateDepositTransactionRequest>,
-    ) -> Result<tonic::Response<CreateDepositTransactionResponse>, tonic::Status> {
-        // FIXME: implement
-        todo!()
-    }
-
-    async fn create_new_address(
-        &self,
-        _request: tonic::Request<CreateNewAddressRequest>,
-    ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
-        // FIXME: implement
-        todo!()
-    }
-
-    /// Regtest only
-    async fn generate_blocks(
-        &self,
-        _request: tonic::Request<GenerateBlocksRequest>,
-    ) -> Result<tonic::Response<GenerateBlocksResponse>, tonic::Status> {
-        // FIXME: implement
-        todo!()
-    }
     async fn get_block_header_info(
         &self,
         request: tonic::Request<GetBlockHeaderInfoRequest>,
@@ -99,14 +54,7 @@ impl ValidatorService for Validator {
         let GetBlockHeaderInfoRequest { block_hash } = request.into_inner();
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockHeaderInfoRequest>("block_hash"))?
-            .try_into()
-            .map_err(|block_hash| {
-                invalid_field_value::<GetBlockHeaderInfoRequest>(
-                    "block_hash",
-                    &hex::encode(block_hash),
-                )
-            })?;
-        let block_hash = BlockHash::from_byte_array(block_hash);
+            .decode_tonic::<GetBlockHeaderInfoRequest, _>("block_hash")?;
         let header_info = self
             .get_header_info(&block_hash)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
@@ -126,11 +74,7 @@ impl ValidatorService for Validator {
         } = request.into_inner();
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockInfoRequest>("block_hash"))?
-            .try_into()
-            .map_err(|block_hash| {
-                invalid_field_value::<GetBlockInfoRequest>("block_hash", &hex::encode(block_hash))
-            })?;
-        let block_hash = BlockHash::from_byte_array(block_hash);
+            .decode_tonic::<GetBlockInfoRequest, _>("block_hash")?;
         let sidechain_id: SidechainNumber = {
             let sidechain_id: u32 =
                 sidechain_id.ok_or_else(|| missing_field::<GetBlockInfoRequest>("sidechain_id"))?;
@@ -166,14 +110,7 @@ impl ValidatorService for Validator {
         } = request.into_inner();
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("block_hash"))?
-            .try_into()
-            .map_err(|block_hash| {
-                invalid_field_value::<GetBmmHStarCommitmentRequest>(
-                    "block_hash",
-                    &hex::encode(block_hash),
-                )
-            })?;
-        let block_hash = BlockHash::from_byte_array(block_hash);
+            .decode_tonic::<GetBmmHStarCommitmentRequest, _>("block_hash")?;
         let sidechain_id: SidechainNumber = {
             let sidechain_id: u32 = sidechain_id
                 .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("sidechain_id"))?;
@@ -192,15 +129,15 @@ impl ValidatorService for Validator {
         let res = match bmm_commitments {
             None => get_bmm_h_star_commitment_response::Result::BlockNotFound(
                 get_bmm_h_star_commitment_response::BlockNotFoundError {
-                    block_hash: block_hash.to_byte_array().to_vec(),
+                    block_hash: Some(ReverseHex::encode(&block_hash)),
                 },
             ),
             Some(bmm_commitments) => {
-                let commitment = bmm_commitments
-                    .get(&sidechain_id)
-                    .map(|commitment| commitment.to_vec());
+                let commitment = bmm_commitments.get(&sidechain_id);
                 get_bmm_h_star_commitment_response::Result::Commitment(
-                    get_bmm_h_star_commitment_response::Commitment { commitment },
+                    get_bmm_h_star_commitment_response::Commitment {
+                        commitment: commitment.map(ConsensusHex::encode),
+                    },
                 )
             }
         };
@@ -283,8 +220,9 @@ impl ValidatorService for Validator {
             lock_time: bitcoin::absolute::LockTime::Blocks(Height::ZERO),
             version: bitcoin::transaction::Version::TWO,
         };
-        let psbt = bitcoin::consensus::serialize(&transasction);
-        let response = GetCoinbasePsbtResponse { psbt };
+        let response = GetCoinbasePsbtResponse {
+            psbt: Some(ConsensusHex::encode(&transasction)),
+        };
         Ok(Response::new(response))
     }
 
@@ -316,7 +254,7 @@ impl ValidatorService for Validator {
             // return Some, so we just unwrap it.
             let sequence_number = sequence_number.unwrap();
             let ctip = Ctip {
-                txid: ctip.outpoint.txid.as_byte_array().into(),
+                txid: Some(ConsensusHex::encode(&ctip.outpoint.txid)),
                 vout: ctip.outpoint.vout,
                 value: ctip.value.to_sat(),
                 sequence_number,
@@ -372,8 +310,8 @@ impl ValidatorService for Validator {
                 )| {
                     SidechainProposal {
                         sidechain_number: u8::from(sidechain_number) as u32,
-                        data,
-                        data_hash: data_hash.to_vec(),
+                        data: Some(data),
+                        data_hash: Some(ConsensusHex::encode(&data_hash)),
                         vote_count: vote_count as u32,
                         proposal_height,
                         proposal_age: 0,
@@ -407,7 +345,7 @@ impl ValidatorService for Validator {
                 } = sidechain;
                 SidechainInfo {
                     sidechain_number: u8::from(sidechain_number) as u32,
-                    data,
+                    data: Some(data),
                     vote_count: vote_count as u32,
                     proposal_height,
                     activation_height,
@@ -441,24 +379,13 @@ impl ValidatorService for Validator {
         };
         let start_block_hash: Option<BlockHash> = start_block_hash
             .map(|start_block_hash| {
-                start_block_hash.try_into().map_err(|start_block_hash| {
-                    invalid_field_value::<GetTwoWayPegDataRequest>(
-                        "start_block_hash",
-                        &hex::encode(start_block_hash),
-                    )
-                })
+                start_block_hash.decode_tonic::<GetTwoWayPegDataRequest, _>("start_block_hash")
             })
             .transpose()?
             .map(BlockHash::from_byte_array);
         let end_block_hash: [u8; 32] = end_block_hash
             .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("end_block_hash"))?
-            .try_into()
-            .map_err(|end_block_hash| {
-                invalid_field_value::<GetTwoWayPegDataRequest>(
-                    "end_block_hash",
-                    &hex::encode(end_block_hash),
-                )
-            })?;
+            .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")?;
         let end_block_hash = BlockHash::from_byte_array(end_block_hash);
         match self.get_two_way_peg_data(start_block_hash, end_block_hash) {
             Err(err) => Err(tonic::Status::from_error(Box::new(err))),

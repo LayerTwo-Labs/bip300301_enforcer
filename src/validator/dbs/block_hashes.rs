@@ -289,7 +289,7 @@ impl BlockHashDbs {
             block_hash: header.block_hash(),
             prev_block_hash: header.prev_blockhash,
             height,
-            work: header.work().to_le_bytes(),
+            work: header.work(),
         };
         Ok(Some(header_info))
     }
