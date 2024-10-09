@@ -1,12 +1,12 @@
 use std::{
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use educe::Educe;
 use fallible_iterator::{FallibleIterator, IteratorExt};
-use heed::{BytesDecode, BytesEncode, EnvOpenOptions, RoTxn};
+use heed::{types::LazyDecode, BytesDecode, BytesEncode, EnvOpenOptions, RoTxn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -200,36 +200,76 @@ pub mod db_error {
             key_bytes: Vec<u8>,
         },
     }
+
+    #[derive(Debug, Error)]
+    #[error(
+        "Inconsistent dbs: key {} exists in db `{}`, but not in db `{}`",
+        hex::encode(.key),
+        .exists_in,
+        .not_in
+    )]
+    pub(crate) struct InconsistentDbs {
+        key: Vec<u8>,
+        exists_in: &'static str,
+        not_in: &'static str,
+    }
+
+    impl InconsistentDbs {
+        pub fn new<'a, KC, DC0, DC1>(
+            key: &'a KC::EItem,
+            exists_in: &super::RoDatabase<KC, DC0>,
+            not_in: &super::RoDatabase<KC, DC1>,
+        ) -> Self
+        where
+            KC: heed::BytesEncode<'a>,
+        {
+            let key_bytes =
+                // Safe to unwrap as we know that `key` encodes correctly,
+                // since it is in `db0`
+                <KC as heed::BytesEncode>::bytes_encode(key).unwrap();
+            Self {
+                key: key_bytes.to_vec(),
+                exists_in: exists_in.name(),
+                not_in: not_in.name(),
+            }
+        }
+    }
 }
 
-/// Wrapper for heed's `Database`
+/// Read-only wrapper for heed's `Database`
 #[derive(Educe)]
 #[educe(Clone, Debug)]
-pub struct Database<KC, DC> {
+pub struct RoDatabase<KC, DC> {
     inner: heed::Database<KC, DC>,
     name: &'static str,
     path: Arc<PathBuf>,
 }
 
-impl<KC, DC> Database<KC, DC> {
-    pub fn delete<'a>(
+impl<KC, DC> RoDatabase<KC, DC> {
+    /// Check if the provided key exists in the db.
+    /// The stored value is not decoded, if it exists.
+    pub fn contains_key<'a, 'txn>(
         &self,
-        rwtxn: &mut RwTxn<'_>,
+        rotxn: &'txn RoTxn<'_>,
         key: &'a KC::EItem,
-    ) -> Result<bool, db_error::Delete>
+    ) -> Result<bool, db_error::TryGet>
     where
         KC: BytesEncode<'a>,
+        LazyDecode<DC>: BytesDecode<'txn>,
     {
-        self.inner.delete(rwtxn, key).map_err(|err| {
-            let key_bytes =
-                <KC as BytesEncode>::bytes_encode(key).map(|key_bytes| key_bytes.to_vec());
-            db_error::Delete {
-                db_name: self.name,
-                db_path: (*self.path).clone(),
-                key_bytes,
-                source: err,
+        match self.inner.lazily_decode_data().get(rotxn, key) {
+            Ok(lazy_value) => Ok(lazy_value.is_some()),
+            Err(err) => {
+                let key_bytes =
+                    <KC as BytesEncode>::bytes_encode(key).map(|key_bytes| key_bytes.to_vec());
+                Err(db_error::TryGet {
+                    db_name: self.name,
+                    db_path: (*self.path).clone(),
+                    key_bytes,
+                    source: err,
+                })
             }
-        })
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -279,6 +319,15 @@ impl<KC, DC> Database<KC, DC> {
         }
     }
 
+    pub fn lazy_decode(&self) -> RoDatabase<KC, LazyDecode<DC>> {
+        let inner = self.inner.lazily_decode_data();
+        RoDatabase {
+            inner,
+            name: self.name(),
+            path: self.path.clone(),
+        }
+    }
+
     pub fn len(&self, rotxn: &RoTxn<'_>) -> Result<u64, db_error::Len> {
         self.inner.len(rotxn).map_err(|err| db_error::Len {
             db_name: self.name,
@@ -289,31 +338,6 @@ impl<KC, DC> Database<KC, DC> {
 
     pub fn name(&self) -> &'static str {
         self.name
-    }
-
-    pub fn put<'a>(
-        &self,
-        rwtxn: &mut RwTxn<'_>,
-        key: &'a KC::EItem,
-        data: &'a DC::EItem,
-    ) -> Result<(), db_error::Put>
-    where
-        KC: BytesEncode<'a>,
-        DC: BytesEncode<'a>,
-    {
-        self.inner.put(rwtxn, key, data).map_err(|err| {
-            let key_bytes =
-                <KC as BytesEncode>::bytes_encode(key).map(|key_bytes| key_bytes.to_vec());
-            let value_bytes =
-                <DC as BytesEncode>::bytes_encode(data).map(|value_bytes| value_bytes.to_vec());
-            db_error::Put {
-                db_name: self.name,
-                db_path: (*self.path).clone(),
-                key_bytes,
-                value_bytes,
-                source: err,
-            }
-        })
     }
 
     pub fn try_get<'a, 'txn>(
@@ -357,6 +381,74 @@ impl<KC, DC> Database<KC, DC> {
                 key_bytes,
             }
         })
+    }
+}
+
+/// Wrapper for heed's `Database`
+#[derive(Educe)]
+#[educe(Clone, Debug)]
+pub struct Database<KC, DC> {
+    inner: RoDatabase<KC, DC>,
+}
+
+impl<KC, DC> Database<KC, DC> {
+    pub fn delete<'a>(
+        &self,
+        rwtxn: &mut RwTxn<'_>,
+        key: &'a KC::EItem,
+    ) -> Result<bool, db_error::Delete>
+    where
+        KC: BytesEncode<'a>,
+    {
+        self.inner.inner.delete(rwtxn, key).map_err(|err| {
+            let key_bytes =
+                <KC as BytesEncode>::bytes_encode(key).map(|key_bytes| key_bytes.to_vec());
+            db_error::Delete {
+                db_name: self.inner.name,
+                db_path: (*self.inner.path).clone(),
+                key_bytes,
+                source: err,
+            }
+        })
+    }
+
+    pub fn lazy_decode(&self) -> Database<KC, LazyDecode<DC>> {
+        Database {
+            inner: self.inner.lazy_decode(),
+        }
+    }
+
+    pub fn put<'a>(
+        &self,
+        rwtxn: &mut RwTxn<'_>,
+        key: &'a KC::EItem,
+        data: &'a DC::EItem,
+    ) -> Result<(), db_error::Put>
+    where
+        KC: BytesEncode<'a>,
+        DC: BytesEncode<'a>,
+    {
+        self.inner.inner.put(rwtxn, key, data).map_err(|err| {
+            let key_bytes =
+                <KC as BytesEncode>::bytes_encode(key).map(|key_bytes| key_bytes.to_vec());
+            let value_bytes =
+                <DC as BytesEncode>::bytes_encode(data).map(|value_bytes| value_bytes.to_vec());
+            db_error::Put {
+                db_name: self.inner.name,
+                db_path: (*self.inner.path).clone(),
+                key_bytes,
+                value_bytes,
+                source: err,
+            }
+        })
+    }
+}
+
+impl<KC, DC> Deref for Database<KC, DC> {
+    type Target = RoDatabase<KC, DC>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -426,9 +518,11 @@ impl Env {
                 source: err,
             })?;
         Ok(Database {
-            inner,
-            name,
-            path: self.path.clone(),
+            inner: RoDatabase {
+                inner,
+                name,
+                path: self.path.clone(),
+            },
         })
     }
 

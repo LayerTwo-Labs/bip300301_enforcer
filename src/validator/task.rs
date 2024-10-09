@@ -1,6 +1,10 @@
-use std::{collections::HashSet, str::FromStr, time::Duration};
+use std::collections::HashSet;
 
 use async_broadcast::{Sender, TrySendError};
+use bip300301::{
+    client::{GetBlockClient, U8Witness},
+    jsonrpsee, MainClient,
+};
 use bip300301_messages::{
     bitcoin::{
         self, hashes::Hash, opcodes::all::OP_RETURN, Amount, Block, BlockHash, OutPoint,
@@ -9,26 +13,26 @@ use bip300301_messages::{
     m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
     CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
 };
+use bitcoin::Work;
 use either::Either;
 use fallible_iterator::FallibleIterator;
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::{TryFutureExt as _, TryStreamExt as _};
 use hashlink::{LinkedHashMap, LinkedHashSet};
 use heed::RoTxn;
 use thiserror::Error;
-use tokio::time::{interval, Instant};
-use tokio_stream::wrappers::IntervalStream;
-use ureq_jsonrpc::json;
 
 use crate::{
-    rpc_client::RpcClient,
     types::{
         BlockInfo, BmmCommitments, Ctip, Deposit, Event, Hash256, HeaderInfo, PendingM6id,
         Sidechain, SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
         WithdrawalBundleEventKind,
     },
+    zmq::SequenceMessage,
 };
 
-use super::dbs::{db_error, CommitWriteTxnError, Dbs, RwTxn, UnitKey, WriteTxnError};
+use super::dbs::{
+    self, db_error, CommitWriteTxnError, Dbs, ReadTxnError, RwTxn, UnitKey, WriteTxnError,
+};
 
 const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
 const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
@@ -129,13 +133,19 @@ enum HandleM8Error {
 #[derive(Debug, Error)]
 enum ConnectBlockError {
     #[error(transparent)]
+    PutBlockInfo(#[from] dbs::block_hash_dbs_error::PutBlockInfo),
+    #[error(transparent)]
     DbDelete(#[from] db_error::Delete),
     #[error(transparent)]
     DbFirst(#[from] db_error::First),
     #[error(transparent)]
+    DbGet(#[from] db_error::Get),
+    #[error(transparent)]
     DbLen(#[from] db_error::Len),
     #[error(transparent)]
     DbPut(#[from] db_error::Put),
+    #[error(transparent)]
+    DbTryGet(#[from] db_error::TryGet),
     #[error("Error handling failed M6IDs")]
     FailedM6Ids(#[from] HandleFailedM6IdsError),
     #[error("Error handling failed sidechain proposals")]
@@ -163,31 +173,24 @@ enum DisconnectBlockError {}
 enum TxValidationError {}
 
 #[derive(Debug, Error)]
-enum InitialSyncError {
+enum SyncError {
     #[error(transparent)]
     CommitWriteTxn(#[from] CommitWriteTxnError),
     #[error("Failed to connect block")]
     ConnectBlock(#[from] ConnectBlockError),
     #[error(transparent)]
+    DbGet(#[from] db_error::Get),
+    #[error(transparent)]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
     DbTryGet(#[from] db_error::TryGet),
-    #[error("Failed to decode block hash hex: `{block_hash_hex}`")]
-    DecodeBlockHashHex {
-        block_hash_hex: String,
-        source: <BlockHash as FromStr>::Err,
-    },
-    #[error("Failed to get block `{block_hash}`")]
-    GetBlock { block_hash: BlockHash },
-    #[error("Failed to get block count")]
-    GetBlockCount,
-    #[error("Failed to get block hash for height `{height}`")]
-    GetBlockHash { height: u32 },
-    #[error("RPC error: `{method}`")]
-    Rpc {
+    #[error("JSON RPC error (`{method}`)")]
+    JsonRpc {
         method: String,
-        source: Box<ureq_jsonrpc::Error>,
+        source: jsonrpsee::core::ClientError,
     },
+    #[error(transparent)]
+    ReadTxn(#[from] ReadTxnError),
     #[error(transparent)]
     WriteTxn(#[from] WriteTxnError),
 }
@@ -251,7 +254,8 @@ fn handle_m2_ack_sidechain(
     let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
 
     let sidechain_slot_is_used = dbs
-        .sidechain_number_to_sidechain
+        .sidechain_numbers
+        .sidechain
         .try_get(rwtxn, &sidechain_number)?
         .is_some();
 
@@ -278,7 +282,8 @@ fn handle_m2_ack_sidechain(
             activation_height: height,
             vote_count: sidechain_proposal.vote_count,
         };
-        dbs.sidechain_number_to_sidechain
+        dbs.sidechain_numbers
+            .sidechain
             .put(rwtxn, &sidechain_number, &sidechain)?;
         dbs.data_hash_to_sidechain_proposal
             .delete(rwtxn, &data_hash)?;
@@ -299,7 +304,8 @@ fn handle_failed_sidechain_proposals(
         .filter_map(|(data_hash, sidechain_proposal)| {
             let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
             let sidechain_slot_is_used = dbs
-                .sidechain_number_to_sidechain
+                .sidechain_numbers
+                .sidechain
                 .try_get(rwtxn, &sidechain_proposal.sidechain_number)?
                 .is_some();
             // FIXME: Do we need to check that the vote_count is below the threshold, or is it
@@ -329,14 +335,16 @@ fn handle_m3_propose_bundle(
     m6id: [u8; 32],
 ) -> Result<(), HandleM3ProposeBundleError> {
     if dbs
-        .sidechain_number_to_sidechain
+        .sidechain_numbers
+        .sidechain
         .try_get(rwtxn, &sidechain_number)?
         .is_none()
     {
         return Err(HandleM3ProposeBundleError::InactiveSidechain { sidechain_number });
     }
     let pending_m6ids = dbs
-        .sidechain_number_to_pending_m6ids
+        .sidechain_numbers
+        .pending_m6ids
         .try_get(rwtxn, &sidechain_number)?;
     let mut pending_m6ids = pending_m6ids.unwrap_or_default();
     let pending_m6id = PendingM6id {
@@ -345,7 +353,8 @@ fn handle_m3_propose_bundle(
     };
     pending_m6ids.push(pending_m6id);
     let () = dbs
-        .sidechain_number_to_pending_m6ids
+        .sidechain_numbers
+        .pending_m6ids
         .put(rwtxn, &sidechain_number, &pending_m6ids)?;
     Ok(())
 }
@@ -362,7 +371,8 @@ fn handle_m4_votes(
             continue;
         }
         let pending_m6ids = dbs
-            .sidechain_number_to_pending_m6ids
+            .sidechain_numbers
+            .pending_m6ids
             .try_get(rwtxn, &sidechain_number)?;
         let Some(mut pending_m6ids) = pending_m6ids else {
             continue;
@@ -377,7 +387,8 @@ fn handle_m4_votes(
             pending_m6id.vote_count += 1;
         }
         let () =
-            dbs.sidechain_number_to_pending_m6ids
+            dbs.sidechain_numbers
+                .pending_m6ids
                 .put(rwtxn, &sidechain_number, &pending_m6ids)?;
     }
     Ok(())
@@ -413,7 +424,8 @@ fn handle_failed_m6ids(
     let mut failed_m6ids = LinkedHashSet::new();
     let mut updated_slots = LinkedHashMap::new();
     let () = dbs
-        .sidechain_number_to_pending_m6ids
+        .sidechain_numbers
+        .pending_m6ids
         .iter(rwtxn)
         .map_err(db_error::Iter::from)?
         .map_err(db_error::Iter::from)
@@ -434,7 +446,8 @@ fn handle_failed_m6ids(
         })?;
     for (sidechain_number, pending_m6ids) in updated_slots {
         let () =
-            dbs.sidechain_number_to_pending_m6ids
+            dbs.sidechain_numbers
+                .pending_m6ids
                 .put(rwtxn, &sidechain_number, &pending_m6ids)?;
     }
     Ok(failed_m6ids)
@@ -478,7 +491,8 @@ fn handle_m5_m6(
     };
     let old_total_value = {
         if let Some(old_ctip) = dbs
-            .sidechain_number_to_ctip
+            .sidechain_numbers
+            .ctip
             .try_get(rwtxn, &sidechain_number)?
         {
             let old_ctip_found = transaction
@@ -507,7 +521,8 @@ fn handle_m5_m6(
         let mut m6_valid = false;
         let m6id = m6_to_id(transaction, old_total_value.to_sat());
         if let Some(pending_m6ids) = dbs
-            .sidechain_number_to_pending_m6ids
+            .sidechain_numbers
+            .pending_m6ids
             .try_get(rwtxn, &sidechain_number)?
         {
             for pending_m6id in &pending_m6ids {
@@ -522,7 +537,7 @@ fn handle_m5_m6(
                     .into_iter()
                     .filter(|pending_m6id| pending_m6id.m6id != m6id)
                     .collect();
-                dbs.sidechain_number_to_pending_m6ids.put(
+                dbs.sidechain_numbers.pending_m6ids.put(
                     rwtxn,
                     &sidechain_number,
                     &pending_m6ids,
@@ -536,7 +551,8 @@ fn handle_m5_m6(
         }
     }
     let mut treasury_utxo_count = dbs
-        .sidechain_number_to_treasury_utxo_count
+        .sidechain_numbers
+        .treasury_utxo_count
         .try_get(rwtxn, &sidechain_number)?
         .unwrap_or(0);
     // Sequence numbers begin at 0, so the total number of treasury utxos in the database
@@ -548,7 +564,7 @@ fn handle_m5_m6(
         &treasury_utxo,
     )?;
     treasury_utxo_count += 1;
-    dbs.sidechain_number_to_treasury_utxo_count.put(
+    dbs.sidechain_numbers.treasury_utxo_count.put(
         rwtxn,
         &sidechain_number,
         &treasury_utxo_count,
@@ -557,7 +573,8 @@ fn handle_m5_m6(
         outpoint: new_ctip,
         value: new_total_value,
     };
-    dbs.sidechain_number_to_ctip
+    dbs.sidechain_numbers
+        .ctip
         .put(rwtxn, &sidechain_number, &new_ctip)?;
     match address {
         Some(address) if new_total_value >= old_total_value && res.is_none() => {
@@ -672,27 +689,6 @@ fn connect_block(
         }
     }
 
-    {
-        let accepted_bmm_block_hashes: Vec<_> = accepted_bmm_requests
-            .iter()
-            .map(|(_sidechain_number, hash)| *hash)
-            .collect();
-        dbs.block_height_to_accepted_bmm_block_hashes.put(
-            rwtxn,
-            &height,
-            &accepted_bmm_block_hashes,
-        )?;
-        const MAX_BMM_BLOCK_DEPTH: u64 = 6 * 24 * 7; // 1008 blocks = ~1 week of time
-        if dbs.block_height_to_accepted_bmm_block_hashes.len(rwtxn)? > MAX_BMM_BLOCK_DEPTH {
-            let (block_height, _) = dbs
-                .block_height_to_accepted_bmm_block_hashes
-                .first(rwtxn)?
-                .unwrap();
-            dbs.block_height_to_accepted_bmm_block_hashes
-                .delete(rwtxn, &block_height)?;
-        }
-    }
-
     let () = handle_failed_sidechain_proposals(rwtxn, dbs, height)?;
     let failed_m6ids = handle_failed_m6ids(rwtxn, dbs)?;
 
@@ -726,32 +722,37 @@ fn connect_block(
             &prev_mainchain_block_hash,
         )?;
     }
+    let block_info = BlockInfo {
+        deposits,
+        withdrawal_bundle_events,
+        bmm_commitments: accepted_bmm_requests.into_iter().collect(),
+    };
     let () = dbs
-        .block_hash_to_bmm_commitments
-        .put(rwtxn, &block_hash, &accepted_bmm_requests)?;
-    let () = dbs
-        .block_hash_to_deposits
-        .put(rwtxn, &block_hash, &deposits)?;
-    let () = dbs
-        .block_hash_to_header
-        .put(rwtxn, &block_hash, &block.header)?;
-    let () = dbs.block_hash_to_height.put(rwtxn, &block_hash, &height)?;
-    let () = dbs.block_hash_to_withdrawal_bundle_events.put(
-        rwtxn,
-        &block_hash,
-        &withdrawal_bundle_events,
-    )?;
+        .block_hashes
+        .put_block_info(rwtxn, &block_hash, &block_info)
+        .map_err(ConnectBlockError::PutBlockInfo)?;
+    // TODO: invalidate block
+    let current_tip_cumulative_work: Option<Work> = 'work: {
+        let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? else {
+            break 'work None;
+        };
+        Some(
+            dbs.block_hashes
+                .cumulative_work()
+                .get(rwtxn, &current_tip)?,
+        )
+    };
+    let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
+    if Some(cumulative_work) > current_tip_cumulative_work {
+        dbs.current_chain_tip.put(rwtxn, &UnitKey, &block_hash)?;
+        tracing::debug!("updated current chain tip to {block_hash}");
+    }
     let event = {
         let header_info = HeaderInfo {
             block_hash,
             prev_block_hash: prev_mainchain_block_hash,
             height,
             work: block.header.work().to_le_bytes(),
-        };
-        let block_info = BlockInfo {
-            deposits,
-            withdrawal_bundle_events,
-            bmm_commitments: accepted_bmm_requests.into_iter().collect(),
         };
         Event::ConnectBlock {
             header_info,
@@ -765,11 +766,11 @@ fn connect_block(
 // TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
 // operations.
 #[allow(unreachable_code, unused_variables)]
-fn _disconnect_block(
+fn disconnect_block(
     _rwtxn: &mut RwTxn,
     _dbs: &Dbs,
     event_tx: &Sender<Event>,
-    block_hash: Hash256,
+    block_hash: BlockHash,
 ) -> Result<(), DisconnectBlockError> {
     // FIXME: implement
     todo!();
@@ -786,151 +787,128 @@ fn _is_transaction_valid(
     todo!();
 }
 
-fn initial_sync(
+async fn sync_headers(
     dbs: &Dbs,
-    event_tx: &Sender<Event>,
-    main_client: &RpcClient,
-) -> Result<(), InitialSyncError> {
-    let mut rwtxn = dbs.write_txn()?;
-    let mut height = dbs
-        .current_block_height
-        .try_get(&rwtxn, &UnitKey)?
-        .unwrap_or(0);
-    let main_block_height: u32 = main_client
-        .send_request("getblockcount", &[])
-        .map_err(|err| InitialSyncError::Rpc {
-            method: "getblockcount".to_owned(),
-            source: Box::new(err),
-        })?
-        .ok_or(InitialSyncError::GetBlockCount)?;
-    tracing::debug!("mainchain block height: {main_block_height}");
-
-    if height < main_block_height {
-        tracing::debug!("syncing to block height: {height} -> {main_block_height}");
-    } else {
-        tracing::debug!("already synced to block height {height}");
+    main_client: &jsonrpsee::http_client::HttpClient,
+    main_tip: BlockHash,
+) -> Result<(), SyncError> {
+    let mut block_hash = main_tip;
+    while let Some(latest_missing_header) = tokio::task::block_in_place(|| {
+        let rotxn = dbs.read_txn()?;
+        dbs.block_hashes
+            .latest_missing_ancestor_header(&rotxn, block_hash)
+            .map_err(SyncError::DbTryGet)
+    })? {
+        tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
+        let header = main_client
+            .getblockheader(latest_missing_header)
+            .map_err(|err| SyncError::JsonRpc {
+                method: "getblockheader".to_owned(),
+                source: err,
+            })
+            .await?;
+        let height = header.height;
+        let mut rwtxn = dbs.write_txn()?;
+        dbs.block_hashes
+            .put_header(&mut rwtxn, &header.into(), height)?;
+        let () = rwtxn.commit()?;
+        block_hash = latest_missing_header;
     }
-
-    while height < main_block_height {
-        let block_hash_hex: String = main_client
-            .send_request("getblockhash", &[json!(height)])
-            .map_err(|err| InitialSyncError::Rpc {
-                method: "getblockhash".to_owned(),
-                source: Box::new(err),
-            })?
-            .ok_or(InitialSyncError::GetBlockHash { height })?;
-        tracing::trace!("fetched block hash at height {height}: {block_hash_hex}");
-        let block_hash = match BlockHash::from_str(&block_hash_hex) {
-            Ok(block_hash) => block_hash,
-            Err(err) => {
-                return Err(InitialSyncError::DecodeBlockHashHex {
-                    block_hash_hex,
-                    source: err,
-                })
-            }
-        };
-        let block: String = main_client
-            .send_request("getblock", &[json!(block_hash_hex), json!(0)])
-            .map_err(|err| InitialSyncError::Rpc {
-                method: "getblock".to_owned(),
-                source: Box::new(err),
-            })?
-            .ok_or_else(|| InitialSyncError::GetBlock { block_hash })?;
-
-        let block = bitcoin::consensus::encode::deserialize_hex(&block).unwrap();
-        match connect_block(&mut rwtxn, dbs, event_tx, &block, height) {
-            Ok(_) => tracing::trace!("connected block at height {height}: {block_hash_hex}"),
-            Err(err) => {
-                /*
-                main_client
-                    .send_request("invalidateblock", &[json!(block_hash)])
-                    .into_diagnostic()?
-                    .ok_or(miette!("failed to invalidate block"))?;
-                */
-                return Err(InitialSyncError::ConnectBlock(err));
-            }
-        }
-        height += 1;
-        dbs.current_chain_tip
-            .put(&mut rwtxn, &UnitKey, &block_hash)?;
-
-        tracing::trace!("updated current chain tip to {block_hash}");
-    }
-
-    dbs.current_block_height
-        .put(&mut rwtxn, &UnitKey, &height)?;
-    let () = rwtxn.commit()?;
     Ok(())
 }
 
-// FIXME: Rewrite all of this to be more readable.
-/// Single iteration of the task loop
-fn task_loop_once(
+// MUST be called after `initial_sync_headers`.
+async fn sync_blocks(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-    main_client: &RpcClient,
-) -> anyhow::Result<()> {
-    let mut txn = dbs.write_txn()?;
-    let mut height = dbs
-        .current_block_height
-        .try_get(&txn, &UnitKey)?
-        .unwrap_or(0);
-    let main_block_height: u32 = main_client
-        .send_request("getblockcount", &[])?
-        .ok_or(anyhow::anyhow!("failed to get block count"))?;
-    if main_block_height == height {
+    main_client: &jsonrpsee::http_client::HttpClient,
+    main_tip: BlockHash,
+) -> Result<(), SyncError> {
+    let missing_blocks: Vec<BlockHash> = tokio::task::block_in_place(|| {
+        let rotxn = dbs.read_txn()?;
+        dbs.block_hashes
+            .ancestor_headers(&rotxn, main_tip)
+            .map(|(block_hash, _header)| Ok(block_hash))
+            .take_while(|block_hash| Ok(!dbs.block_hashes.contains_block(&rotxn, block_hash)?))
+            .collect()
+            .map_err(SyncError::from)
+    })?;
+    if missing_blocks.is_empty() {
         return Ok(());
     }
-    tracing::debug!("Block height: {main_block_height}");
-
-    while height < main_block_height {
-        let block_hash_hex: String = main_client
-            .send_request("getblockhash", &[json!(height)])?
-            .ok_or(anyhow::anyhow!("failed to get block hash"))?;
-        let prev_blockhash = BlockHash::from_str(&block_hash_hex)?;
-        // FIXME: This looks sus
-        tracing::debug!("Mainchain tip: {prev_blockhash}");
-
-        let block: String = main_client
-            .send_request("getblock", &[json!(block_hash_hex), json!(0)])?
-            .ok_or(anyhow::anyhow!("failed to get block"))?;
-        let block = bitcoin::consensus::encode::deserialize_hex(&block).unwrap();
-
-        if connect_block(&mut txn, dbs, event_tx, &block, height).is_err() {
-            /*
-            main_client
-                .send_request("invalidateblock", &[json!(block_hash)])
-                .into_diagnostic()?
-                .ok_or(miette!("failed to invalidate block"))?;
-            */
-        }
-
-        // check for new block
-        // validate block
-        // if invalid invalidate
-        // if valid connect
-        // wait 1 second
-        height += 1;
-        let block_hash = prev_blockhash;
-        dbs.current_chain_tip.put(&mut txn, &UnitKey, &block_hash)?;
+    for missing_block in missing_blocks.into_iter().rev() {
+        tracing::debug!("Syncing block `{missing_block}` -> `{main_tip}`");
+        let block = main_client
+            .get_block(missing_block, U8Witness::<0>)
+            .map_err(|err| SyncError::JsonRpc {
+                method: "getblock".to_owned(),
+                source: err,
+            })
+            .await?
+            .0;
+        let mut rwtxn = dbs.write_txn()?;
+        let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
+        let () = connect_block(&mut rwtxn, dbs, event_tx, &block, height)?;
+        tracing::debug!("connected block at height {height}: {missing_block}");
+        let () = rwtxn.commit()?;
     }
-    dbs.current_block_height.put(&mut txn, &UnitKey, &height)?;
-    txn.commit()?;
+    Ok(())
+}
+
+async fn sync_to_tip(
+    dbs: &Dbs,
+    event_tx: &Sender<Event>,
+    main_client: &jsonrpsee::http_client::HttpClient,
+    main_tip: BlockHash,
+) -> Result<(), SyncError> {
+    let () = sync_headers(dbs, main_client, main_tip).await?;
+    let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
+    Ok(())
+}
+
+async fn initial_sync(
+    dbs: &Dbs,
+    event_tx: &Sender<Event>,
+    main_client: &jsonrpsee::http_client::HttpClient,
+) -> Result<(), SyncError> {
+    let main_tip: BlockHash = main_client
+        .getbestblockhash()
+        .map_err(|err| SyncError::JsonRpc {
+            method: "getbestblockhash".to_owned(),
+            source: err,
+        })
+        .await?;
+    tracing::debug!("mainchain tip: `{main_tip}`");
+    let () = sync_to_tip(dbs, event_tx, main_client, main_tip).await?;
     Ok(())
 }
 
 pub(super) async fn task(
-    main_client: &RpcClient,
+    main_client: &jsonrpsee::http_client::HttpClient,
     zmq_addr_sequence: &str,
     dbs: &Dbs,
     event_tx: &Sender<Event>,
 ) -> anyhow::Result<()> {
     // FIXME: use this instead of polling
-    let _zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence).await?;
-    let () = initial_sync(dbs, event_tx, main_client)?;
-    let interval = interval(Duration::from_secs(1));
-    IntervalStream::new(interval)
-        .map(Ok)
-        .try_for_each(move |_: Instant| async move { task_loop_once(dbs, event_tx, main_client) })
+    let zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence).await?;
+    let () = initial_sync(dbs, event_tx, main_client).await?;
+    zmq_sequence
+        .err_into()
+        .try_for_each(|msg| async move {
+            match msg {
+                SequenceMessage::BlockHashConnected(block_hash, _) => {
+                    let () = sync_to_tip(dbs, event_tx, main_client, block_hash).await?;
+                    Ok(())
+                }
+                SequenceMessage::BlockHashDisconnected(block_hash, _) => {
+                    let mut rwtxn = dbs.write_txn()?;
+                    let () = disconnect_block(&mut rwtxn, dbs, event_tx, block_hash)?;
+                    Ok(())
+                }
+                SequenceMessage::TxHashAdded { .. } | SequenceMessage::TxHashRemoved { .. } => {
+                    Ok(())
+                }
+            }
+        })
         .await
 }

@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+/// Encoded file descriptor set, for gRPC reflection
+pub static ENCODED_FILE_DESCRIPTOR_SET: &[u8] =
+    tonic::include_file_descriptor_set!("file_descriptor_set");
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`")]
@@ -464,7 +468,7 @@ pub mod validator {
                 }
                 Self::DisconnectBlock { block_hash } => {
                     let event = DisconnectBlock {
-                        block_hash: block_hash.to_vec(),
+                        block_hash: block_hash.to_byte_array().to_vec(),
                     };
                     subscribe_events_response::event::Event::DisconnectBlock(event)
                 }

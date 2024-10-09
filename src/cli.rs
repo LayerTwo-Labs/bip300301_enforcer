@@ -5,12 +5,13 @@ use std::{
 
 use clap::{Args, Parser};
 
+const DEFAULT_NODE_RPC_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 18443));
+
 #[derive(Clone, Args)]
 pub struct NodeRpcConfig {
-    #[arg(default_value = "localhost", long = "node-rpc-host")]
-    pub host: String,
-    #[arg(default_value = "18443", long = "node-rpc-port")]
-    pub port: u16,
+    #[arg(default_value_t = DEFAULT_NODE_RPC_ADDR, long = "node-rpc-addr")]
+    pub addr: SocketAddr,
     /// Path to Bitcoin Core cookie. Cannot be set together with user + password.
     #[arg(long = "node-rpc-cookie-path")]
     pub cookie_path: Option<String>,
@@ -20,8 +21,8 @@ pub struct NodeRpcConfig {
     pub user: Option<String>,
     /// RPC password for Bitcoin Core. Implies also setting user. Cannot
     /// be set together with cookie path.
-    #[arg(long = "node-rpc-password")]
-    pub password: Option<String>,
+    #[arg(long = "node-rpc-pass")]
+    pub pass: Option<String>,
 }
 
 #[derive(Clone, Args)]
