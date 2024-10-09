@@ -1,11 +1,14 @@
+use bip300301::{
+    client::{BlockchainInfo, GetRawTransactionClient, GetRawTransactionVerbose},
+    jsonrpsee::http_client::HttpClient,
+    MainClient,
+};
 use std::{
     collections::{BTreeMap, HashMap},
     io::Cursor,
     path::Path,
-    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
-use ureq_jsonrpc::{json, Client};
 
 use bdk::{
     bitcoin::{
@@ -39,7 +42,7 @@ use bitcoin::{
         OP_0, OP_TRUE,
     },
     transaction::Version as TxVersion,
-    Amount, Block, BlockHash, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Amount, Block, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use cusf_sidechain_types::{Hashable, HASH_LENGTH};
 use miette::{miette, IntoDiagnostic, Result};
@@ -49,13 +52,12 @@ use tonic::transport::Channel;
 use crate::{
     cli::WalletConfig,
     proto::sidechain::Client as SidechainClient,
-    rpc_client::RpcClient,
     types::{Deposit, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 
 pub struct Wallet {
-    main_client: Client,
+    main_client: HttpClient,
     validator: Validator,
     sidechain_clients: HashMap<SidechainNumber, SidechainClient<Channel>>,
     bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
@@ -74,7 +76,7 @@ impl Wallet {
     pub async fn new<P: AsRef<Path>>(
         data_dir: P,
         config: &WalletConfig,
-        main_client: RpcClient,
+        main_client: HttpClient,
         validator: Validator,
     ) -> Result<Self> {
         // Generate fresh mnemonic
@@ -228,15 +230,6 @@ impl Wallet {
         Ok(wallet)
     }
 
-    pub fn get_block_height(&self) -> Result<u32> {
-        let block_height: u32 = self
-            .main_client
-            .send_request("getblockcount", &[])
-            .into_diagnostic()?
-            .ok_or(miette!("failed to get block count"))?;
-        Ok(block_height)
-    }
-
     pub async fn generate_block(
         &self,
         coinbase_outputs: &[TxOut],
@@ -247,15 +240,19 @@ impl Wallet {
             .get_address(AddressIndex::New)
             .into_diagnostic()?;
         let script_pubkey = addr.script_pubkey();
-        let block_height = self.get_block_height()?;
 
-        tracing::trace!("Block height: {block_height}");
-        let block_hash: String = self
+        let BlockchainInfo {
+            blocks: block_height,
+            best_blockhash,
+            ..
+        } = self
             .main_client
-            .send_request("getblockhash", &[json!(block_height)])
-            .into_diagnostic()?
-            .ok_or(miette!("failed to get block hash"))?;
-        let prev_blockhash = BlockHash::from_str(&block_hash).into_diagnostic()?;
+            .get_blockchain_info()
+            .await
+            .into_diagnostic()?;
+        tracing::debug!("Block height: {block_height}");
+        tracing::debug!("Best block: {best_blockhash}");
+        let prev_blockhash = best_blockhash;
 
         let start = SystemTime::now();
         let time = start
@@ -353,9 +350,10 @@ impl Wallet {
         block.consensus_encode(&mut block_bytes).into_diagnostic()?;
         let block_hex = hex::encode(block_bytes);
 
-        let _: Option<()> = self
+        let () = self
             .main_client
-            .send_request("submitblock", &[json!(block_hex)])
+            .submit_block(block_hex)
+            .await
             .into_diagnostic()?;
 
         // FIXME: implement
@@ -645,9 +643,9 @@ impl Wallet {
         if let Some((ctip_outpoint, _, _)) = ctip {
             let transaction_hex: String = self
                 .main_client
-                .send_request("getrawtransaction", &[json!(ctip_outpoint.txid)])
-                .into_diagnostic()?
-                .unwrap();
+                .get_raw_transaction(ctip_outpoint.txid, GetRawTransactionVerbose::<false>, None)
+                .await
+                .into_diagnostic()?;
             let ctip_outpoint = bdk::bitcoin::OutPoint {
                 txid: bdk::bitcoin::Txid::from_byte_array(ctip_outpoint.txid.to_byte_array()),
                 vout: ctip_outpoint.vout,

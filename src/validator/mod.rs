@@ -1,19 +1,17 @@
 use std::{future::Future, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver, Receiver};
+use bip300301::{jsonrpsee, MainClient};
 use bip300301_messages::bitcoin::{self, BlockHash};
 use fallible_iterator::FallibleIterator;
-use futures::FutureExt;
+use futures::{FutureExt as _, TryFutureExt as _};
 use miette::IntoDiagnostic;
 use thiserror::Error;
 use tokio::task::{spawn, JoinHandle};
 
-use crate::{
-    rpc_client::{self, RpcClient},
-    types::{
-        BlockInfo, BmmCommitments, Ctip, Event, Hash256, HeaderInfo, Sidechain, SidechainNumber,
-        SidechainProposal, TwoWayPegData,
-    },
+use crate::types::{
+    BlockInfo, BmmCommitments, Ctip, Event, Hash256, HeaderInfo, Sidechain, SidechainNumber,
+    SidechainProposal, TwoWayPegData,
 };
 
 mod dbs;
@@ -25,8 +23,11 @@ use dbs::{CreateDbsError, Dbs};
 pub enum InitError {
     #[error(transparent)]
     CreateDbs(#[from] CreateDbsError),
-    #[error(transparent)]
-    GetBlockchainInfo(#[from] rpc_client::GetBlockchainInfoError),
+    #[error("JSON RPC error (`{method}`)")]
+    JsonRpc {
+        method: String,
+        source: jsonrpsee::core::ClientError,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -34,7 +35,7 @@ pub enum GetBlockInfoError {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
-    GetBlockInfo(#[from] dbs::GetBlockInfoError),
+    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
 }
 
 #[derive(Debug, Error)]
@@ -42,15 +43,15 @@ pub enum GetHeaderInfoError {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
-    GetHeaderInfo(#[from] dbs::GetHeaderInfoError),
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
 }
 
 #[derive(Debug, Error)]
-pub enum GetTwoWayPegDataError {
+pub enum GetTwoWayPegDataRangeError {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
-    GetTwoWayPegData(#[from] dbs::GetTwoWayPegDataError),
+    GetTwoWayPegDataRange(#[from] dbs::block_hash_dbs_error::GetTwoWayPegDataRange),
 }
 
 #[derive(Debug, Error)]
@@ -70,8 +71,8 @@ pub struct Validator {
 }
 
 impl Validator {
-    pub fn new<F, Fut>(
-        mainchain_client: RpcClient,
+    pub async fn new<F, Fut>(
+        mainchain_client: jsonrpsee::http_client::HttpClient,
         zmq_addr_sequence: String,
         data_dir: &Path,
         err_handler: F,
@@ -84,7 +85,13 @@ impl Validator {
         let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
-        let blockchain_info = rpc_client::get_blockchain_info(&mainchain_client)?;
+        let blockchain_info = mainchain_client
+            .get_blockchain_info()
+            .map_err(|err| InitError::JsonRpc {
+                method: "getblockchaininfo".to_owned(),
+                source: err,
+            })
+            .await?;
         let dbs = Dbs::new(data_dir, blockchain_info.chain)?;
         let task = spawn({
             let dbs = dbs.clone();
@@ -132,7 +139,8 @@ impl Validator {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let res = self
             .dbs
-            .sidechain_number_to_sidechain
+            .sidechain_numbers
+            .sidechain
             .iter(&rotxn)
             .into_diagnostic()?
             .map(|(_sidechain_number, sidechain)| Ok(sidechain))
@@ -148,7 +156,8 @@ impl Validator {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let treasury_utxo_count = self
             .dbs
-            .sidechain_number_to_treasury_utxo_count
+            .sidechain_numbers
+            .treasury_utxo_count
             .try_get(&rotxn, &sidechain_number)
             .into_diagnostic()?;
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
@@ -166,7 +175,8 @@ impl Validator {
         let txn = self.dbs.read_txn().into_diagnostic()?;
         let ctip = self
             .dbs
-            .sidechain_number_to_ctip
+            .sidechain_numbers
+            .ctip
             .try_get(&txn, &sidechain_number)
             .into_diagnostic()?;
         Ok(ctip)
@@ -174,7 +184,7 @@ impl Validator {
 
     pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, GetBlockInfoError> {
         let rotxn = self.dbs.read_txn()?;
-        let res = self.dbs.get_block_info(&rotxn, block_hash)?;
+        let res = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
         Ok(res)
     }
 
@@ -183,7 +193,7 @@ impl Validator {
         block_hash: &BlockHash,
     ) -> Result<HeaderInfo, GetHeaderInfoError> {
         let rotxn = self.dbs.read_txn()?;
-        let res = self.dbs.get_header_info(&rotxn, block_hash)?;
+        let res = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
         Ok(res)
     }
 
@@ -199,11 +209,12 @@ impl Validator {
         &self,
         start_block: Option<BlockHash>,
         end_block: BlockHash,
-    ) -> Result<Vec<TwoWayPegData>, GetTwoWayPegDataError> {
+    ) -> Result<Vec<TwoWayPegData>, GetTwoWayPegDataRangeError> {
         let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .get_two_way_peg_data(&rotxn, start_block, end_block)?;
+        let res =
+            self.dbs
+                .block_hashes
+                .get_two_way_peg_data_range(&rotxn, start_block, end_block)?;
         Ok(res)
     }
 
@@ -214,7 +225,8 @@ impl Validator {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
-            .block_hash_to_bmm_commitments
+            .block_hashes
+            .bmm_commitments()
             .try_get(&rotxn, block_hash)?;
         Ok(res)
     }

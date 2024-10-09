@@ -36,7 +36,7 @@ $ cargo run -- --help
 $ cargo run -- \
   --node-rpc-port=38332 \
   --node-rpc-user=user \
-  --node-rpc-password=password \
+  --node-rpc-pass=password \
   --node-zmq-addr-sequence=tcp://0.0.0.0:29000
 
 # You should now be able to fetch data from the server!

@@ -1,14 +1,12 @@
+use std::{net::SocketAddr, path::Path, time::Duration};
+
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
 use miette::{miette, IntoDiagnostic, Result};
-use std::{net::SocketAddr, path::Path, time::Duration};
 use tokio::{spawn, task::JoinHandle, time::interval};
-use tonic::transport::Server;
+use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
-use tower_http::trace::DefaultOnFailure;
-use tower_http::trace::DefaultOnResponse;
-use tower_http::trace::TraceLayer;
-use tracing::Level;
+use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 mod cli;
@@ -20,16 +18,9 @@ mod validator;
 mod wallet;
 mod zmq;
 
-use proto::validator::{
-    validator_service_server::SERVICE_NAME as VALIDATOR_SERVICE_NAME,
-    Server as ValidatorServiceServer,
-};
+use proto::validator::Server as ValidatorServiceServer;
 use server::Validator;
 use wallet::Wallet;
-
-/// Encoded file descriptor set, for gRPC reflection
-pub static ENCODED_FILE_DESCRIPTOR_SET: &[u8] =
-    tonic::include_file_descriptor_set!("file_descriptor_set");
 
 // Configure logger.
 fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
@@ -50,9 +41,10 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
 }
 
 async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
+    let validator_service = ValidatorServiceServer::new(validator);
     let reflection_service = tonic_reflection::server::Builder::configure()
-        .with_service_name(VALIDATOR_SERVICE_NAME)
-        .register_encoded_file_descriptor_set(ENCODED_FILE_DESCRIPTOR_SET)
+        .with_service_name(ValidatorServiceServer::<Validator>::NAME)
+        .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET)
         .build_v1()
         .into_diagnostic()?;
 
@@ -63,15 +55,15 @@ async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
     let tracer = ServiceBuilder::new()
         .layer(
             TraceLayer::new_for_grpc()
-                .on_response(DefaultOnResponse::new().level(Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
         )
         .into_inner();
 
     Server::builder()
         .layer(tracer)
         .add_service(reflection_service)
-        .add_service(ValidatorServiceServer::new(validator))
+        .add_service(validator_service)
         .serve(addr)
         .map_err(|err| miette!("error in validator server: {err:#}"))
         .await
@@ -102,6 +94,7 @@ async fn main() -> Result<()> {
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     )
+    .await
     .into_diagnostic()?;
 
     let wallet: Option<Wallet> = if cli.enable_wallet {

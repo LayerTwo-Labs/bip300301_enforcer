@@ -1,4 +1,4 @@
-use bip300301_messages::bitcoin::{Amount, BlockHash, OutPoint, TxOut};
+use bitcoin::{Amount, BlockHash, OutPoint, TxOut};
 use hashlink::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +116,6 @@ pub enum Event {
         block_info: BlockInfo,
     },
     DisconnectBlock {
-        block_hash: Hash256,
+        block_hash: BlockHash,
     },
 }
