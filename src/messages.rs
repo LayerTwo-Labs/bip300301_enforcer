@@ -42,7 +42,7 @@ impl CoinbaseBuilder {
     pub fn ack_sidechain(mut self, sidechain_number: u8, data_hash: &[u8; 32]) -> Self {
         let message = CoinbaseMessage::M2AckSidechain {
             sidechain_number,
-            data_hash: data_hash.clone(),
+            data_hash: *data_hash,
         };
         self.messages.push(message);
         self
@@ -51,7 +51,7 @@ impl CoinbaseBuilder {
     pub fn propose_bundle(mut self, sidechain_number: u8, bundle_hash: &[u8; 32]) -> Self {
         let message = CoinbaseMessage::M3ProposeBundle {
             sidechain_number,
-            bundle_txid: bundle_hash.clone(),
+            bundle_txid: *bundle_hash,
         };
         self.messages.push(message);
         self
@@ -81,10 +81,10 @@ pub enum CoinbaseMessage {
     M4AckBundles(M4AckBundles),
 }
 
-const M1_PROPOSE_SIDECHAIN_TAG: &[u8] = &[0xD5, 0xE0, 0xC4, 0xAF];
-const M2_ACK_SIDECHAIN_TAG: &[u8] = &[0xD6, 0xE1, 0xC5, 0xDF];
-const M3_PROPOSE_BUNDLE_TAG: &[u8] = &[0xD4, 0x5A, 0xA9, 0x43];
-const M4_ACK_BUNDLES_TAG: &[u8] = &[0xD7, 0x7D, 0x17, 0x76];
+pub const M1_PROPOSE_SIDECHAIN_TAG: &[u8] = &[0xD5, 0xE0, 0xC4, 0xAF];
+pub const M2_ACK_SIDECHAIN_TAG: &[u8] = &[0xD6, 0xE1, 0xC5, 0xDF];
+pub const M3_PROPOSE_BUNDLE_TAG: &[u8] = &[0xD4, 0x5A, 0xA9, 0x43];
+pub const M4_ACK_BUNDLES_TAG: &[u8] = &[0xD7, 0x7D, 0x17, 0x76];
 
 pub const ABSTAIN_ONE_BYTE: u8 = 0xFF;
 pub const ABSTAIN_TWO_BYTES: u16 = 0xFFFF;
@@ -124,7 +124,7 @@ impl M4AckBundles {
     }
 }
 
-pub fn parse_coinbase_script<'a>(script: &'a Script) -> IResult<&'a [u8], CoinbaseMessage> {
+pub fn parse_coinbase_script(script: &Script) -> IResult<&[u8], CoinbaseMessage> {
     let script = script.as_bytes();
     let (input, _) = tag(&[OP_RETURN.to_u8()])(script)?;
     let (input, message_tag) = alt((
@@ -154,7 +154,7 @@ fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
         sidechain_number,
         data,
     };
-    return Ok((input, message));
+    Ok((input, message))
 }
 
 fn parse_m2_ack_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
@@ -166,7 +166,7 @@ fn parse_m2_ack_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
         sidechain_number,
         data_hash,
     };
-    return Ok((input, message));
+    Ok((input, message))
 }
 
 fn parse_m3_propose_bundle(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
@@ -178,7 +178,7 @@ fn parse_m3_propose_bundle(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
         sidechain_number,
         bundle_txid,
     };
-    return Ok((input, message));
+    Ok((input, message))
 }
 
 fn parse_m4_ack_bundles(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
@@ -199,23 +199,20 @@ fn parse_m4_ack_bundles(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
         return Ok((input, message));
     } else if m4_tag == TWO_BYTES_TAG {
         let (input, upvotes) = many0(take(2usize))(input)?;
-        let upvotes: Vec<u16> = upvotes
-            .into_iter()
-            .map(|upvote| LittleEndian::read_u16(upvote))
-            .collect();
+        let upvotes: Vec<u16> = upvotes.into_iter().map(LittleEndian::read_u16).collect();
         let message = CoinbaseMessage::M4AckBundles(M4AckBundles::TwoBytes { upvotes });
         return Ok((input, message));
     } else if m4_tag == LEADING_BY_50_TAG {
         let message = CoinbaseMessage::M4AckBundles(M4AckBundles::LeadingBy50);
         return Ok((input, message));
     }
-    return fail(input);
+    fail(input)
 }
 
-impl Into<ScriptBuf> for CoinbaseMessage {
-    fn into(self) -> ScriptBuf {
-        match self {
-            Self::M1ProposeSidechain {
+impl From<CoinbaseMessage> for ScriptBuf {
+    fn from(val: CoinbaseMessage) -> Self {
+        match val {
+            CoinbaseMessage::M1ProposeSidechain {
                 sidechain_number,
                 data,
             } => {
@@ -226,10 +223,10 @@ impl Into<ScriptBuf> for CoinbaseMessage {
                     &data,
                 ]
                 .concat();
-                let script_pubkey = ScriptBuf::from_bytes(message);
-                return script_pubkey;
+
+                ScriptBuf::from_bytes(message)
             }
-            Self::M2AckSidechain {
+            CoinbaseMessage::M2AckSidechain {
                 sidechain_number,
                 data_hash,
             } => {
@@ -240,10 +237,10 @@ impl Into<ScriptBuf> for CoinbaseMessage {
                     &data_hash,
                 ]
                 .concat();
-                let script_pubkey = ScriptBuf::from_bytes(message);
-                return script_pubkey;
+
+                ScriptBuf::from_bytes(message)
             }
-            Self::M3ProposeBundle {
+            CoinbaseMessage::M3ProposeBundle {
                 sidechain_number,
                 bundle_txid,
             } => {
@@ -254,10 +251,10 @@ impl Into<ScriptBuf> for CoinbaseMessage {
                     &bundle_txid,
                 ]
                 .concat();
-                let script_pubkey = ScriptBuf::from_bytes(message);
-                return script_pubkey;
+
+                ScriptBuf::from_bytes(message)
             }
-            Self::M4AckBundles(m4_ack_bundles) => {
+            CoinbaseMessage::M4AckBundles(m4_ack_bundles) => {
                 let upvotes = match &m4_ack_bundles {
                     M4AckBundles::OneByte { upvotes } => upvotes.clone(),
                     M4AckBundles::TwoBytes { upvotes } => upvotes
@@ -273,8 +270,8 @@ impl Into<ScriptBuf> for CoinbaseMessage {
                     &upvotes,
                 ]
                 .concat();
-                let script_pubkey = ScriptBuf::from_bytes(message);
-                return script_pubkey;
+
+                ScriptBuf::from_bytes(message)
             }
         }
     }
