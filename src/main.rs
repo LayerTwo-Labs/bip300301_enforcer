@@ -18,7 +18,7 @@ mod validator;
 mod wallet;
 mod zmq;
 
-use proto::validator::Server as ValidatorServiceServer;
+use proto::mainchain::Server as ValidatorServiceServer;
 use server::Validator;
 use wallet::Wallet;
 

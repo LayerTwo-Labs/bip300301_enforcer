@@ -84,15 +84,9 @@ impl Error {
     }
 }
 
-pub mod sidechain {
-    tonic::include_proto!("cusf.sidechain.v1");
-    pub use sidechain_service_client::SidechainServiceClient as Client;
-}
+pub mod mainchain {
+    tonic::include_proto!("cusf.mainchain.v1");
 
-pub mod validator {
-    tonic::include_proto!("cusf.validator.v1");
-
-    use bip300301_messages::bitcoin::hashes::Hash as _;
     use subscribe_events_response::event::{ConnectBlock, DisconnectBlock};
     #[allow(unused_imports)]
     pub use validator_service_server::{
@@ -100,6 +94,74 @@ pub mod validator {
     };
 
     use crate::types::SidechainNumber;
+
+    impl ConsensusHex {
+        pub fn decode<Message, T>(self, field_name: &str) -> Result<T, super::Error>
+        where
+            Message: prost::Name,
+            T: bitcoin::consensus::Decodable,
+        {
+            let Self { hex } = self;
+            let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            bitcoin::consensus::encode::deserialize_hex(&hex)
+                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+        }
+
+        /// Variant of [`Self::decode`] that returns a `tonic::Status` error
+        pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
+        where
+            Message: prost::Name,
+            T: bitcoin::consensus::Decodable,
+        {
+            self.decode::<Message, _>(field_name)
+                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+        }
+
+        pub fn encode<T>(value: &T) -> Self
+        where
+            T: bitcoin::consensus::Encodable,
+        {
+            let hex = bitcoin::consensus::encode::serialize_hex(value);
+            Self { hex: Some(hex) }
+        }
+    }
+
+    impl ReverseHex {
+        pub fn decode<Message, T>(self, field_name: &str) -> Result<T, super::Error>
+        where
+            Message: prost::Name,
+            T: bitcoin::consensus::Decodable,
+        {
+            let Self { hex } = self;
+            let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            let mut bytes = hex::decode(&hex)
+                .map_err(|_| super::Error::invalid_field_value::<Message>(field_name, &hex))?;
+            bytes.reverse();
+            bitcoin::consensus::deserialize(&bytes)
+                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+        }
+
+        /// Variant of [`Self::decode`] that returns a `tonic::Status` error
+        pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
+        where
+            Message: prost::Name,
+            T: bitcoin::consensus::Decodable,
+        {
+            self.decode::<Message, _>(field_name)
+                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+        }
+
+        pub fn encode<T>(value: &T) -> Self
+        where
+            T: bitcoin::consensus::Encodable,
+        {
+            let mut bytes = bitcoin::consensus::encode::serialize(value);
+            bytes.reverse();
+            Self {
+                hex: Some(hex::encode(bytes)),
+            }
+        }
+    }
 
     impl From<bip300301_messages::bitcoin::Network> for Network {
         fn from(network: bip300301_messages::bitcoin::Network) -> Self {
@@ -135,8 +197,9 @@ pub mod validator {
                     )
                 })?
             };
-            let data: Vec<u8> =
-                data.ok_or_else(|| Self::Error::missing_field::<ProposeSidechain>("data"))?;
+            let data: Vec<u8> = data
+                .ok_or_else(|| Self::Error::missing_field::<ProposeSidechain>("data"))?
+                .decode::<ProposeSidechain, _>("data")?;
             Ok(bip300301_messages::CoinbaseMessage::M1ProposeSidechain {
                 sidechain_number,
                 data,
@@ -166,16 +229,9 @@ pub mod validator {
                     )
                 })?
             };
-            let data_hash: [u8; 32] = {
-                let data_hash = data_hash
-                    .ok_or_else(|| Self::Error::missing_field::<AckSidechain>("data_hash"))?;
-                data_hash.try_into().map_err(|data_hash| {
-                    Self::Error::invalid_field_value::<AckSidechain>(
-                        "data_hash",
-                        &hex::encode(data_hash),
-                    )
-                })?
-            };
+            let data_hash: [u8; 32] = data_hash
+                .ok_or_else(|| Self::Error::missing_field::<AckSidechain>("data_hash"))?
+                .decode::<AckSidechain, _>("data_hash")?;
             Ok(bip300301_messages::CoinbaseMessage::M2AckSidechain {
                 sidechain_number,
                 data_hash,
@@ -205,16 +261,9 @@ pub mod validator {
                     )
                 })?
             };
-            let bundle_txid: [u8; 32] = {
-                let data_hash = bundle_txid
-                    .ok_or_else(|| Self::Error::missing_field::<ProposeBundle>("bundle_txid"))?;
-                data_hash.try_into().map_err(|data_hash| {
-                    Self::Error::invalid_field_value::<ProposeBundle>(
-                        "bundle_txid",
-                        &hex::encode(data_hash),
-                    )
-                })?
-            };
+            let bundle_txid: [u8; 32] = bundle_txid
+                .ok_or_else(|| Self::Error::missing_field::<ProposeBundle>("bundle_txid"))?
+                .decode::<ProposeBundle, _>("bundle_txid")?;
             Ok(bip300301_messages::CoinbaseMessage::M3ProposeBundle {
                 sidechain_number,
                 bundle_txid,
@@ -313,13 +362,11 @@ pub mod validator {
 
     impl From<crate::types::HeaderInfo> for BlockHeaderInfo {
         fn from(header_info: crate::types::HeaderInfo) -> Self {
-            let block_hash = header_info.block_hash.to_byte_array().to_vec();
-            let prev_block_hash = header_info.prev_block_hash.to_byte_array().to_vec();
             Self {
-                block_hash,
-                prev_block_hash,
+                block_hash: Some(ReverseHex::encode(&header_info.block_hash)),
+                prev_block_hash: Some(ReverseHex::encode(&header_info.prev_block_hash)),
                 height: header_info.height,
-                work: header_info.work.into(),
+                work: Some(ConsensusHex::encode(&header_info.work.to_le_bytes())),
             }
         }
     }
@@ -327,7 +374,7 @@ pub mod validator {
     impl From<bip300301_messages::bitcoin::OutPoint> for OutPoint {
         fn from(outpoint: bip300301_messages::bitcoin::OutPoint) -> Self {
             Self {
-                txid: outpoint.txid.to_raw_hash().as_byte_array().to_vec(),
+                txid: Some(ConsensusHex::encode(&outpoint.txid)),
                 vout: outpoint.vout,
             }
         }
@@ -336,7 +383,7 @@ pub mod validator {
     impl From<bip300301_messages::bitcoin::TxOut> for Output {
         fn from(output: bip300301_messages::bitcoin::TxOut) -> Self {
             Self {
-                address: output.script_pubkey.into_bytes(),
+                address: Some(ConsensusHex::encode(&output.script_pubkey)),
                 value_sats: output.value.to_sat(),
             }
         }
@@ -384,7 +431,7 @@ pub mod validator {
             } = event;
             let withdrawal_bundle_event_type = WithdrawalBundleEventType::from(kind) as i32;
             let event = WithdrawalBundleEvent {
-                m6id: m6id.to_vec(),
+                m6id: Some(ConsensusHex::encode(&m6id)),
                 withdrawal_bundle_event_type,
             };
             (sidechain_id, event)
@@ -417,14 +464,11 @@ pub mod validator {
                     }
                 })
                 .collect();
-            let bmm_commitment = self
-                .bmm_commitments
-                .get(&sidechain_number)
-                .map(|commitment| commitment.to_vec());
+            let bmm_commitment = self.bmm_commitments.get(&sidechain_number);
             BlockInfo {
                 deposits,
                 withdrawal_bundle_events,
-                bmm_commitment,
+                bmm_commitment: bmm_commitment.map(ConsensusHex::encode),
             }
         }
     }
@@ -468,7 +512,7 @@ pub mod validator {
                 }
                 Self::DisconnectBlock { block_hash } => {
                     let event = DisconnectBlock {
-                        block_hash: block_hash.to_byte_array().to_vec(),
+                        block_hash: Some(ReverseHex::encode(&block_hash)),
                     };
                     subscribe_events_response::event::Event::DisconnectBlock(event)
                 }
@@ -481,4 +525,9 @@ pub mod validator {
             Self { event: Some(event) }
         }
     }
+}
+
+pub mod sidechain {
+    tonic::include_proto!("cusf.sidechain.v1");
+    pub use sidechain_service_client::SidechainServiceClient as Client;
 }

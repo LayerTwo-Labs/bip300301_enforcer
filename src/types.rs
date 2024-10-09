@@ -1,4 +1,4 @@
-use bitcoin::{Amount, BlockHash, OutPoint, TxOut};
+use bitcoin::{Amount, BlockHash, OutPoint, TxOut, Work};
 use hashlink::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -73,8 +73,7 @@ pub struct HeaderInfo {
     pub block_hash: BlockHash,
     pub prev_block_hash: BlockHash,
     pub height: u32,
-    /// Total work as a uint256, little-endian
-    pub work: [u8; 32],
+    pub work: Work,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
