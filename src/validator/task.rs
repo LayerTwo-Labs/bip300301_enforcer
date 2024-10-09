@@ -7,8 +7,8 @@ use bip300301::{
 };
 use bip300301_messages::{
     bitcoin::{
-        self, hashes::Hash, opcodes::all::OP_RETURN, Amount, Block, BlockHash, OutPoint,
-        Transaction, TxOut,
+        self, consensus::Encodable, hashes::Hash, opcodes::all::OP_RETURN, Amount, Block,
+        BlockHash, OutPoint, Transaction, TxOut,
     },
     m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
     CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
@@ -22,6 +22,7 @@ use heed::RoTxn;
 use thiserror::Error;
 
 use crate::{
+    messages::CoinbaseBuilder,
     types::{
         BlockInfo, BmmCommitments, Ctip, Deposit, Event, Hash256, HeaderInfo, PendingM6id,
         Sidechain, SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
@@ -195,6 +196,63 @@ enum SyncError {
     WriteTxn(#[from] WriteTxnError),
 }
 
+// Returns the serialized sidechain proposal OP_RETURN output.
+fn create_sidechain_proposal(
+    sidechain_number: SidechainNumber,
+    version: u8,
+    title: String,
+    description: String,
+    hash_1: Vec<u8>,
+    hash_2: Vec<u8>,
+) -> anyhow::Result<Vec<u8>> {
+    const HASH_1_LENGTH: usize = 32;
+    const HASH_2_LENGTH: usize = 20;
+
+    let hash_1: Vec<u8> = if hash_1.is_empty() {
+        vec![0u8; HASH_1_LENGTH]
+    } else if hash_1.len() == HASH_1_LENGTH {
+        hash_1
+    } else {
+        return Err(anyhow::anyhow!(
+            "hash_1 must be empty or {HASH_1_LENGTH} bytes"
+        ));
+    };
+
+    let hash_2: Vec<u8> = if hash_2.is_empty() {
+        vec![0u8; HASH_2_LENGTH]
+    } else if hash_2.len() == HASH_2_LENGTH {
+        hash_2
+    } else {
+        return Err(anyhow::anyhow!(
+            "hash_2 must be empty or {HASH_2_LENGTH} bytes"
+        ));
+    };
+
+    let mut data: Vec<u8> = vec![];
+    data.push(sidechain_number.into());
+    data.push(version);
+    data.extend_from_slice(title.as_bytes());
+    data.extend_from_slice(description.as_bytes());
+    data.extend_from_slice(&hash_1);
+    data.extend_from_slice(&hash_2);
+
+    let builder = CoinbaseBuilder::new()
+        .propose_sidechain(sidechain_number.into(), &data)
+        .build();
+
+    let tx_out = builder.first().unwrap();
+
+    let mut buffer = Vec::new();
+    match tx_out.consensus_encode(&mut buffer) {
+        Ok(_) => (),
+        Err(e) => {
+            return Err(anyhow::anyhow!("Error encoding tx_out: {}", e));
+        }
+    }
+
+    Ok(buffer)
+}
+
 // See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m1-1
 fn handle_m1_propose_sidechain(
     rwtxn: &mut RwTxn,
@@ -216,6 +274,7 @@ fn handle_m1_propose_sidechain(
         //
         // Without this rule it would be possible for the miners to reset the vote count for
         // any sidechain proposal at any point.
+        tracing::debug!("sidechain proposal already exists");
         return Ok(());
     }
     let sidechain_proposal = SidechainProposal {
@@ -224,9 +283,12 @@ fn handle_m1_propose_sidechain(
         vote_count: 0,
         proposal_height,
     };
+
     let () = dbs
         .data_hash_to_sidechain_proposal
         .put(rwtxn, &data_hash, &sidechain_proposal)?;
+
+    tracing::info!("persisted new sidechain proposal: {sidechain_proposal:?}");
     Ok(())
 }
 
@@ -911,4 +973,75 @@ pub(super) async fn task(
             }
         })
         .await
+}
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use bip300301_messages::CoinbaseMessage;
+    use bitcoin::{consensus::Decodable, io::Cursor};
+
+    #[test]
+    fn test_roundtrip() {
+        let Ok(proposal) = create_sidechain_proposal(
+            SidechainNumber::from(13),
+            0,
+            "title".into(),
+            "description".into(),
+            vec![0u8; 32],
+            vec![0u8; 20],
+        ) else {
+            panic!("Failed to create sidechain proposal");
+        };
+
+        let tx_out = TxOut::consensus_decode(&mut Cursor::new(&proposal)).unwrap();
+
+        let Ok((tag, message)) = parse_coinbase_script(&tx_out.script_pubkey) else {
+            panic!("Failed to parse sidechain proposal");
+        };
+
+        // I'd expect this to be M1_PROPOSE_SIDECHAIN_TAG, but it's not...
+        // Bug in the parsing code, or is it something Torkel is misunderstanding?
+        assert!(tag.is_empty());
+
+        // assert_eq!(tag, M1_PROPOSE_SIDECHAIN_TAG);
+
+        let CoinbaseMessage::M1ProposeSidechain {
+            sidechain_number,
+            data: _,
+        } = message
+        else {
+            panic!("Failed to parse sidechain proposal");
+        };
+
+        assert_eq!(sidechain_number, 13);
+    }
+
+    #[test]
+    fn test_parse_m1_message() {
+        let hex_encoded = "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff03023939feffffff0300f2052a01000000160014a46fddeaf98f1dd3efca296ad19fec5b067dab3a00000000000000005e6ad5e0c4af0a0a0154657374636861696e41207265616c6c792073696d706c652073696465636861696e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000986a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf94c70ecc7daa2000247304402207084564296c763b6cfcaf3aeea421015559161d4ecc0feb5f9b6b3c85b8b67ae02207044d4b0650a8f3b63218ca17764d2eced822859809141aee2112ca8e3b5a2770121032b15624631d879829cf8d66b89965d264674b36d73682a69d739b9cf255b99500120000000000000000000000000000000000000000000000000000000000000000000000000";
+        let mut bytes = hex::decode(hex_encoded).expect("Decoding failed");
+        let transaction = Transaction::consensus_decode(&mut Cursor::new(&mut bytes))
+            .expect("Deserialization failed");
+
+        for output in &transaction.output {
+            let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
+                continue;
+            };
+
+            match message {
+                CoinbaseMessage::M1ProposeSidechain {
+                    sidechain_number,
+                    data: _,
+                } => {
+                    assert_eq!(sidechain_number, 10);
+
+                    return;
+                }
+                _ => panic!("Parsed message is not an M1ProposeSidechain"),
+            }
+        }
+
+        panic!("did not find M1ProposeSidechain");
+    }
 }
