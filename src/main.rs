@@ -1,10 +1,14 @@
-use std::{net::SocketAddr, path::Path, time::Duration};
-
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
 use miette::{miette, IntoDiagnostic, Result};
+use std::{net::SocketAddr, path::Path, time::Duration};
 use tokio::{spawn, task::JoinHandle, time::interval};
 use tonic::transport::Server;
+use tower::ServiceBuilder;
+use tower_http::trace::DefaultOnFailure;
+use tower_http::trace::DefaultOnResponse;
+use tower_http::trace::TraceLayer;
+use tracing::Level;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 mod cli;
@@ -53,7 +57,19 @@ async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
         .into_diagnostic()?;
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
+
+    // Adds rather verbose access logging.
+    // TODO: adjust if it becomes too much.
+    let tracer = ServiceBuilder::new()
+        .layer(
+            TraceLayer::new_for_grpc()
+                .on_response(DefaultOnResponse::new().level(Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+        )
+        .into_inner();
+
     Server::builder()
+        .layer(tracer)
         .add_service(reflection_service)
         .add_service(ValidatorServiceServer::new(validator))
         .serve(addr)
