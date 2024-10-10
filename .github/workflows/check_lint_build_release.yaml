@@ -1,6 +1,6 @@
 on: [pull_request, push]
 
-name: Check, Lint, Build, Release
+name: Check, Lint, Test, Build, Release
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,7 +36,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features
 
-  build-release:
+  test-build-release:
     strategy:
       fail-fast: false
       matrix:
@@ -56,7 +56,7 @@ jobs:
             binary-suffix: .exe
             rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
 
-    name: Build, Release (${{ matrix.name }})
+    name: Test, Build, Release (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     needs: [check-lint]
     permissions:
@@ -81,6 +81,9 @@ jobs:
       - name: Install mingw-w64
         run: sudo apt install mingw-w64
         if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
+
+      - name: Test
+        run: cargo test --all-targets --all-features
 
       - name: Build
         run: cargo build --release --target ${{ matrix.name }}
@@ -118,7 +121,7 @@ jobs:
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [build-release]
+    needs: [test-build-release]
     if: github.ref == 'refs/heads/master'
     steps:
       - name: Download artifacts
