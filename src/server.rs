@@ -1,3 +1,12 @@
+use std::sync::Arc;
+
+use crate::proto::mainchain::{
+    wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
+    BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
+    CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
+    CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
+    GenerateBlocksRequest, GenerateBlocksResponse,
+};
 use crate::{
     proto::{
         self,
@@ -484,4 +493,61 @@ impl ValidatorService for Validator {
     //     };
     //     Ok(Response::new(response))
     // }
+}
+
+pub type ArcWallet = Arc<crate::wallet::Wallet>;
+
+#[tonic::async_trait]
+impl WalletService for ArcWallet {
+    async fn create_new_address(
+        &self,
+        request: tonic::Request<CreateNewAddressRequest>,
+    ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
+        Err(tonic::Status::new(
+            tonic::Code::Unimplemented,
+            "not implemented",
+        ))
+    }
+
+    async fn generate_blocks(
+        &self,
+        request: tonic::Request<GenerateBlocksRequest>,
+    ) -> std::result::Result<tonic::Response<GenerateBlocksResponse>, tonic::Status> {
+        Err(tonic::Status::new(
+            tonic::Code::Unimplemented,
+            "not implemented",
+        ))
+    }
+
+    async fn broadcast_withdrawal_bundle(
+        &self,
+        request: tonic::Request<BroadcastWithdrawalBundleRequest>,
+    ) -> std::result::Result<tonic::Response<BroadcastWithdrawalBundleResponse>, tonic::Status>
+    {
+        Err(tonic::Status::new(
+            tonic::Code::Unimplemented,
+            "not implemented",
+        ))
+    }
+
+    async fn create_bmm_critical_data_transaction(
+        &self,
+        request: tonic::Request<CreateBmmCriticalDataTransactionRequest>,
+    ) -> std::result::Result<tonic::Response<CreateBmmCriticalDataTransactionResponse>, tonic::Status>
+    {
+        Err(tonic::Status::new(
+            tonic::Code::Unimplemented,
+            "not implemented",
+        ))
+    }
+
+    async fn create_deposit_transaction(
+        &self,
+        request: tonic::Request<CreateDepositTransactionRequest>,
+    ) -> std::result::Result<tonic::Response<CreateDepositTransactionResponse>, tonic::Status> {
+        Err(tonic::Status::new(
+            tonic::Code::Unimplemented,
+            "not implemented",
+        ))
+    }
 }
