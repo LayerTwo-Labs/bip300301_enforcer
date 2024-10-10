@@ -1,18 +1,18 @@
 use bip300301::{
-    client::{BlockchainInfo, GetRawTransactionClient, GetRawTransactionVerbose},
+    client::BlockchainInfo,
     jsonrpsee::http_client::HttpClient,
     MainClient,
 };
 use std::{
     collections::{BTreeMap, HashMap},
-    io::Cursor,
     path::Path,
+    sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use bdk::{
     bitcoin::{
-        consensus::{Decodable as _, Encodable as _},
+        consensus::Encodable as _,
         hashes::Hash,
         Network,
     },
@@ -25,12 +25,10 @@ use bdk::{
     },
     template::Bip84,
     wallet::AddressIndex,
-    KeychainKind, SignOptions, SyncOptions,
+    KeychainKind, SyncOptions,
 };
-use bip300301_messages::OP_DRIVECHAIN;
 use bitcoin::{
     absolute::{Height, LockTime},
-    base58,
     block::Version as BlockVersion,
     consensus::Encodable as _,
     constants::{genesis_block, SUBSIDY_HALVING_INTERVAL},
@@ -38,29 +36,26 @@ use bitcoin::{
     hashes::Hash as _,
     merkle_tree,
     opcodes::{
-        all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36, OP_RETURN},
-        OP_0, OP_TRUE,
+        all::{OP_PUSHBYTES_36, OP_RETURN},
+        OP_0,
     },
     transaction::Version as TxVersion,
     Amount, Block, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
-use cusf_sidechain_types::{Hashable, HASH_LENGTH};
 use miette::{miette, IntoDiagnostic, Result};
-use rusqlite::{Connection, Row};
-use tonic::transport::Channel;
+use rusqlite::Connection;
 
 use crate::{
     cli::WalletConfig,
-    proto::sidechain::Client as SidechainClient,
-    types::{Deposit, SidechainNumber, SidechainProposal},
+    types::{SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 
 pub struct Wallet {
     main_client: HttpClient,
     validator: Validator,
-    bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
-    db_connection: Connection,
+    bitcoin_wallet: ThreadSafe<bdk::Wallet<SqliteDatabase>>,
+    db_connection: ThreadSafe<rusqlite::Connection>,
     bitcoin_blockchain: ElectrumBlockchain,
     mnemonic: Mnemonic,
     // seed
@@ -68,7 +63,7 @@ pub struct Wallet {
     // index
     // address (20 byte hash of public key)
     // utxos
-    last_sync: Option<SystemTime>,
+    last_sync: Arc<Mutex<Option<SystemTime>>>,
 }
 
 impl Wallet {
@@ -128,7 +123,8 @@ impl Wallet {
             Some(Bip84(xprv, KeychainKind::Internal)),
             network,
             wallet_database,
-        );
+        )
+        .map(ThreadSafe::new);
 
         let bitcoin_blockchain = {
             let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
@@ -197,11 +193,11 @@ impl Wallet {
             main_client,
             validator,
             bitcoin_wallet: bitcoin_wallet.into_diagnostic()?,
-            db_connection,
+            db_connection: ThreadSafe::new(db_connection),
             bitcoin_blockchain,
             mnemonic,
 
-            last_sync: None,
+            last_sync: Arc::new(Mutex::new(None)),
         };
         Ok(wallet)
     }
@@ -213,6 +209,7 @@ impl Wallet {
     ) -> Result<Block> {
         let addr = self
             .bitcoin_wallet
+            .lock()?
             .get_address(AddressIndex::New)
             .into_diagnostic()?;
         let script_pubkey = addr.script_pubkey();
@@ -355,11 +352,20 @@ impl Wallet {
     }
 
     pub fn get_balance(&self) -> Result<()> {
-        if self.last_sync.is_none() {
+        if self
+            .last_sync
+            .lock()
+            .map(|sync| sync.is_none())
+            .unwrap_or_default()
+        {
             return Err(miette!("get balance: wallet not synced"));
         }
 
-        let balance = self.bitcoin_wallet.get_balance().into_diagnostic()?;
+        let balance = self
+            .bitcoin_wallet
+            .lock()?
+            .get_balance()
+            .into_diagnostic()?;
         let immature = Amount::from_sat(balance.immature);
         let untrusted_pending = Amount::from_sat(balance.untrusted_pending);
         let trusted_pending = Amount::from_sat(balance.trusted_pending);
@@ -372,11 +378,12 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn sync(&mut self) -> Result<()> {
+    pub fn sync(&self) -> Result<()> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
 
         self.bitcoin_wallet
+            .lock()?
             .sync(&self.bitcoin_blockchain, SyncOptions::default())
             .into_diagnostic()?;
 
@@ -385,17 +392,31 @@ impl Wallet {
             start.elapsed().unwrap_or_default(),
         );
 
-        self.last_sync = Some(SystemTime::now());
+        let mut last_sync = self
+            .last_sync
+            .lock()
+            .map_err(|_| miette!("Failed to lock last_sync"))?;
+
+        *last_sync = Some(SystemTime::now());
 
         Ok(())
     }
 
     pub fn get_utxos(&self) -> Result<()> {
-        if self.last_sync.is_none() {
+        if self
+            .last_sync
+            .lock()
+            .map(|sync| sync.is_none())
+            .unwrap_or_default()
+        {
             return Err(miette!("get utxos: wallet not synced"));
         }
 
-        let utxos = self.bitcoin_wallet.list_unspent().into_diagnostic()?;
+        let utxos = self
+            .bitcoin_wallet
+            .lock()?
+            .list_unspent()
+            .into_diagnostic()?;
         for utxo in &utxos {
             tracing::trace!(
                 "address: {}, value: {}",
@@ -408,6 +429,7 @@ impl Wallet {
 
     pub fn propose_sidechain(&self, sidechain_number: u8, data: &[u8]) -> Result<()> {
         self.db_connection
+            .lock()?
             .execute(
                 "INSERT INTO sidechain_proposals (number, data) VALUES (?1, ?2)",
                 (sidechain_number, data),
@@ -418,6 +440,7 @@ impl Wallet {
 
     pub fn ack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
         self.db_connection
+            .lock()?
             .execute(
                 "INSERT INTO sidechain_acks (number, data_hash) VALUES (?1, ?2)",
                 (sidechain_number, data_hash),
@@ -428,6 +451,7 @@ impl Wallet {
 
     pub fn nack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
         self.db_connection
+            .lock()?
             .execute(
                 "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
                 (sidechain_number, data_hash),
@@ -437,8 +461,8 @@ impl Wallet {
     }
 
     pub fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
-        let mut statement = self
-            .db_connection
+        let connection = self.db_connection.lock()?;
+        let mut statement = connection
             .prepare("SELECT number, data_hash FROM sidechain_acks")
             .into_diagnostic()?;
         let rows = statement
@@ -460,6 +484,7 @@ impl Wallet {
 
     pub fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
         self.db_connection
+            .lock()?
             .execute(
                 "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
                 (ack.sidechain_number, ack.data_hash),
@@ -484,10 +509,11 @@ impl Wallet {
     }
 
     pub fn get_sidechain_proposals(&mut self) -> Result<Vec<Sidechain>> {
-        let mut statement = self
-            .db_connection
+        let connection = self.db_connection.lock()?;
+        let mut statement = connection
             .prepare("SELECT number, data FROM sidechain_proposals")
             .into_diagnostic()?;
+
         let rows = statement
             .query_map([], |row| {
                 let data: Vec<u8> = row.get(1)?;
@@ -545,6 +571,7 @@ impl Wallet {
 
     pub fn delete_sidechain_proposals(&self) -> Result<()> {
         self.db_connection
+            .lock()?
             .execute("DELETE FROM sidechain_proposals;", ())
             .into_diagnostic()?;
         Ok(())
@@ -558,6 +585,27 @@ impl Wallet {
             }
         }
         Ok(false)
+    }
+}
+
+// TODO: getting some complains from clippy:
+//     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+// Not sure about how to accomplish this.
+struct ThreadSafe<D> {
+    underlying: Arc<Mutex<D>>,
+}
+
+impl<D> ThreadSafe<D> {
+    pub fn new(underlying: D) -> Self {
+        Self {
+            underlying: Arc::new(Mutex::new(underlying)),
+        }
+    }
+
+    pub fn lock(&self) -> Result<MutexGuard<'_, D>, miette::Error> {
+        self.underlying
+            .lock()
+            .map_err(|e| miette::miette!("Mutex poison error: {}", e))
     }
 }
 

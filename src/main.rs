@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::Path, time::Duration};
+use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
@@ -19,8 +19,10 @@ mod validator;
 mod wallet;
 mod zmq;
 
-use proto::mainchain::Server as ValidatorServiceServer;
-use server::Validator;
+use proto::mainchain::{
+    wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer,
+};
+use server::{ArcWallet, Validator};
 use wallet::Wallet;
 
 // Configure logger.
@@ -41,13 +43,16 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
         .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
 }
 
-async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
+async fn run_server(
+    validator: Validator,
+    wallet: Option<Arc<Wallet>>,
+    addr: SocketAddr,
+) -> Result<()> {
     let validator_service = ValidatorServiceServer::new(validator);
-    let reflection_service = tonic_reflection::server::Builder::configure()
+
+    let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
         .with_service_name(ValidatorServiceServer::<Validator>::NAME)
-        .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .into_diagnostic()?;
+        .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
@@ -61,21 +66,41 @@ async fn run_server(validator: Validator, addr: SocketAddr) -> Result<()> {
         )
         .into_inner();
 
-    Server::builder()
+    let mut builder = Server::builder()
         .layer(tracer)
-        .add_service(reflection_service)
-        .add_service(validator_service)
+        .add_service(validator_service);
+
+    if let Some(wallet) = wallet {
+        tracing::info!("gRPC: enabling wallet service");
+
+        let wallet_service = WalletServiceServer::new(Arc::clone(&wallet));
+        builder = builder.add_service(wallet_service);
+
+        reflection_service_builder =
+            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
+
+        let _sync_wallet: JoinHandle<()> = {
+            let wallet = Arc::clone(&wallet);
+            spawn(wallet_task(wallet).unwrap_or_else(|err| tracing::error!("{err:#}")))
+        };
+    }
+
+    builder
+        .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
         .serve(addr)
         .map_err(|err| miette!("error in validator server: {err:#}"))
         .await
 }
 
 // TODO: return `Result<!, _>` once `never_type` is stabilized
-async fn wallet_task(mut wallet: Wallet) -> Result<(), miette::Report> {
+async fn wallet_task(wallet: ArcWallet) -> Result<(), miette::Report> {
     const SYNC_INTERVAL: Duration = Duration::from_secs(15);
     let mut interval_stream = tokio_stream::wrappers::IntervalStream::new(interval(SYNC_INTERVAL));
     while let Some(_tick) = interval_stream.next().await {
-        let () = wallet.sync()?;
+        match wallet.sync() {
+            Ok(_) => (),
+            Err(err) => tracing::error!("wallet sync error: {err:#}"),
+        }
     }
     Ok(())
 }
@@ -98,17 +123,16 @@ async fn main() -> Result<()> {
     .await
     .into_diagnostic()?;
 
-    let wallet: Option<Wallet> = if cli.enable_wallet {
-        Some(
-            Wallet::new(
-                cli.data_dir,
-                &cli.wallet_opts,
-                mainchain_client,
-                validator.clone(),
-            )
-            .map_err(|e| miette!("failed to create wallet: {:?}", e))
-            .await?,
+    let wallet: Option<ArcWallet> = if cli.enable_wallet {
+        let wallet = Wallet::new(
+            cli.data_dir,
+            &cli.wallet_opts,
+            mainchain_client,
+            validator.clone(),
         )
+        .map_err(|e| miette!("failed to create wallet: {:?}", e))
+        .await?;
+        Some(Arc::new(wallet))
     } else {
         None
     };
@@ -120,8 +144,6 @@ async fn main() -> Result<()> {
             }
         })
     });
-    let _sync_wallet: Option<JoinHandle<()>> = wallet
-        .map(|wallet| spawn(wallet_task(wallet).unwrap_or_else(|err| tracing::error!("{err:#}"))));
 
-    run_server(validator, cli.serve_rpc_addr).await
+    run_server(validator, wallet, cli.serve_rpc_addr).await
 }
