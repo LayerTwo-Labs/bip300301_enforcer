@@ -691,9 +691,20 @@ fn connect_block(
     let mut accepted_bmm_requests = BmmCommitments::new();
     let mut withdrawal_bundle_events = Vec::new();
     for output in &coinbase.output {
-        let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
-            continue;
+        let message = match parse_coinbase_script(&output.script_pubkey) {
+            Ok((rest, message)) => {
+                if !rest.is_empty() {
+                    tracing::warn!("Extra data in coinbase script: {:?}", hex::encode(rest));
+                }
+                message
+            }
+
+            Err(err) => {
+                tracing::error!("Failed to parse coinbase script: {:?}", err);
+                continue;
+            }
         };
+
         match message {
             CoinbaseMessage::M1ProposeSidechain {
                 sidechain_number,
@@ -996,15 +1007,11 @@ mod tests {
 
         let tx_out = TxOut::consensus_decode(&mut Cursor::new(&proposal)).unwrap();
 
-        let Ok((tag, message)) = parse_coinbase_script(&tx_out.script_pubkey) else {
+        let Ok((rest, message)) = parse_coinbase_script(&tx_out.script_pubkey) else {
             panic!("Failed to parse sidechain proposal");
         };
 
-        // I'd expect this to be M1_PROPOSE_SIDECHAIN_TAG, but it's not...
-        // Bug in the parsing code, or is it something Torkel is misunderstanding?
-        assert!(tag.is_empty());
-
-        // assert_eq!(tag, M1_PROPOSE_SIDECHAIN_TAG);
+        assert!(rest.is_empty());
 
         let CoinbaseMessage::M1ProposeSidechain {
             sidechain_number,
