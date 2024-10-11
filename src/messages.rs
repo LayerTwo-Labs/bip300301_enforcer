@@ -1,5 +1,8 @@
-use bitcoin::opcodes::all::{OP_NOP5, OP_RETURN};
-use bitcoin::{Amount, Opcode, Script, ScriptBuf, TxOut};
+use bitcoin::opcodes::{
+    all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
+    OP_TRUE,
+};
+use bitcoin::{hashes::Hash, Amount, Opcode, Script, ScriptBuf, Transaction, TxOut};
 use byteorder::{ByteOrder, LittleEndian};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
@@ -79,12 +82,25 @@ pub enum CoinbaseMessage {
         bundle_txid: [u8; 32],
     },
     M4AckBundles(M4AckBundles),
+    M7BmmAccept {
+        sidechain_number: u8,
+        sidechain_block_hash: [u8; 32],
+    },
+}
+
+#[derive(Debug)]
+pub struct M8BmmRequest {
+    pub sidechain_number: u8,
+    pub sidechain_block_hash: [u8; 32],
+    pub prev_mainchain_block_hash: [u8; 32],
 }
 
 pub const M1_PROPOSE_SIDECHAIN_TAG: &[u8] = &[0xD5, 0xE0, 0xC4, 0xAF];
 pub const M2_ACK_SIDECHAIN_TAG: &[u8] = &[0xD6, 0xE1, 0xC5, 0xDF];
 pub const M3_PROPOSE_BUNDLE_TAG: &[u8] = &[0xD4, 0x5A, 0xA9, 0x43];
 pub const M4_ACK_BUNDLES_TAG: &[u8] = &[0xD7, 0x7D, 0x17, 0x76];
+pub const M7_BMM_ACCEPT_TAG: &[u8] = &[0xD1, 0x61, 0x73, 0x68];
+pub const M8_BMM_REQUEST_TAG: &[u8] = &[0x00, 0xBF, 0x00];
 
 pub const ABSTAIN_ONE_BYTE: u8 = 0xFF;
 pub const ABSTAIN_TWO_BYTES: u16 = 0xFFFF;
@@ -141,8 +157,18 @@ pub fn parse_coinbase_script(script: &Script) -> IResult<&[u8], CoinbaseMessage>
         return parse_m3_propose_bundle(input);
     } else if message_tag == M4_ACK_BUNDLES_TAG {
         return parse_m4_ack_bundles(input);
+    } else if message_tag == M7_BMM_ACCEPT_TAG {
+        return parse_m7_bmm_accept(input);
     }
     fail(input)
+}
+
+pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], u8> {
+    let (input, _op_drivechain_tag) = tag(&[OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8()])(input)?;
+    let (input, sidechain_number) = take(1usize)(input)?;
+    let sidechain_number = sidechain_number[0];
+    tag(&[OP_TRUE.to_u8()])(input)?;
+    Ok((input, sidechain_number))
 }
 
 fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
@@ -209,6 +235,37 @@ fn parse_m4_ack_bundles(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
     fail(input)
 }
 
+fn parse_m7_bmm_accept(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
+    let (input, sidechain_number) = take(1usize)(input)?;
+    let sidechain_number = sidechain_number[0];
+    let (input, sidechain_block_hash) = take(32usize)(input)?;
+    // Unwrap here is fine, because if we didn't get exactly 32 bytes we'd fail on the previous
+    // line.
+    let sidechain_block_hash = sidechain_block_hash.try_into().unwrap();
+    let message = CoinbaseMessage::M7BmmAccept {
+        sidechain_number,
+        sidechain_block_hash,
+    };
+    Ok((input, message))
+}
+
+pub fn parse_m8_bmm_request(input: &[u8]) -> IResult<&[u8], M8BmmRequest> {
+    let (input, _) = tag(&[OP_RETURN.to_u8()])(input)?;
+    let (input, _) = tag(M8_BMM_REQUEST_TAG)(input)?;
+    let (input, sidechain_number) = take(1usize)(input)?;
+    let sidechain_number = sidechain_number[0];
+    let (input, sidechain_block_hash) = take(32usize)(input)?;
+    let (input, prev_mainchain_block_hash) = take(32usize)(input)?;
+    let sidechain_block_hash = sidechain_block_hash.try_into().unwrap();
+    let prev_mainchain_block_hash = prev_mainchain_block_hash.try_into().unwrap();
+    let message = M8BmmRequest {
+        sidechain_number,
+        sidechain_block_hash,
+        prev_mainchain_block_hash,
+    };
+    Ok((input, message))
+}
+
 impl From<CoinbaseMessage> for ScriptBuf {
     fn from(val: CoinbaseMessage) -> Self {
         match val {
@@ -273,6 +330,20 @@ impl From<CoinbaseMessage> for ScriptBuf {
 
                 ScriptBuf::from_bytes(message)
             }
+            CoinbaseMessage::M7BmmAccept {
+                sidechain_number,
+                sidechain_block_hash,
+            } => {
+                let message = [
+                    &[OP_RETURN.to_u8()],
+                    M7_BMM_ACCEPT_TAG,
+                    &[sidechain_number],
+                    &sidechain_block_hash,
+                ]
+                .concat();
+
+                ScriptBuf::from_bytes(message)
+            }
         }
     }
 }
@@ -284,6 +355,53 @@ pub fn sha256d(data: &[u8]) -> [u8; 32] {
     hasher.update(data_hash);
     let data_hash: [u8; 32] = hasher.finalize().into();
     data_hash
+}
+
+pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32] {
+    let mut m6 = m6.clone();
+    /*
+    1. Remove the single input spending the previous treasury UTXO from the `vin`
+       vector, so that the `vin` vector is empty.
+            */
+    m6.input.clear();
+    /*
+    2. Compute `P_total` by summing the `nValue`s of all pay out outputs in this
+       `M6`, so `P_total` = sum of `nValue`s of all outputs of this `M6` except for
+       the new treasury UTXO at index 0.
+            */
+    let p_total: Amount = m6.output[1..].iter().map(|o| o.value).sum();
+    /*
+    3. Set `T_n` equal to the `nValue` of the treasury UTXO created in this `M6`.
+        */
+    let t_n = m6.output[0].value.to_sat();
+    /*
+    4. Compute `F_total = T_n-1 - T_n - P_total`, since we know that `T_n = T_n-1 -
+       P_total - F_total`, `T_n-1` was passed as an argument, and `T_n` and
+       `P_total` were computed in previous steps..
+        */
+    let t_n_minus_1 = previous_treasury_utxo_total;
+    let f_total = t_n_minus_1 - t_n - p_total.to_sat();
+    /*
+    5. Encode `F_total` as `F_total_be_bytes`, an array of 8 bytes encoding the 64
+       bit unsigned integer in big endian order.
+        */
+    let f_total_be_bytes = f_total.to_be_bytes();
+    /*
+    6. Push an output to the end of `vout` of this `M6` with the `nValue = 0` and
+       `scriptPubKey = OP_RETURN F_total_be_bytes`.
+        */
+    let script_bytes = [vec![OP_RETURN.to_u8()], f_total_be_bytes.to_vec()].concat();
+    let script_pubkey = ScriptBuf::from_bytes(script_bytes);
+    let txout = TxOut {
+        script_pubkey,
+        value: Amount::ZERO,
+    };
+    m6.output.push(txout);
+    /*
+    At this point we have constructed `M6_blinded`.
+        */
+    let m6_blinded = m6;
+    m6_blinded.compute_txid().as_raw_hash().to_byte_array()
 }
 
 // Move all non-consensus components out of Bitcoin Core.

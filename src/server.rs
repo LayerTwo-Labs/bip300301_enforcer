@@ -26,11 +26,9 @@ use crate::{
     types::SidechainNumber,
 };
 
+use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
-use bip300301_messages::{
-    bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut},
-    CoinbaseMessage,
-};
+use bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
 use miette::Result;
 use tonic::{Request, Response, Status};

@@ -16,7 +16,6 @@ anyhow = "1.0.89"
 async-broadcast = "0.7.1"
 bdk = { version = "0.29.0", features = ["all-keys", "sqlite"] }
 bincode = "1.3.3"
-bip300301_messages = { git = "https://github.com/LayerTwo-Labs/bip300301_messages" }
 bitcoin = "0.32.3"
 blake3 = "1.5.4"
 byteorder = "1.5.0"

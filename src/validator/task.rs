@@ -1,19 +1,18 @@
 use std::collections::HashSet;
 
+use crate::messages::{
+    m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
+    CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
+};
 use async_broadcast::{Sender, TrySendError};
 use bip300301::{
     client::{GetBlockClient, U8Witness},
     jsonrpsee, MainClient,
 };
-use bip300301_messages::{
-    bitcoin::{
-        self, consensus::Encodable, hashes::Hash, opcodes::all::OP_RETURN, Amount, Block,
-        BlockHash, OutPoint, Transaction, TxOut,
-    },
-    m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
-    CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
+use bitcoin::{
+    self, consensus::Encodable, hashes::Hash, opcodes::all::OP_RETURN, Amount, Block, BlockHash,
+    OutPoint, Transaction, TxOut, Work,
 };
-use bitcoin::Work;
 use either::Either;
 use fallible_iterator::FallibleIterator;
 use futures::{TryFutureExt as _, TryStreamExt as _};
@@ -989,7 +988,6 @@ pub(super) async fn task(
 mod tests {
 
     use super::*;
-    use bip300301_messages::CoinbaseMessage;
     use bitcoin::{consensus::Decodable, io::Cursor};
 
     #[test]

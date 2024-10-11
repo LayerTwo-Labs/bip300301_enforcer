@@ -406,7 +406,6 @@ dependencies = [
  "bdk",
  "bincode",
  "bip300301",
- "bip300301_messages",
  "bitcoin 0.32.3",
  "blake3",
  "byteorder",
@@ -420,7 +419,7 @@ dependencies = [
  "hashlink 0.9.1",
  "heed",
  "hex",
- "miette 7.2.0",
+ "miette",
  "nom",
  "num-traits",
  "parking_lot 0.12.3",
@@ -442,18 +441,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeromq",
-]
-
-[[package]]
-name = "bip300301_messages"
-version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#dd26518ff9505ea9088436797171799f359d0076"
-dependencies = [
- "bitcoin 0.32.3",
- "byteorder",
- "miette 5.10.0",
- "nom",
- "sha2",
 ]
 
 [[package]]
@@ -1976,18 +1963,6 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 
 [[package]]
 name = "miette"
-version = "5.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59bb584eaeeab6bd0226ccf3509a69d7936d148cf3d036ad350abe35e8c6856e"
-dependencies = [
- "miette-derive 5.10.0",
- "once_cell",
- "thiserror",
- "unicode-width",
-]
-
-[[package]]
-name = "miette"
 version = "7.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4edc8853320c2a0dab800fbda86253c8938f6ea88510dc92c5f1ed20e794afc1"
@@ -1995,7 +1970,7 @@ dependencies = [
  "backtrace",
  "backtrace-ext",
  "cfg-if",
- "miette-derive 7.2.0",
+ "miette-derive",
  "owo-colors",
  "supports-color",
  "supports-hyperlinks",
@@ -2004,17 +1979,6 @@ dependencies = [
  "textwrap",
  "thiserror",
  "unicode-width",
-]
-
-[[package]]
-name = "miette-derive"
-version = "5.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.79",
 ]
 
 [[package]]
@@ -2450,7 +2414,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b7535b02f0e5efe3e1dbfcb428be152226ed0c66cad9541f2274c8ba8d4cd40"
 dependencies = [
  "logos",
- "miette 7.2.0",
+ "miette",
  "once_cell",
  "prost",
  "prost-types",
@@ -2472,7 +2436,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "873f359bdecdfe6e353752f97cb9ee69368df55b16363ed2216da85e03232a58"
 dependencies = [
  "bytes",
- "miette 7.2.0",
+ "miette",
  "prost",
  "prost-reflect",
  "prost-types",
@@ -2487,7 +2451,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3a462d115462c080ae000c29a47f0b3985737e5d3a995fcdbcaa5c782068dde"
 dependencies = [
  "logos",
- "miette 7.2.0",
+ "miette",
  "prost-types",
  "thiserror",
 ]

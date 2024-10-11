@@ -93,7 +93,10 @@ pub mod mainchain {
         self as server, ValidatorService as Service, ValidatorServiceServer as Server,
     };
 
-    use crate::types::SidechainNumber;
+    use crate::{
+        messages::{CoinbaseMessage, M4AckBundles},
+        types::SidechainNumber,
+    };
 
     impl ConsensusHex {
         pub fn decode<Message, T>(self, field_name: &str) -> Result<T, super::Error>
@@ -163,19 +166,19 @@ pub mod mainchain {
         }
     }
 
-    impl From<bip300301_messages::bitcoin::Network> for Network {
-        fn from(network: bip300301_messages::bitcoin::Network) -> Self {
+    impl From<bitcoin::Network> for Network {
+        fn from(network: bitcoin::Network) -> Self {
             match network {
-                bip300301_messages::bitcoin::Network::Bitcoin => Network::Mainnet,
-                bip300301_messages::bitcoin::Network::Regtest => Network::Regtest,
-                bip300301_messages::bitcoin::Network::Signet => Network::Signet,
-                bip300301_messages::bitcoin::Network::Testnet => Network::Testnet,
+                bitcoin::Network::Bitcoin => Network::Mainnet,
+                bitcoin::Network::Regtest => Network::Regtest,
+                bitcoin::Network::Signet => Network::Signet,
+                bitcoin::Network::Testnet => Network::Testnet,
                 _ => Network::Unknown,
             }
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ProposeSidechain> for bip300301_messages::CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::ProposeSidechain> for CoinbaseMessage {
         type Error = super::Error;
 
         fn try_from(
@@ -200,14 +203,14 @@ pub mod mainchain {
             let data: Vec<u8> = data
                 .ok_or_else(|| Self::Error::missing_field::<ProposeSidechain>("data"))?
                 .decode::<ProposeSidechain, _>("data")?;
-            Ok(bip300301_messages::CoinbaseMessage::M1ProposeSidechain {
+            Ok(CoinbaseMessage::M1ProposeSidechain {
                 sidechain_number,
                 data,
             })
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::AckSidechain> for bip300301_messages::CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::AckSidechain> for CoinbaseMessage {
         type Error = super::Error;
 
         fn try_from(
@@ -232,14 +235,14 @@ pub mod mainchain {
             let data_hash: [u8; 32] = data_hash
                 .ok_or_else(|| Self::Error::missing_field::<AckSidechain>("data_hash"))?
                 .decode::<AckSidechain, _>("data_hash")?;
-            Ok(bip300301_messages::CoinbaseMessage::M2AckSidechain {
+            Ok(CoinbaseMessage::M2AckSidechain {
                 sidechain_number,
                 data_hash,
             })
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ProposeBundle> for bip300301_messages::CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::ProposeBundle> for CoinbaseMessage {
         type Error = super::Error;
 
         fn try_from(
@@ -264,32 +267,28 @@ pub mod mainchain {
             let bundle_txid: [u8; 32] = bundle_txid
                 .ok_or_else(|| Self::Error::missing_field::<ProposeBundle>("bundle_txid"))?
                 .decode::<ProposeBundle, _>("bundle_txid")?;
-            Ok(bip300301_messages::CoinbaseMessage::M3ProposeBundle {
+            Ok(CoinbaseMessage::M3ProposeBundle {
                 sidechain_number,
                 bundle_txid,
             })
         }
     }
 
-    impl From<get_coinbase_psbt_request::ack_bundles::RepeatPrevious>
-        for bip300301_messages::M4AckBundles
-    {
+    impl From<get_coinbase_psbt_request::ack_bundles::RepeatPrevious> for M4AckBundles {
         fn from(repeat_previous: get_coinbase_psbt_request::ack_bundles::RepeatPrevious) -> Self {
             let get_coinbase_psbt_request::ack_bundles::RepeatPrevious {} = repeat_previous;
             Self::RepeatPrevious
         }
     }
 
-    impl From<get_coinbase_psbt_request::ack_bundles::LeadingBy50>
-        for bip300301_messages::M4AckBundles
-    {
+    impl From<get_coinbase_psbt_request::ack_bundles::LeadingBy50> for M4AckBundles {
         fn from(leading_by_50: get_coinbase_psbt_request::ack_bundles::LeadingBy50) -> Self {
             let get_coinbase_psbt_request::ack_bundles::LeadingBy50 {} = leading_by_50;
             Self::LeadingBy50
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ack_bundles::Upvotes> for bip300301_messages::M4AckBundles {
+    impl TryFrom<get_coinbase_psbt_request::ack_bundles::Upvotes> for M4AckBundles {
         type Error = super::Error;
 
         fn try_from(
@@ -319,9 +318,7 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ack_bundles::AckBundles>
-        for bip300301_messages::M4AckBundles
-    {
+    impl TryFrom<get_coinbase_psbt_request::ack_bundles::AckBundles> for M4AckBundles {
         type Error = super::Error;
 
         fn try_from(
@@ -336,7 +333,7 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::AckBundles> for bip300301_messages::M4AckBundles {
+    impl TryFrom<get_coinbase_psbt_request::AckBundles> for M4AckBundles {
         type Error = super::Error;
 
         fn try_from(
@@ -350,7 +347,7 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::AckBundles> for bip300301_messages::CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::AckBundles> for CoinbaseMessage {
         type Error = super::Error;
 
         fn try_from(
@@ -371,8 +368,8 @@ pub mod mainchain {
         }
     }
 
-    impl From<bip300301_messages::bitcoin::OutPoint> for OutPoint {
-        fn from(outpoint: bip300301_messages::bitcoin::OutPoint) -> Self {
+    impl From<bitcoin::OutPoint> for OutPoint {
+        fn from(outpoint: bitcoin::OutPoint) -> Self {
             Self {
                 txid: Some(ConsensusHex::encode(&outpoint.txid)),
                 vout: outpoint.vout,
@@ -380,8 +377,8 @@ pub mod mainchain {
         }
     }
 
-    impl From<bip300301_messages::bitcoin::TxOut> for Output {
-        fn from(output: bip300301_messages::bitcoin::TxOut) -> Self {
+    impl From<bitcoin::TxOut> for Output {
+        fn from(output: bitcoin::TxOut) -> Self {
             Self {
                 address: Some(ConsensusHex::encode(&output.script_pubkey)),
                 value_sats: output.value.to_sat(),
@@ -529,5 +526,4 @@ pub mod mainchain {
 
 pub mod sidechain {
     tonic::include_proto!("cusf.sidechain.v1");
-    pub use sidechain_service_client::SidechainServiceClient as Client;
 }
