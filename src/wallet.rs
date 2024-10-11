@@ -667,6 +667,29 @@ impl Wallet {
             .map(|(_outpoint, amount, _sequence)| amount)
             .unwrap_or(Amount::ZERO);
 
+        let ctip_outpoint_with_tx = if let Some((ctip_outpoint, _, _)) = ctip {
+            let transaction_hex = self
+                .main_client
+                .get_raw_transaction(ctip_outpoint.txid, GetRawTransactionVerbose::<false>, None)
+                .await
+                .into_diagnostic()?;
+
+            let ctip_outpoint = bdk::bitcoin::OutPoint {
+                txid: bdk::bitcoin::Txid::from_byte_array(ctip_outpoint.txid.to_byte_array()),
+                vout: ctip_outpoint.vout,
+            };
+
+            let transaction_bytes = hex::decode(transaction_hex).into_diagnostic()?;
+
+            let transaction =
+                bdk::bitcoin::Transaction::consensus_decode(&mut Cursor::new(transaction_bytes))
+                    .into_diagnostic()?;
+
+            Some((ctip_outpoint, transaction))
+        } else {
+            None
+        };
+
         let wallet = self.bitcoin_wallet.lock()?;
         let mut builder = wallet.build_tx();
         builder
@@ -674,20 +697,7 @@ impl Wallet {
             .add_recipient(op_drivechain.clone(), (ctip_amount + amount).to_sat())
             .add_recipient(address_op_return, 0);
 
-        if let Some((ctip_outpoint, _, _)) = ctip {
-            let transaction_hex: String = self
-                .main_client
-                .get_raw_transaction(ctip_outpoint.txid, GetRawTransactionVerbose::<false>, None)
-                .await
-                .into_diagnostic()?;
-            let ctip_outpoint = bdk::bitcoin::OutPoint {
-                txid: bdk::bitcoin::Txid::from_byte_array(ctip_outpoint.txid.to_byte_array()),
-                vout: ctip_outpoint.vout,
-            };
-            let transaction_bytes = hex::decode(transaction_hex).unwrap();
-            let mut cursor = Cursor::new(transaction_bytes);
-            let transaction =
-                bdk::bitcoin::Transaction::consensus_decode(&mut cursor).into_diagnostic()?;
+        if let Some((ctip_outpoint, transaction)) = ctip_outpoint_with_tx {
             builder
                 .add_foreign_utxo(
                     ctip_outpoint,
@@ -900,9 +910,6 @@ impl Wallet {
     }
 }
 
-// TODO: getting some complains from clippy:
-//     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
-// Not sure about how to accomplish this.
 struct ThreadSafe<D> {
     underlying: Arc<Mutex<D>>,
 }
