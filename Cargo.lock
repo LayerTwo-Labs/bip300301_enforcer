@@ -423,6 +423,7 @@ dependencies = [
  "miette 7.2.0",
  "nom",
  "num-traits",
+ "parking_lot 0.12.3",
  "prost",
  "prost-build",
  "protox",
