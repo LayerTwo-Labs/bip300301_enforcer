@@ -301,7 +301,7 @@ impl Wallet {
     }
 
     pub async fn mine(
-        &mut self,
+        &self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> Result<()> {
@@ -464,7 +464,7 @@ impl Wallet {
     }
 
     pub async fn get_pending_sidechain_proposals(
-        &mut self,
+        &self,
     ) -> Result<HashMap<SidechainNumber, SidechainProposal>> {
         let pending_proposals = self
             .validator
@@ -501,7 +501,7 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    pub async fn get_sidechains(&mut self) -> Result<Vec<Sidechain>> {
+    pub async fn get_sidechains(&self) -> Result<Vec<Sidechain>> {
         let sidechains = self
             .validator
             .get_sidechains()?
@@ -515,7 +515,7 @@ impl Wallet {
     }
 
     pub async fn get_ctip(
-        &mut self,
+        &self,
         sidechain_number: SidechainNumber,
     ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>> {
         let ctip = self.validator.get_ctip(sidechain_number)?;
@@ -541,7 +541,7 @@ impl Wallet {
         Ok(())
     }
 
-    pub async fn is_sidechain_active(&mut self, sidechain_number: SidechainNumber) -> Result<bool> {
+    pub async fn is_sidechain_active(&self, sidechain_number: SidechainNumber) -> Result<bool> {
         let sidechains = self.get_sidechains().await?;
         for sidechain in sidechains {
             if sidechain.sidechain_number == sidechain_number {
@@ -549,6 +549,21 @@ impl Wallet {
             }
         }
         Ok(false)
+    }
+
+    pub fn get_new_address(&self) -> Result<bdk::bitcoin::Address> {
+        // Satisfy clippy with a single function call per lock
+        let with_wallet = |wallet: &bdk::Wallet<SqliteDatabase>| -> Result<bdk::bitcoin::Address> {
+            // Using AddressIndex::LastUnused here means that we get a new address
+            // when funds are received. Without this we'd need to take care not
+            // to cross the wallet scan gap.
+            let info = wallet
+                .get_address(AddressIndex::LastUnused)
+                .map_err(|e| miette!("unable to get address: {}", e))?;
+            Ok(info.address)
+        };
+
+        with_wallet(&self.bitcoin_wallet.lock())
     }
 }
 

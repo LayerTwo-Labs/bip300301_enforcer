@@ -700,7 +700,9 @@ fn connect_block(
             }
 
             Err(err) => {
-                tracing::error!("Failed to parse coinbase script: {:?}", err);
+                // Happens all the time. Would be nice to differentiate between "this isn't a BIP300 message"
+                // and "we failed real bad".
+                tracing::trace!("Failed to parse coinbase script: {:?}", err);
                 continue;
             }
         };
