@@ -495,10 +495,8 @@ impl ValidatorService for Validator {
     // }
 }
 
-pub type ArcWallet = Arc<crate::wallet::Wallet>;
-
 #[tonic::async_trait]
-impl WalletService for ArcWallet {
+impl WalletService for Arc<crate::wallet::Wallet> {
     async fn create_new_address(
         &self,
         request: tonic::Request<CreateNewAddressRequest>,

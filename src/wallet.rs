@@ -55,7 +55,7 @@ pub struct Wallet {
     // index
     // address (20 byte hash of public key)
     // utxos
-    last_sync: Arc<Mutex<Option<SystemTime>>>,
+    last_sync: Arc<parking_lot::Mutex<Option<SystemTime>>>,
 }
 
 impl Wallet {
@@ -116,8 +116,7 @@ impl Wallet {
             network,
             wallet_database,
         )
-        .map(parking_lot::Mutex::new)
-        .map(Arc::new);
+        .map(|wallet| Arc::new(parking_lot::Mutex::new(wallet)));
 
         let bitcoin_blockchain = {
             let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
@@ -190,7 +189,7 @@ impl Wallet {
             bitcoin_blockchain,
             mnemonic,
 
-            last_sync: Arc::new(Mutex::new(None)),
+            last_sync: Arc::new(parking_lot::Mutex::new(None)),
         };
         Ok(wallet)
     }
@@ -345,12 +344,7 @@ impl Wallet {
     }
 
     pub fn get_balance(&self) -> Result<()> {
-        if self
-            .last_sync
-            .lock()
-            .map(|sync| sync.is_none())
-            .unwrap_or_default()
-        {
+        if self.last_sync.lock().is_none() {
             return Err(miette!("get balance: wallet not synced"));
         }
 
@@ -381,10 +375,7 @@ impl Wallet {
             start.elapsed().unwrap_or_default(),
         );
 
-        let mut last_sync = self
-            .last_sync
-            .lock()
-            .map_err(|_| miette!("Failed to lock last_sync"))?;
+        let mut last_sync = self.last_sync.lock();
 
         *last_sync = Some(SystemTime::now());
 
@@ -392,12 +383,7 @@ impl Wallet {
     }
 
     pub fn get_utxos(&self) -> Result<()> {
-        if self
-            .last_sync
-            .lock()
-            .map(|sync| sync.is_none())
-            .unwrap_or_default()
-        {
+        if self.last_sync.lock().is_none() {
             return Err(miette!("get utxos: wallet not synced"));
         }
 

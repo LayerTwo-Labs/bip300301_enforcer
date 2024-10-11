@@ -22,7 +22,7 @@ mod zmq;
 use proto::mainchain::{
     wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer,
 };
-use server::{ArcWallet, Validator};
+use server::Validator;
 use wallet::Wallet;
 
 // Configure logger.
@@ -93,7 +93,7 @@ async fn run_server(
 }
 
 // TODO: return `Result<!, _>` once `never_type` is stabilized
-async fn wallet_task(wallet: ArcWallet) -> Result<(), miette::Report> {
+async fn wallet_task(wallet: Arc<wallet::Wallet>) -> Result<(), miette::Report> {
     const SYNC_INTERVAL: Duration = Duration::from_secs(15);
     let mut interval_stream = tokio_stream::wrappers::IntervalStream::new(interval(SYNC_INTERVAL));
     while let Some(_tick) = interval_stream.next().await {
@@ -123,7 +123,7 @@ async fn main() -> Result<()> {
     .await
     .into_diagnostic()?;
 
-    let wallet: Option<ArcWallet> = if cli.enable_wallet {
+    let wallet: Option<Arc<wallet::Wallet>> = if cli.enable_wallet {
         let wallet = Wallet::new(
             cli.data_dir,
             &cli.wallet_opts,
