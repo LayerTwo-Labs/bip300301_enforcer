@@ -59,7 +59,6 @@ use crate::{
 pub struct Wallet {
     main_client: HttpClient,
     validator: Validator,
-    sidechain_clients: HashMap<SidechainNumber, SidechainClient<Channel>>,
     bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
     db_connection: Connection,
     bitcoin_blockchain: ElectrumBlockchain,
@@ -176,13 +175,6 @@ impl Wallet {
                     UNIQUE(sidechain_number, bundle_hash));",
                 ),
                 M::up(
-                    "CREATE TABLE deposits
-                   (sidechain_number INTEGER NOT NULL,
-                    address BLOB NOT NULl,
-                    amount INTEGER NOT NULL,
-                    txid BLOB NOT NULL);",
-                ),
-                M::up(
                     "CREATE TABLE mempool
                    (txid BLOB UNIQUE NOT NULL,
                     tx_data BLOB NOT NULL);",
@@ -201,12 +193,9 @@ impl Wallet {
             db_connection
         };
 
-        let sidechain_clients = HashMap::new();
-
         let wallet = Self {
             main_client,
             validator,
-            sidechain_clients,
             bitcoin_wallet: bitcoin_wallet.into_diagnostic()?,
             db_connection,
             bitcoin_blockchain,
@@ -214,19 +203,6 @@ impl Wallet {
 
             last_sync: None,
         };
-        /*
-        let sidechains = wallet.get_sidechains().await?;
-        for sidechain in &sidechains {
-            let endpoint = format!(
-                "http://[::1]:{}",
-                50052 + sidechain.sidechain_number.0 as u32
-            );
-            let sidechain_client = SidechainClient::connect(endpoint).await.into_diagnostic()?;
-            wallet
-                .sidechain_clients
-                .insert(sidechain.sidechain_number, sidechain_client);
-        }
-        */
         Ok(wallet)
     }
 
@@ -373,19 +349,6 @@ impl Wallet {
             .collect();
 
 
-        for (_sidechain_number, sidechain_client) in self.sidechain_clients.iter_mut() {
-            let request = ConnectMainBlockRequest {
-                block_height,
-                block_hash: block_hash.clone(),
-                bmm_hashes: bmm_hashes.clone(),
-                deposits: vec![],
-                withdrawal_bundle_event: None,
-            };
-            sidechain_client
-                .connect_main_block(request)
-                .await
-                .into_diagnostic()?;
-        }
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
         */
@@ -595,271 +558,6 @@ impl Wallet {
             }
         }
         Ok(false)
-    }
-
-    pub async fn deposit(
-        &mut self,
-        sidechain_number: SidechainNumber,
-        amount: Amount,
-        address: &str,
-    ) -> Result<()> {
-        if !self.is_sidechain_active(sidechain_number).await? {
-            return Err(miette!(
-                "sidechain slot {} is not active",
-                sidechain_number.0
-            ));
-        }
-        let message = [
-            OP_DRIVECHAIN.to_u8(),
-            OP_PUSHBYTES_1.to_u8(),
-            sidechain_number.into(),
-            OP_TRUE.to_u8(),
-        ];
-        let op_drivechain = bdk::bitcoin::ScriptBuf::from_bytes(message.into());
-
-        let address = base58::decode(address).into_diagnostic()?;
-        if address.len() != 20 {
-            return Err(miette!(
-                "invalid address length, is is {} bytes, when it must be 20 bytes",
-                address.len()
-            ));
-        }
-        let message = [vec![OP_RETURN.to_u8()], address.clone()].concat();
-        let address_op_return = bdk::bitcoin::ScriptBuf::from_bytes(message);
-
-        let ctip = self.get_ctip(sidechain_number).await?;
-
-        // FIXME: Make this easier to read.
-        let ctip_amount = ctip
-            .map(|(_outpoint, amount, _sequence)| amount)
-            .unwrap_or(Amount::ZERO);
-
-        let mut builder = self.bitcoin_wallet.build_tx();
-        builder
-            .ordering(bdk::wallet::tx_builder::TxOrdering::Untouched)
-            .add_recipient(op_drivechain.clone(), (ctip_amount + amount).to_sat())
-            .add_recipient(address_op_return, 0);
-
-        if let Some((ctip_outpoint, _, _)) = ctip {
-            let transaction_hex: String = self
-                .main_client
-                .get_raw_transaction(ctip_outpoint.txid, GetRawTransactionVerbose::<false>, None)
-                .await
-                .into_diagnostic()?;
-            let ctip_outpoint = bdk::bitcoin::OutPoint {
-                txid: bdk::bitcoin::Txid::from_byte_array(ctip_outpoint.txid.to_byte_array()),
-                vout: ctip_outpoint.vout,
-            };
-            let transaction_bytes = hex::decode(transaction_hex).unwrap();
-            let mut cursor = Cursor::new(transaction_bytes);
-            let transaction =
-                bdk::bitcoin::Transaction::consensus_decode(&mut cursor).into_diagnostic()?;
-            builder
-                .add_foreign_utxo(
-                    ctip_outpoint,
-                    bdk::bitcoin::psbt::Input {
-                        non_witness_utxo: Some(transaction),
-                        ..bdk::bitcoin::psbt::Input::default()
-                    },
-                    0,
-                )
-                .into_diagnostic()?;
-        }
-
-        let (mut psbt, _details) = builder.finish().into_diagnostic()?;
-        self.bitcoin_wallet
-            .sign(&mut psbt, SignOptions::default())
-            .into_diagnostic()?;
-        let transaction = psbt.extract_tx();
-
-        let mut tx_data = vec![];
-        let mut cursor = Cursor::new(&mut tx_data);
-        transaction
-            .consensus_encode(&mut cursor)
-            .into_diagnostic()?;
-        self.db_connection
-            .execute(
-                "INSERT INTO deposits (sidechain_number, address, amount, txid) VALUES (?1, ?2, ?3, ?4)",
-                (sidechain_number.0, &address, amount.to_sat(), transaction.txid().as_byte_array()),
-            )
-            .into_diagnostic()?;
-        self.db_connection
-            .execute(
-                "INSERT INTO mempool (txid, tx_data) VALUES (?1, ?2)",
-                (transaction.txid().as_byte_array(), &tx_data),
-            )
-            .into_diagnostic()?;
-        Ok(())
-    }
-
-    pub fn delete_deposits(&self) -> Result<()> {
-        self.db_connection
-            .execute("DELETE FROM deposits;", ())
-            .into_diagnostic()?;
-        Ok(())
-    }
-
-    pub async fn get_deposits(&mut self, _sidechain_number: SidechainNumber) -> Result<()> {
-        // FIXME: implement
-        todo!()
-        /*
-        let deposits = self
-            .validator
-            .get_deposits(sidechain_number)
-            .map_err(|e| miette::miette!(e.to_string()))?;
-        dbg!(deposits);
-        Ok(())
-        */
-    }
-
-    pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
-        let mut statement = match sidechain_number {
-            Some(_sidechain_number) => self
-                .db_connection
-                .prepare(
-                    "SELECT sidechain_number, address, amount, tx_data
-                         FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
-                         WHERE sidechain_number = ?1;",
-                )
-                .into_diagnostic()?,
-            None => self
-                .db_connection
-                .prepare(
-                    "SELECT sidechain_number, address, amount, tx_data
-                     FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid;",
-                )
-                .into_diagnostic()?,
-        };
-        // FIXME: Make this code more sane.
-        let func = |_row: &Row| {
-            // FIXME: implement
-            todo!()
-            /*
-            let sidechain_number: u8 = row.get(0)?;
-            let address: Vec<u8> = row.get(1)?;
-            let amount: u64 = row.get(2)?;
-            let tx_data: Vec<u8> = row.get(3)?;
-            let transaction =
-                Transaction::consensus_decode_from_finite_reader(&mut tx_data.as_slice()).unwrap();
-            let deposit = Deposit {
-                sidechain_id: sidechain_number.into(),
-                address,
-                amount,
-                transaction,
-            };
-            Ok(deposit)
-            */
-        };
-        let rows = match sidechain_number {
-            Some(sidechain_number) => statement
-                .query_map([sidechain_number], func)
-                .into_diagnostic()?,
-            None => statement.query_map([], func).into_diagnostic()?,
-        };
-        let mut deposits = vec![];
-        for deposit in rows {
-            let deposit = deposit.into_diagnostic()?;
-            deposits.push(deposit);
-        }
-        Ok(deposits)
-    }
-
-    pub async fn get_bmm_requests(&mut self) -> Result<Vec<(SidechainNumber, [u8; HASH_LENGTH])>> {
-        let mut bmm_requests = vec![];
-        let active_sidechains = self.get_sidechains().await?;
-        for sidechain in &active_sidechains {
-            let (header, _coinbase, _transactions) =
-                self.get_next_block(sidechain.sidechain_number).await?;
-            let bmm_hash = header.hash();
-            bmm_requests.push((sidechain.sidechain_number, bmm_hash));
-        }
-        Ok(bmm_requests)
-    }
-
-    pub async fn get_next_block(
-        &mut self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<(
-        cusf_sidechain_types::Header,
-        Vec<cusf_sidechain_types::Output>,
-        Vec<cusf_sidechain_types::Transaction>,
-    )> {
-        let _sidechain_client = match self.sidechain_clients.get_mut(&sidechain_number) {
-            Some(sidechain_client) => sidechain_client,
-            None => return Err(miette!("sidechain is not active")),
-        };
-        // FIXME: implement
-        todo!()
-        /*
-        let prev_side_block_hash = sidechain_client
-            .get_chain_tip(GetChainTipRequest {})
-            .await
-            .into_diagnostic()?
-            .into_inner()
-            .block_hash;
-        let prev_side_block_hash: [u8; HASH_LENGTH] = prev_side_block_hash.try_into().unwrap();
-        let transactions_bytes = sidechain_client
-            .collect_transactions(CollectTransactionsRequest {})
-            .await
-            .into_diagnostic()?
-            .into_inner()
-            .transactions;
-        let transactions: Vec<cusf_sidechain_types::Transaction> =
-            bincode::deserialize(&transactions_bytes).into_diagnostic()?;
-        let coinbase = vec![];
-        let merkle_root =
-            cusf_sidechain_types::Header::compute_merkle_root(&coinbase, &transactions);
-        let header = cusf_sidechain_types::Header {
-            prev_side_block_hash,
-            merkle_root,
-        };
-        tracing::debug!("header: {}", hex::encode(header.hash()));
-        tracing::debug!(
-            "prev_side_block_hash: {}",
-            hex::encode(header.prev_side_block_hash)
-        );
-        tracing::debug!("merkle_root: {}", hex::encode(header.merkle_root));
-        let block = (header, coinbase, transactions);
-        Ok(block)
-        */
-    }
-
-    pub async fn mine_side_block(&mut self, sidechain_number: SidechainNumber) -> Result<()> {
-        let block = self.get_next_block(sidechain_number).await?;
-        let _sidechain_client = match self.sidechain_clients.get_mut(&sidechain_number) {
-            Some(sidechain_client) => sidechain_client,
-            None => return Err(miette!("sidechain is not active")),
-        };
-        let _block = bincode::serialize(&block).into_diagnostic()?;
-        // FIXME: implement
-        todo!()
-        /*
-        let request = SubmitBlockRequest { block };
-        let () = sidechain_client
-            .submit_block(request)
-            .await
-            .into_diagnostic()?;
-        Ok(())
-        */
-    }
-
-    pub async fn get_withdrawal_bundle(
-        &mut self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<bitcoin::Transaction> {
-        let _sidechain_client = self.sidechain_clients.get_mut(&sidechain_number).unwrap();
-        // FIXME: implement
-        todo!()
-        /*
-        let bundle = sidechain_client
-            .get_withdrawal_bundle(GetWithdrawalBundleRequest {})
-            .await
-            .into_diagnostic()?
-            .into_inner()
-            .bundle;
-        let bundle = bitcoin::consensus::deserialize(&bundle).into_diagnostic()?;
-        Ok(bundle)
-        */
     }
 }
 
