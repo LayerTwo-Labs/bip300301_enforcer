@@ -1,13 +1,12 @@
-use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, MainClient};
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use bdk::{
-    bitcoin::{consensus::Encodable as _, hashes::Hash, Network},
+    bitcoin::Network,
     blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
@@ -19,6 +18,7 @@ use bdk::{
     wallet::AddressIndex,
     KeychainKind, SyncOptions,
 };
+use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, MainClient};
 use bitcoin::{
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
@@ -35,6 +35,7 @@ use bitcoin::{
     Amount, Block, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use miette::{miette, IntoDiagnostic, Result};
+use parking_lot::{Mutex, RwLock};
 use rusqlite::Connection;
 
 use crate::{
@@ -46,8 +47,8 @@ use crate::{
 pub struct Wallet {
     main_client: HttpClient,
     validator: Validator,
-    bitcoin_wallet: Arc<parking_lot::Mutex<bdk::Wallet<SqliteDatabase>>>,
-    db_connection: Arc<parking_lot::Mutex<rusqlite::Connection>>,
+    bitcoin_wallet: Arc<Mutex<bdk::Wallet<SqliteDatabase>>>,
+    db_connection: Arc<Mutex<rusqlite::Connection>>,
     bitcoin_blockchain: ElectrumBlockchain,
     mnemonic: Mnemonic,
     // seed
@@ -55,7 +56,7 @@ pub struct Wallet {
     // index
     // address (20 byte hash of public key)
     // utxos
-    last_sync: Arc<parking_lot::Mutex<Option<SystemTime>>>,
+    last_sync: Arc<RwLock<Option<SystemTime>>>,
 }
 
 impl Wallet {
@@ -116,7 +117,7 @@ impl Wallet {
             network,
             wallet_database,
         )
-        .map(|wallet| Arc::new(parking_lot::Mutex::new(wallet)));
+        .into_diagnostic()?;
 
         let bitcoin_blockchain = {
             let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
@@ -184,12 +185,12 @@ impl Wallet {
         let wallet = Self {
             main_client,
             validator,
-            bitcoin_wallet: bitcoin_wallet.into_diagnostic()?,
-            db_connection: Arc::new(parking_lot::Mutex::new(db_connection)),
+            bitcoin_wallet: Arc::new(Mutex::new(bitcoin_wallet)),
+            db_connection: Arc::new(Mutex::new(db_connection)),
             bitcoin_blockchain,
             mnemonic,
 
-            last_sync: Arc::new(parking_lot::Mutex::new(None)),
+            last_sync: Arc::new(RwLock::new(None)),
         };
         Ok(wallet)
     }
@@ -344,7 +345,7 @@ impl Wallet {
     }
 
     pub fn get_balance(&self) -> Result<()> {
-        if self.last_sync.lock().is_none() {
+        if self.last_sync.read().is_none() {
             return Err(miette!("get balance: wallet not synced"));
         }
 
@@ -364,26 +365,20 @@ impl Wallet {
     pub fn sync(&self) -> Result<()> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
-
         self.bitcoin_wallet
             .lock()
             .sync(&self.bitcoin_blockchain, SyncOptions::default())
             .into_diagnostic()?;
-
         tracing::debug!(
             "wallet sync complete in {:?}",
             start.elapsed().unwrap_or_default(),
         );
-
-        let mut last_sync = self.last_sync.lock();
-
-        *last_sync = Some(SystemTime::now());
-
+        *self.last_sync.write() = Some(SystemTime::now());
         Ok(())
     }
 
     pub fn get_utxos(&self) -> Result<()> {
-        if self.last_sync.lock().is_none() {
+        if self.last_sync.read().is_none() {
             return Err(miette!("get utxos: wallet not synced"));
         }
 
@@ -436,25 +431,25 @@ impl Wallet {
     }
 
     pub fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
-        let connection = self.db_connection.lock();
-        let mut statement = connection
-            .prepare("SELECT number, data_hash FROM sidechain_acks")
-            .into_diagnostic()?;
-        let rows = statement
-            .query_map([], |row| {
-                let data_hash: [u8; 32] = row.get(1)?;
-                Ok(SidechainAck {
-                    sidechain_number: row.get(0)?,
-                    data_hash,
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = connection
+                .prepare("SELECT number, data_hash FROM sidechain_acks")
+                .into_diagnostic()?;
+            let rows = statement
+                .query_map([], |row| {
+                    let data_hash: [u8; 32] = row.get(1)?;
+                    Ok(SidechainAck {
+                        sidechain_number: row.get(0)?,
+                        data_hash,
+                    })
                 })
-            })
-            .into_diagnostic()?;
-        let mut acks = vec![];
-        for ack in rows {
-            let ack = ack.into_diagnostic()?;
-            acks.push(ack);
-        }
-        Ok(acks)
+                .into_diagnostic()?
+                .collect::<Result<_, _>>()
+                .into_diagnostic()?;
+            Ok(rows)
+        };
+        with_connection(&self.db_connection.lock())
     }
 
     pub fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
@@ -484,35 +479,32 @@ impl Wallet {
     }
 
     pub fn get_sidechain_proposals(&mut self) -> Result<Vec<Sidechain>> {
-        let connection = self.db_connection.lock();
-        let mut statement = connection
-            .prepare("SELECT number, data FROM sidechain_proposals")
-            .into_diagnostic()?;
-
-        let rows = statement
-            .query_map([], |row| {
-                let data: Vec<u8> = row.get(1)?;
-                let sidechain_number: u8 = row.get::<_, u8>(0)?;
-                Ok(Sidechain {
-                    sidechain_number: sidechain_number.into(),
-                    data,
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = connection
+                .prepare("SELECT number, data FROM sidechain_proposals")
+                .into_diagnostic()?;
+            let proposals = statement
+                .query_map([], |row| {
+                    let data: Vec<u8> = row.get(1)?;
+                    let sidechain_number: u8 = row.get::<_, u8>(0)?;
+                    Ok(Sidechain {
+                        sidechain_number: sidechain_number.into(),
+                        data,
+                    })
                 })
-            })
-            .into_diagnostic()?;
-        let mut proposals = vec![];
-        for proposal in rows {
-            let proposal = proposal.into_diagnostic()?;
-            proposals.push(proposal);
-        }
-
-        Ok(proposals)
+                .into_diagnostic()?
+                .collect::<Result<_, _>>()
+                .into_diagnostic()?;
+            Ok(proposals)
+        };
+        with_connection(&self.db_connection.lock())
     }
 
     pub async fn get_sidechains(&mut self) -> Result<Vec<Sidechain>> {
         let sidechains = self
             .validator
-            .get_sidechains()
-            .map_err(|e| miette::miette!(e.to_string()))?
+            .get_sidechains()?
             .into_iter()
             .map(|sidechain| Sidechain {
                 sidechain_number: sidechain.sidechain_number,
@@ -526,17 +518,14 @@ impl Wallet {
         &mut self,
         sidechain_number: SidechainNumber,
     ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>> {
-        let ctip = self
-            .validator
-            .get_ctip(sidechain_number)
-            .map_err(|e| miette::miette!(e.to_string()));
+        let ctip = self.validator.get_ctip(sidechain_number)?;
 
         let sequence_number = self
             .validator
             .get_ctip_sequence_number(sidechain_number)?
             .unwrap();
 
-        if let Ok(Some(ctip)) = ctip {
+        if let Some(ctip) = ctip {
             let value = ctip.value;
             Ok(Some((ctip.outpoint, value, sequence_number)))
         } else {

@@ -32,6 +32,7 @@ hex = "0.4.3"
 miette = { version = "7.1.0", features = ["fancy"] }
 num-traits = "0.2.19"
 nom = "7.1.3"
+parking_lot = { version = "0.12.3", features = ["send_guard"] }
 prost = "0.13.2"
 rusqlite = { version = "0.28.0", features = ["bundled"] }
 rusqlite_migration = "1.0.2"
@@ -47,7 +48,6 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 zeromq = "0.4.0"
 tower = "0.5.1"
 tower-http = { version = "0.6.1", features = ["trace"] }
-parking_lot = "0.12.3"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
@@ -62,9 +62,11 @@ features = ["Clone", "Debug"]
 all = { level = "deny", priority = -1 }
 assertions_on_result_states = "allow"
 let_unit_value = "allow"
-wildcard_imports = "deny"
-print_stdout = "deny"
 print_stderr = "deny"
+print_stdout = "deny"
+significant_drop_in_scrutinee = "deny"
+significant_drop_tightening = "deny"
+wildcard_imports = "deny"
 
 [lints.rust]
 let_underscore_drop = "deny"
