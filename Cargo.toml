@@ -47,6 +47,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 zeromq = "0.4.0"
 tower = "0.5.1"
 tower-http = { version = "0.6.1", features = ["trace"] }
+parking_lot = "0.12.3"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
