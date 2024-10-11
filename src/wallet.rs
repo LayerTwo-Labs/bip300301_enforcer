@@ -1,21 +1,13 @@
-use bip300301::{
-    client::BlockchainInfo,
-    jsonrpsee::http_client::HttpClient,
-    MainClient,
-};
+use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, MainClient};
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use bdk::{
-    bitcoin::{
-        consensus::Encodable as _,
-        hashes::Hash,
-        Network,
-    },
+    bitcoin::{consensus::Encodable as _, hashes::Hash, Network},
     blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
@@ -54,8 +46,8 @@ use crate::{
 pub struct Wallet {
     main_client: HttpClient,
     validator: Validator,
-    bitcoin_wallet: ThreadSafe<bdk::Wallet<SqliteDatabase>>,
-    db_connection: ThreadSafe<rusqlite::Connection>,
+    bitcoin_wallet: Arc<parking_lot::Mutex<bdk::Wallet<SqliteDatabase>>>,
+    db_connection: Arc<parking_lot::Mutex<rusqlite::Connection>>,
     bitcoin_blockchain: ElectrumBlockchain,
     mnemonic: Mnemonic,
     // seed
@@ -124,7 +116,8 @@ impl Wallet {
             network,
             wallet_database,
         )
-        .map(ThreadSafe::new);
+        .map(parking_lot::Mutex::new)
+        .map(Arc::new);
 
         let bitcoin_blockchain = {
             let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
@@ -193,7 +186,7 @@ impl Wallet {
             main_client,
             validator,
             bitcoin_wallet: bitcoin_wallet.into_diagnostic()?,
-            db_connection: ThreadSafe::new(db_connection),
+            db_connection: Arc::new(parking_lot::Mutex::new(db_connection)),
             bitcoin_blockchain,
             mnemonic,
 
@@ -209,7 +202,7 @@ impl Wallet {
     ) -> Result<Block> {
         let addr = self
             .bitcoin_wallet
-            .lock()?
+            .lock()
             .get_address(AddressIndex::New)
             .into_diagnostic()?;
         let script_pubkey = addr.script_pubkey();
@@ -361,11 +354,7 @@ impl Wallet {
             return Err(miette!("get balance: wallet not synced"));
         }
 
-        let balance = self
-            .bitcoin_wallet
-            .lock()?
-            .get_balance()
-            .into_diagnostic()?;
+        let balance = self.bitcoin_wallet.lock().get_balance().into_diagnostic()?;
         let immature = Amount::from_sat(balance.immature);
         let untrusted_pending = Amount::from_sat(balance.untrusted_pending);
         let trusted_pending = Amount::from_sat(balance.trusted_pending);
@@ -383,7 +372,7 @@ impl Wallet {
         tracing::trace!("starting wallet sync");
 
         self.bitcoin_wallet
-            .lock()?
+            .lock()
             .sync(&self.bitcoin_blockchain, SyncOptions::default())
             .into_diagnostic()?;
 
@@ -414,7 +403,7 @@ impl Wallet {
 
         let utxos = self
             .bitcoin_wallet
-            .lock()?
+            .lock()
             .list_unspent()
             .into_diagnostic()?;
         for utxo in &utxos {
@@ -429,7 +418,7 @@ impl Wallet {
 
     pub fn propose_sidechain(&self, sidechain_number: u8, data: &[u8]) -> Result<()> {
         self.db_connection
-            .lock()?
+            .lock()
             .execute(
                 "INSERT INTO sidechain_proposals (number, data) VALUES (?1, ?2)",
                 (sidechain_number, data),
@@ -440,7 +429,7 @@ impl Wallet {
 
     pub fn ack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
         self.db_connection
-            .lock()?
+            .lock()
             .execute(
                 "INSERT INTO sidechain_acks (number, data_hash) VALUES (?1, ?2)",
                 (sidechain_number, data_hash),
@@ -451,7 +440,7 @@ impl Wallet {
 
     pub fn nack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
         self.db_connection
-            .lock()?
+            .lock()
             .execute(
                 "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
                 (sidechain_number, data_hash),
@@ -461,7 +450,7 @@ impl Wallet {
     }
 
     pub fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
-        let connection = self.db_connection.lock()?;
+        let connection = self.db_connection.lock();
         let mut statement = connection
             .prepare("SELECT number, data_hash FROM sidechain_acks")
             .into_diagnostic()?;
@@ -484,7 +473,7 @@ impl Wallet {
 
     pub fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
         self.db_connection
-            .lock()?
+            .lock()
             .execute(
                 "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
                 (ack.sidechain_number, ack.data_hash),
@@ -509,7 +498,7 @@ impl Wallet {
     }
 
     pub fn get_sidechain_proposals(&mut self) -> Result<Vec<Sidechain>> {
-        let connection = self.db_connection.lock()?;
+        let connection = self.db_connection.lock();
         let mut statement = connection
             .prepare("SELECT number, data FROM sidechain_proposals")
             .into_diagnostic()?;
@@ -571,7 +560,7 @@ impl Wallet {
 
     pub fn delete_sidechain_proposals(&self) -> Result<()> {
         self.db_connection
-            .lock()?
+            .lock()
             .execute("DELETE FROM sidechain_proposals;", ())
             .into_diagnostic()?;
         Ok(())
@@ -585,27 +574,6 @@ impl Wallet {
             }
         }
         Ok(false)
-    }
-}
-
-// TODO: getting some complains from clippy:
-//     = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
-// Not sure about how to accomplish this.
-struct ThreadSafe<D> {
-    underlying: Arc<Mutex<D>>,
-}
-
-impl<D> ThreadSafe<D> {
-    pub fn new(underlying: D) -> Self {
-        Self {
-            underlying: Arc::new(Mutex::new(underlying)),
-        }
-    }
-
-    pub fn lock(&self) -> Result<MutexGuard<'_, D>, miette::Error> {
-        self.underlying
-            .lock()
-            .map_err(|e| miette::miette!("Mutex poison error: {}", e))
     }
 }
 
