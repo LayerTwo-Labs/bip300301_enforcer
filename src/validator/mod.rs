@@ -2,7 +2,7 @@ use std::{future::Future, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver, Receiver};
 use bip300301::{jsonrpsee, MainClient};
-use bip300301_messages::bitcoin::{self, BlockHash};
+use bitcoin::{self, BlockHash};
 use fallible_iterator::FallibleIterator;
 use futures::{FutureExt as _, TryFutureExt as _};
 use miette::IntoDiagnostic;

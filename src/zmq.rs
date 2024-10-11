@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use bip300301_messages::bitcoin::{hashes::Hash as _, BlockHash, Txid};
+use bitcoin::{hashes::Hash as _, BlockHash, Txid};
 use either::Either;
 use futures::{
     stream::{self, BoxStream},
