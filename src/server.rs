@@ -501,10 +501,16 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         request: tonic::Request<CreateNewAddressRequest>,
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        let wallet = self as &Arc<crate::wallet::Wallet>;
+
+        let address = wallet
+            .get_new_address()
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+
+        let response = CreateNewAddressResponse {
+            address: address.to_string(),
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn generate_blocks(
