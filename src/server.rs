@@ -28,7 +28,8 @@ use crate::{
 
 use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
-use bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
+use bdk::bitcoin::hashes::Hash as _;
+use bitcoin::{self, absolute::Height, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
 use miette::Result;
 use tonic::{Request, Response, Status};
@@ -382,11 +383,18 @@ impl ValidatorService for Validator {
                 start_block_hash.decode_tonic::<GetTwoWayPegDataRequest, _>("start_block_hash")
             })
             .transpose()?
-            .map(BlockHash::from_byte_array);
-        let end_block_hash: [u8; 32] = end_block_hash
+            .map(|bytes| {
+                bdk_block_hash_to_bitcoin_block_hash(bdk::bitcoin::BlockHash::from_byte_array(
+                    bytes,
+                ))
+            });
+
+        let end_block_hash: BlockHash = end_block_hash
             .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("end_block_hash"))?
-            .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")?;
-        let end_block_hash = BlockHash::from_byte_array(end_block_hash);
+            .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")
+            .map(bdk::bitcoin::BlockHash::from_byte_array)
+            .map(bdk_block_hash_to_bitcoin_block_hash)?;
+
         match self.get_two_way_peg_data(start_block_hash, end_block_hash) {
             Err(err) => Err(tonic::Status::from_error(Box::new(err))),
             Ok(two_way_peg_data) => {
@@ -526,15 +534,109 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         ))
     }
 
+    // Legacy Bitcoin Core-based implementation
+    // https://github.com/LayerTwo-Labs/mainchain/blob/05e71917042132202248c0c917f8ef120a2a5251/src/wallet/rpcwallet.cpp#L3863-L4008
     async fn create_bmm_critical_data_transaction(
         &self,
         request: tonic::Request<CreateBmmCriticalDataTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateBmmCriticalDataTransactionResponse>, tonic::Status>
     {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        let CreateBmmCriticalDataTransactionRequest {
+            sidechain_id,
+            value_sats,
+            height,
+            critical_hash,
+            prev_bytes,
+        } = request.into_inner();
+
+        let amount = value_sats
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("value_sats"))
+            .map(bdk::bitcoin::Amount::from_sat)
+            .map_err(|_| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+                    "value_sats",
+                    &value_sats.unwrap_or_default().to_string(),
+                )
+            })?;
+
+        let locktime = height
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("height"))
+            .map(bdk::bitcoin::absolute::LockTime::from_height)?
+            .map_err(|_| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+                    "height",
+                    &height.unwrap_or_default().to_string(),
+                )
+            })?;
+
+        let sidechain_number = sidechain_id
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("sidechain_id"))
+            .map(SidechainNumber::try_from)?
+            .map_err(|_| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+                    "sidechain_id",
+                    &sidechain_id.unwrap_or_default().to_string(),
+                )
+            })?;
+
+        match self.is_sidechain_active(sidechain_number).await {
+            Ok(false) => {
+                return Err(tonic::Status::failed_precondition(
+                    "sidechain is not active",
+                ))
+            }
+            Ok(true) => (),
+            Err(err) => return Err(tonic::Status::from_error(err.into())),
+        }
+
+        // This is also called H*
+        let critical_hash = critical_hash
+            .ok_or_else(|| {
+                missing_field::<CreateBmmCriticalDataTransactionRequest>("critical_hash")
+            })?
+            .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("critical_hash")
+            .map(bdk::bitcoin::BlockHash::from_byte_array)?;
+
+        let prev_bytes = prev_bytes
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("prev_bytes"))?
+            .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("prev_bytes")
+            .map(bdk::bitcoin::BlockHash::from_byte_array)?;
+
+        let mainchain_tip = self
+            .get_mainchain_tip()
+            .map_err(|err| tonic::Status::from_error(err.into()))?;
+
+        // If the mainchain tip has progressed beyond this, the request is already
+        // expired.
+        if mainchain_tip != bdk_block_hash_to_bitcoin_block_hash(prev_bytes) {
+            let message = format!(
+                "invalid prev_bytes {}: expected {}",
+                prev_bytes, mainchain_tip
+            );
+
+            return Err(tonic::Status::invalid_argument(message));
+        }
+
+        let tx = self
+            .create_bmm_request(
+                sidechain_number,
+                critical_hash,
+                prev_bytes,
+                amount,
+                locktime,
+            )
+            .await
+            .map_err(|err| tonic::Status::internal(err.to_string()))
+            .inspect_err(|err| {
+                tracing::error!("Error creating BMM critical data transaction: {}", err);
+            })?;
+
+        let txid = bdk_txid_to_bitcoin_txid(tx.txid());
+
+        let response = CreateBmmCriticalDataTransactionResponse {
+            txid: Some(ConsensusHex::encode(&txid)),
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn create_deposit_transaction(
@@ -546,4 +648,24 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             "not implemented",
         ))
     }
+}
+
+fn bdk_block_hash_to_bitcoin_block_hash(hash: bdk::bitcoin::BlockHash) -> bitcoin::BlockHash {
+    let bytes = hash.as_byte_array().to_vec();
+
+    use bitcoin::hashes::sha256d::Hash;
+    use bitcoin::hashes::Hash as Hm;
+    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
+
+    bitcoin::BlockHash::from_raw_hash(hash)
+}
+
+fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
+    let bytes = hash.as_byte_array().to_vec();
+
+    use bitcoin::hashes::sha256d::Hash;
+    use bitcoin::hashes::Hash as Hm;
+    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
+
+    bitcoin::Txid::from_raw_hash(hash)
 }

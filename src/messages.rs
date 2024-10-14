@@ -12,6 +12,8 @@ use nom::multi::many0;
 use nom::IResult;
 use sha2::{Digest, Sha256};
 
+use crate::types::SidechainNumber;
+
 pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
 
 pub struct CoinbaseBuilder {
@@ -99,7 +101,8 @@ pub enum CoinbaseMessage {
 
 #[derive(Debug)]
 pub struct M8BmmRequest {
-    pub sidechain_number: u8,
+    pub sidechain_number: SidechainNumber,
+    // Also called H* or critical hash, critical data hash, hash critical
     pub sidechain_block_hash: [u8; 32],
     pub prev_mainchain_block_hash: [u8; 32],
 }
@@ -278,7 +281,7 @@ pub fn parse_m8_bmm_request(input: &[u8]) -> IResult<&[u8], M8BmmRequest> {
     let sidechain_block_hash = sidechain_block_hash.try_into().unwrap();
     let prev_mainchain_block_hash = prev_mainchain_block_hash.try_into().unwrap();
     let message = M8BmmRequest {
-        sidechain_number,
+        sidechain_number: sidechain_number.into(),
         sidechain_block_hash,
         prev_mainchain_block_hash,
     };
@@ -438,7 +441,7 @@ mod tests {
     #[test]
     fn test_parse_m8_bmm_request() {
         // This data was given to /cusf.mainchain.v1.WalletService/CreateBmmCriticalDataTransaction
-        let sidechain_number: u8 = 1;
+        let sidechain_number = SidechainNumber(1);
         let critical_bytes =
             hex::decode("1200007c0ca1efd8d128fedf50c73f395b0cceb0ffa823edbd971b4afd913021")
                 .unwrap();
