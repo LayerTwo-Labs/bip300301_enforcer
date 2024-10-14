@@ -1,3 +1,5 @@
+use std::num::TryFromIntError;
+
 use bitcoin::{Amount, BlockHash, OutPoint, TxOut, Work};
 use hashlink::LinkedHashMap;
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,16 @@ impl From<u8> for SidechainNumber {
     #[inline(always)]
     fn from(sidechain_number: u8) -> Self {
         Self(sidechain_number)
+    }
+}
+
+// Used by protos
+impl TryFrom<u32> for SidechainNumber {
+    type Error = TryFromIntError;
+
+    #[inline(always)]
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        value.try_into().map(SidechainNumber)
     }
 }
 

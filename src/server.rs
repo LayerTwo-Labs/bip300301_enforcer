@@ -82,18 +82,15 @@ impl ValidatorService for Validator {
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockInfoRequest>("block_hash"))?
             .decode_tonic::<GetBlockInfoRequest, _>("block_hash")?;
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 =
+        let sidechain_id = {
+            let raw_id =
                 sidechain_id.ok_or_else(|| missing_field::<GetBlockInfoRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetBlockInfoRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetBlockInfoRequest>("sidechain_id", &raw_id.to_string())
+            })?
         };
+
         let header_info = self
             .get_header_info(&block_hash)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
@@ -118,18 +115,19 @@ impl ValidatorService for Validator {
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("block_hash"))?
             .decode_tonic::<GetBmmHStarCommitmentRequest, _>("block_hash")?;
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 = sidechain_id
+
+        let sidechain_id = {
+            let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetBmmHStarCommitmentRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetBmmHStarCommitmentRequest>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                )
+            })?
         };
+
         let bmm_commitments = self
             .try_get_bmm_commitments(&block_hash)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
@@ -238,18 +236,15 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetCtipRequest>,
     ) -> Result<tonic::Response<GetCtipResponse>, tonic::Status> {
         let GetCtipRequest { sidechain_number } = request.into_inner();
-        let sidechain_number: SidechainNumber = {
-            let sidechain_number: u32 = sidechain_number
+        let sidechain_number = {
+            let raw_id = sidechain_number
                 .ok_or_else(|| missing_field::<GetCtipRequest>("sidechain_number"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_number)
-                .map_err(|_| {
-                    invalid_field_value::<GetCtipRequest>(
-                        "sidechain_number",
-                        &sidechain_number.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetCtipRequest>("sidechain_number", &raw_id.to_string())
+            })?
         };
+
         let ctip = self
             .get_ctip(sidechain_number)
             .map_err(|err| tonic::Status::internal(err.to_string()))?;
@@ -372,18 +367,16 @@ impl ValidatorService for Validator {
             start_block_hash,
             end_block_hash,
         } = request.into_inner();
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 = sidechain_id
+
+        let sidechain_id = {
+            let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetTwoWayPegDataRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetTwoWayPegDataRequest>("sidechain_id", &raw_id.to_string())
+            })?
         };
+
         let start_block_hash: Option<BlockHash> = start_block_hash
             .map(|start_block_hash| {
                 start_block_hash.decode_tonic::<GetTwoWayPegDataRequest, _>("start_block_hash")
@@ -416,18 +409,16 @@ impl ValidatorService for Validator {
         request: tonic::Request<SubscribeEventsRequest>,
     ) -> Result<tonic::Response<Self::SubscribeEventsStream>, tonic::Status> {
         let SubscribeEventsRequest { sidechain_id } = request.into_inner();
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 = sidechain_id
-                .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetTwoWayPegDataRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+        let sidechain_id = {
+            let raw_id = sidechain_id
+                .ok_or_else(|| missing_field::<SubscribeEventsRequest>("sidechain_id"))?;
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<SubscribeEventsRequest>("sidechain_id", &raw_id.to_string())
+            })?
         };
+
         let stream = futures::stream::try_unfold(self.subscribe_events(), |mut receiver| async {
             match receiver.recv_direct().await {
                 Ok(event) => Ok(Some((event, receiver))),
