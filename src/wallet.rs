@@ -6,7 +6,7 @@ use std::{
 };
 
 use bdk::{
-    bitcoin::Network,
+    bitcoin::{hashes::Hash, BlockHash, Network},
     blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
@@ -16,7 +16,7 @@ use bdk::{
     },
     template::Bip84,
     wallet::AddressIndex,
-    KeychainKind, SyncOptions,
+    KeychainKind, SignOptions, SyncOptions,
 };
 use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, MainClient};
 use bitcoin::{
@@ -41,7 +41,7 @@ use rusqlite::{Connection, Row};
 
 use crate::{
     cli::WalletConfig,
-    messages::{sha256d, CoinbaseBuilder},
+    messages::{sha256d, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
     types::{SidechainNumber, SidechainProposal},
     validator::Validator,
 };
@@ -644,7 +644,11 @@ impl Wallet {
         Ok(sidechains)
     }
 
-    pub async fn get_ctip(
+    pub fn get_mainchain_tip(&self) -> Result<bitcoin::BlockHash> {
+        self.validator.get_mainchain_tip()
+    }
+
+    pub async fn get_sidechain_ctip(
         &self,
         sidechain_number: SidechainNumber,
     ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>> {
@@ -679,6 +683,78 @@ impl Wallet {
             }
         }
         Ok(false)
+    }
+
+    // Creates a BMM request transaction. Does NOT broadcast. `height` is the block height this
+    // transaction MUST be included in. `amount` is the amount to spend in the BMM bid.
+    pub async fn create_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: bdk::bitcoin::BlockHash,
+        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        amount: bdk::bitcoin::Amount,
+        locktime: bdk::bitcoin::absolute::LockTime,
+    ) -> Result<bdk::bitcoin::Transaction> {
+        let mut psbt = self.build_bmm_tx(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+            amount,
+            locktime,
+        )?;
+
+        match self
+            .bitcoin_wallet
+            .lock()
+            .sign(&mut psbt, SignOptions::default())
+        {
+            Ok(true) => {
+                tracing::info!("BMM request psbt signed successfully");
+            }
+
+            Ok(false) => {
+                tracing::error!("failed to sign BMM request psbt");
+                return Err(miette!("failed to sign BMM request psbt"));
+            }
+
+            Err(e) => {
+                return Err(miette!("failed to sign BMM request psbt: {e:#}"));
+            }
+        }
+
+        let tx = psbt.extract_tx();
+
+        Ok(tx)
+    }
+
+    fn build_bmm_tx(
+        &self,
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: bdk::bitcoin::BlockHash,
+        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        amount: bdk::bitcoin::Amount,
+        locktime: bdk::bitcoin::absolute::LockTime,
+    ) -> Result<bdk::bitcoin::psbt::PartiallySignedTransaction> {
+        // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
+        let message = [
+            vec![OP_RETURN.to_u8()],
+            M8_BMM_REQUEST_TAG.to_vec(),
+            vec![sidechain_number.into()],
+            BlockHash::to_byte_array(sidechain_block_hash).to_vec(),
+            BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
+        ]
+        .concat();
+
+        let bitcoin_wallet = self.bitcoin_wallet.lock();
+
+        let builder = bitcoin_wallet.build_tx().nlocktime(locktime).add_recipient(
+            bdk::bitcoin::ScriptBuf::from_bytes(message),
+            amount.to_sat(),
+        );
+
+        let (psbt, _) = builder.finish().into_diagnostic()?;
+
+        Ok(psbt)
     }
 
     pub fn get_new_address(&self) -> Result<bdk::bitcoin::Address> {
