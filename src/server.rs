@@ -631,7 +631,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
                 tracing::error!("Error creating BMM critical data transaction: {}", err);
             })?;
 
-        let txid = bdk_txid_to_bitcoin_txid(tx.txid());
+        let txid = tx.txid();
+        self.broadcast_transaction(tx)
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+
+        let txid = bdk_txid_to_bitcoin_txid(txid);
 
         let response = CreateBmmCriticalDataTransactionResponse {
             txid: Some(ConsensusHex::encode(&txid)),
