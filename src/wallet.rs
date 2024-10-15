@@ -744,15 +744,15 @@ impl Wallet {
             BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
         ]
         .concat();
-
         let bitcoin_wallet = self.bitcoin_wallet.lock();
-
-        let builder = bitcoin_wallet.build_tx().nlocktime(locktime).add_recipient(
-            bdk::bitcoin::ScriptBuf::from_bytes(message),
-            amount.to_sat(),
-        );
-
-        let (psbt, _) = builder.finish().into_diagnostic()?;
+        let (psbt, _) = {
+            let mut builder = bitcoin_wallet.build_tx();
+            builder.nlocktime(locktime).add_recipient(
+                bdk::bitcoin::ScriptBuf::from_bytes(message),
+                amount.to_sat(),
+            );
+            builder.finish().into_diagnostic()?
+        };
 
         Ok(psbt)
     }
