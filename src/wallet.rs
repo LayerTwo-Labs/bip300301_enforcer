@@ -41,6 +41,7 @@ use rusqlite::{Connection, Row};
 
 use crate::{
     cli::WalletConfig,
+    errors::convert_bdk_error,
     messages::{sha256d, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
     types::{SidechainNumber, SidechainProposal},
     validator::Validator,
@@ -765,9 +766,9 @@ impl Wallet {
     pub fn broadcast_transaction(&self, tx: bdk::bitcoin::Transaction) -> Result<()> {
         self.bitcoin_blockchain
             .broadcast(&tx)
+            .map_err(convert_bdk_error)
             .inspect(|_| tracing::info!("broadcast tx: {}", tx.txid()))
-            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))
-            .into_diagnostic()?;
+            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))?;
         Ok(())
     }
 
