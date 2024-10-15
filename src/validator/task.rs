@@ -665,7 +665,7 @@ fn handle_m8(
 
     if let Ok((_input, bmm_request)) = parse_m8_bmm_request(&script) {
         if !accepted_bmm_requests
-            .get(&bmm_request.sidechain_number.into())
+            .get(&bmm_request.sidechain_number)
             .is_some_and(|commitment| *commitment == bmm_request.sidechain_block_hash)
         {
             return Err(HandleM8Error::NotAcceptedByMiners);
