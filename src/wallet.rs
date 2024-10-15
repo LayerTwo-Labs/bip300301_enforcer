@@ -7,7 +7,7 @@ use std::{
 
 use bdk::{
     bitcoin::{hashes::Hash, BlockHash, Network},
-    blockchain::ElectrumBlockchain,
+    blockchain::{Blockchain, ElectrumBlockchain},
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
     keys::{
@@ -759,6 +759,16 @@ impl Wallet {
         };
 
         Ok(psbt)
+    }
+
+    // Broadcasts a transaction to the Bitcoin network.
+    pub fn broadcast_transaction(&self, tx: bdk::bitcoin::Transaction) -> Result<()> {
+        self.bitcoin_blockchain
+            .broadcast(&tx)
+            .inspect(|_| tracing::info!("broadcast tx: {}", tx.txid()))
+            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))
+            .into_diagnostic()?;
+        Ok(())
     }
 
     pub fn get_new_address(&self) -> Result<bdk::bitcoin::Address> {
