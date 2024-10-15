@@ -703,11 +703,11 @@ impl Wallet {
             locktime,
         )?;
 
-        match self
+        let psbt_finalized: Result<bool, _> = self
             .bitcoin_wallet
             .lock()
-            .sign(&mut psbt, SignOptions::default())
-        {
+            .sign(&mut psbt, SignOptions::default());
+        match psbt_finalized {
             Ok(true) => {
                 tracing::info!("BMM request psbt signed successfully");
             }
@@ -727,6 +727,10 @@ impl Wallet {
         Ok(tx)
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
     fn build_bmm_tx(
         &self,
         sidechain_number: SidechainNumber,
@@ -744,8 +748,8 @@ impl Wallet {
             BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
         ]
         .concat();
-        let bitcoin_wallet = self.bitcoin_wallet.lock();
         let (psbt, _) = {
+            let bitcoin_wallet = self.bitcoin_wallet.lock();
             let mut builder = bitcoin_wallet.build_tx();
             builder.nlocktime(locktime).add_recipient(
                 bdk::bitcoin::ScriptBuf::from_bytes(message),
