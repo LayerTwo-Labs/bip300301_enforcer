@@ -867,13 +867,30 @@ async fn sync_headers(
     main_tip: BlockHash,
 ) -> Result<(), SyncError> {
     let mut block_hash = main_tip;
-    while let Some(latest_missing_header) = tokio::task::block_in_place(|| {
-        let rotxn = dbs.read_txn()?;
-        dbs.block_hashes
-            .latest_missing_ancestor_header(&rotxn, block_hash)
-            .map_err(SyncError::DbTryGet)
-    })? {
-        tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
+    while let Some((latest_missing_header, latest_missing_header_height)) =
+        tokio::task::block_in_place(|| {
+            let rotxn = dbs.read_txn()?;
+            match dbs
+                .block_hashes
+                .latest_missing_ancestor_header(&rotxn, block_hash)
+                .map_err(SyncError::DbTryGet)?
+            {
+                Some(latest_missing_header) => {
+                    let height = dbs
+                        .block_hashes
+                        .height()
+                        .try_get(&rotxn, &latest_missing_header)?;
+                    Ok::<_, SyncError>(Some((latest_missing_header, height)))
+                }
+                None => Ok(None),
+            }
+        })?
+    {
+        if let Some(latest_missing_header_height) = latest_missing_header_height {
+            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
+        } else {
+            tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
+        }
         let header = main_client
             .getblockheader(latest_missing_header)
             .map_err(|err| SyncError::JsonRpc {
@@ -881,6 +898,7 @@ async fn sync_headers(
                 source: err,
             })
             .await?;
+        latest_missing_header_height.inspect(|height| assert_eq!(*height, header.height));
         let height = header.height;
         let mut rwtxn = dbs.write_txn()?;
         dbs.block_hashes

@@ -64,7 +64,11 @@ pub struct Config {
     pub data_dir: PathBuf,
     #[arg(long)]
     pub enable_wallet: bool,
-    /// Log level
+    /// Log level.
+    /// Logs from most dependencies are filtered one level below the specified
+    /// log level, if a lower level exists.
+    /// For example, at the default log level `DEBUG`, logs from most
+    /// dependencies are only emitted if their level is `INFO` or lower.
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     pub log_level: tracing::Level,
     #[command(flatten)]

@@ -116,7 +116,8 @@ pub struct BlockHashDbs {
     deposits: Database<SerdeBincode<BlockHash>, SerdeBincode<Vec<Deposit>>>,
     // All keys in this DB MUST also exist in `height`
     header: Database<SerdeBincode<BlockHash>, SerdeBincode<Header>>,
-    // All keys in this DB MUST also exist in `header`
+    // All keys in this DB MUST also exist in `header` as keys AND/OR
+    // `prev_blockhash` in a value
     height: Database<SerdeBincode<BlockHash>, SerdeBincode<u32>>,
     // All ancestors for each block MUST exist in this DB.
     // All keys in this DB MUST also exist in ALL other DBs.
@@ -187,6 +188,11 @@ impl BlockHashDbs {
         let block_hash = header.block_hash();
         let () = self.header.put(rwtxn, &block_hash, header)?;
         let () = self.height.put(rwtxn, &block_hash, &height)?;
+        if header.prev_blockhash != BlockHash::all_zeros() {
+            let () = self
+                .height
+                .put(rwtxn, &header.prev_blockhash, &(height - 1))?;
+        }
         Ok(())
     }
 

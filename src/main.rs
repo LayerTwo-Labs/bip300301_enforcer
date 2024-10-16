@@ -25,12 +25,54 @@ use proto::mainchain::{
 use server::Validator;
 use wallet::Wallet;
 
+/// Saturating predecessor of a log level
+fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
+    match log_level {
+        tracing::Level::TRACE => tracing::Level::DEBUG,
+        tracing::Level::DEBUG => tracing::Level::INFO,
+        tracing::Level::INFO => tracing::Level::WARN,
+        tracing::Level::WARN => tracing::Level::ERROR,
+        tracing::Level::ERROR => tracing::Level::ERROR,
+    }
+}
+
+/// The empty string target `""` can be used to set a default level.
+fn targets_directive_str<'a, Targets>(targets: Targets) -> String
+where
+    Targets: IntoIterator<Item = (&'a str, tracing::Level)>,
+{
+    targets
+        .into_iter()
+        .map(|(target, level)| {
+            let level = level.as_str().to_ascii_lowercase();
+            if target.is_empty() {
+                level
+            } else {
+                format!("{target}={level}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 // Configure logger.
 fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
-    let targets_filter = tracing_filter::EnvFilter::builder()
-        .with_default_directive(tracing_filter::LevelFilter::from_level(log_level).into())
-        .from_env()
-        .into_diagnostic()?;
+    let targets_filter = {
+        let default_directives_str = targets_directive_str([
+            ("", saturating_pred_level(log_level)),
+            ("bip300301", log_level),
+            ("jsonrpsee_core::tracing", log_level),
+            ("bip300301_enforcer", log_level),
+        ]);
+        let directives_str = match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
+            Ok(env_directives) => format!("{default_directives_str},{env_directives}"),
+            Err(std::env::VarError::NotPresent) => default_directives_str,
+            Err(err) => return Err(err).into_diagnostic(),
+        };
+        tracing_filter::EnvFilter::builder()
+            .parse(directives_str)
+            .into_diagnostic()?
+    };
     let stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_file(true)
