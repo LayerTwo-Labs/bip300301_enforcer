@@ -89,8 +89,10 @@ impl Dbs {
             return Err(err);
         }
         let env = {
-            // 1GB
-            const DB_MAP_SIZE: usize = 1024 * 1024 * 1024;
+            // 1 GB
+            const GB: usize = 1024 * 1024 * 1024;
+            // 10 GB
+            const DB_MAP_SIZE: usize = 10 * GB;
             let mut env_opts = EnvOpenOptions::new();
             let _: &mut EnvOpenOptions = env_opts.max_dbs(Self::NUM_DBS).map_size(DB_MAP_SIZE);
             unsafe { Env::open(&env_opts, db_dir) }?
