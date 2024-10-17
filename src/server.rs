@@ -168,9 +168,8 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetChainTipRequest>,
     ) -> Result<tonic::Response<GetChainTipResponse>, tonic::Status> {
         let GetChainTipRequest {} = request.into_inner();
-        let tip_hash = self
-            .get_mainchain_tip()
-            .map_err(|err| tonic::Status::from_error(err.into()))?;
+        let tip_hash = self.get_mainchain_tip().map_err(|err| err.into_status())?;
+
         let header_info = self
             .get_header_info(&tip_hash)
             .map_err(|err| tonic::Status::from_error(err.into()))?;
@@ -248,11 +247,11 @@ impl ValidatorService for Validator {
 
         let ctip = self
             .get_ctip(sidechain_number)
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
         if let Some(ctip) = ctip {
             let sequence_number = self
                 .get_ctip_sequence_number(sidechain_number)
-                .map_err(|err| tonic::Status::internal(err.to_string()))?;
+                .map_err(|err| err.into_status())?;
             // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
             // return Some, so we just unwrap it.
             let sequence_number = sequence_number.unwrap();
@@ -298,7 +297,7 @@ impl ValidatorService for Validator {
         let GetSidechainProposalsRequest {} = request.into_inner();
         let sidechain_proposals = self
             .get_sidechain_proposals()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
             .map(
@@ -333,9 +332,7 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetSidechainsRequest>,
     ) -> Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
         let GetSidechainsRequest {} = request.into_inner();
-        let sidechains = self
-            .get_sidechains()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let sidechains = self.get_sidechains().map_err(|err| err.into_status())?;
         let sidechains = sidechains
             .into_iter()
             .map(|sidechain| {
@@ -500,9 +497,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
         let wallet = self as &Arc<crate::wallet::Wallet>;
 
-        let address = wallet
-            .get_new_address()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let address = wallet.get_new_address().map_err(|err| err.into_status())?;
 
         let response = CreateNewAddressResponse {
             address: address.to_string(),
@@ -518,7 +513,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let count = request.into_inner().blocks.unwrap_or(1);
         self.generate(count)
             .await
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
         let response = GenerateBlocksResponse {};
         Ok(tonic::Response::new(response))
     }
@@ -626,14 +621,14 @@ impl WalletService for Arc<crate::wallet::Wallet> {
                 locktime,
             )
             .await
-            .map_err(|err| tonic::Status::internal(err.to_string()))
+            .map_err(|err| err.into_status())
             .inspect_err(|err| {
                 tracing::error!("Error creating BMM critical data transaction: {}", err);
             })?;
 
         let txid = tx.txid();
         self.broadcast_transaction(tx)
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
 
         let txid = bdk_txid_to_bitcoin_txid(txid);
 
@@ -672,4 +667,25 @@ fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
     let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
 
     bitcoin::Txid::from_raw_hash(hash)
+}
+
+pub trait IntoStatus {
+    fn into_status(self) -> tonic::Status;
+}
+
+// The idea here is to centralize conversion of lower layer errors into something meaningful
+// out from the API.
+//
+// Lower layer errors that return `miette::Report` can be easily turned into a meaningful
+// API response by just doing `into_status()`. We also get the additional benefit of a singular
+// place to add logs for unexpected errors.
+impl IntoStatus for miette::Report {
+    fn into_status(self) -> tonic::Status {
+        if let Some(source) = self.downcast_ref::<crate::errors::ElectrumError>() {
+            return source.clone().into();
+        }
+
+        tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
+        tonic::Status::new(tonic::Code::Unknown, self.to_string())
+    }
 }
