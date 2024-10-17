@@ -65,6 +65,15 @@ impl CoinbaseBuilder {
         self.messages.push(message);
         self
     }
+
+    pub fn bmm_accept(mut self, sidechain_number: u8, bmm_hash: &[u8; 32]) -> Self {
+        let message = CoinbaseMessage::M7BmmAccept {
+            sidechain_number,
+            sidechain_block_hash: *bmm_hash,
+        };
+        self.messages.push(message);
+        self
+    }
 }
 
 #[derive(Debug)]

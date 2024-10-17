@@ -28,6 +28,7 @@ use crate::{
 
 use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
+use bip300301::jsonrpsee::types::error::reject_too_big_request;
 use bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
 use miette::Result;
@@ -515,10 +516,13 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         request: tonic::Request<GenerateBlocksRequest>,
     ) -> std::result::Result<tonic::Response<GenerateBlocksResponse>, tonic::Status> {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        // FIXME: Remove `optional` from the `blocks` parameter in the proto file.
+        let count = request.into_inner().blocks.unwrap_or(1);
+        self.generate(count)
+            .await
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let response = GenerateBlocksResponse {};
+        Ok(tonic::Response::new(response))
     }
 
     async fn broadcast_withdrawal_bundle(
