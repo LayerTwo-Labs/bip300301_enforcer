@@ -550,9 +550,17 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         request: tonic::Request<CreateDepositTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateDepositTransactionResponse>, tonic::Status> {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        let CreateDepositTransactionRequest {
+            sidechain_id,
+            address,
+            value_sats,
+            fee_sats,
+        } = request.into_inner();
+        let txid = self
+            .create_deposit(sidechain_id as u8, address, value_sats, fee_sats)
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let txid = ConsensusHex::encode(&txid);
+        let response = CreateDepositTransactionResponse { txid: Some(txid) };
+        Ok(tonic::Response::new(response))
     }
 }
