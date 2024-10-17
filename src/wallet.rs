@@ -725,7 +725,33 @@ impl Wallet {
 
         let tx = psbt.extract_tx();
 
+        self.insert_new_bmm_request(sidechain_number, sidechain_block_hash)?;
+        tracing::info!("inserted new bmm request into db");
+
         Ok(tx)
+    }
+
+    fn insert_new_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        side_block_hash: BlockHash,
+    ) -> Result<()> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            connection
+                .prepare(
+                    "INSERT INTO bmm_requests (sidechain_number, side_block_hash) VALUES (?1, ?2)",
+                )
+                .into_diagnostic()?
+                .execute((
+                    u8::from(sidechain_number),
+                    side_block_hash.to_byte_array().to_vec(),
+                ))
+                .into_diagnostic()
+        };
+
+        with_connection(&self.db_connection.lock())?;
+        Ok(())
     }
 
     #[allow(
