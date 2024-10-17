@@ -369,6 +369,16 @@ impl Wallet {
         Ok(())
     }
 
+    pub fn create_deposit(
+        &self,
+        sidechain_number: u8,
+        address: String,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> Result<[u8; 32]> {
+        todo!();
+    }
+
     pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
         let with_connection = |connection: &Connection| -> Result<_> {
             let mut statement = match sidechain_number {
