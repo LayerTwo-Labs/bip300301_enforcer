@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bdk::{
@@ -22,6 +22,7 @@ use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, Main
 use bitcoin::{
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
+    consensus::Decodable as _,
     consensus::Encodable as _,
     constants::{genesis_block, SUBSIDY_HALVING_INTERVAL},
     hash_types::TxMerkleNode,
@@ -36,10 +37,11 @@ use bitcoin::{
 };
 use miette::{miette, IntoDiagnostic, Result};
 use parking_lot::{Mutex, RwLock};
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 
 use crate::{
     cli::WalletConfig,
+    messages::{sha256d, CoinbaseBuilder},
     types::{SidechainNumber, SidechainProposal},
     validator::Validator,
 };
@@ -167,6 +169,19 @@ impl Wallet {
                     "CREATE TABLE mempool
                    (txid BLOB UNIQUE NOT NULL,
                     tx_data BLOB NOT NULL);",
+                ),
+                M::up(
+                    "CREATE TABLE deposits
+                   (sidechain_number INTEGER NOT NULL,
+                    address BLOB NOT NULl,
+                    amount INTEGER NOT NULL,
+                    txid BLOB NOT NULL);",
+                ),
+                M::up(
+                    "CREATE TABLE bmm_requests
+                    (sidechain_number INTEGER NOT NULL,
+                     side_block_hash BLOB NOT NULL,
+                     UNIQUE(sidechain_number, side_block_hash));",
                 ),
             ]);
 
@@ -300,6 +315,130 @@ impl Wallet {
         Ok(block)
     }
 
+    pub async fn generate(&self, count: u32) -> Result<()> {
+        for _ in 0..count {
+            let sidechain_proposals = self.get_sidechain_proposals()?;
+            let mut coinbase_builder = CoinbaseBuilder::new();
+            for sidechain_proposal in sidechain_proposals {
+                coinbase_builder = coinbase_builder.propose_sidechain(
+                    sidechain_proposal.sidechain_number.into(),
+                    sidechain_proposal.data.as_slice(),
+                );
+            }
+            let sidechain_acks = self.get_sidechain_acks()?;
+            let pending_sidechain_proposals = self.get_pending_sidechain_proposals().await?;
+            for sidechain_ack in sidechain_acks {
+                if let Some(sidechain_proposal) =
+                    pending_sidechain_proposals.get(&sidechain_ack.sidechain_number.into())
+                {
+                    let sidechain_proposal_data_hash = sha256d(&sidechain_proposal.data);
+                    if sidechain_proposal_data_hash == sidechain_ack.data_hash {
+                        coinbase_builder = coinbase_builder.ack_sidechain(
+                            sidechain_ack.sidechain_number,
+                            &sidechain_ack.data_hash,
+                        );
+                    } else {
+                        self.delete_sidechain_ack(&sidechain_ack)?;
+                    }
+                } else {
+                    self.delete_sidechain_ack(&sidechain_ack)?;
+                }
+            }
+            let bmm_hashes = self.get_bmm_requests()?;
+            for (sidechain_number, bmm_hash) in &bmm_hashes {
+                coinbase_builder = coinbase_builder.bmm_accept(*sidechain_number, bmm_hash);
+            }
+            let coinbase_outputs = coinbase_builder.build();
+            let deposits = self.get_pending_deposits(None)?;
+            let deposit_transactions = deposits
+                .into_iter()
+                .map(|deposit| deposit.transaction)
+                .collect();
+            self.mine(&coinbase_outputs, deposit_transactions).await?;
+            self.delete_sidechain_proposals()?;
+            self.delete_deposits()?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_deposits(&self) -> Result<()> {
+        self.db_connection
+            .lock()
+            .execute("DELETE FROM deposits;", ())
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = match sidechain_number {
+                Some(_sidechain_number) => connection
+                    .prepare(
+                        "SELECT sidechain_number, address, amount, tx_data
+                         FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
+                         WHERE sidechain_number = ?1;",
+                    )
+                    .into_diagnostic()?,
+                None => connection
+                    .prepare(
+                        "SELECT sidechain_number, address, amount, tx_data
+                     FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid;",
+                    )
+                    .into_diagnostic()?,
+            };
+            // FIXME: Make this code more sane.
+            let func = |row: &Row| {
+                let sidechain_number: u8 = row.get(0)?;
+                let address: Vec<u8> = row.get(1)?;
+                let amount: u64 = row.get(2)?;
+                let tx_data: Vec<u8> = row.get(3)?;
+                let transaction =
+                    Transaction::consensus_decode_from_finite_reader(&mut tx_data.as_slice())
+                        .unwrap();
+                let deposit = Deposit {
+                    sidechain_number,
+                    address,
+                    amount,
+                    transaction,
+                };
+                Ok(deposit)
+            };
+            let rows = match sidechain_number {
+                Some(sidechain_number) => statement
+                    .query_map([sidechain_number], func)
+                    .into_diagnostic()?,
+                None => statement.query_map([], func).into_diagnostic()?,
+            };
+            let mut deposits = vec![];
+            for deposit in rows {
+                let deposit = deposit.into_diagnostic()?;
+                deposits.push(deposit);
+            }
+            Ok(deposits)
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
+    pub fn get_bmm_requests(&self) -> Result<Vec<(u8, [u8; 32])>> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = connection
+                .prepare("SELECT sidechain_number, side_block_hash FROM bmm_requests")
+                .into_diagnostic()?;
+            let rows = statement
+                .query_map([], |row| {
+                    let sidechain_number: u8 = row.get(0)?;
+                    let data_hash: [u8; 32] = row.get(1)?;
+                    Ok((sidechain_number, data_hash))
+                })
+                .into_diagnostic()?
+                .collect::<Result<_, _>>()
+                .into_diagnostic()?;
+            Ok(rows)
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
     pub async fn mine(
         &self,
         coinbase_outputs: &[TxOut],
@@ -322,26 +461,17 @@ impl Wallet {
             .await
             .into_diagnostic()?;
 
-        // FIXME: implement
-        todo!();
-        /*
         let block_hash = block.header.block_hash().as_byte_array().to_vec();
-        let block_height: u32 = self
-            .main_client
-            .send_request("getblockcount", &[])
-            .into_diagnostic()?
-            .ok_or(miette!("failed to get block count"))?;
+        let block_height: u32 = self.main_client.getblockcount().await.into_diagnostic()? as u32;
+
         let bmm_hashes: Vec<Vec<u8>> = self
-            .get_bmm_requests()
-            .await?
+            .get_bmm_requests()?
             .into_iter()
             .map(|(_sidechain_number, bmm_hash)| bmm_hash.to_vec())
             .collect();
 
-
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
-        */
     }
 
     pub fn get_balance(&self) -> Result<()> {
@@ -478,7 +608,7 @@ impl Wallet {
         Ok(pending_proposals)
     }
 
-    pub fn get_sidechain_proposals(&mut self) -> Result<Vec<Sidechain>> {
+    pub fn get_sidechain_proposals(&self) -> Result<Vec<Sidechain>> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_> {
             let mut statement = connection
@@ -599,4 +729,12 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
 pub struct SidechainAck {
     pub sidechain_number: u8,
     pub data_hash: [u8; 32],
+}
+
+#[derive(Debug)]
+pub struct Deposit {
+    pub sidechain_number: u8,
+    pub address: Vec<u8>,
+    pub amount: u64,
+    pub transaction: Transaction,
 }
