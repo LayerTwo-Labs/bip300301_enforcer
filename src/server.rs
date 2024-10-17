@@ -28,7 +28,6 @@ use crate::{
 
 use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
-use bip300301::jsonrpsee::types::error::reject_too_big_request;
 use bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
 use miette::Result;
