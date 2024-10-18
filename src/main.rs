@@ -98,11 +98,11 @@ async fn run_server(
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
-    // Adds rather verbose access logging.
-    // TODO: adjust if it becomes too much.
     let tracer = ServiceBuilder::new()
         .layer(
             TraceLayer::new_for_grpc()
+                .on_request(())
+                .on_eos(())
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
         )

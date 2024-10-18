@@ -42,11 +42,11 @@ tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 tokio-stream = "0.1.15"
 tonic = "0.12.3"
 tonic-reflection = "0.12.3"
+tower = "0.5.1"
+tower-http = { version = "0.6.1", features = ["trace"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 zeromq = "0.4.0"
-tower = "0.5.1"
-tower-http = { version = "0.6.1", features = ["trace"] }
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
