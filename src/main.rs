@@ -2,13 +2,11 @@ use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
-use http_body_util::combinators::UnsyncBoxBody;
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::{spawn, task::JoinHandle, time::interval};
-use tonic::{server::NamedService, transport::Server, Status};
+use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
-use tracing::Span;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 mod cli;
@@ -58,17 +56,11 @@ async fn run_server(
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
-    // Do nothing at all. Note: the handlers here have bizarre types. Is it
-    // possible to simplify this and still compile?
-    let noop_on_end_of_stream = |_: Option<&http::HeaderMap>, _: Duration, _span: &Span| {};
-    let noop_on_request = |_: &http::Request<UnsyncBoxBody<bytes::Bytes, Status>>, _: &Span| {};
-
-    // Adds
     let tracer = ServiceBuilder::new()
         .layer(
             TraceLayer::new_for_grpc()
-                .on_request(noop_on_request)
-                .on_eos(noop_on_end_of_stream)
+                .on_request(())
+                .on_eos(())
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
         )
