@@ -628,6 +628,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         let txid = tx.txid();
         self.broadcast_transaction(tx)
+            .await
             .map_err(|err| err.into_status())?;
 
         let txid = bdk_txid_to_bitcoin_txid(txid);
