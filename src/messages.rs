@@ -259,7 +259,17 @@ fn parse_m7_bmm_accept(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
 }
 
 pub fn parse_m8_bmm_request(input: &[u8]) -> IResult<&[u8], M8BmmRequest> {
-    let (input, _) = tag(&[OP_RETURN.to_u8()])(input)?;
+    const HEADER_LENGTH: u8 = 3;
+    const SIDECHAIN_NUMBER_LENGTH: u8 = 1;
+    const SIDECHAIN_BLOCK_HASH_LENGTH: u8 = 32;
+    const PREV_MAINCHAIN_BLOCK_HASH_LENGTH: u8 = 32;
+
+    const M8_BMM_REQUEST_LENGTH: u8 = HEADER_LENGTH
+        + SIDECHAIN_NUMBER_LENGTH
+        + SIDECHAIN_BLOCK_HASH_LENGTH
+        + PREV_MAINCHAIN_BLOCK_HASH_LENGTH;
+
+    let (input, _) = tag(&[OP_RETURN.to_u8(), M8_BMM_REQUEST_LENGTH])(input)?;
     let (input, _) = tag(M8_BMM_REQUEST_TAG)(input)?;
     let (input, sidechain_number) = take(1usize)(input)?;
     let sidechain_number = sidechain_number[0];
@@ -418,3 +428,43 @@ pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32]
 // Simplify everything.
 //
 // AKM not H&K G11.
+
+// ... existing code ...
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_m8_bmm_request() {
+        // This data was given to /cusf.mainchain.v1.WalletService/CreateBmmCriticalDataTransaction
+        let sidechain_number: u8 = 1;
+        let critical_bytes =
+            hex::decode("1200007c0ca1efd8d128fedf50c73f395b0cceb0ffa823edbd971b4afd913021")
+                .unwrap();
+
+        let mut prev_mainchain_block_hash =
+            hex::decode("000000e597b4ff2b7b81bcb2b0199b65471b9ece52b9688f18a8a7ed8e275eb1")
+                .unwrap();
+
+        // Reverse, because this is a ReverseHex in the API
+        prev_mainchain_block_hash.reverse();
+
+        // And the endpoint created this TX
+        // https://mempool.drivechain.live/tx/dd465c00860631c3d120d5473a2cf1adb2ddc58e79785aba054ee1ada9bd06c8
+        // Raw hex of the OP_RETURN output
+        const INPUT: &str = "6a4400bf00011200007c0ca1efd8d128fedf50c73f395b0cceb0ffa823edbd971b4afd913021b15e278eeda7a8188f68b952ce9e1b47659b19b0b2bc817b2bffb497e5000000";
+
+        let input = hex::decode(INPUT).unwrap();
+
+        let (remaining, result) = parse_m8_bmm_request(&input).unwrap();
+
+        assert!(remaining.is_empty());
+        assert_eq!(result.sidechain_number, sidechain_number);
+        assert_eq!(result.sidechain_block_hash.to_vec(), critical_bytes);
+        assert_eq!(
+            result.prev_mainchain_block_hash.to_vec(),
+            prev_mainchain_block_hash
+        );
+    }
+}

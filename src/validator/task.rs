@@ -655,11 +655,14 @@ fn handle_m5_m6(
     Ok(res)
 }
 
+/// Handles a (potential) M8 BMM request.
+/// Returns `true` if this is a valid BMM request, HandleM8Error if this
+/// is an invalid BMM request, and `false` if this is not a BMM request.
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: &BmmCommitments,
     prev_mainchain_block_hash: &BlockHash,
-) -> Result<(), HandleM8Error> {
+) -> Result<bool, HandleM8Error> {
     let output = &transaction.output[0];
     let script = output.script_pubkey.to_bytes();
 
@@ -668,13 +671,16 @@ fn handle_m8(
             .get(&bmm_request.sidechain_number.into())
             .is_some_and(|commitment| *commitment == bmm_request.sidechain_block_hash)
         {
-            return Err(HandleM8Error::NotAcceptedByMiners);
+            Err(HandleM8Error::NotAcceptedByMiners)
+        } else if bmm_request.prev_mainchain_block_hash != prev_mainchain_block_hash.to_byte_array()
+        {
+            Err(HandleM8Error::BmmRequestExpired)
+        } else {
+            Ok(true)
         }
-        if bmm_request.prev_mainchain_block_hash != prev_mainchain_block_hash.to_byte_array() {
-            return Err(HandleM8Error::BmmRequestExpired);
-        }
+    } else {
+        Ok(false)
     }
-    Ok(())
 }
 
 fn connect_block(
@@ -790,11 +796,16 @@ fn connect_block(
             }
             None => (),
         };
-        let () = handle_m8(
+        if handle_m8(
             transaction,
             &accepted_bmm_requests,
             &prev_mainchain_block_hash,
-        )?;
+        )? {
+            tracing::trace!(
+                "Handled valid M8 BMM request in tx `{}`",
+                transaction.compute_txid()
+            );
+        }
     }
     let block_info = BlockInfo {
         deposits,
