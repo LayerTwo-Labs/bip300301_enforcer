@@ -6,7 +6,7 @@ use std::{
 };
 
 use bdk::{
-    bitcoin::{hashes::Hash, BlockHash, Network},
+    bitcoin::{hashes::Hash, script::PushBytes, BlockHash, Network, Script},
     blockchain::{Blockchain, ElectrumBlockchain},
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
@@ -754,6 +754,23 @@ impl Wallet {
         Ok(())
     }
 
+    fn bmm_request_message(
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: BlockHash,
+        prev_mainchain_block_hash: BlockHash,
+    ) -> Result<bdk::bitcoin::ScriptBuf> {
+        let message = [
+            M8_BMM_REQUEST_TAG.to_vec(),
+            vec![sidechain_number.into()],
+            BlockHash::to_byte_array(sidechain_block_hash).to_vec(),
+            BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
+        ]
+        .concat();
+
+        let bytes = bdk::bitcoin::script::PushBytesBuf::try_from(message).into_diagnostic()?;
+        Ok(bdk::bitcoin::ScriptBuf::new_op_return(&bytes))
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
@@ -767,21 +784,18 @@ impl Wallet {
         locktime: bdk::bitcoin::absolute::LockTime,
     ) -> Result<bdk::bitcoin::psbt::PartiallySignedTransaction> {
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
-        let message = [
-            vec![OP_RETURN.to_u8()],
-            M8_BMM_REQUEST_TAG.to_vec(),
-            vec![sidechain_number.into()],
-            BlockHash::to_byte_array(sidechain_block_hash).to_vec(),
-            BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
-        ]
-        .concat();
+        let message = Self::bmm_request_message(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+        )?;
+
         let (psbt, _) = {
             let bitcoin_wallet = self.bitcoin_wallet.lock();
             let mut builder = bitcoin_wallet.build_tx();
-            builder.nlocktime(locktime).add_recipient(
-                bdk::bitcoin::ScriptBuf::from_bytes(message),
-                amount.to_sat(),
-            );
+            builder
+                .nlocktime(locktime)
+                .add_recipient(message, amount.to_sat());
             builder.finish().into_diagnostic()?
         };
 
