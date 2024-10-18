@@ -53,6 +53,47 @@ where
     tonic::Status::invalid_argument(err.to_string())
 }
 
+fn bdk_block_hash_to_bitcoin_block_hash(hash: bdk::bitcoin::BlockHash) -> bitcoin::BlockHash {
+    let bytes = hash.as_byte_array().to_vec();
+
+    use bitcoin::hashes::sha256d::Hash;
+    use bitcoin::hashes::Hash as Hm;
+    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
+
+    bitcoin::BlockHash::from_raw_hash(hash)
+}
+
+fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
+    let bytes = hash.as_byte_array().to_vec();
+
+    use bitcoin::hashes::sha256d::Hash;
+    use bitcoin::hashes::Hash as Hm;
+    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
+
+    bitcoin::Txid::from_raw_hash(hash)
+}
+
+trait IntoStatus {
+    fn into_status(self) -> tonic::Status;
+}
+
+// The idea here is to centralize conversion of lower layer errors into something meaningful
+// out from the API.
+//
+// Lower layer errors that return `miette::Report` can be easily turned into a meaningful
+// API response by just doing `into_status()`. We also get the additional benefit of a singular
+// place to add logs for unexpected errors.
+impl IntoStatus for miette::Report {
+    fn into_status(self) -> tonic::Status {
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::ElectrumError>() {
+            return source.clone().into();
+        }
+
+        tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
+        tonic::Status::new(tonic::Code::Unknown, self.to_string())
+    }
+}
+
 #[tonic::async_trait]
 impl ValidatorService for Validator {
     async fn get_block_header_info(
@@ -493,7 +534,7 @@ impl ValidatorService for Validator {
 impl WalletService for Arc<crate::wallet::Wallet> {
     async fn create_new_address(
         &self,
-        request: tonic::Request<CreateNewAddressRequest>,
+        _request: tonic::Request<CreateNewAddressRequest>,
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
         let wallet = self as &Arc<crate::wallet::Wallet>;
 
@@ -641,52 +682,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
     async fn create_deposit_transaction(
         &self,
-        request: tonic::Request<CreateDepositTransactionRequest>,
+        _request: tonic::Request<CreateDepositTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateDepositTransactionResponse>, tonic::Status> {
         Err(tonic::Status::new(
             tonic::Code::Unimplemented,
             "not implemented",
         ))
-    }
-}
-
-fn bdk_block_hash_to_bitcoin_block_hash(hash: bdk::bitcoin::BlockHash) -> bitcoin::BlockHash {
-    let bytes = hash.as_byte_array().to_vec();
-
-    use bitcoin::hashes::sha256d::Hash;
-    use bitcoin::hashes::Hash as Hm;
-    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
-
-    bitcoin::BlockHash::from_raw_hash(hash)
-}
-
-fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
-    let bytes = hash.as_byte_array().to_vec();
-
-    use bitcoin::hashes::sha256d::Hash;
-    use bitcoin::hashes::Hash as Hm;
-    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
-
-    bitcoin::Txid::from_raw_hash(hash)
-}
-
-pub trait IntoStatus {
-    fn into_status(self) -> tonic::Status;
-}
-
-// The idea here is to centralize conversion of lower layer errors into something meaningful
-// out from the API.
-//
-// Lower layer errors that return `miette::Report` can be easily turned into a meaningful
-// API response by just doing `into_status()`. We also get the additional benefit of a singular
-// place to add logs for unexpected errors.
-impl IntoStatus for miette::Report {
-    fn into_status(self) -> tonic::Status {
-        if let Some(source) = self.downcast_ref::<crate::errors::ElectrumError>() {
-            return source.clone().into();
-        }
-
-        tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
-        tonic::Status::new(tonic::Code::Unknown, self.to_string())
     }
 }

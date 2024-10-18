@@ -46,6 +46,8 @@ use crate::{
     validator::Validator,
 };
 
+pub mod error;
+
 pub struct Wallet {
     main_client: HttpClient,
     validator: Validator,
@@ -461,10 +463,10 @@ impl Wallet {
             .await
             .into_diagnostic()?;
 
-        let block_hash = block.header.block_hash().as_byte_array().to_vec();
-        let block_height: u32 = self.main_client.getblockcount().await.into_diagnostic()? as u32;
+        let _block_hash = block.header.block_hash().as_byte_array().to_vec();
+        let _block_height: u32 = self.main_client.getblockcount().await.into_diagnostic()? as u32;
 
-        let bmm_hashes: Vec<Vec<u8>> = self
+        let _bmm_hashes: Vec<Vec<u8>> = self
             .get_bmm_requests()?
             .into_iter()
             .map(|(_sidechain_number, bmm_hash)| bmm_hash.to_vec())
