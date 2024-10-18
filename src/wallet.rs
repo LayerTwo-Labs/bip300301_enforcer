@@ -6,8 +6,8 @@ use std::{
 };
 
 use bdk::{
-    bitcoin::{hashes::Hash, script::PushBytes, BlockHash, Network, Script},
-    blockchain::{Blockchain, ElectrumBlockchain},
+    bitcoin::{consensus::Encodable, hashes::Hash, BlockHash, Network},
+    blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
     keys::{
@@ -41,7 +41,6 @@ use rusqlite::{Connection, Row};
 
 use crate::{
     cli::WalletConfig,
-    errors::convert_bdk_error,
     messages::{sha256d, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
     types::{SidechainNumber, SidechainProposal},
     validator::Validator,
@@ -803,12 +802,32 @@ impl Wallet {
     }
 
     // Broadcasts a transaction to the Bitcoin network.
-    pub fn broadcast_transaction(&self, tx: bdk::bitcoin::Transaction) -> Result<()> {
-        self.bitcoin_blockchain
-            .broadcast(&tx)
-            .map_err(convert_bdk_error)
-            .inspect(|_| tracing::info!("broadcast tx: {}", tx.txid()))
-            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))?;
+    pub async fn broadcast_transaction(&self, tx: bdk::bitcoin::Transaction) -> Result<()> {
+        // Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
+        // because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
+        // perspective). To get around this we have to pass a `maxburnamount` parameter, and
+        // that's not possible if going through the ElectrumBlockchain interface.
+        //
+        // For the interested reader, the flow of ElectrumBlockchain::broadcast is this:
+        // 1. Send the raw TX from our Electrum client
+        // 2. Electrum server implements this by sending it into Bitcoin Core
+        // 3. Bitcoin Core responds with an error, because we're burning money.
+
+        let mut tx_bytes = vec![];
+        tx.consensus_encode(&mut tx_bytes).into_diagnostic()?;
+
+        let encoded_tx = hex::encode(tx_bytes);
+
+        const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
+        let broadcast_result = self
+            .main_client
+            .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
+            .await
+            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))
+            .into_diagnostic()?;
+
+        tracing::debug!("broadcasted TXID: {:?}", broadcast_result);
+
         Ok(())
     }
 
