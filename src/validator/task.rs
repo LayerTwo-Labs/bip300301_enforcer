@@ -198,7 +198,6 @@ enum SyncError {
 // Returns the serialized sidechain proposal OP_RETURN output.
 fn create_sidechain_proposal(
     sidechain_number: SidechainNumber,
-    version: u8,
     title: String,
     description: String,
     hash_1: Vec<u8>,
@@ -227,9 +226,13 @@ fn create_sidechain_proposal(
         ));
     };
 
+    // The only known M1 version.
+    const VERSION: u8 = 0;
+
     let mut data: Vec<u8> = vec![];
     data.push(sidechain_number.into());
-    data.push(version);
+    data.push(VERSION);
+    data.push(title.len() as u8);
     data.extend_from_slice(title.as_bytes());
     data.extend_from_slice(description.as_bytes());
     data.extend_from_slice(&hash_1);
@@ -1026,61 +1029,46 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let Ok(proposal) = create_sidechain_proposal(
+        let proposal = create_sidechain_proposal(
             SidechainNumber::from(13),
-            0,
             "title".into(),
             "description".into(),
-            vec![0u8; 32],
-            vec![0u8; 20],
-        ) else {
-            panic!("Failed to create sidechain proposal");
-        };
+            vec![1u8; 32],
+            vec![2u8; 20],
+        )
+        .expect("Failed to create sidechain proposal");
 
         let tx_out = TxOut::consensus_decode(&mut Cursor::new(&proposal)).unwrap();
 
-        let Ok((rest, message)) = parse_coinbase_script(&tx_out.script_pubkey) else {
-            panic!("Failed to parse sidechain proposal");
-        };
+        let (rest, message) = parse_coinbase_script(&tx_out.script_pubkey)
+            .expect("Failed to parse sidechain proposal");
 
         assert!(rest.is_empty());
 
         let CoinbaseMessage::M1ProposeSidechain {
             sidechain_number,
-            data: _,
+            data,
         } = message
         else {
             panic!("Failed to parse sidechain proposal");
         };
 
         assert_eq!(sidechain_number, 13);
-    }
 
-    #[test]
-    fn test_parse_m1_message() {
-        let hex_encoded = "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff03023939feffffff0300f2052a01000000160014a46fddeaf98f1dd3efca296ad19fec5b067dab3a00000000000000005e6ad5e0c4af0a0a0154657374636861696e41207265616c6c792073696d706c652073696465636861696e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000986a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf94c70ecc7daa2000247304402207084564296c763b6cfcaf3aeea421015559161d4ecc0feb5f9b6b3c85b8b67ae02207044d4b0650a8f3b63218ca17764d2eced822859809141aee2112ca8e3b5a2770121032b15624631d879829cf8d66b89965d264674b36d73682a69d739b9cf255b99500120000000000000000000000000000000000000000000000000000000000000000000000000";
-        let mut bytes = hex::decode(hex_encoded).expect("Decoding failed");
-        let transaction = Transaction::consensus_decode(&mut Cursor::new(&mut bytes))
-            .expect("Deserialization failed");
+        let proposal = SidechainProposal {
+            sidechain_number: sidechain_number.into(),
+            data,
+            vote_count: 0,
+            proposal_height: 0,
+        };
 
-        for output in &transaction.output {
-            let Ok((_, message)) = parse_coinbase_script(&output.script_pubkey) else {
-                continue;
-            };
+        let (sidechain_number, deserialized) =
+            proposal.try_deserialize().expect("Failed to deserialize");
 
-            match message {
-                CoinbaseMessage::M1ProposeSidechain {
-                    sidechain_number,
-                    data: _,
-                } => {
-                    assert_eq!(sidechain_number, 10);
-
-                    return;
-                }
-                _ => panic!("Parsed message is not an M1ProposeSidechain"),
-            }
-        }
-
-        panic!("did not find M1ProposeSidechain");
+        assert_eq!(sidechain_number, SidechainNumber(13));
+        assert_eq!(deserialized.description, "description");
+        assert_eq!(deserialized.title, "title");
+        assert_eq!(deserialized.hash_id_1, [1u8; 32]);
+        assert_eq!(deserialized.hash_id_2, [2u8; 20]);
     }
 }
