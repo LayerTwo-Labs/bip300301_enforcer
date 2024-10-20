@@ -335,7 +335,7 @@ impl Wallet {
             for (sidechain_number, bmm_hash) in &bmm_hashes {
                 coinbase_builder = coinbase_builder.bmm_accept(*sidechain_number, bmm_hash);
             }
-            let coinbase_outputs = coinbase_builder.build();
+            let coinbase_outputs = coinbase_builder.build().into_diagnostic()?;
             let deposits = self.get_pending_deposits(None)?;
             let deposit_transactions = deposits
                 .into_iter()

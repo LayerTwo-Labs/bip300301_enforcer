@@ -1,8 +1,12 @@
-use bitcoin::opcodes::{
-    all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
-    OP_TRUE,
-};
+use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{hashes::Hash, Amount, Opcode, Script, ScriptBuf, Transaction, TxOut};
+use bitcoin::{
+    opcodes::{
+        all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
+        OP_TRUE,
+    },
+    script::PushBytesBuf,
+};
 use byteorder::{ByteOrder, LittleEndian};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
@@ -25,12 +29,15 @@ impl CoinbaseBuilder {
         CoinbaseBuilder { messages: vec![] }
     }
 
-    pub fn build(self) -> Vec<TxOut> {
+    pub fn build(self) -> Result<Vec<TxOut>, bitcoin::script::PushBytesError> {
         self.messages
             .into_iter()
-            .map(|message| TxOut {
-                value: Amount::from_sat(0),
-                script_pubkey: message.into(),
+            .map(|message| {
+                let script_pubkey = message.try_into()?;
+                Ok(TxOut {
+                    value: Amount::from_sat(0),
+                    script_pubkey,
+                })
             })
             .collect()
     }
@@ -153,8 +160,27 @@ impl M4AckBundles {
 }
 
 pub fn parse_coinbase_script(script: &Script) -> IResult<&[u8], CoinbaseMessage> {
-    let script = script.as_bytes();
-    let (input, _) = tag(&[OP_RETURN.to_u8()])(script)?;
+    let mut instructions = script.instructions();
+
+    // Return a nom parsing failure. Would be nice to include a message
+    // about what went wrong? Is that possible?
+    fn instruction_failure(instructions: Instructions) -> nom::Err<nom::error::Error<&[u8]>> {
+        nom::Err::Failure(nom::error::Error {
+            input: instructions.as_script().as_bytes(),
+            code: nom::error::ErrorKind::Fail,
+        })
+    }
+
+    if instructions.next() != Some(Ok(Instruction::Op(OP_RETURN))) {
+        return Err(instruction_failure(instructions));
+    }
+
+    let Some(Ok(Instruction::PushBytes(data))) = instructions.next() else {
+        return Err(instruction_failure(instructions));
+    };
+
+    let input = data.as_bytes();
+
     let (input, message_tag) = alt((
         tag(M1_PROPOSE_SIDECHAIN_TAG),
         tag(M2_ACK_SIDECHAIN_TAG),
@@ -288,50 +314,37 @@ pub fn parse_m8_bmm_request(input: &[u8]) -> IResult<&[u8], M8BmmRequest> {
     Ok((input, message))
 }
 
-impl From<CoinbaseMessage> for ScriptBuf {
-    fn from(val: CoinbaseMessage) -> Self {
+impl TryFrom<CoinbaseMessage> for ScriptBuf {
+    type Error = bitcoin::script::PushBytesError;
+
+    fn try_from(val: CoinbaseMessage) -> Result<Self, Self::Error> {
         match val {
             CoinbaseMessage::M1ProposeSidechain {
                 sidechain_number,
                 data,
             } => {
-                let message = [
-                    &[OP_RETURN.to_u8()],
-                    M1_PROPOSE_SIDECHAIN_TAG,
-                    &[sidechain_number],
-                    &data,
-                ]
-                .concat();
+                let message = [M1_PROPOSE_SIDECHAIN_TAG, &[sidechain_number], &data].concat();
 
-                ScriptBuf::from_bytes(message)
+                let data = PushBytesBuf::try_from(message)?;
+                Ok(ScriptBuf::new_op_return(&data))
             }
             CoinbaseMessage::M2AckSidechain {
                 sidechain_number,
                 data_hash,
             } => {
-                let message = [
-                    &[OP_RETURN.to_u8()],
-                    M2_ACK_SIDECHAIN_TAG,
-                    &[sidechain_number],
-                    &data_hash,
-                ]
-                .concat();
+                let message = [M2_ACK_SIDECHAIN_TAG, &[sidechain_number], &data_hash].concat();
 
-                ScriptBuf::from_bytes(message)
+                let data = PushBytesBuf::try_from(message)?;
+                Ok(ScriptBuf::new_op_return(&data))
             }
             CoinbaseMessage::M3ProposeBundle {
                 sidechain_number,
                 bundle_txid,
             } => {
-                let message = [
-                    &[OP_RETURN.to_u8()],
-                    M3_PROPOSE_BUNDLE_TAG,
-                    &[sidechain_number],
-                    &bundle_txid,
-                ]
-                .concat();
+                let message = [M3_PROPOSE_BUNDLE_TAG, &[sidechain_number], &bundle_txid].concat();
 
-                ScriptBuf::from_bytes(message)
+                let data = PushBytesBuf::try_from(message)?;
+                Ok(ScriptBuf::new_op_return(&data))
             }
             CoinbaseMessage::M4AckBundles(m4_ack_bundles) => {
                 let upvotes = match &m4_ack_bundles {
@@ -342,29 +355,24 @@ impl From<CoinbaseMessage> for ScriptBuf {
                         .collect(),
                     _ => vec![],
                 };
-                let message = [
-                    &[OP_RETURN.to_u8()],
-                    M4_ACK_BUNDLES_TAG,
-                    &[m4_ack_bundles.tag()],
-                    &upvotes,
-                ]
-                .concat();
+                let message = [M4_ACK_BUNDLES_TAG, &[m4_ack_bundles.tag()], &upvotes].concat();
 
-                ScriptBuf::from_bytes(message)
+                let data = PushBytesBuf::try_from(message)?;
+                Ok(ScriptBuf::new_op_return(&data))
             }
             CoinbaseMessage::M7BmmAccept {
                 sidechain_number,
                 sidechain_block_hash,
             } => {
                 let message = [
-                    &[OP_RETURN.to_u8()],
                     M7_BMM_ACCEPT_TAG,
                     &[sidechain_number],
                     &sidechain_block_hash,
                 ]
                 .concat();
 
-                ScriptBuf::from_bytes(message)
+                let data = PushBytesBuf::try_from(message)?;
+                Ok(ScriptBuf::new_op_return(&data))
             }
         }
     }

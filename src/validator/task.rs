@@ -235,9 +235,12 @@ fn create_sidechain_proposal(
     data.extend_from_slice(&hash_1);
     data.extend_from_slice(&hash_2);
 
-    let builder = CoinbaseBuilder::new()
+    let Ok(builder) = CoinbaseBuilder::new()
         .propose_sidechain(sidechain_number.into(), &data)
-        .build();
+        .build()
+    else {
+        return Err(anyhow::anyhow!("Failed to build sidechain proposal"));
+    };
 
     let tx_out = builder.first().unwrap();
 

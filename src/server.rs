@@ -31,7 +31,7 @@ use async_broadcast::RecvError;
 use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{self, absolute::Height, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 use tonic::{Request, Response, Status};
 
 use crate::types;
@@ -255,19 +255,22 @@ impl ValidatorService for Validator {
         }
         let output = messages
             .into_iter()
-            .map(|message| TxOut {
-                value: Amount::ZERO,
-                script_pubkey: message.into(),
+            .map(|message| {
+                Ok(TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: message.try_into().into_diagnostic()?,
+                })
             })
-            .collect();
-        let transasction = Transaction {
+            .collect::<Result<Vec<_>>>()
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let transaction = Transaction {
             output,
             input: vec![],
             lock_time: bitcoin::absolute::LockTime::Blocks(Height::ZERO),
             version: bitcoin::transaction::Version::TWO,
         };
         let response = GetCoinbasePsbtResponse {
-            psbt: Some(ConsensusHex::encode(&transasction)),
+            psbt: Some(ConsensusHex::encode(&transaction)),
         };
         Ok(Response::new(response))
     }
