@@ -11,16 +11,17 @@ use crate::{
     proto::{
         self,
         mainchain::{
-            get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
+            deserialized_sidechain, get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, server::ValidatorService, ConsensusHex,
-            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
-            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
-            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
-            ReverseHex, SubscribeEventsRequest, SubscribeEventsResponse,
+            DeserializedSidechain, DeserializedSidechainV0, GetBlockHeaderInfoRequest,
+            GetBlockHeaderInfoResponse, GetBlockInfoRequest, GetBlockInfoResponse,
+            GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse, GetChainInfoRequest,
+            GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
+            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, ReverseHex,
+            SubscribeEventsRequest, SubscribeEventsResponse,
         },
     },
     types::SidechainNumber,
@@ -344,26 +345,26 @@ impl ValidatorService for Validator {
             .map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
-            .map(
-                |(
-                    data_hash,
-                    types::SidechainProposal {
-                        sidechain_number,
-                        data,
-                        vote_count,
-                        proposal_height,
-                    },
-                )| {
-                    SidechainProposal {
-                        sidechain_number: u8::from(sidechain_number) as u32,
-                        data: Some(data),
-                        data_hash: Some(ConsensusHex::encode(&data_hash)),
-                        vote_count: vote_count as u32,
-                        proposal_height,
-                        proposal_age: 0,
+            .map(|(data_hash, proposal)| SidechainProposal {
+                sidechain_number: u8::from(proposal.sidechain_number) as u32,
+                data: Some(proposal.data.clone()),
+                deserialized: proposal.try_deserialize().ok().map(|(_, deserialized)| {
+                    DeserializedSidechain {
+                        version: Some(deserialized_sidechain::Version::V0(
+                            DeserializedSidechainV0 {
+                                title: deserialized.title,
+                                description: deserialized.description,
+                                hash_id_1: deserialized.hash_id_1.to_vec(),
+                                hash_id_2: deserialized.hash_id_2.to_vec(),
+                            },
+                        )),
                     }
-                },
-            )
+                }),
+                data_hash: Some(ConsensusHex::encode(&data_hash)),
+                vote_count: proposal.vote_count as u32,
+                proposal_height: proposal.proposal_height,
+                proposal_age: 0,
+            })
             .collect();
         let response = GetSidechainProposalsResponse {
             sidechain_proposals,
