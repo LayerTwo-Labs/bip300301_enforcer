@@ -20,10 +20,10 @@ use bitcoin::{
 };
 use either::Either;
 use fallible_iterator::FallibleIterator;
+use fatality::Split as _;
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hashlink::{LinkedHashMap, LinkedHashSet};
 use heed::RoTxn;
-use thiserror::Error;
 
 use crate::{
     types::{
@@ -31,12 +31,11 @@ use crate::{
         SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
         WithdrawalBundleEventKind,
     },
+    validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
     zmq::SequenceMessage,
 };
 
-use super::dbs::{
-    self, db_error, CommitWriteTxnError, Dbs, ReadTxnError, RwTxn, UnitKey, WriteTxnError,
-};
+mod error;
 
 const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
 const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
@@ -49,156 +48,6 @@ const UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS: u16 = 5;
 const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 =
     UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS;
 
-#[derive(Debug, Error)]
-enum HandleM1ProposeSidechainError {
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, Error)]
-enum HandleM2AckSidechainError {
-    #[error(transparent)]
-    DbDelete(#[from] db_error::Delete),
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, Error)]
-enum HandleFailedSidechainProposalsError {
-    #[error(transparent)]
-    DbDelete(#[from] db_error::Delete),
-    #[error(transparent)]
-    DbIter(#[from] db_error::Iter),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-}
-
-#[derive(Debug, Error)]
-enum HandleM3ProposeBundleError {
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-    #[error(
-        "Cannot propose bundle; sidechain slot {} is inactive",
-        .sidechain_number.0
-    )]
-    InactiveSidechain { sidechain_number: SidechainNumber },
-}
-
-#[derive(Debug, Error)]
-enum HandleM4VotesError {
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-}
-
-#[derive(Debug, Error)]
-enum HandleM4AckBundlesError {
-    #[error("Error handling M4 Votes")]
-    Votes(#[from] HandleM4VotesError),
-}
-
-#[derive(Debug, Error)]
-enum HandleFailedM6IdsError {
-    #[error(transparent)]
-    DbIter(#[from] db_error::Iter),
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-}
-
-#[derive(Debug, Error)]
-enum HandleM5M6Error {
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-    #[error("Invalid M6")]
-    InvalidM6,
-    #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
-    OldCtipUnspent { sidechain_number: SidechainNumber },
-}
-
-#[derive(Debug, Error)]
-enum HandleM8Error {
-    #[error("BMM request expired")]
-    BmmRequestExpired,
-    #[error("Cannot include BMM request; not accepted by miners")]
-    NotAcceptedByMiners,
-}
-
-#[derive(Debug, Error)]
-enum ConnectBlockError {
-    #[error(transparent)]
-    PutBlockInfo(#[from] dbs::block_hash_dbs_error::PutBlockInfo),
-    #[error(transparent)]
-    DbDelete(#[from] db_error::Delete),
-    #[error(transparent)]
-    DbFirst(#[from] db_error::First),
-    #[error(transparent)]
-    DbGet(#[from] db_error::Get),
-    #[error(transparent)]
-    DbLen(#[from] db_error::Len),
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-    #[error("Error handling failed M6IDs")]
-    FailedM6Ids(#[from] HandleFailedM6IdsError),
-    #[error("Error handling failed sidechain proposals")]
-    FailedSidechainProposals(#[from] HandleFailedSidechainProposalsError),
-    #[error("Error handling M1 (propose sidechain)")]
-    M1ProposeSidechain(#[from] HandleM1ProposeSidechainError),
-    #[error("Error handling M2 (ack sidechain)")]
-    M2AckSidechain(#[from] HandleM2AckSidechainError),
-    #[error("Error handling M3 (propose bundle)")]
-    M3ProposeBundle(#[from] HandleM3ProposeBundleError),
-    #[error("Error handling M4 (ack bundles)")]
-    M4AckBundles(#[from] HandleM4AckBundlesError),
-    #[error("Error handling M5/M6")]
-    M5M6(#[from] HandleM5M6Error),
-    #[error("Error handling M8")]
-    M8(#[from] HandleM8Error),
-    #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
-    MultipleBmmBlocks { sidechain_number: SidechainNumber },
-}
-
-#[derive(Debug, Error)]
-enum DisconnectBlockError {}
-
-#[derive(Debug, Error)]
-enum TxValidationError {}
-
-#[derive(Debug, Error)]
-enum SyncError {
-    #[error(transparent)]
-    CommitWriteTxn(#[from] CommitWriteTxnError),
-    #[error("Failed to connect block")]
-    ConnectBlock(#[from] ConnectBlockError),
-    #[error(transparent)]
-    DbGet(#[from] db_error::Get),
-    #[error(transparent)]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
-    #[error("JSON RPC error (`{method}`)")]
-    JsonRpc {
-        method: String,
-        source: jsonrpsee::core::ClientError,
-    },
-    #[error(transparent)]
-    ReadTxn(#[from] ReadTxnError),
-    #[error(transparent)]
-    WriteTxn(#[from] WriteTxnError),
-}
-
 /// Returns `Some` if the sidechain proposal does not already exist
 // See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m1-1
 fn handle_m1_propose_sidechain(
@@ -206,7 +55,7 @@ fn handle_m1_propose_sidechain(
     dbs: &Dbs,
     proposal: SidechainProposal,
     proposal_height: u32,
-) -> Result<Option<Sidechain>, HandleM1ProposeSidechainError> {
+) -> Result<Option<Sidechain>, error::HandleM1ProposeSidechain> {
     let description_hash: sha256d::Hash = proposal.description.sha256d_hash();
     // FIXME: check that the proposal was made in an ancestor block
     if dbs
@@ -247,7 +96,7 @@ fn handle_m2_ack_sidechain(
     height: u32,
     sidechain_number: SidechainNumber,
     description_hash: &sha256d::Hash,
-) -> Result<(), HandleM2AckSidechainError> {
+) -> Result<(), error::HandleM2AckSidechain> {
     let sidechain = dbs
         .description_hash_to_sidechain
         .try_get(rwtxn, description_hash)?;
@@ -299,12 +148,12 @@ fn handle_failed_sidechain_proposals(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     height: u32,
-) -> Result<(), HandleFailedSidechainProposalsError> {
+) -> Result<(), error::HandleFailedSidechainProposals> {
     let failed_proposals: Vec<_> = dbs
         .description_hash_to_sidechain
         .iter(rwtxn)
         .map_err(db_error::Iter::from)?
-        .map_err(|err| HandleFailedSidechainProposalsError::DbIter(err.into()))
+        .map_err(|err| error::HandleFailedSidechainProposals::DbIter(err.into()))
         .filter_map(|(description_hash, sidechain)| {
             let sidechain_proposal_age = height - sidechain.status.proposal_height;
             let sidechain_slot_is_used = dbs
@@ -337,13 +186,13 @@ fn handle_m3_propose_bundle(
     dbs: &Dbs,
     sidechain_number: SidechainNumber,
     m6id: [u8; 32],
-) -> Result<(), HandleM3ProposeBundleError> {
+) -> Result<(), error::HandleM3ProposeBundle> {
     if !dbs
         .active_sidechains
         .sidechain
         .contains_key(rwtxn, &sidechain_number)?
     {
-        return Err(HandleM3ProposeBundleError::InactiveSidechain { sidechain_number });
+        return Err(error::HandleM3ProposeBundle::InactiveSidechain { sidechain_number });
     }
     let pending_m6ids = dbs
         .active_sidechains
@@ -366,7 +215,7 @@ fn handle_m4_votes(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     upvotes: &[u16],
-) -> Result<(), HandleM4VotesError> {
+) -> Result<(), error::HandleM4Votes> {
     for (sidechain_number, vote) in upvotes.iter().enumerate() {
         let sidechain_number = (sidechain_number as u8).into();
         let vote = *vote;
@@ -401,7 +250,7 @@ fn handle_m4_ack_bundles(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     m4: &M4AckBundles,
-) -> Result<(), HandleM4AckBundlesError> {
+) -> Result<(), error::HandleM4AckBundles> {
     match m4 {
         M4AckBundles::LeadingBy50 => {
             todo!();
@@ -411,10 +260,10 @@ fn handle_m4_ack_bundles(
         }
         M4AckBundles::OneByte { upvotes } => {
             let upvotes: Vec<u16> = upvotes.iter().map(|vote| *vote as u16).collect();
-            handle_m4_votes(rwtxn, dbs, &upvotes).map_err(HandleM4AckBundlesError::from)
+            handle_m4_votes(rwtxn, dbs, &upvotes).map_err(error::HandleM4AckBundles::from)
         }
         M4AckBundles::TwoBytes { upvotes } => {
-            handle_m4_votes(rwtxn, dbs, upvotes).map_err(HandleM4AckBundlesError::from)
+            handle_m4_votes(rwtxn, dbs, upvotes).map_err(error::HandleM4AckBundles::from)
         }
     }
 }
@@ -423,7 +272,7 @@ fn handle_m4_ack_bundles(
 fn handle_failed_m6ids(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
-) -> Result<LinkedHashSet<(SidechainNumber, [u8; 32])>, HandleFailedM6IdsError> {
+) -> Result<LinkedHashSet<(SidechainNumber, [u8; 32])>, error::HandleFailedM6Ids> {
     let mut failed_m6ids = LinkedHashSet::new();
     let mut updated_slots = LinkedHashMap::new();
     let () = dbs
@@ -463,7 +312,7 @@ fn handle_m5_m6(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     transaction: &Transaction,
-) -> Result<Option<DepositOrSuccessfulWithdrawal>, HandleM5M6Error> {
+) -> Result<Option<DepositOrSuccessfulWithdrawal>, error::HandleM5M6> {
     let txid = transaction.compute_txid();
     // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
     let (sidechain_number, new_ctip, new_total_value) = {
@@ -502,7 +351,7 @@ fn handle_m5_m6(
                 .iter()
                 .any(|input| input.previous_output == old_ctip.outpoint);
             if !old_ctip_found {
-                return Err(HandleM5M6Error::OldCtipUnspent { sidechain_number });
+                return Err(error::HandleM5M6::OldCtipUnspent { sidechain_number });
             }
             old_ctip.value
         } else {
@@ -549,7 +398,7 @@ fn handle_m5_m6(
         if m6_valid {
             res = Some(Either::Right((sidechain_number, m6id)));
         } else {
-            return Err(HandleM5M6Error::InvalidM6);
+            return Err(error::HandleM5M6::InvalidM6);
         }
     }
     let mut treasury_utxo_count = dbs
@@ -597,13 +446,13 @@ fn handle_m5_m6(
 }
 
 /// Handles a (potential) M8 BMM request.
-/// Returns `true` if this is a valid BMM request, HandleM8Error if this
-/// is an invalid BMM request, and `false` if this is not a BMM request.
+/// Returns `true` if this is a valid BMM request, `HandleM8Error::Jfyi` if
+/// this is an invalid BMM request, and `false` if this is not a BMM request.
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: &BmmCommitments,
     prev_mainchain_block_hash: &BlockHash,
-) -> Result<bool, HandleM8Error> {
+) -> Result<bool, error::HandleM8> {
     let output = &transaction.output[0];
     let script = output.script_pubkey.to_bytes();
 
@@ -612,10 +461,10 @@ fn handle_m8(
             .get(&bmm_request.sidechain_number)
             .is_some_and(|commitment| *commitment == bmm_request.sidechain_block_hash)
         {
-            Err(HandleM8Error::NotAcceptedByMiners)
+            Err(error::HandleM8::NotAcceptedByMiners)
         } else if bmm_request.prev_mainchain_block_hash != prev_mainchain_block_hash.to_byte_array()
         {
-            Err(HandleM8Error::BmmRequestExpired)
+            Err(error::HandleM8::BmmRequestExpired)
         } else {
             Ok(true)
         }
@@ -630,7 +479,7 @@ fn connect_block(
     event_tx: &Sender<Event>,
     block: &Block,
     height: u32,
-) -> Result<(), ConnectBlockError> {
+) -> Result<(), error::ConnectBlock> {
     // TODO: Check that there are no duplicate M2s.
     let coinbase = &block.txdata[0];
     let mut bmmed_sidechain_slots = HashSet::new();
@@ -710,7 +559,7 @@ fn connect_block(
                 sidechain_block_hash,
             } => {
                 if bmmed_sidechain_slots.contains(&sidechain_number) {
-                    return Err(ConnectBlockError::MultipleBmmBlocks { sidechain_number });
+                    return Err(error::ConnectBlock::MultipleBmmBlocks { sidechain_number });
                 }
                 bmmed_sidechain_slots.insert(sidechain_number);
                 accepted_bmm_requests.insert(sidechain_number, sidechain_block_hash);
@@ -766,7 +615,7 @@ fn connect_block(
     let () = dbs
         .block_hashes
         .put_block_info(rwtxn, &block_hash, &block_info)
-        .map_err(ConnectBlockError::PutBlockInfo)?;
+        .map_err(error::ConnectBlock::PutBlockInfo)?;
     // TODO: invalidate block
     let current_tip_cumulative_work: Option<Work> = 'work: {
         let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? else {
@@ -807,7 +656,7 @@ fn disconnect_block(
     _dbs: &Dbs,
     event_tx: &Sender<Event>,
     block_hash: BlockHash,
-) -> Result<(), DisconnectBlockError> {
+) -> Result<(), error::DisconnectBlock> {
     // FIXME: implement
     todo!();
     let event = Event::DisconnectBlock { block_hash };
@@ -819,7 +668,7 @@ fn _is_transaction_valid(
     _rotxn: &mut RoTxn,
     _dbs: &Dbs,
     _transaction: &Transaction,
-) -> Result<(), TxValidationError> {
+) -> Result<(), error::TxValidation> {
     todo!();
 }
 
@@ -827,7 +676,7 @@ async fn sync_headers(
     dbs: &Dbs,
     main_client: &jsonrpsee::http_client::HttpClient,
     main_tip: BlockHash,
-) -> Result<(), SyncError> {
+) -> Result<(), error::Sync> {
     let mut block_hash = main_tip;
     while let Some((latest_missing_header, latest_missing_header_height)) =
         tokio::task::block_in_place(|| {
@@ -835,14 +684,14 @@ async fn sync_headers(
             match dbs
                 .block_hashes
                 .latest_missing_ancestor_header(&rotxn, block_hash)
-                .map_err(SyncError::DbTryGet)?
+                .map_err(error::Sync::DbTryGet)?
             {
                 Some(latest_missing_header) => {
                     let height = dbs
                         .block_hashes
                         .height()
                         .try_get(&rotxn, &latest_missing_header)?;
-                    Ok::<_, SyncError>(Some((latest_missing_header, height)))
+                    Ok::<_, error::Sync>(Some((latest_missing_header, height)))
                 }
                 None => Ok(None),
             }
@@ -855,7 +704,7 @@ async fn sync_headers(
         }
         let header = main_client
             .getblockheader(latest_missing_header)
-            .map_err(|err| SyncError::JsonRpc {
+            .map_err(|err| error::Sync::JsonRpc {
                 method: "getblockheader".to_owned(),
                 source: err,
             })
@@ -877,7 +726,7 @@ async fn sync_blocks(
     event_tx: &Sender<Event>,
     main_client: &jsonrpsee::http_client::HttpClient,
     main_tip: BlockHash,
-) -> Result<(), SyncError> {
+) -> Result<(), error::Sync> {
     let missing_blocks: Vec<BlockHash> = tokio::task::block_in_place(|| {
         let rotxn = dbs.read_txn()?;
         dbs.block_hashes
@@ -885,7 +734,7 @@ async fn sync_blocks(
             .map(|(block_hash, _header)| Ok(block_hash))
             .take_while(|block_hash| Ok(!dbs.block_hashes.contains_block(&rotxn, block_hash)?))
             .collect()
-            .map_err(SyncError::from)
+            .map_err(error::Sync::from)
     })?;
     if missing_blocks.is_empty() {
         return Ok(());
@@ -894,7 +743,7 @@ async fn sync_blocks(
         tracing::debug!("Syncing block `{missing_block}` -> `{main_tip}`");
         let block = main_client
             .get_block(missing_block, U8Witness::<0>)
-            .map_err(|err| SyncError::JsonRpc {
+            .map_err(|err| error::Sync::JsonRpc {
                 method: "getblock".to_owned(),
                 source: err,
             })
@@ -914,7 +763,7 @@ async fn sync_to_tip(
     event_tx: &Sender<Event>,
     main_client: &jsonrpsee::http_client::HttpClient,
     main_tip: BlockHash,
-) -> Result<(), SyncError> {
+) -> Result<(), error::Sync> {
     let () = sync_headers(dbs, main_client, main_tip).await?;
     let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
     Ok(())
@@ -924,10 +773,10 @@ async fn initial_sync(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_client: &jsonrpsee::http_client::HttpClient,
-) -> Result<(), SyncError> {
+) -> Result<(), error::Sync> {
     let main_tip: BlockHash = main_client
         .getbestblockhash()
-        .map_err(|err| SyncError::JsonRpc {
+        .map_err(|err| error::Sync::JsonRpc {
             method: "getbestblockhash".to_owned(),
             source: err,
         })
@@ -942,16 +791,32 @@ pub(super) async fn task(
     zmq_addr_sequence: &str,
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-) -> anyhow::Result<()> {
+) -> Result<(), error::Fatal> {
     // FIXME: use this instead of polling
-    let zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence).await?;
-    let () = initial_sync(dbs, event_tx, main_client).await?;
+    let zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence)
+        .await
+        .map_err(error::Fatal::from)?;
+    let () = initial_sync(dbs, event_tx, main_client)
+        .await
+        .or_else(|err| {
+            let non_fatal: <error::Sync as fatality::Split>::Jfyi = err.split()?;
+            let non_fatal = anyhow::Error::from(non_fatal);
+            tracing::warn!("Error during initial sync: {non_fatal:#}");
+            Ok::<(), error::Fatal>(())
+        })?;
     zmq_sequence
-        .err_into()
+        .err_into::<error::Fatal>()
         .try_for_each(|msg| async move {
             match msg {
                 SequenceMessage::BlockHashConnected(block_hash, _) => {
-                    let () = sync_to_tip(dbs, event_tx, main_client, block_hash).await?;
+                    let () = sync_to_tip(dbs, event_tx, main_client, block_hash)
+                        .await
+                        .or_else(|err| {
+                            let non_fatal: <error::Sync as fatality::Split>::Jfyi = err.split()?;
+                            let non_fatal = anyhow::Error::from(non_fatal);
+                            tracing::warn!("Error during sync to {block_hash}: {non_fatal:#}");
+                            Ok::<(), error::Fatal>(())
+                        })?;
                     Ok(())
                 }
                 SequenceMessage::BlockHashDisconnected(block_hash, _) => {
@@ -965,4 +830,5 @@ pub(super) async fn task(
             }
         })
         .await
+        .map_err(error::Fatal::from)
 }
