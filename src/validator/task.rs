@@ -126,7 +126,7 @@ enum HandleM5M6Error {
 enum HandleM8Error {
     #[error("BMM request expired")]
     BmmRequestExpired,
-    #[error("Cannot include BMM request; not accepted by miners")]
+    #[error("BMM request not accepted by miners")]
     NotAcceptedByMiners,
 }
 
@@ -796,16 +796,34 @@ fn connect_block(
             }
             None => (),
         };
-        if handle_m8(
+        match handle_m8(
             transaction,
             &accepted_bmm_requests,
             &prev_mainchain_block_hash,
-        )? {
-            tracing::trace!(
-                "Handled valid M8 BMM request in tx `{}`",
-                transaction.compute_txid()
-            );
-        }
+        ) {
+            Ok(true) => {
+                tracing::trace!(
+                    "Handled valid M8 BMM request in tx `{}`",
+                    transaction.compute_txid()
+                );
+            }
+            // This was not a BMM request
+            Ok(_) => (),
+
+            // Make sure to NOT propagate this outwards. These errors are not
+            // errors in our system, but merely indicate that the M8 messages
+            // were invalid.
+            // We list out the variants of `HandleM8Error` that we can ignore,
+            // to ensure the compiler helping us out if we add other variants
+            // later that DO indicate we have an error in our system.
+            Err(err @ (HandleM8Error::NotAcceptedByMiners | HandleM8Error::BmmRequestExpired)) => {
+                tracing::trace!(
+                    "Handled invalid M8 BMM request in tx `{}`: {:?}",
+                    transaction.compute_txid(),
+                    err
+                );
+            }
+        };
     }
     let block_info = BlockInfo {
         deposits,
