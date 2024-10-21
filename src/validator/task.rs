@@ -81,11 +81,11 @@ enum HandleM3ProposeBundleError {
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
     DbTryGet(#[from] db_error::TryGet),
-    #[error(
-        "Cannot propose bundle; sidechain slot {} is inactive",
-        .sidechain_number.0
-    )]
+}
+
+enum HandleM3ProposeBundleResult {
     InactiveSidechain { sidechain_number: SidechainNumber },
+    Valid { m6id: [u8; 32] },
 }
 
 #[derive(Debug, Error)]
@@ -116,18 +116,31 @@ enum HandleM5M6Error {
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
     DbTryGet(#[from] db_error::TryGet),
-    #[error("Invalid M6")]
-    InvalidM6,
-    #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
-    OldCtipUnspent { sidechain_number: SidechainNumber },
 }
 
-#[derive(Debug, Error)]
-enum HandleM8Error {
-    #[error("BMM request expired")]
+#[derive(Debug)]
+enum HandleM5M6Result {
+    InvalidM6,
+    OldCtipUnspent {
+        sidechain_number: SidechainNumber,
+    },
+    ValidProposal {
+        sidechain_number: SidechainNumber,
+        m6id: [u8; 32],
+    },
+    ValidDeposit {
+        deposit: Deposit,
+    },
+}
+
+#[derive(Debug)]
+enum HandleM8Result {
+    // BMM request expired
     BmmRequestExpired,
-    #[error("Cannot include BMM request; not accepted by miners")]
+    // Cannot include BMM request; not accepted by miners
     NotAcceptedByMiners,
+    // Valid BMM request
+    Valid,
 }
 
 #[derive(Debug, Error)]
@@ -160,10 +173,6 @@ enum ConnectBlockError {
     M4AckBundles(#[from] HandleM4AckBundlesError),
     #[error("Error handling M5/M6")]
     M5M6(#[from] HandleM5M6Error),
-    #[error("Error handling M8")]
-    M8(#[from] HandleM8Error),
-    #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
-    MultipleBmmBlocks { sidechain_number: SidechainNumber },
 }
 
 #[derive(Debug, Error)]
@@ -394,14 +403,14 @@ fn handle_m3_propose_bundle(
     dbs: &Dbs,
     sidechain_number: SidechainNumber,
     m6id: [u8; 32],
-) -> Result<(), HandleM3ProposeBundleError> {
+) -> Result<HandleM3ProposeBundleResult, HandleM3ProposeBundleError> {
     if dbs
         .sidechain_numbers
         .sidechain
         .try_get(rwtxn, &sidechain_number)?
         .is_none()
     {
-        return Err(HandleM3ProposeBundleError::InactiveSidechain { sidechain_number });
+        return Ok(HandleM3ProposeBundleResult::InactiveSidechain { sidechain_number });
     }
     let pending_m6ids = dbs
         .sidechain_numbers
@@ -417,7 +426,8 @@ fn handle_m3_propose_bundle(
         .sidechain_numbers
         .pending_m6ids
         .put(rwtxn, &sidechain_number, &pending_m6ids)?;
-    Ok(())
+
+    Ok(HandleM3ProposeBundleResult::Valid { m6id })
 }
 
 fn handle_m4_votes(
@@ -514,14 +524,11 @@ fn handle_failed_m6ids(
     Ok(failed_m6ids)
 }
 
-/// Deposit or (sidechain_id, m6id)
-type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, [u8; 32])>;
-
 fn handle_m5_m6(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     transaction: &Transaction,
-) -> Result<Option<DepositOrSuccessfulWithdrawal>, HandleM5M6Error> {
+) -> Result<Option<HandleM5M6Result>, HandleM5M6Error> {
     let txid = transaction.compute_txid();
     // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
     let (sidechain_number, new_ctip, new_total_value) = {
@@ -561,7 +568,7 @@ fn handle_m5_m6(
                 .iter()
                 .any(|input| input.previous_output == old_ctip.outpoint);
             if !old_ctip_found {
-                return Err(HandleM5M6Error::OldCtipUnspent { sidechain_number });
+                return Ok(Some(HandleM5M6Result::OldCtipUnspent { sidechain_number }));
             }
             old_ctip.value
         } else {
@@ -574,9 +581,8 @@ fn handle_m5_m6(
         total_value: new_total_value,
         previous_total_value: old_total_value,
     };
-    dbg!(&treasury_utxo);
 
-    let mut res = None;
+    let mut res: Option<HandleM5M6Result> = None;
     // M6
     if new_total_value < old_total_value {
         let mut m6_valid = false;
@@ -606,9 +612,12 @@ fn handle_m5_m6(
             }
         }
         if m6_valid {
-            res = Some(Either::Right((sidechain_number, m6id)));
+            res = Some(HandleM5M6Result::ValidProposal {
+                sidechain_number,
+                m6id,
+            });
         } else {
-            return Err(HandleM5M6Error::InvalidM6);
+            return Ok(Some(HandleM5M6Result::InvalidM6));
         }
     }
     let mut treasury_utxo_count = dbs
@@ -648,7 +657,7 @@ fn handle_m5_m6(
                     script_pubkey: address.into(),
                 },
             };
-            res = Some(Either::Left(deposit));
+            res = Some(HandleM5M6Result::ValidDeposit { deposit });
         }
         Some(_) | None => (),
     }
@@ -656,13 +665,12 @@ fn handle_m5_m6(
 }
 
 /// Handles a (potential) M8 BMM request.
-/// Returns `true` if this is a valid BMM request, HandleM8Error if this
-/// is an invalid BMM request, and `false` if this is not a BMM request.
+/// Returns `Some` if this was a BMM request and `None` if not.
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: &BmmCommitments,
     prev_mainchain_block_hash: &BlockHash,
-) -> Result<bool, HandleM8Error> {
+) -> Option<HandleM8Result> {
     let output = &transaction.output[0];
     let script = output.script_pubkey.to_bytes();
 
@@ -671,15 +679,15 @@ fn handle_m8(
             .get(&bmm_request.sidechain_number)
             .is_some_and(|commitment| *commitment == bmm_request.sidechain_block_hash)
         {
-            Err(HandleM8Error::NotAcceptedByMiners)
+            Some(HandleM8Result::NotAcceptedByMiners)
         } else if bmm_request.prev_mainchain_block_hash != prev_mainchain_block_hash.to_byte_array()
         {
-            Err(HandleM8Error::BmmRequestExpired)
+            Some(HandleM8Result::BmmRequestExpired)
         } else {
-            Ok(true)
+            Some(HandleM8Result::Valid)
         }
     } else {
-        Ok(false)
+        None
     }
 }
 
@@ -744,9 +752,24 @@ fn connect_block(
                 bundle_txid,
             } => {
                 let sidechain_number = sidechain_number.into();
-                let () = handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid)?;
+                match handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid)? {
+                    HandleM3ProposeBundleResult::Valid { m6id } => {
+                        tracing::info!(
+                            "Valid M3 bundle for sidechain number {sidechain_number:?} in tx `{}`: {}",
+                            hex::encode(bundle_txid),
+                            hex::encode(m6id),
+                        );
+                    }
+                    HandleM3ProposeBundleResult::InactiveSidechain { sidechain_number } => {
+                        tracing::warn!(
+                            "Propose bundle for inactive sidechain number {sidechain_number:?} in tx `{}`",
+                            hex::encode(bundle_txid) // TODO: should this be a TXID?
+                        );
+                    }
+                }
+
                 let event = WithdrawalBundleEvent {
-                    sidechain_id: sidechain_number,
+                    sidechain_number,
                     m6id: bundle_txid,
                     kind: WithdrawalBundleEventKind::Submitted,
                 };
@@ -761,8 +784,10 @@ fn connect_block(
             } => {
                 let sidechain_number = sidechain_number.into();
                 if bmmed_sidechain_slots.contains(&sidechain_number) {
-                    return Err(ConnectBlockError::MultipleBmmBlocks { sidechain_number });
+                    tracing::warn!("Multiple blocks BMM'd in sidechain slot {sidechain_number:?}");
+                    continue;
                 }
+
                 bmmed_sidechain_slots.insert(sidechain_number);
                 accepted_bmm_requests.insert(sidechain_number, sidechain_block_hash);
             }
@@ -776,35 +801,55 @@ fn connect_block(
     let prev_mainchain_block_hash = block.header.prev_blockhash;
 
     let mut deposits = Vec::new();
-    withdrawal_bundle_events.extend(failed_m6ids.into_iter().map(|(sidechain_id, m6id)| {
+    withdrawal_bundle_events.extend(failed_m6ids.into_iter().map(|(sidechain_number, m6id)| {
         WithdrawalBundleEvent {
             m6id,
-            sidechain_id,
+            sidechain_number,
             kind: WithdrawalBundleEventKind::Failed,
         }
     }));
     for transaction in &block.txdata[1..] {
         match handle_m5_m6(rwtxn, dbs, transaction)? {
-            Some(Either::Left(deposit)) => deposits.push(deposit),
-            Some(Either::Right((sidechain_id, m6id))) => {
+            Some(HandleM5M6Result::ValidDeposit { deposit }) => deposits.push(deposit),
+            Some(HandleM5M6Result::ValidProposal {
+                sidechain_number,
+                m6id,
+            }) => {
                 let withdrawal_bundle_event = WithdrawalBundleEvent {
                     m6id,
-                    sidechain_id,
+                    sidechain_number,
                     kind: WithdrawalBundleEventKind::Succeeded,
                 };
                 withdrawal_bundle_events.push(withdrawal_bundle_event);
             }
+            Some(invalid) => {
+                tracing::warn!(
+                    "Invalid M5 or M6 in tx `{}`: {:?}",
+                    transaction.compute_txid(),
+                    invalid
+                );
+            }
             None => (),
         };
-        if handle_m8(
+        match handle_m8(
             transaction,
             &accepted_bmm_requests,
             &prev_mainchain_block_hash,
-        )? {
-            tracing::trace!(
-                "Handled valid M8 BMM request in tx `{}`",
-                transaction.compute_txid()
-            );
+        ) {
+            Some(HandleM8Result::Valid) => {
+                tracing::trace!(
+                    "Handled valid M8 BMM request in tx `{}`",
+                    transaction.compute_txid()
+                );
+            }
+            Some(res) => {
+                tracing::warn!(
+                    "Invalid M8 BMM request in tx `{}`: {:?}",
+                    transaction.compute_txid(),
+                    res
+                );
+            }
+            None => (),
         }
     }
     let block_info = BlockInfo {
@@ -981,8 +1026,22 @@ async fn initial_sync(
             source: err,
         })
         .await?;
-    tracing::debug!("mainchain tip: `{main_tip}`");
+
+    let main_tip_block = main_client
+        .get_block(main_tip, U8Witness::<1>)
+        .map_err(|err| SyncError::JsonRpc {
+            method: "getblock".to_owned(),
+            source: err,
+        })
+        .await?;
+
+    tracing::info!(
+        "Starting initial sync to mainchain tip: `{main_tip}` (height: {})",
+        main_tip_block.height,
+    );
     let () = sync_to_tip(dbs, event_tx, main_client, main_tip).await?;
+
+    tracing::info!("Initial sync complete");
     Ok(())
 }
 

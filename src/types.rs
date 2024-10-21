@@ -97,7 +97,7 @@ pub enum WithdrawalBundleEventKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WithdrawalBundleEvent {
-    pub sidechain_id: SidechainNumber,
+    pub sidechain_number: SidechainNumber,
     pub m6id: Hash256,
     pub kind: WithdrawalBundleEventKind,
 }
