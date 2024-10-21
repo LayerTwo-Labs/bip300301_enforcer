@@ -1,6 +1,7 @@
 use std::{
+    env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use clap::{Args, Parser};
@@ -22,6 +23,38 @@ fn parse_host_addr(s: &str) -> Result<SocketAddr, HostAddrError> {
         .map_err(HostAddrError::InvalidAddress)?
         .next()
         .ok_or(HostAddrError::FailedResolution)
+}
+
+fn get_data_dir() -> Result<PathBuf, String> {
+    const APP_NAME: &str = "bip300301_enforcer";
+
+    let dir = match env::consts::OS {
+        "linux" => {
+            if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
+                Path::new(&xdg_data_home).join(APP_NAME)
+            } else {
+                let home = env::var("HOME")
+                    .map_err(|_| "HOME environment variable not set".to_string())?;
+                Path::new(&home).join(".local").join("share").join(APP_NAME)
+            }
+        }
+        "macos" => {
+            let home =
+                env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+            Path::new(&home)
+                .join("Library")
+                .join("Application Support")
+                .join(APP_NAME)
+        }
+        "windows" => {
+            let app_data = env::var("APPDATA")
+                .map_err(|_| "APPDATA environment variable not set".to_string())?;
+            Path::new(&app_data).join(APP_NAME)
+        }
+        os => return Err(format!("Unsupported OS: {}", os)),
+    };
+
+    Ok(dir)
 }
 
 #[derive(Clone, Args)]
@@ -58,9 +91,8 @@ const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
 
 #[derive(Clone, Parser)]
 pub struct Config {
-    /// Directory to store wallet + drivechain data.
-    /// TODO: find a sensible default outside of the repo.
-    #[arg(default_value = "./datadir", long)]
+    /// Directory to store wallet + drivechain + validator data.
+    #[arg(default_value_os_t = get_data_dir().unwrap_or_else(|_| PathBuf::from("./datadir")), long)]
     pub data_dir: PathBuf,
     #[arg(long)]
     pub enable_wallet: bool,

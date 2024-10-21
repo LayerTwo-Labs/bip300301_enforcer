@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
     let validator = Validator::new(
         mainchain_client.clone(),
         cli.node_zmq_addr_sequence,
-        Path::new("./"),
+        cli.data_dir.as_ref(),
         |err| async {
             let _send_err: Result<(), _> = err_tx.send(err);
         },
