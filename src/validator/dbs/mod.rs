@@ -78,9 +78,7 @@ impl Dbs {
     const NUM_DBS: u32 = BlockHashDbs::NUM_DBS + SidechainNumberDbs::NUM_DBS + 5;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
-        let db_dir = data_dir
-            .join("./bip300301_enforcer")
-            .join(format!("{network}.mdb"));
+        let db_dir = data_dir.join(format!("{network}.mdb"));
         if let Err(err) = std::fs::create_dir_all(&db_dir) {
             let err = CreateDbsError::CreateDirectory {
                 path: db_dir,
@@ -95,7 +93,7 @@ impl Dbs {
             const DB_MAP_SIZE: usize = 10 * GB;
             let mut env_opts = EnvOpenOptions::new();
             let _: &mut EnvOpenOptions = env_opts.max_dbs(Self::NUM_DBS).map_size(DB_MAP_SIZE);
-            unsafe { Env::open(&env_opts, db_dir) }?
+            unsafe { Env::open(&env_opts, db_dir.clone()) }?
         };
         let mut rwtxn = env.write_txn()?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
@@ -110,6 +108,8 @@ impl Dbs {
         )?;
         let sidechain_numbers = SidechainNumberDbs::new(&env, &mut rwtxn)?;
         let () = rwtxn.commit()?;
+
+        tracing::info!("Created validator DBs in {}", db_dir.display());
         Ok(Self {
             env,
             block_hashes,
