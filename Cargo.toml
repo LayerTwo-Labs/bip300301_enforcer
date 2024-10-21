@@ -33,9 +33,12 @@ num-traits = "0.2.19"
 nom = "7.1.3"
 parking_lot = { version = "0.12.3", features = ["send_guard"] }
 prost = "0.13.2"
+regex = "1.11.0"
 rusqlite = { version = "0.28.0", features = ["bundled"] }
 rusqlite_migration = "1.0.2"
 serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.128"
+serde_path_to_error = "0.1.16"
 sha2 = "0.10.8"
 thiserror = "1.0.64"
 tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
@@ -50,7 +53,7 @@ zeromq = "0.4.0"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "7406a92dd58c2b15c97d2bb4b1793946baf3bc2c"
+rev = "91a34cca7e811ef6eba32b8413abe59709381ae6"
 
 [dependencies.educe]
 version = "0.6.0"

@@ -6,7 +6,7 @@ use std::{
 };
 
 use bdk::{
-    bitcoin::Network,
+    bitcoin::{consensus::Encodable, hashes::Hash, BlockHash, Network},
     blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
@@ -16,7 +16,7 @@ use bdk::{
     },
     template::Bip84,
     wallet::AddressIndex,
-    KeychainKind, SyncOptions,
+    KeychainKind, SignOptions, SyncOptions,
 };
 use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, MainClient};
 use bitcoin::{
@@ -41,10 +41,12 @@ use rusqlite::{Connection, Row};
 
 use crate::{
     cli::WalletConfig,
-    messages::{sha256d, CoinbaseBuilder},
+    messages::{sha256d, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
     types::{SidechainNumber, SidechainProposal},
     validator::Validator,
 };
+
+pub mod error;
 
 pub struct Wallet {
     main_client: HttpClient,
@@ -461,10 +463,10 @@ impl Wallet {
             .await
             .into_diagnostic()?;
 
-        let block_hash = block.header.block_hash().as_byte_array().to_vec();
-        let block_height: u32 = self.main_client.getblockcount().await.into_diagnostic()? as u32;
+        let _block_hash = block.header.block_hash().as_byte_array().to_vec();
+        let _block_height: u32 = self.main_client.getblockcount().await.into_diagnostic()? as u32;
 
-        let bmm_hashes: Vec<Vec<u8>> = self
+        let _bmm_hashes: Vec<Vec<u8>> = self
             .get_bmm_requests()?
             .into_iter()
             .map(|(_sidechain_number, bmm_hash)| bmm_hash.to_vec())
@@ -644,7 +646,11 @@ impl Wallet {
         Ok(sidechains)
     }
 
-    pub async fn get_ctip(
+    pub fn get_mainchain_tip(&self) -> Result<bitcoin::BlockHash> {
+        self.validator.get_mainchain_tip()
+    }
+
+    pub async fn get_sidechain_ctip(
         &self,
         sidechain_number: SidechainNumber,
     ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>> {
@@ -679,6 +685,152 @@ impl Wallet {
             }
         }
         Ok(false)
+    }
+
+    // Creates a BMM request transaction. Does NOT broadcast. `height` is the block height this
+    // transaction MUST be included in. `amount` is the amount to spend in the BMM bid.
+    pub async fn create_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: bdk::bitcoin::BlockHash,
+        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        amount: bdk::bitcoin::Amount,
+        locktime: bdk::bitcoin::absolute::LockTime,
+    ) -> Result<bdk::bitcoin::Transaction> {
+        let mut psbt = self.build_bmm_tx(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+            amount,
+            locktime,
+        )?;
+
+        let psbt_finalized: Result<bool, _> = self
+            .bitcoin_wallet
+            .lock()
+            .sign(&mut psbt, SignOptions::default());
+        match psbt_finalized {
+            Ok(true) => {
+                tracing::info!("BMM request psbt signed successfully");
+            }
+
+            Ok(false) => {
+                tracing::error!("failed to sign BMM request psbt");
+                return Err(miette!("failed to sign BMM request psbt"));
+            }
+
+            Err(e) => {
+                return Err(miette!("failed to sign BMM request psbt: {e:#}"));
+            }
+        }
+
+        let tx = psbt.extract_tx();
+
+        self.insert_new_bmm_request(sidechain_number, sidechain_block_hash)?;
+        tracing::info!("inserted new bmm request into db");
+
+        Ok(tx)
+    }
+
+    fn insert_new_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        side_block_hash: BlockHash,
+    ) -> Result<()> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            connection
+                .prepare(
+                    "INSERT INTO bmm_requests (sidechain_number, side_block_hash) VALUES (?1, ?2)",
+                )
+                .into_diagnostic()?
+                .execute((
+                    u8::from(sidechain_number),
+                    side_block_hash.to_byte_array().to_vec(),
+                ))
+                .into_diagnostic()
+        };
+
+        with_connection(&self.db_connection.lock())?;
+        Ok(())
+    }
+
+    fn bmm_request_message(
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: BlockHash,
+        prev_mainchain_block_hash: BlockHash,
+    ) -> Result<bdk::bitcoin::ScriptBuf> {
+        let message = [
+            M8_BMM_REQUEST_TAG.to_vec(),
+            vec![sidechain_number.into()],
+            BlockHash::to_byte_array(sidechain_block_hash).to_vec(),
+            BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
+        ]
+        .concat();
+
+        let bytes = bdk::bitcoin::script::PushBytesBuf::try_from(message).into_diagnostic()?;
+        Ok(bdk::bitcoin::ScriptBuf::new_op_return(&bytes))
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
+    fn build_bmm_tx(
+        &self,
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: bdk::bitcoin::BlockHash,
+        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        amount: bdk::bitcoin::Amount,
+        locktime: bdk::bitcoin::absolute::LockTime,
+    ) -> Result<bdk::bitcoin::psbt::PartiallySignedTransaction> {
+        // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
+        let message = Self::bmm_request_message(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+        )?;
+
+        let (psbt, _) = {
+            let bitcoin_wallet = self.bitcoin_wallet.lock();
+            let mut builder = bitcoin_wallet.build_tx();
+            builder
+                .nlocktime(locktime)
+                .add_recipient(message, amount.to_sat());
+            builder.finish().into_diagnostic()?
+        };
+
+        Ok(psbt)
+    }
+
+    // Broadcasts a transaction to the Bitcoin network.
+    pub async fn broadcast_transaction(&self, tx: bdk::bitcoin::Transaction) -> Result<()> {
+        // Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
+        // because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
+        // perspective). To get around this we have to pass a `maxburnamount` parameter, and
+        // that's not possible if going through the ElectrumBlockchain interface.
+        //
+        // For the interested reader, the flow of ElectrumBlockchain::broadcast is this:
+        // 1. Send the raw TX from our Electrum client
+        // 2. Electrum server implements this by sending it into Bitcoin Core
+        // 3. Bitcoin Core responds with an error, because we're burning money.
+
+        let mut tx_bytes = vec![];
+        tx.consensus_encode(&mut tx_bytes).into_diagnostic()?;
+
+        let encoded_tx = hex::encode(tx_bytes);
+
+        const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
+        let broadcast_result = self
+            .main_client
+            .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
+            .await
+            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))
+            .into_diagnostic()?;
+
+        tracing::debug!("broadcasted TXID: {:?}", broadcast_result);
+
+        Ok(())
     }
 
     pub fn get_new_address(&self) -> Result<bdk::bitcoin::Address> {

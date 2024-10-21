@@ -28,7 +28,8 @@ use crate::{
 
 use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
-use bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
+use bdk::bitcoin::hashes::Hash as _;
+use bitcoin::{self, absolute::Height, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
 use miette::Result;
 use tonic::{Request, Response, Status};
@@ -50,6 +51,47 @@ where
 {
     let err = proto::Error::missing_field::<Message>(field_name);
     tonic::Status::invalid_argument(err.to_string())
+}
+
+fn bdk_block_hash_to_bitcoin_block_hash(hash: bdk::bitcoin::BlockHash) -> bitcoin::BlockHash {
+    let bytes = hash.as_byte_array().to_vec();
+
+    use bitcoin::hashes::sha256d::Hash;
+    use bitcoin::hashes::Hash as Hm;
+    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
+
+    bitcoin::BlockHash::from_raw_hash(hash)
+}
+
+fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
+    let bytes = hash.as_byte_array().to_vec();
+
+    use bitcoin::hashes::sha256d::Hash;
+    use bitcoin::hashes::Hash as Hm;
+    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
+
+    bitcoin::Txid::from_raw_hash(hash)
+}
+
+trait IntoStatus {
+    fn into_status(self) -> tonic::Status;
+}
+
+// The idea here is to centralize conversion of lower layer errors into something meaningful
+// out from the API.
+//
+// Lower layer errors that return `miette::Report` can be easily turned into a meaningful
+// API response by just doing `into_status()`. We also get the additional benefit of a singular
+// place to add logs for unexpected errors.
+impl IntoStatus for miette::Report {
+    fn into_status(self) -> tonic::Status {
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::ElectrumError>() {
+            return source.clone().into();
+        }
+
+        tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
+        tonic::Status::new(tonic::Code::Unknown, self.to_string())
+    }
 }
 
 #[tonic::async_trait]
@@ -82,18 +124,15 @@ impl ValidatorService for Validator {
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockInfoRequest>("block_hash"))?
             .decode_tonic::<GetBlockInfoRequest, _>("block_hash")?;
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 =
+        let sidechain_id = {
+            let raw_id =
                 sidechain_id.ok_or_else(|| missing_field::<GetBlockInfoRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetBlockInfoRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetBlockInfoRequest>("sidechain_id", &raw_id.to_string())
+            })?
         };
+
         let header_info = self
             .get_header_info(&block_hash)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
@@ -118,18 +157,19 @@ impl ValidatorService for Validator {
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("block_hash"))?
             .decode_tonic::<GetBmmHStarCommitmentRequest, _>("block_hash")?;
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 = sidechain_id
+
+        let sidechain_id = {
+            let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetBmmHStarCommitmentRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetBmmHStarCommitmentRequest>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                )
+            })?
         };
+
         let bmm_commitments = self
             .try_get_bmm_commitments(&block_hash)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
@@ -169,9 +209,8 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetChainTipRequest>,
     ) -> Result<tonic::Response<GetChainTipResponse>, tonic::Status> {
         let GetChainTipRequest {} = request.into_inner();
-        let tip_hash = self
-            .get_mainchain_tip()
-            .map_err(|err| tonic::Status::from_error(err.into()))?;
+        let tip_hash = self.get_mainchain_tip().map_err(|err| err.into_status())?;
+
         let header_info = self
             .get_header_info(&tip_hash)
             .map_err(|err| tonic::Status::from_error(err.into()))?;
@@ -238,25 +277,22 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetCtipRequest>,
     ) -> Result<tonic::Response<GetCtipResponse>, tonic::Status> {
         let GetCtipRequest { sidechain_number } = request.into_inner();
-        let sidechain_number: SidechainNumber = {
-            let sidechain_number: u32 = sidechain_number
+        let sidechain_number = {
+            let raw_id = sidechain_number
                 .ok_or_else(|| missing_field::<GetCtipRequest>("sidechain_number"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_number)
-                .map_err(|_| {
-                    invalid_field_value::<GetCtipRequest>(
-                        "sidechain_number",
-                        &sidechain_number.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetCtipRequest>("sidechain_number", &raw_id.to_string())
+            })?
         };
+
         let ctip = self
             .get_ctip(sidechain_number)
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
         if let Some(ctip) = ctip {
             let sequence_number = self
                 .get_ctip_sequence_number(sidechain_number)
-                .map_err(|err| tonic::Status::internal(err.to_string()))?;
+                .map_err(|err| err.into_status())?;
             // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
             // return Some, so we just unwrap it.
             let sequence_number = sequence_number.unwrap();
@@ -302,7 +338,7 @@ impl ValidatorService for Validator {
         let GetSidechainProposalsRequest {} = request.into_inner();
         let sidechain_proposals = self
             .get_sidechain_proposals()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
             .map(
@@ -337,9 +373,7 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetSidechainsRequest>,
     ) -> Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
         let GetSidechainsRequest {} = request.into_inner();
-        let sidechains = self
-            .get_sidechains()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let sidechains = self.get_sidechains().map_err(|err| err.into_status())?;
         let sidechains = sidechains
             .into_iter()
             .map(|sidechain| {
@@ -372,28 +406,33 @@ impl ValidatorService for Validator {
             start_block_hash,
             end_block_hash,
         } = request.into_inner();
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 = sidechain_id
+
+        let sidechain_id = {
+            let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetTwoWayPegDataRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<GetTwoWayPegDataRequest>("sidechain_id", &raw_id.to_string())
+            })?
         };
+
         let start_block_hash: Option<BlockHash> = start_block_hash
             .map(|start_block_hash| {
                 start_block_hash.decode_tonic::<GetTwoWayPegDataRequest, _>("start_block_hash")
             })
             .transpose()?
-            .map(BlockHash::from_byte_array);
-        let end_block_hash: [u8; 32] = end_block_hash
+            .map(|bytes| {
+                bdk_block_hash_to_bitcoin_block_hash(bdk::bitcoin::BlockHash::from_byte_array(
+                    bytes,
+                ))
+            });
+
+        let end_block_hash: BlockHash = end_block_hash
             .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("end_block_hash"))?
-            .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")?;
-        let end_block_hash = BlockHash::from_byte_array(end_block_hash);
+            .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")
+            .map(bdk::bitcoin::BlockHash::from_byte_array)
+            .map(bdk_block_hash_to_bitcoin_block_hash)?;
+
         match self.get_two_way_peg_data(start_block_hash, end_block_hash) {
             Err(err) => Err(tonic::Status::from_error(Box::new(err))),
             Ok(two_way_peg_data) => {
@@ -416,18 +455,16 @@ impl ValidatorService for Validator {
         request: tonic::Request<SubscribeEventsRequest>,
     ) -> Result<tonic::Response<Self::SubscribeEventsStream>, tonic::Status> {
         let SubscribeEventsRequest { sidechain_id } = request.into_inner();
-        let sidechain_id: SidechainNumber = {
-            let sidechain_id: u32 = sidechain_id
-                .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("sidechain_id"))?;
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<GetTwoWayPegDataRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
+
+        let sidechain_id = {
+            let raw_id = sidechain_id
+                .ok_or_else(|| missing_field::<SubscribeEventsRequest>("sidechain_id"))?;
+
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<SubscribeEventsRequest>("sidechain_id", &raw_id.to_string())
+            })?
         };
+
         let stream = futures::stream::try_unfold(self.subscribe_events(), |mut receiver| async {
             match receiver.recv_direct().await {
                 Ok(event) => Ok(Some((event, receiver))),
@@ -497,13 +534,11 @@ impl ValidatorService for Validator {
 impl WalletService for Arc<crate::wallet::Wallet> {
     async fn create_new_address(
         &self,
-        request: tonic::Request<CreateNewAddressRequest>,
+        _request: tonic::Request<CreateNewAddressRequest>,
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
         let wallet = self as &Arc<crate::wallet::Wallet>;
 
-        let address = wallet
-            .get_new_address()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let address = wallet.get_new_address().map_err(|err| err.into_status())?;
 
         let response = CreateNewAddressResponse {
             address: address.to_string(),
@@ -519,7 +554,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let count = request.into_inner().blocks.unwrap_or(1);
         self.generate(count)
             .await
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| err.into_status())?;
         let response = GenerateBlocksResponse {};
         Ok(tonic::Response::new(response))
     }
@@ -535,20 +570,119 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         ))
     }
 
+    // Legacy Bitcoin Core-based implementation
+    // https://github.com/LayerTwo-Labs/mainchain/blob/05e71917042132202248c0c917f8ef120a2a5251/src/wallet/rpcwallet.cpp#L3863-L4008
     async fn create_bmm_critical_data_transaction(
         &self,
         request: tonic::Request<CreateBmmCriticalDataTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateBmmCriticalDataTransactionResponse>, tonic::Status>
     {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        let CreateBmmCriticalDataTransactionRequest {
+            sidechain_id,
+            value_sats,
+            height,
+            critical_hash,
+            prev_bytes,
+        } = request.into_inner();
+
+        let amount = value_sats
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("value_sats"))
+            .map(bdk::bitcoin::Amount::from_sat)
+            .map_err(|_| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+                    "value_sats",
+                    &value_sats.unwrap_or_default().to_string(),
+                )
+            })?;
+
+        let locktime = height
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("height"))
+            .map(bdk::bitcoin::absolute::LockTime::from_height)?
+            .map_err(|_| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+                    "height",
+                    &height.unwrap_or_default().to_string(),
+                )
+            })?;
+
+        let sidechain_number = sidechain_id
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("sidechain_id"))
+            .map(SidechainNumber::try_from)?
+            .map_err(|_| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+                    "sidechain_id",
+                    &sidechain_id.unwrap_or_default().to_string(),
+                )
+            })?;
+
+        match self.is_sidechain_active(sidechain_number).await {
+            Ok(false) => {
+                return Err(tonic::Status::failed_precondition(
+                    "sidechain is not active",
+                ))
+            }
+            Ok(true) => (),
+            Err(err) => return Err(tonic::Status::from_error(err.into())),
+        }
+
+        // This is also called H*
+        let critical_hash = critical_hash
+            .ok_or_else(|| {
+                missing_field::<CreateBmmCriticalDataTransactionRequest>("critical_hash")
+            })?
+            .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("critical_hash")
+            .map(bdk::bitcoin::BlockHash::from_byte_array)?;
+
+        let prev_bytes = prev_bytes
+            .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("prev_bytes"))?
+            .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("prev_bytes")
+            .map(bdk::bitcoin::BlockHash::from_byte_array)?;
+
+        let mainchain_tip = self
+            .get_mainchain_tip()
+            .map_err(|err| tonic::Status::from_error(err.into()))?;
+
+        // If the mainchain tip has progressed beyond this, the request is already
+        // expired.
+        if mainchain_tip != bdk_block_hash_to_bitcoin_block_hash(prev_bytes) {
+            let message = format!(
+                "invalid prev_bytes {}: expected {}",
+                prev_bytes, mainchain_tip
+            );
+
+            return Err(tonic::Status::invalid_argument(message));
+        }
+
+        let tx = self
+            .create_bmm_request(
+                sidechain_number,
+                critical_hash,
+                prev_bytes,
+                amount,
+                locktime,
+            )
+            .await
+            .map_err(|err| err.into_status())
+            .inspect_err(|err| {
+                tracing::error!("Error creating BMM critical data transaction: {}", err);
+            })?;
+
+        let txid = tx.txid();
+        self.broadcast_transaction(tx)
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let txid = bdk_txid_to_bitcoin_txid(txid);
+
+        let response = CreateBmmCriticalDataTransactionResponse {
+            txid: Some(ConsensusHex::encode(&txid)),
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn create_deposit_transaction(
         &self,
-        request: tonic::Request<CreateDepositTransactionRequest>,
+        _request: tonic::Request<CreateDepositTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateDepositTransactionResponse>, tonic::Status> {
         Err(tonic::Status::new(
             tonic::Code::Unimplemented,
