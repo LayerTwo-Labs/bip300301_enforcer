@@ -104,6 +104,7 @@ impl Validator {
                 task::task(&mainchain_client, &zmq_addr_sequence, &dbs, &events_tx)
                     .then(|res| async {
                         if let Err(err) = res {
+                            let err = anyhow::Error::from(err);
                             err_handler(err).await
                         }
                     })
