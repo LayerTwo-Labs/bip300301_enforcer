@@ -64,8 +64,8 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub async fn new<P: AsRef<Path>>(
-        data_dir: P,
+    pub async fn new(
+        data_dir: &Path,
         config: &WalletConfig,
         main_client: HttpClient,
         validator: Validator,
@@ -98,22 +98,7 @@ impl Wallet {
             .into_xprv(network)
             .ok_or(miette!("couldn't get xprv"))?;
 
-        // Ensure that the data directory exists
-        match std::fs::create_dir_all(&data_dir) {
-            Ok(_) => (),
-            Err(e) => {
-                return Err(miette!(
-                    "failed to create data dir {}: {e:#}",
-                    data_dir.as_ref().display()
-                ));
-            }
-        }
-        tracing::trace!(
-            "Ensured data directory exists: {}",
-            data_dir.as_ref().display()
-        );
-
-        let wallet_database = SqliteDatabase::new(data_dir.as_ref().join("wallet.sqlite"));
+        let wallet_database = SqliteDatabase::new(data_dir.join("wallet.sqlite"));
         // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
         let bitcoin_wallet = bdk::Wallet::new(
             Bip84(xprv, KeychainKind::External),
@@ -188,14 +173,14 @@ impl Wallet {
             ]);
 
             let db_name = "db.sqlite";
-            let mut db_connection =
-                Connection::open(data_dir.as_ref().join(db_name)).into_diagnostic()?;
+            let path = data_dir.join(db_name);
+            let mut db_connection = Connection::open(path.clone()).into_diagnostic()?;
 
-            tracing::debug!("Created database connection to {db_name}");
+            tracing::info!("Created database connection to {}", path.display());
 
             migrations.to_latest(&mut db_connection).into_diagnostic()?;
 
-            tracing::debug!("Ran migrations on {db_name}");
+            tracing::debug!("Ran migrations on {}", path.display());
             db_connection
         };
 

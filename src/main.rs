@@ -152,12 +152,28 @@ async fn main() -> Result<()> {
     let cli = cli::Config::parse();
     set_tracing_subscriber(cli.log_level)?;
 
+    tracing::info!(
+        "starting up bip300301_enforcer with data directory {}",
+        cli.data_dir.display()
+    );
+
+    // Both wallet data and validator data are stored under the same root
+    // directory. Add a subdirectories to clearly indicate which
+    // is which.
+    let validator_data_dir = cli.data_dir.join("validator");
+    let wallet_data_dir = cli.data_dir.join("wallet");
+
+    // Ensure that the data directories exists
+    for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
+        std::fs::create_dir_all(data_dir).into_diagnostic()?;
+    }
+
     let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
     let (err_tx, err_rx) = futures::channel::oneshot::channel();
     let validator = Validator::new(
         mainchain_client.clone(),
         cli.node_zmq_addr_sequence,
-        cli.data_dir.as_ref(),
+        &validator_data_dir,
         |err| async {
             let _send_err: Result<(), _> = err_tx.send(err);
         },
@@ -167,7 +183,7 @@ async fn main() -> Result<()> {
 
     let wallet: Option<Arc<wallet::Wallet>> = if cli.enable_wallet {
         let wallet = Wallet::new(
-            cli.data_dir,
+            &wallet_data_dir,
             &cli.wallet_opts,
             mainchain_client,
             validator.clone(),
