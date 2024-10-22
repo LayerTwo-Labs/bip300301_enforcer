@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use crate::proto::mainchain::{
+    sidechain_declaration, SidechainDeclaration, SidechainDeclarationV0,
+};
+use crate::proto::mainchain::{
     wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
     BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
     CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
@@ -31,7 +34,7 @@ use async_broadcast::RecvError;
 use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{self, absolute::Height, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 use tonic::{Request, Response, Status};
 
 use crate::types;
@@ -255,19 +258,22 @@ impl ValidatorService for Validator {
         }
         let output = messages
             .into_iter()
-            .map(|message| TxOut {
-                value: Amount::ZERO,
-                script_pubkey: message.into(),
+            .map(|message| {
+                Ok(TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: message.try_into().into_diagnostic()?,
+                })
             })
-            .collect();
-        let transasction = Transaction {
+            .collect::<Result<Vec<_>>>()
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+        let transaction = Transaction {
             output,
             input: vec![],
             lock_time: bitcoin::absolute::LockTime::Blocks(Height::ZERO),
             version: bitcoin::transaction::Version::TWO,
         };
         let response = GetCoinbasePsbtResponse {
-            psbt: Some(ConsensusHex::encode(&transasction)),
+            psbt: Some(ConsensusHex::encode(&transaction)),
         };
         Ok(Response::new(response))
     }
@@ -341,26 +347,24 @@ impl ValidatorService for Validator {
             .map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
-            .map(
-                |(
-                    data_hash,
-                    types::SidechainProposal {
-                        sidechain_number,
-                        data,
-                        vote_count,
-                        proposal_height,
-                    },
-                )| {
-                    SidechainProposal {
-                        sidechain_number: u8::from(sidechain_number) as u32,
-                        data: Some(data),
-                        data_hash: Some(ConsensusHex::encode(&data_hash)),
-                        vote_count: vote_count as u32,
-                        proposal_height,
-                        proposal_age: 0,
+            .map(|(data_hash, proposal)| SidechainProposal {
+                sidechain_number: u8::from(proposal.sidechain_number) as u32,
+                data: Some(proposal.data.clone()),
+                declaration: proposal.try_deserialize().ok().map(|(_, deserialized)| {
+                    SidechainDeclaration {
+                        version: Some(sidechain_declaration::Version::V0(SidechainDeclarationV0 {
+                            title: Some(deserialized.title),
+                            description: Some(deserialized.description),
+                            hash_id_1: Some(ConsensusHex::encode(&deserialized.hash_id_1)),
+                            hash_id_2: Some(ConsensusHex::encode(&deserialized.hash_id_2.to_vec())),
+                        })),
                     }
-                },
-            )
+                }),
+                data_hash: Some(ConsensusHex::encode(&data_hash)),
+                vote_count: proposal.vote_count as u32,
+                proposal_height: proposal.proposal_height,
+                proposal_age: 0,
+            })
             .collect();
         let response = GetSidechainProposalsResponse {
             sidechain_proposals,
