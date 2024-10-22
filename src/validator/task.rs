@@ -1063,7 +1063,7 @@ mod tests {
         };
 
         let (sidechain_number, deserialized) =
-            proposal.try_deserialize().expect("Failed to deserialize");
+            (&proposal).try_into().expect("Failed to deserialize");
 
         assert_eq!(sidechain_number, SidechainNumber(13));
         assert_eq!(deserialized.description, "description");

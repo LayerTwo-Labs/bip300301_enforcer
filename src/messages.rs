@@ -1,20 +1,20 @@
-use bitcoin::script::{Instruction, Instructions};
-use bitcoin::{hashes::Hash, Amount, Opcode, Script, ScriptBuf, Transaction, TxOut};
 use bitcoin::{
+    hashes::Hash,
     opcodes::{
         all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
     },
-    script::PushBytesBuf,
+    script::{Instruction, Instructions, PushBytesBuf},
+    Amount, Opcode, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
-use nom::branch::alt;
-use nom::bytes::complete::{tag, take};
-use nom::combinator::fail;
-use nom::combinator::rest;
-use nom::multi::many0;
-use nom::IResult;
-use sha2::{Digest, Sha256};
+use nom::{
+    branch::alt,
+    bytes::complete::{tag, take},
+    combinator::{fail, rest},
+    multi::many0,
+    IResult,
+};
 
 use crate::types::SidechainNumber;
 
@@ -160,27 +160,36 @@ impl M4AckBundles {
 }
 
 pub fn parse_coinbase_script(script: &Script) -> IResult<&[u8], CoinbaseMessage> {
-    let mut instructions = script.instructions();
-
-    // Return a nom parsing failure. Would be nice to include a message
-    // about what went wrong? Is that possible?
-    fn instruction_failure(instructions: Instructions) -> nom::Err<nom::error::Error<&[u8]>> {
-        nom::Err::Failure(nom::error::Error {
-            input: instructions.as_script().as_bytes(),
+    fn instruction_failure<'a>(
+        err_msg: Option<&'static str>,
+        instructions: Instructions<'a>,
+    ) -> nom::Err<nom::error::Error<&'a [u8]>> {
+        use nom::error::ContextError as _;
+        let input = instructions.as_script().as_bytes();
+        let err = nom::error::Error {
+            input,
             code: nom::error::ErrorKind::Fail,
-        })
+        };
+        let err = match err_msg {
+            Some(err_msg) => nom::error::Error::add_context(input, err_msg, err),
+            None => err,
+        };
+        nom::Err::Failure(err)
     }
-
-    if instructions.next() != Some(Ok(Instruction::Op(OP_RETURN))) {
-        return Err(instruction_failure(instructions));
-    }
-
-    let Some(Ok(Instruction::PushBytes(data))) = instructions.next() else {
-        return Err(instruction_failure(instructions));
+    let mut instructions = script.instructions();
+    let Some(Ok(Instruction::Op(OP_RETURN))) = instructions.next() else {
+        return Err(instruction_failure(
+            Some("expected OP_RETURN instruction"),
+            instructions,
+        ));
     };
-
+    let Some(Ok(Instruction::PushBytes(data))) = instructions.next() else {
+        return Err(instruction_failure(
+            Some("expected PushBytes instruction"),
+            instructions,
+        ));
+    };
     let input = data.as_bytes();
-
     let (input, message_tag) = alt((
         tag(M1_PROPOSE_SIDECHAIN_TAG),
         tag(M2_ACK_SIDECHAIN_TAG),
@@ -379,12 +388,7 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
 }
 
 pub fn sha256d(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let data_hash: [u8; 32] = hasher.finalize_reset().into();
-    hasher.update(data_hash);
-    let data_hash: [u8; 32] = hasher.finalize().into();
-    data_hash
+    bitcoin::hashes::sha256d::Hash::hash(data).to_byte_array()
 }
 
 pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32] {
