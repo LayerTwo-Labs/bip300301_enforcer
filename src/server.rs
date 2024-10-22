@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use crate::proto::mainchain::{
+    sidechain_declaration, SidechainDeclaration, SidechainDeclarationV0,
+};
+use crate::proto::mainchain::{
     wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
     BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
     CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
@@ -11,17 +14,16 @@ use crate::{
     proto::{
         self,
         mainchain::{
-            deserialized_sidechain, get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
+            get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, server::ValidatorService, ConsensusHex,
-            DeserializedSidechain, DeserializedSidechainV0, GetBlockHeaderInfoRequest,
-            GetBlockHeaderInfoResponse, GetBlockInfoRequest, GetBlockInfoResponse,
-            GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse, GetChainInfoRequest,
-            GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, ReverseHex,
-            SubscribeEventsRequest, SubscribeEventsResponse,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
+            ReverseHex, SubscribeEventsRequest, SubscribeEventsResponse,
         },
     },
     types::SidechainNumber,
@@ -348,16 +350,14 @@ impl ValidatorService for Validator {
             .map(|(data_hash, proposal)| SidechainProposal {
                 sidechain_number: u8::from(proposal.sidechain_number) as u32,
                 data: Some(proposal.data.clone()),
-                deserialized: proposal.try_deserialize().ok().map(|(_, deserialized)| {
-                    DeserializedSidechain {
-                        version: Some(deserialized_sidechain::Version::V0(
-                            DeserializedSidechainV0 {
-                                title: deserialized.title,
-                                description: deserialized.description,
-                                hash_id_1: deserialized.hash_id_1.to_vec(),
-                                hash_id_2: deserialized.hash_id_2.to_vec(),
-                            },
-                        )),
+                declaration: proposal.try_deserialize().ok().map(|(_, deserialized)| {
+                    SidechainDeclaration {
+                        version: Some(sidechain_declaration::Version::V0(SidechainDeclarationV0 {
+                            title: Some(deserialized.title),
+                            description: Some(deserialized.description),
+                            hash_id_1: Some(ConsensusHex::encode(&deserialized.hash_id_1)),
+                            hash_id_2: Some(ConsensusHex::encode(&deserialized.hash_id_2.to_vec())),
+                        })),
                     }
                 }),
                 data_hash: Some(ConsensusHex::encode(&data_hash)),
