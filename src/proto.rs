@@ -413,7 +413,7 @@ pub mod mainchain {
     impl From<bitcoin::OutPoint> for OutPoint {
         fn from(outpoint: bitcoin::OutPoint) -> Self {
             Self {
-                txid: Some(ConsensusHex::encode(&outpoint.txid)),
+                txid: Some(ReverseHex::encode(&outpoint.txid)),
                 vout: outpoint.vout,
             }
         }

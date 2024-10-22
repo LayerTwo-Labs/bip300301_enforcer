@@ -514,7 +514,8 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn propose_sidechain(&self, sidechain_number: u8, data: &[u8]) -> Result<()> {
+    pub fn propose_sidechain(&self, sidechain_number: SidechainNumber, data: &[u8]) -> Result<()> {
+        let sidechain_number: u8 = sidechain_number.into();
         self.db_connection
             .lock()
             .execute(

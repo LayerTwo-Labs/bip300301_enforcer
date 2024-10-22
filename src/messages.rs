@@ -10,6 +10,7 @@ use bitcoin::{
     Amount, Opcode, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
+use miette::{miette, Result};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take},
@@ -448,14 +449,15 @@ pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32]
 
 // ... existing code ...
 
-// Returns the serialized sidechain proposal OP_RETURN output.
-fn create_sidechain_proposal(
+// Returns the serialized sidechain proposal OP_RETURN output, plus the byte
+// slice encoded into the OP_RETURN output.
+pub fn create_sidechain_proposal(
     sidechain_number: SidechainNumber,
     title: String,
     description: String,
     hash_1: Vec<u8>,
     hash_2: Vec<u8>,
-) -> anyhow::Result<Vec<u8>> {
+) -> Result<(bitcoin::TxOut, Vec<u8>)> {
     const HASH_1_LENGTH: usize = 32;
     const HASH_2_LENGTH: usize = 20;
 
@@ -464,9 +466,7 @@ fn create_sidechain_proposal(
     } else if hash_1.len() == HASH_1_LENGTH {
         hash_1
     } else {
-        return Err(anyhow::anyhow!(
-            "hash_1 must be empty or {HASH_1_LENGTH} bytes"
-        ));
+        return Err(miette!("hash_1 must be empty or {HASH_1_LENGTH} bytes"));
     };
 
     let hash_2: Vec<u8> = if hash_2.is_empty() {
@@ -474,9 +474,7 @@ fn create_sidechain_proposal(
     } else if hash_2.len() == HASH_2_LENGTH {
         hash_2
     } else {
-        return Err(anyhow::anyhow!(
-            "hash_2 must be empty or {HASH_2_LENGTH} bytes"
-        ));
+        return Err(miette!("hash_2 must be empty or {HASH_2_LENGTH} bytes"));
     };
 
     // The only known M1 version.
@@ -491,24 +489,16 @@ fn create_sidechain_proposal(
     data.extend_from_slice(&hash_1);
     data.extend_from_slice(&hash_2);
 
-    let Ok(builder) = CoinbaseBuilder::new()
+    let builder = CoinbaseBuilder::new()
         .propose_sidechain(sidechain_number.into(), &data)
         .build()
-    else {
-        return Err(anyhow::anyhow!("Failed to build sidechain proposal"));
-    };
+        .map_err(|err| miette!(err))?; // TODO: better error
 
-    let tx_out = builder.first().unwrap();
+    assert!(builder.len() == 1);
 
-    let mut buffer = Vec::new();
-    match tx_out.consensus_encode(&mut buffer) {
-        Ok(_) => (),
-        Err(e) => {
-            return Err(anyhow::anyhow!("Error encoding tx_out: {}", e));
-        }
-    }
+    let tx_out = builder.first().unwrap().clone();
 
-    Ok(buffer)
+    Ok((tx_out, data))
 }
 
 #[cfg(test)]
@@ -554,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let proposal = create_sidechain_proposal(
+        let tx_out = create_sidechain_proposal(
             SidechainNumber::from(13),
             "title".into(),
             "description".into(),
@@ -562,8 +552,6 @@ mod tests {
             vec![2u8; 20],
         )
         .expect("Failed to create sidechain proposal");
-
-        let tx_out = TxOut::consensus_decode(&mut Cursor::new(&proposal)).unwrap();
 
         let (rest, message) = parse_coinbase_script(&tx_out.script_pubkey)
             .expect("Failed to parse sidechain proposal");
