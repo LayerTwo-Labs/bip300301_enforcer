@@ -127,6 +127,14 @@ pub mod mainchain {
             let hex = bitcoin::consensus::encode::serialize_hex(value);
             Self { hex: Some(hex) }
         }
+
+        pub fn encode_hex<T>(value: &T) -> Self
+        where
+            T: hex::ToHex,
+        {
+            let hex = value.encode_hex();
+            Self { hex: Some(hex) }
+        }
     }
 
     impl ReverseHex {
@@ -163,6 +171,31 @@ pub mod mainchain {
             Self {
                 hex: Some(hex::encode(bytes)),
             }
+        }
+    }
+
+    impl From<SidechainDeclarationV0> for SidechainDeclaration {
+        fn from(declaration: SidechainDeclarationV0) -> Self {
+            Self {
+                version: Some(sidechain_declaration::Version::V0(declaration)),
+            }
+        }
+    }
+
+    impl From<crate::types::SidechainDeclaration> for SidechainDeclarationV0 {
+        fn from(declaration: crate::types::SidechainDeclaration) -> Self {
+            Self {
+                title: Some(declaration.title),
+                description: Some(declaration.description),
+                hash_id_1: Some(ConsensusHex::encode(&declaration.hash_id_1)),
+                hash_id_2: Some(ConsensusHex::encode_hex(&declaration.hash_id_2)),
+            }
+        }
+    }
+
+    impl From<crate::types::SidechainDeclaration> for SidechainDeclaration {
+        fn from(declaration: crate::types::SidechainDeclaration) -> Self {
+            SidechainDeclarationV0::from(declaration).into()
         }
     }
 

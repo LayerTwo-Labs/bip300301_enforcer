@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
 use crate::proto::mainchain::{
-    sidechain_declaration, SidechainDeclaration, SidechainDeclarationV0,
-};
-use crate::proto::mainchain::{
     wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
     BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
     CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
@@ -350,16 +347,10 @@ impl ValidatorService for Validator {
             .map(|(data_hash, proposal)| SidechainProposal {
                 sidechain_number: u8::from(proposal.sidechain_number) as u32,
                 data: Some(proposal.data.clone()),
-                declaration: proposal.try_deserialize().ok().map(|(_, deserialized)| {
-                    SidechainDeclaration {
-                        version: Some(sidechain_declaration::Version::V0(SidechainDeclarationV0 {
-                            title: Some(deserialized.title),
-                            description: Some(deserialized.description),
-                            hash_id_1: Some(ConsensusHex::encode(&deserialized.hash_id_1)),
-                            hash_id_2: Some(ConsensusHex::encode(&deserialized.hash_id_2.to_vec())),
-                        })),
-                    }
-                }),
+                declaration: (&proposal)
+                    .try_into()
+                    .ok()
+                    .map(|(_, declaration)| declaration.into()),
                 data_hash: Some(ConsensusHex::encode(&data_hash)),
                 vote_count: proposal.vote_count as u32,
                 proposal_height: proposal.proposal_height,

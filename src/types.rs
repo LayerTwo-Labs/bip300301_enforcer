@@ -2,8 +2,10 @@ use std::num::TryFromIntError;
 
 use bitcoin::{Amount, BlockHash, OutPoint, TxOut, Work};
 use hashlink::LinkedHashMap;
-use miette::Result;
+use miette::Diagnostic;
+use nom::Finish;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 pub type Hash256 = [u8; 32];
 
@@ -59,87 +61,23 @@ pub struct SidechainProposal {
     pub proposal_height: u32,
 }
 
-impl SidechainProposal {
-    /// Deserialize the sidechain proposal, returning "raw" nom errors. This also means we're
-    /// not validating that the title and description are valid UTF-8. This is probably possible
-    /// with nom, but the author doesn't know how. It's fine to do this in the outer function,
-    /// anyways.
-    fn try_deserialize_unvalidated(
-        &self,
-    ) -> nom::IResult<&[u8], (u8, UnvalidatedDeserializedSidechainProposalV1)> {
-        use nom::bytes::complete::tag;
-        use nom::bytes::complete::take;
-        use nom::number::complete::be_u8;
+#[derive(Debug, Error, Diagnostic)]
+pub enum ParseSidechainProposalError {
+    #[error("Invalid UTF-8 sequence in title")]
+    #[diagnostic(code(sidechain_proposal::invalid_utf8_title))]
+    InvalidUtf8Title(std::str::Utf8Error),
 
-        let input = self.data.as_slice();
-        let (input, sidechain_number) = be_u8(input)?;
+    #[error("Invalid UTF-8 sequence in description")]
+    #[diagnostic(code(sidechain_proposal::invalid_utf8_description))]
+    InvalidUtf8Description(std::str::Utf8Error),
 
-        const VERSION_0: u8 = 0;
-        let (input, _) = tag(&[VERSION_0])(input)?;
+    #[error("Failed to deserialize sidechain proposal")]
+    #[diagnostic(code(sidechain_proposal::failed_to_deserialize))]
+    FailedToDeserialize(nom::error::Error<Vec<u8>>),
 
-        let (input, title_length) = be_u8(input)?;
-        let (input, title) = take(title_length)(input)?;
-
-        const HASH_ID_1_LENGTH: usize = 32;
-        const HASH_ID_2_LENGTH: usize = 20;
-
-        let description_length = input.len() - HASH_ID_1_LENGTH - HASH_ID_2_LENGTH;
-        let (input, description) = take(description_length)(input)?;
-
-        let (input, hash_id_1) = take(HASH_ID_1_LENGTH)(input)?;
-        let (input, hash_id_2) = take(HASH_ID_2_LENGTH)(input)?;
-
-        let hash_id_1: [u8; HASH_ID_1_LENGTH] = hash_id_1.try_into().unwrap();
-        let hash_id_2: [u8; HASH_ID_2_LENGTH] = hash_id_2.try_into().unwrap();
-
-        let parsed = UnvalidatedDeserializedSidechainProposalV1 {
-            title: title.to_vec(),
-            description: description.to_vec(),
-            hash_id_1,
-            hash_id_2,
-        };
-
-        Ok((input, (sidechain_number, parsed)))
-    }
-
-    pub fn try_deserialize(&self) -> Result<(SidechainNumber, DeserializedSidechainProposalV1)> {
-        let (input, (sidechain_number, unvalidated)) =
-            self.try_deserialize_unvalidated()
-                .map_err(|err| match err {
-                    nom::Err::Error(nom::error::Error {
-                        code: nom::error::ErrorKind::Tag,
-                        input,
-                    }) => SidechainProposalError::UnknownVersion(input[0]),
-                    _ => SidechainProposalError::FailedToDeserialize(err.to_owned()),
-                })?;
-
-        // One might think "this would be a good place to check there's no trailing bytes".
-        // That doesn't work! Our parsing logic consumes _all_ bytes, because the length of the
-        // `description` field is defined as the total length of the entire input minus
-        // the length of all the other, known-length fields. We therefore _always_ read
-        // the entire input.
-        if !input.is_empty() {
-            panic!("somehow ended up with trailing bytes")
-        }
-
-        let sidechain_number = SidechainNumber::from(sidechain_number);
-
-        let title = String::from_utf8(unvalidated.title)
-            .map_err(SidechainProposalError::InvalidUtf8Title)?;
-
-        let description = String::from_utf8(unvalidated.description)
-            .map_err(SidechainProposalError::InvalidUtf8Description)?;
-
-        Ok((
-            sidechain_number,
-            DeserializedSidechainProposalV1 {
-                title,
-                description,
-                hash_id_1: unvalidated.hash_id_1,
-                hash_id_2: unvalidated.hash_id_2,
-            },
-        ))
-    }
+    #[error("Unknown sidechain proposal version: {0}")]
+    #[diagnostic(code(sidechain_proposal::unknown_version))]
+    UnknownVersion(u8),
 }
 
 /// We know how to deserialize M1 v1 messages from BIP300
@@ -150,44 +88,90 @@ impl SidechainProposal {
 ///    1-byte title length
 ///    x-byte title
 ///    x-byte description
-///    32-byte hashID1
+///    32-byte hashID1f
 ///    20-byte hashID2
 ///
 /// Description length is total_data_length - length_of_all_other_fields
 #[derive(Debug)]
-pub struct DeserializedSidechainProposalV1 {
+pub struct SidechainDeclaration {
     pub title: String,
     pub description: String,
     pub hash_id_1: [u8; 32],
     pub hash_id_2: [u8; 20],
 }
 
-struct UnvalidatedDeserializedSidechainProposalV1 {
-    pub title: Vec<u8>,
-    pub description: Vec<u8>,
-    pub hash_id_1: [u8; 32],
-    pub hash_id_2: [u8; 20],
+impl SidechainDeclaration {
+    /// Parse the sidechain proposal, returning "raw" nom errors. This also means we're
+    /// not validating that the title and description are valid UTF-8. This is probably possible
+    /// with nom, but the author doesn't know how. It's fine to do this in the outer function,
+    /// anyways.
+    fn try_parse(
+        input: &[u8],
+    ) -> nom::IResult<&[u8], (SidechainNumber, Self), ParseSidechainProposalError> {
+        use nom::{
+            bytes::complete::{tag, take},
+            number::complete::be_u8,
+        };
+        fn failed_to_deserialize(
+            err: nom::Err<nom::error::Error<&[u8]>>,
+        ) -> nom::Err<ParseSidechainProposalError> {
+            err.to_owned()
+                .map(ParseSidechainProposalError::FailedToDeserialize)
+        }
+        let (input, sidechain_number) = be_u8(input).map_err(failed_to_deserialize)?;
+
+        const VERSION_0: u8 = 0;
+        let (input, _) =
+            tag(&[VERSION_0])(input).map_err(|_: nom::Err<nom::error::Error<&[u8]>>| {
+                nom::Err::Error(ParseSidechainProposalError::UnknownVersion(input[0]))
+            })?;
+
+        let (input, title_length) = be_u8(input).map_err(failed_to_deserialize)?;
+        let (input, title_bytes) = take(title_length)(input).map_err(failed_to_deserialize)?;
+        let title = std::str::from_utf8(title_bytes)
+            .map_err(|err| nom::Err::Error(ParseSidechainProposalError::InvalidUtf8Title(err)))?;
+
+        const HASH_ID_1_LENGTH: usize = 32;
+        const HASH_ID_2_LENGTH: usize = 20;
+
+        let description_length = input.len() - HASH_ID_1_LENGTH - HASH_ID_2_LENGTH;
+        let (input, description_bytes) =
+            take(description_length)(input).map_err(failed_to_deserialize)?;
+        let description = std::str::from_utf8(description_bytes).map_err(|err| {
+            nom::Err::Error(ParseSidechainProposalError::InvalidUtf8Description(err))
+        })?;
+
+        let (input, hash_id_1) = take(HASH_ID_1_LENGTH)(input).map_err(failed_to_deserialize)?;
+        let (input, hash_id_2) = take(HASH_ID_2_LENGTH)(input).map_err(failed_to_deserialize)?;
+
+        let hash_id_1: [u8; HASH_ID_1_LENGTH] = hash_id_1.try_into().unwrap();
+        let hash_id_2: [u8; HASH_ID_2_LENGTH] = hash_id_2.try_into().unwrap();
+
+        let parsed = Self {
+            title: title.to_owned(),
+            description: description.to_owned(),
+            hash_id_1,
+            hash_id_2,
+        };
+
+        Ok((input, (sidechain_number.into(), parsed)))
+    }
 }
-use miette::Diagnostic;
-use thiserror::Error;
 
-#[derive(Debug, Error, Diagnostic)]
-pub enum SidechainProposalError {
-    #[error("Invalid UTF-8 sequence in title")]
-    #[diagnostic(code(sidechain_proposal::invalid_utf8_title))]
-    InvalidUtf8Title(std::string::FromUtf8Error),
+impl TryFrom<&SidechainProposal> for (SidechainNumber, SidechainDeclaration) {
+    type Error = ParseSidechainProposalError;
 
-    #[error("Invalid UTF-8 sequence in description")]
-    #[diagnostic(code(sidechain_proposal::invalid_utf8_description))]
-    InvalidUtf8Description(std::string::FromUtf8Error),
-
-    #[error("Failed to deserialize sidechain proposal")]
-    #[diagnostic(code(sidechain_proposal::failed_to_deserialize))]
-    FailedToDeserialize(nom::Err<nom::error::Error<Vec<u8>>>),
-
-    #[error("Unknown sidechain proposal version: {0}")]
-    #[diagnostic(code(sidechain_proposal::unknown_version))]
-    UnknownVersion(u8),
+    fn try_from(sidechain_proposal: &SidechainProposal) -> Result<Self, Self::Error> {
+        let (input, (sidechain_number, sidechain_proposal)) =
+            SidechainDeclaration::try_parse(&sidechain_proposal.data).finish()?;
+        // One might think "this would be a good place to check there's no trailing bytes".
+        // That doesn't work! Our parsing logic consumes _all_ bytes, because the length of the
+        // `description` field is defined as the total length of the entire input minus
+        // the length of all the other, known-length fields. We therefore _always_ read
+        // the entire input.
+        assert!(input.is_empty(), "somehow ended up with trailing bytes");
+        Ok((sidechain_number, sidechain_proposal))
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -265,8 +249,8 @@ pub enum Event {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::SidechainNumber;
-    use crate::types::SidechainProposal;
+    use crate::types::{SidechainNumber, SidechainProposal};
+    use miette::Diagnostic as _;
 
     fn proposal(data: Vec<u8>) -> SidechainProposal {
         SidechainProposal {
@@ -294,7 +278,7 @@ mod tests {
             1, // hash_id_2
         ]);
 
-        let result = sidechain_proposal.try_deserialize();
+        let result = (&sidechain_proposal).try_into();
         assert!(result.is_ok());
 
         let (sidechain_number, deserialized) = result.unwrap();
@@ -332,7 +316,7 @@ mod tests {
             .concat(),
         );
 
-        let result = sidechain_proposal.try_deserialize();
+        let result: Result<(_, _), _> = (&sidechain_proposal).try_into();
         assert!(result.is_err());
         assert_eq!(
             format!("{}", result.unwrap_err().code().unwrap()),
@@ -357,7 +341,7 @@ mod tests {
             .concat(),
         );
 
-        let result = sidechain_proposal.try_deserialize();
+        let result: Result<(_, _), _> = (&sidechain_proposal).try_into();
         assert!(result.is_err());
         assert_eq!(
             format!("{}", result.unwrap_err().code().unwrap()),
@@ -373,7 +357,7 @@ mod tests {
             0, // trailing byte
         ]);
 
-        let result = sidechain_proposal.try_deserialize();
+        let result: Result<(_, _), _> = (&sidechain_proposal).try_into();
         assert!(result.is_err());
         assert_eq!(
             format!("{}", result.unwrap_err().code().unwrap()),
