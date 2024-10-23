@@ -118,3 +118,8 @@ pub struct BitcoinCoreRPC {
 #[error("failed to consensus encode block")]
 #[diagnostic(code(encode_block_error))]
 pub struct EncodeBlock(#[from] pub bitcoin::io::Error);
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("BDK wallet error: {0}")]
+#[diagnostic(code(bdk_wallet_error))]
+pub struct WalletError(#[from] pub bdk::Error);

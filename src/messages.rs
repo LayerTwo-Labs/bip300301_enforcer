@@ -1,10 +1,11 @@
+use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{
     hashes::{sha256d, Hash},
     opcodes::{
         all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
     },
-    script::{Instruction, Instructions, PushBytesBuf},
+    script::PushBytesBuf,
     Amount, Opcode, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
@@ -226,6 +227,24 @@ pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], SidechainNumber> {
     let sidechain_number = sidechain_number[0];
     tag(&[OP_TRUE.to_u8()])(input)?;
     Ok((input, SidechainNumber::from(sidechain_number)))
+}
+
+pub fn create_m5_deposit_output(
+    sidechain_number: SidechainNumber,
+    old_ctip_amount: Amount,
+    deposit_amount: Amount,
+) -> TxOut {
+    let script_pubkey = ScriptBuf::from_bytes(vec![
+        OP_DRIVECHAIN.to_u8(),
+        OP_PUSHBYTES_1.to_u8(),
+        sidechain_number.into(),
+        OP_TRUE.to_u8(),
+    ]);
+    TxOut {
+        script_pubkey,
+        // All deposits INCREASE the amount locked in the OP_DRIVECHAIN output.
+        value: old_ctip_amount + deposit_amount,
+    }
 }
 
 fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
