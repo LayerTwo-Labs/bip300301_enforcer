@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use bip300301::jsonrpsee::core::client::Error as JsonRpcError;
 use miette::{diagnostic, Diagnostic};
 use regex::Regex;
 use serde::Deserialize;
@@ -103,3 +104,17 @@ pub fn convert_bdk_error(err: bdk::Error) -> miette::Report {
         Err(json_deserialize_err) => miette::Report::new(json_deserialize_err),
     }
 }
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Bitcoin Core RPC error `{method}")]
+#[diagnostic(code(bitcoin_core_rpc_error))]
+pub struct BitcoinCoreRPC {
+    pub method: String,
+    #[source]
+    pub error: JsonRpcError,
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("failed to consensus encode block")]
+#[diagnostic(code(encode_block_error))]
+pub struct EncodeBlock(#[from] pub bitcoin::io::Error);

@@ -172,6 +172,18 @@ async fn main() -> Result<()> {
     }
 
     let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
+
+    tracing::info!(
+        "Created mainchain client from options: {}:{}@{}",
+        cli.node_rpc_opts.user.as_deref().unwrap_or("cookie"),
+        cli.node_rpc_opts
+            .pass
+            .as_deref()
+            .map(|_| "*****")
+            .unwrap_or("cookie"),
+        cli.node_rpc_opts.addr,
+    );
+
     let (err_tx, err_rx) = futures::channel::oneshot::channel();
     let validator = Validator::new(
         mainchain_client.clone(),
