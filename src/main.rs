@@ -22,7 +22,7 @@ mod zmq;
 use proto::mainchain::{
     wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer,
 };
-use server::Validator;
+use validator::Validator;
 use wallet::Wallet;
 
 /// Saturating predecessor of a log level

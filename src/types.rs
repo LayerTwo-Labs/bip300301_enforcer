@@ -92,7 +92,7 @@ pub enum ParseSidechainProposalError {
 ///    20-byte hashID2
 ///
 /// Description length is total_data_length - length_of_all_other_fields
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SidechainDeclaration {
     pub title: String,
     pub description: String,

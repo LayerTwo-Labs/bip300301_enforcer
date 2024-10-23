@@ -98,6 +98,8 @@ pub mod mainchain {
         types::SidechainNumber,
     };
 
+    use super::Error;
+
     impl ConsensusHex {
         pub fn decode<Message, T>(self, field_name: &str) -> Result<T, super::Error>
         where
@@ -107,6 +109,17 @@ pub mod mainchain {
             let Self { hex } = self;
             let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
             bitcoin::consensus::encode::deserialize_hex(&hex)
+                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+        }
+
+        pub fn decode_hex<Message, T>(self, field_name: &str) -> Result<T, super::Error>
+        where
+            Message: prost::Name,
+            T: hex::FromHex,
+        {
+            let Self { hex } = self;
+            let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            T::from_hex(&hex)
                 .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
         }
 
@@ -174,14 +187,6 @@ pub mod mainchain {
         }
     }
 
-    impl From<SidechainDeclarationV0> for SidechainDeclaration {
-        fn from(declaration: SidechainDeclarationV0) -> Self {
-            Self {
-                version: Some(sidechain_declaration::Version::V0(declaration)),
-            }
-        }
-    }
-
     impl From<crate::types::SidechainDeclaration> for SidechainDeclarationV0 {
         fn from(declaration: crate::types::SidechainDeclaration) -> Self {
             Self {
@@ -193,9 +198,59 @@ pub mod mainchain {
         }
     }
 
+    impl TryFrom<SidechainDeclarationV0> for crate::types::SidechainDeclaration {
+        type Error = super::Error;
+
+        fn try_from(declaration: SidechainDeclarationV0) -> Result<Self, Self::Error> {
+            let SidechainDeclarationV0 {
+                title,
+                description,
+                hash_id_1,
+                hash_id_2,
+            } = declaration;
+            let title =
+                title.ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("title"))?;
+            let description = description
+                .ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("description"))?;
+            let hash_id_1 = hash_id_1
+                .ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("hash_id_1"))?
+                .decode::<SidechainDeclarationV0, _>("hash_id_1")?;
+            let hash_id_2 = hash_id_2
+                .ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("hash_id_2"))?
+                .decode_hex::<SidechainDeclarationV0, _>("hash_id_2")?;
+            Ok(Self {
+                title,
+                description,
+                hash_id_1,
+                hash_id_2,
+            })
+        }
+    }
+
+    impl From<SidechainDeclarationV0> for SidechainDeclaration {
+        fn from(declaration: SidechainDeclarationV0) -> Self {
+            Self {
+                version: Some(sidechain_declaration::Version::V0(declaration)),
+            }
+        }
+    }
+
     impl From<crate::types::SidechainDeclaration> for SidechainDeclaration {
         fn from(declaration: crate::types::SidechainDeclaration) -> Self {
             SidechainDeclarationV0::from(declaration).into()
+        }
+    }
+
+    impl TryFrom<SidechainDeclaration> for crate::types::SidechainDeclaration {
+        type Error = super::Error;
+
+        fn try_from(declaration: SidechainDeclaration) -> Result<Self, Self::Error> {
+            let SidechainDeclaration { version } = declaration;
+            let version =
+                version.ok_or_else(|| Error::missing_field::<SidechainDeclaration>("version"))?;
+            match version {
+                sidechain_declaration::Version::V0(v0) => v0.try_into(),
+            }
         }
     }
 
@@ -404,7 +459,7 @@ pub mod mainchain {
     impl From<bitcoin::OutPoint> for OutPoint {
         fn from(outpoint: bitcoin::OutPoint) -> Self {
             Self {
-                txid: Some(ConsensusHex::encode(&outpoint.txid)),
+                txid: Some(ReverseHex::encode(&outpoint.txid)),
                 vout: outpoint.vout,
             }
         }
