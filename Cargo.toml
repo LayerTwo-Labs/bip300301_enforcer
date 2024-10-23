@@ -24,6 +24,7 @@ cusf_sidechain_types = { git = "https://github.com/LayerTwo-Labs/cusf_sidechain_
 ed25519-dalek-bip32 = "0.3.0"
 either = "1.13.0"
 fallible-iterator = "0.3.0"
+fatality = "0.1.1"
 futures = "0.3.30"
 hashlink = { version = "0.9.1", features = ["serde_impl"] }
 heed = "0.20.5"

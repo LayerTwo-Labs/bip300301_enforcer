@@ -15,6 +15,7 @@ use bitcoin::{
 };
 use either::Either;
 use fallible_iterator::FallibleIterator;
+use fatality::{fatality, Split as _};
 use futures::{TryFutureExt as _, TryStreamExt as _};
 use hashlink::{LinkedHashMap, LinkedHashSet};
 use heed::RoTxn;
@@ -45,41 +46,51 @@ const UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS: u16 = 5;
 const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 =
     UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS;
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM1ProposeSidechainError {
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM2AckSidechainError {
     #[error(transparent)]
+    #[fatal]
     DbDelete(#[from] db_error::Delete),
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleFailedSidechainProposalsError {
     #[error(transparent)]
+    #[fatal]
     DbDelete(#[from] db_error::Delete),
     #[error(transparent)]
+    #[fatal]
     DbIter(#[from] db_error::Iter),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM3ProposeBundleError {
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
     #[error(
         "Cannot propose bundle; sidechain slot {} is inactive",
@@ -88,33 +99,40 @@ enum HandleM3ProposeBundleError {
     InactiveSidechain { sidechain_number: SidechainNumber },
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM4VotesError {
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM4AckBundlesError {
     #[error("Error handling M4 Votes")]
+    #[fatal(forward)]
     Votes(#[from] HandleM4VotesError),
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleFailedM6IdsError {
     #[error(transparent)]
+    #[fatal]
     DbIter(#[from] db_error::Iter),
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM5M6Error {
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
     #[error("Invalid M6")]
     InvalidM6,
@@ -122,7 +140,7 @@ enum HandleM5M6Error {
     OldCtipUnspent { sidechain_number: SidechainNumber },
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum HandleM8Error {
     #[error("BMM request expired")]
     BmmRequestExpired,
@@ -130,37 +148,52 @@ enum HandleM8Error {
     NotAcceptedByMiners,
 }
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum ConnectBlockError {
     #[error(transparent)]
+    #[fatal]
     PutBlockInfo(#[from] dbs::block_hash_dbs_error::PutBlockInfo),
     #[error(transparent)]
+    #[fatal]
     DbDelete(#[from] db_error::Delete),
     #[error(transparent)]
+    #[fatal]
     DbFirst(#[from] db_error::First),
     #[error(transparent)]
+    #[fatal]
     DbGet(#[from] db_error::Get),
     #[error(transparent)]
+    #[fatal]
     DbLen(#[from] db_error::Len),
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
     #[error("Error handling failed M6IDs")]
+    #[fatal(forward)]
     FailedM6Ids(#[from] HandleFailedM6IdsError),
     #[error("Error handling failed sidechain proposals")]
+    #[fatal(forward)]
     FailedSidechainProposals(#[from] HandleFailedSidechainProposalsError),
     #[error("Error handling M1 (propose sidechain)")]
+    #[fatal(forward)]
     M1ProposeSidechain(#[from] HandleM1ProposeSidechainError),
     #[error("Error handling M2 (ack sidechain)")]
+    #[fatal(forward)]
     M2AckSidechain(#[from] HandleM2AckSidechainError),
     #[error("Error handling M3 (propose bundle)")]
+    #[fatal(forward)]
     M3ProposeBundle(#[from] HandleM3ProposeBundleError),
     #[error("Error handling M4 (ack bundles)")]
+    #[fatal(forward)]
     M4AckBundles(#[from] HandleM4AckBundlesError),
     #[error("Error handling M5/M6")]
+    #[fatal(forward)]
     M5M6(#[from] HandleM5M6Error),
     #[error("Error handling M8")]
+    #[fatal(forward)]
     M8(#[from] HandleM8Error),
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },
@@ -172,28 +205,54 @@ enum DisconnectBlockError {}
 #[derive(Debug, Error)]
 enum TxValidationError {}
 
-#[derive(Debug, Error)]
+#[fatality(splitable)]
 enum SyncError {
     #[error(transparent)]
+    #[fatal]
     CommitWriteTxn(#[from] CommitWriteTxnError),
     #[error("Failed to connect block")]
+    #[fatal(forward)]
     ConnectBlock(#[from] ConnectBlockError),
     #[error(transparent)]
+    #[fatal]
     DbGet(#[from] db_error::Get),
     #[error(transparent)]
+    #[fatal]
     DbPut(#[from] db_error::Put),
     #[error(transparent)]
+    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
     #[error("JSON RPC error (`{method}`)")]
+    #[fatal]
     JsonRpc {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
     #[error(transparent)]
+    #[fatal]
     ReadTxn(#[from] ReadTxnError),
     #[error(transparent)]
+    #[fatal]
     WriteTxn(#[from] WriteTxnError),
 }
+
+#[derive(Debug, Error)]
+enum ErrorInner {
+    #[error(transparent)]
+    DisconnectBlock(#[from] DisconnectBlockError),
+    #[error(transparent)]
+    Sync(#[from] <SyncError as fatality::Split>::Fatal),
+    #[error(transparent)]
+    WriteTxn(#[from] WriteTxnError),
+    #[error(transparent)]
+    Zmq(#[from] zeromq::ZmqError),
+    #[error(transparent)]
+    ZmqSequenceStream(#[from] crate::zmq::SequenceStreamError),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct Error(#[from] ErrorInner);
 
 // Returns the serialized sidechain proposal OP_RETURN output.
 fn create_sidechain_proposal(
@@ -662,8 +721,8 @@ fn handle_m5_m6(
 }
 
 /// Handles a (potential) M8 BMM request.
-/// Returns `true` if this is a valid BMM request, HandleM8Error if this
-/// is an invalid BMM request, and `false` if this is not a BMM request.
+/// Returns `true` if this is a valid BMM request, `HandleM8Error::Jfyi` if
+/// this is an invalid BMM request, and `false` if this is not a BMM request.
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: &BmmCommitments,
@@ -997,16 +1056,32 @@ pub(super) async fn task(
     zmq_addr_sequence: &str,
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-) -> anyhow::Result<()> {
+) -> Result<(), Error> {
     // FIXME: use this instead of polling
-    let zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence).await?;
-    let () = initial_sync(dbs, event_tx, main_client).await?;
+    let zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence)
+        .await
+        .map_err(ErrorInner::from)?;
+    let () = initial_sync(dbs, event_tx, main_client)
+        .await
+        .or_else(|err| {
+            let non_fatal: <SyncError as fatality::Split>::Jfyi = err.split()?;
+            let non_fatal = anyhow::Error::from(non_fatal);
+            tracing::warn!("Error during initial sync: {non_fatal:#}");
+            Ok::<(), ErrorInner>(())
+        })?;
     zmq_sequence
-        .err_into()
+        .err_into::<ErrorInner>()
         .try_for_each(|msg| async move {
             match msg {
                 SequenceMessage::BlockHashConnected(block_hash, _) => {
-                    let () = sync_to_tip(dbs, event_tx, main_client, block_hash).await?;
+                    let () = sync_to_tip(dbs, event_tx, main_client, block_hash)
+                        .await
+                        .or_else(|err| {
+                            let non_fatal: <SyncError as fatality::Split>::Jfyi = err.split()?;
+                            let non_fatal = anyhow::Error::from(non_fatal);
+                            tracing::warn!("Error during sync to {block_hash}: {non_fatal:#}");
+                            Ok::<(), ErrorInner>(())
+                        })?;
                     Ok(())
                 }
                 SequenceMessage::BlockHashDisconnected(block_hash, _) => {
@@ -1020,6 +1095,7 @@ pub(super) async fn task(
             }
         })
         .await
+        .map_err(Error::from)
 }
 #[cfg(test)]
 mod tests {
