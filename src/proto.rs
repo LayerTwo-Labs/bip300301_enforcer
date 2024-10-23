@@ -455,7 +455,7 @@ pub mod mainchain {
     impl From<crate::types::WithdrawalBundleEvent> for (SidechainNumber, WithdrawalBundleEvent) {
         fn from(event: crate::types::WithdrawalBundleEvent) -> Self {
             let crate::types::WithdrawalBundleEvent {
-                sidechain_id,
+                sidechain_number,
                 m6id,
                 kind,
             } = event;
@@ -464,7 +464,7 @@ pub mod mainchain {
                 m6id: Some(ConsensusHex::encode(&m6id)),
                 withdrawal_bundle_event_type,
             };
-            (sidechain_id, event)
+            (sidechain_number, event)
         }
     }
 
