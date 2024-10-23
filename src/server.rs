@@ -1,19 +1,17 @@
 use std::sync::Arc;
 
-use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha512, Hash as _, HashEngine},
     Amount, BlockHash, Transaction, TxOut,
 };
 use futures::{stream::BoxStream, StreamExt as _, TryStreamExt as _};
-use miette::{IntoDiagnostic, Result};
+use miette::IntoDiagnostic as _;
 use tonic::{Request, Response, Status};
 
 use crate::{
     messages::CoinbaseMessage,
     proto::{
-        self,
         common::{ConsensusHex, ReverseHex},
         crypto::{
             crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response,
@@ -24,17 +22,18 @@ use crate::{
             get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, server::ValidatorService,
             wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
-            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
-            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
-            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
-            GenerateBlocksRequest, GenerateBlocksResponse, GetBlockHeaderInfoRequest,
-            GetBlockHeaderInfoResponse, GetBlockInfoRequest, GetBlockInfoResponse,
-            GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse, GetChainInfoRequest,
-            GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, SubscribeEventsRequest,
-            SubscribeEventsResponse,
+            BroadcastWithdrawalBundleResponse,
+            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
+            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
+            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
+            CreateSidechainProposalResponse, GenerateBlocksRequest, GenerateBlocksResponse,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
+            SubscribeEventsRequest, SubscribeEventsResponse,
         },
     },
     types::SidechainNumber,
@@ -45,7 +44,7 @@ fn invalid_field_value<Message>(field_name: &str, value: &str) -> tonic::Status
 where
     Message: prost::Name,
 {
-    let err = proto::Error::invalid_field_value::<Message>(field_name, value);
+    let err = crate::proto::Error::invalid_field_value::<Message>(field_name, value);
     tonic::Status::invalid_argument(err.to_string())
 }
 
@@ -53,32 +52,29 @@ fn missing_field<Message>(field_name: &str) -> tonic::Status
 where
     Message: prost::Name,
 {
-    let err = proto::Error::missing_field::<Message>(field_name);
+    let err = crate::proto::Error::missing_field::<Message>(field_name);
     tonic::Status::invalid_argument(err.to_string())
 }
 
 fn bdk_block_hash_to_bitcoin_block_hash(hash: bdk::bitcoin::BlockHash) -> bitcoin::BlockHash {
-    let bytes = hash.as_byte_array().to_vec();
-
-    use bitcoin::hashes::sha256d::Hash;
-    use bitcoin::hashes::Hash as Hm;
-    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
-
-    bitcoin::BlockHash::from_raw_hash(hash)
+    use bdk::bitcoin::hashes::Hash as _;
+    bitcoin::BlockHash::from_byte_array(hash.to_byte_array())
 }
 
-fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
-    let bytes = hash.as_byte_array().to_vec();
-
-    use bitcoin::hashes::sha256d::Hash;
-    use bitcoin::hashes::Hash as Hm;
-    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
-
-    bitcoin::Txid::from_raw_hash(hash)
+fn bdk_txid_to_bitcoin_txid(txid: bdk::bitcoin::Txid) -> bitcoin::Txid {
+    use bdk::bitcoin::hashes::Hash as _;
+    bitcoin::Txid::from_byte_array(txid.to_byte_array())
 }
 
 trait IntoStatus {
     fn into_status(self) -> tonic::Status;
+}
+
+impl IntoStatus for crate::proto::Error {
+    fn into_status(self) -> tonic::Status {
+        let err = anyhow::Error::from(self);
+        tonic::Status::invalid_argument(format!("{err:#}"))
+    }
 }
 
 // The idea here is to centralize conversion of lower layer errors into something meaningful
@@ -233,19 +229,19 @@ impl ValidatorService for Validator {
         for propose_sidechain in request.propose_sidechains {
             let message = propose_sidechain
                 .try_into()
-                .map_err(|err: proto::Error| tonic::Status::invalid_argument(err.to_string()))?;
+                .map_err(|err: crate::proto::Error| err.into_status())?;
             messages.push(message);
         }
         for ack_sidechain in request.ack_sidechains {
             let message = ack_sidechain
                 .try_into()
-                .map_err(|err: proto::Error| tonic::Status::invalid_argument(err.to_string()))?;
+                .map_err(|err: crate::proto::Error| err.into_status())?;
             messages.push(message);
         }
         for propose_bundle in request.propose_bundles {
             let message = propose_bundle
                 .try_into()
-                .map_err(|err: proto::Error| tonic::Status::invalid_argument(err.to_string()))?;
+                .map_err(|err: crate::proto::Error| err.into_status())?;
             messages.push(message);
         }
         let ack_bundles = request
@@ -254,7 +250,7 @@ impl ValidatorService for Validator {
         {
             let message = ack_bundles
                 .try_into()
-                .map_err(|err: proto::Error| tonic::Status::invalid_argument(err.to_string()))?;
+                .map_err(|err: crate::proto::Error| err.into_status())?;
             messages.push(message);
         }
         let output = messages
@@ -265,7 +261,7 @@ impl ValidatorService for Validator {
                     script_pubkey: message.try_into().into_diagnostic()?,
                 })
             })
-            .collect::<Result<Vec<_>>>()
+            .collect::<miette::Result<Vec<_>>>()
             .map_err(|err| tonic::Status::internal(err.to_string()))?;
         let transaction = Transaction {
             output,
@@ -350,7 +346,7 @@ impl ValidatorService for Validator {
             .into_iter()
             .map(|(data_hash, proposal)| SidechainProposal {
                 sidechain_number: u8::from(proposal.sidechain_number) as u32,
-                data: Some(proposal.data.clone()),
+                description: Some(proposal.data.clone()),
                 declaration: (&proposal)
                     .try_into()
                     .ok()
@@ -534,39 +530,33 @@ impl WalletService for Arc<crate::wallet::Wallet> {
     async fn create_sidechain_proposal(
         &self,
         request: tonic::Request<CreateSidechainProposalRequest>,
-    ) -> std::result::Result<tonic::Response<CreateSidechainProposalResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<CreateSidechainProposalResponse>, tonic::Status> {
         let CreateSidechainProposalRequest {
             sidechain_id,
             declaration,
         } = request.into_inner();
-
-        let Some(declaration) = declaration.unwrap_or_default().version else {
-            return Err(tonic::Status::invalid_argument("declaration is required"));
+        let sidechain_id = {
+            let raw_id = sidechain_id
+                .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("sidechain_id"))?;
+            SidechainNumber::try_from(raw_id).map_err(|_| {
+                invalid_field_value::<CreateSidechainProposalRequest>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                )
+            })?
         };
-
-        let declaration = match declaration {
-            sidechain_declaration::Version::V0(v0) => v0,
-        };
-
-        let sidechain_id = sidechain_id.unwrap_or_default();
-
-        let title = declaration.title.unwrap_or_default();
-        let description = declaration.description.unwrap_or_default();
-
-        let sidechain_number = SidechainNumber(sidechain_id as u8);
-        let (proposal, data) = messages::create_sidechain_proposal(
-            sidechain_number,
-            title,
-            description,
-            vec![0u8; 32],
-            vec![0u8; 20],
-        )
-        .map_err(|err| err.into_status())?;
+        let declaration = declaration
+            .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("declaration"))?
+            .try_into()
+            .map_err(|err: proto::Error| err.into_status())?;
+        let (proposal, data) = messages::create_sidechain_proposal(sidechain_id, &declaration)
+            .into_diagnostic()
+            .map_err(|err| err.into_status())?;
 
         tracing::info!("Created sidechain proposal TX output: {:?}", proposal);
 
         let () = self
-            .propose_sidechain(sidechain_number, &data)
+            .propose_sidechain(sidechain_id, &data)
             .map_err(|err| err.into_status())?;
 
         tracing::info!("Persisted sidechain proposal into DB",);

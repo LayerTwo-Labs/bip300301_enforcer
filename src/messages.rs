@@ -1,16 +1,13 @@
-use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{
-    consensus::Encodable as _,
     hashes::Hash,
     opcodes::{
         all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
     },
-    script::PushBytesBuf,
+    script::{Instruction, Instructions, PushBytesBuf},
     Amount, Opcode, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
-use miette::{miette, Result};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take},
@@ -19,7 +16,7 @@ use nom::{
     IResult,
 };
 
-use crate::types::SidechainNumber;
+use crate::types::{SidechainDeclaration, SidechainNumber};
 
 pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
 
@@ -453,51 +450,26 @@ pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32]
 // slice encoded into the OP_RETURN output.
 pub fn create_sidechain_proposal(
     sidechain_number: SidechainNumber,
-    title: String,
-    description: String,
-    hash_1: Vec<u8>,
-    hash_2: Vec<u8>,
-) -> Result<(bitcoin::TxOut, Vec<u8>)> {
-    const HASH_1_LENGTH: usize = 32;
-    const HASH_2_LENGTH: usize = 20;
-
-    let hash_1: Vec<u8> = if hash_1.is_empty() {
-        vec![0u8; HASH_1_LENGTH]
-    } else if hash_1.len() == HASH_1_LENGTH {
-        hash_1
-    } else {
-        return Err(miette!("hash_1 must be empty or {HASH_1_LENGTH} bytes"));
-    };
-
-    let hash_2: Vec<u8> = if hash_2.is_empty() {
-        vec![0u8; HASH_2_LENGTH]
-    } else if hash_2.len() == HASH_2_LENGTH {
-        hash_2
-    } else {
-        return Err(miette!("hash_2 must be empty or {HASH_2_LENGTH} bytes"));
-    };
-
-    // The only known M1 version.
+    declaration: &SidechainDeclaration,
+) -> Result<(bitcoin::TxOut, Vec<u8>), bitcoin::script::PushBytesError> {
+    // The only defined M1 version.
     const VERSION: u8 = 0;
 
     let mut data: Vec<u8> = vec![];
     data.push(sidechain_number.into());
     data.push(VERSION);
-    data.push(title.len() as u8);
-    data.extend_from_slice(title.as_bytes());
-    data.extend_from_slice(description.as_bytes());
-    data.extend_from_slice(&hash_1);
-    data.extend_from_slice(&hash_2);
+    data.push(declaration.title.len() as u8);
+    data.extend_from_slice(declaration.title.as_bytes());
+    data.extend_from_slice(declaration.description.as_bytes());
+    data.extend_from_slice(&declaration.hash_id_1);
+    data.extend_from_slice(&declaration.hash_id_2);
 
     let builder = CoinbaseBuilder::new()
         .propose_sidechain(sidechain_number.into(), &data)
-        .build()
-        .map_err(|err| miette!(err))?; // TODO: better error
+        .build()?; // TODO: better error
 
     assert!(builder.len() == 1);
-
     let tx_out = builder.first().unwrap().clone();
-
     Ok((tx_out, data))
 }
 
@@ -540,18 +512,17 @@ mod tests {
             prev_mainchain_block_hash
         );
     }
-    use bitcoin::{consensus::Decodable, io::Cursor};
 
     #[test]
     fn test_roundtrip() {
-        let tx_out = create_sidechain_proposal(
-            SidechainNumber::from(13),
-            "title".into(),
-            "description".into(),
-            vec![1u8; 32],
-            vec![2u8; 20],
-        )
-        .expect("Failed to create sidechain proposal");
+        let declaration = SidechainDeclaration {
+            title: "title".to_owned(),
+            description: "description".to_owned(),
+            hash_id_1: [1u8; 32],
+            hash_id_2: [2u8; 20],
+        };
+        let (tx_out, _) = create_sidechain_proposal(SidechainNumber::from(13), &declaration)
+            .expect("Failed to create sidechain proposal");
 
         let (rest, message) = parse_coinbase_script(&tx_out.script_pubkey)
             .expect("Failed to parse sidechain proposal");
@@ -579,9 +550,6 @@ mod tests {
             (&proposal).try_into().expect("Failed to deserialize");
 
         assert_eq!(sidechain_number, SidechainNumber(13));
-        assert_eq!(deserialized.description, "description");
-        assert_eq!(deserialized.title, "title");
-        assert_eq!(deserialized.hash_id_1, [1u8; 32]);
-        assert_eq!(deserialized.hash_id_2, [2u8; 20]);
+        assert_eq!(deserialized, declaration);
     }
 }

@@ -10,8 +10,8 @@ use bip300301::{
     jsonrpsee, MainClient,
 };
 use bitcoin::{
-    self, consensus::Encodable, hashes::Hash, opcodes::all::OP_RETURN, Amount, Block, BlockHash,
-    OutPoint, Transaction, TxOut, Work,
+    self, hashes::Hash as _, opcodes::all::OP_RETURN, Amount, Block, BlockHash, OutPoint,
+    Transaction, TxOut, Work,
 };
 use either::Either;
 use fallible_iterator::FallibleIterator;
@@ -21,7 +21,6 @@ use heed::RoTxn;
 use thiserror::Error;
 
 use crate::{
-    messages::CoinbaseBuilder,
     types::{
         BlockInfo, BmmCommitments, Ctip, Deposit, Event, Hash256, HeaderInfo, PendingM6id,
         Sidechain, SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
