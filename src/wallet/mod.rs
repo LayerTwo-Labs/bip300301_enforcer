@@ -1,3 +1,4 @@
+use bip300301::jsonrpsee::core::client::Error as JsonRpcError;
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
@@ -35,9 +36,10 @@ use bitcoin::{
     transaction::Version as TxVersion,
     Amount, Block, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{miette, Diagnostic, IntoDiagnostic, Result};
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, Row};
+use thiserror::Error;
 
 use crate::{
     cli::WalletConfig,
@@ -197,7 +199,11 @@ impl Wallet {
         Ok(wallet)
     }
 
-    pub async fn generate_block(
+    pub fn network(&self) -> bitcoin::Network {
+        self.validator.network()
+    }
+
+    async fn generate_block(
         &self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
@@ -217,7 +223,11 @@ impl Wallet {
             .main_client
             .get_blockchain_info()
             .await
-            .into_diagnostic()?;
+            .map_err(|err| BitcoinCoreRPCError {
+                method: "getblockchaininfo".to_string(),
+                error: err,
+            })?;
+
         tracing::debug!("Block height: {block_height}");
         tracing::debug!("Best block: {best_blockhash}");
         let prev_blockhash = best_blockhash;
@@ -426,11 +436,7 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    pub async fn mine(
-        &self,
-        coinbase_outputs: &[TxOut],
-        transactions: Vec<Transaction>,
-    ) -> Result<()> {
+    async fn mine(&self, coinbase_outputs: &[TxOut], transactions: Vec<Transaction>) -> Result<()> {
         let mut block = self.generate_block(coinbase_outputs, transactions).await?;
         loop {
             block.header.nonce += 1;
@@ -439,17 +445,20 @@ impl Wallet {
             }
         }
         let mut block_bytes = vec![];
-        block.consensus_encode(&mut block_bytes).into_diagnostic()?;
-        let block_hex = hex::encode(block_bytes);
+        block
+            .consensus_encode(&mut block_bytes)
+            .map_err(EncodeBlockError)?;
 
         let () = self
             .main_client
-            .submit_block(block_hex)
+            .submit_block(hex::encode(block_bytes))
             .await
-            .into_diagnostic()?;
+            .map_err(|err| BitcoinCoreRPCError {
+                method: "submitblock".to_string(),
+                error: err,
+            })?;
 
-        let _block_hash = block.header.block_hash().as_byte_array().to_vec();
-        let _block_height: u32 = self.main_client.getblockcount().await.into_diagnostic()? as u32;
+        tracing::info!("Submitted block: `{}`", block.header.block_hash());
 
         let _bmm_hashes: Vec<Vec<u8>> = self
             .get_bmm_requests()?
@@ -875,3 +884,17 @@ pub struct Deposit {
     pub amount: u64,
     pub transaction: Transaction,
 }
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("Bitcoin Core RPC error `{method}`: {error}")]
+#[diagnostic(code(bitcoin_core_rpc_error))]
+pub struct BitcoinCoreRPCError {
+    method: String,
+    #[source]
+    error: JsonRpcError,
+}
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("failed to consensus encode block: {0}")]
+#[diagnostic(code(encode_block_error))]
+pub struct EncodeBlockError(pub bitcoin::io::Error);

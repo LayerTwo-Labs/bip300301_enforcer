@@ -57,7 +57,7 @@ fn get_data_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-#[derive(Clone, Args)]
+#[derive(Clone, Args, Debug)]
 pub struct NodeRpcConfig {
     #[arg(
         default_value_t = DEFAULT_NODE_RPC_ADDR,
