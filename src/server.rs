@@ -661,6 +661,13 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         request: tonic::Request<GenerateBlocksRequest>,
     ) -> std::result::Result<tonic::Response<GenerateBlocksResponse>, tonic::Status> {
+        // If we're not on regtest, this won't work!
+        if self.validator().network() != bitcoin::Network::Regtest {
+            return Err(tonic::Status::failed_precondition(
+                "can only generate blocks on regtest",
+            ));
+        }
+
         // FIXME: Remove `optional` from the `blocks` parameter in the proto file.
         let count = request.into_inner().blocks.unwrap_or(1);
         self.generate(count)
