@@ -8,6 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cusf_sidechain_proto/proto/cusf/mainchain/v1/validator.proto",
         "cusf_sidechain_proto/proto/cusf/mainchain/v1/wallet.proto",
         "cusf_sidechain_proto/proto/cusf/sidechain/v1/sidechain.proto",
+        "cusf_sidechain_proto/proto/cusf/crypto/v1/crypto.proto",
     ];
     let includes: &[&str] = &["cusf_sidechain_proto/proto"];
     let file_descriptors = protox::compile(protos, includes)?;

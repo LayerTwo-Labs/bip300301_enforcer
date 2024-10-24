@@ -26,12 +26,20 @@ use crate::{
     types::SidechainNumber,
 };
 
+use crate::proto::crypto::{
+    crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response, Ripemd160Request,
+    Ripemd160Response,
+};
+
 use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
 use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{self, absolute::Height, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
+use hmac::{Hmac, Mac};
 use miette::{IntoDiagnostic, Result};
+use ripemd::{Digest, Ripemd160};
+use sha2::Sha512;
 use tonic::{Request, Response, Status};
 
 use crate::types;
@@ -685,3 +693,48 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         ))
     }
 }
+
+pub struct Crypto;
+
+#[tonic::async_trait]
+impl CryptoService for Crypto {
+    async fn ripemd160(
+        &self,
+        request: tonic::Request<Ripemd160Request>,
+    ) -> std::result::Result<tonic::Response<Ripemd160Response>, tonic::Status> {
+        let Ripemd160Request { message } = request.into_inner();
+        let message: Vec<u8> = message
+            .ok_or_else(|| missing_field::<Ripemd160Request>("message"))?
+            .decode_tonic::<Ripemd160Request, _>("message")?;
+        let mut hasher = Ripemd160::new();
+        hasher.update(&message);
+        let hash = hasher.finalize();
+        let response = Ripemd160Response {
+            hash: Some(ConsensusHex::encode(&hash.as_slice().to_vec())),
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn hmac_sha512(
+        &self,
+        request: tonic::Request<HmacSha512Request>,
+    ) -> std::result::Result<tonic::Response<HmacSha512Response>, tonic::Status> {
+        let HmacSha512Request { secret, message } = request.into_inner();
+        let secret: Vec<u8> = secret
+            .ok_or_else(|| missing_field::<HmacSha512Request>("secret"))?
+            .decode_tonic::<HmacSha512Request, _>("secret")?;
+        let message: Vec<u8> = message
+            .ok_or_else(|| missing_field::<HmacSha512Request>("message"))?
+            .decode_tonic::<HmacSha512Request, _>("message")?;
+        let mut mac = HmacSha512::new_from_slice(&secret).unwrap();
+        mac.update(&message);
+        let hash = mac.finalize().into_bytes();
+        let response = HmacSha512Response {
+            hash: Some(ConsensusHex::encode(&hash.as_slice().to_vec())),
+        };
+        Ok(tonic::Response::new(response))
+    }
+}
+
+// Create alias for HMAC-SHA512
+type HmacSha512 = Hmac<Sha512>;

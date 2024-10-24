@@ -3,6 +3,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
 use miette::{miette, IntoDiagnostic, Result};
+use proto::crypto::crypto_service_server::CryptoServiceServer;
 use tokio::{spawn, task::JoinHandle, time::interval};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
@@ -22,6 +23,7 @@ mod zmq;
 use proto::mainchain::{
     wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer,
 };
+use server::Crypto;
 use server::Validator;
 use wallet::Wallet;
 
@@ -108,9 +110,12 @@ async fn run_server(
         )
         .into_inner();
 
+    let crypto_service = CryptoServiceServer::new(Crypto);
+
     let mut builder = Server::builder()
         .layer(tracer)
-        .add_service(validator_service);
+        .add_service(validator_service)
+        .add_service(crypto_service);
 
     if let Some(wallet) = wallet {
         tracing::info!("gRPC: enabling wallet service");
