@@ -692,7 +692,12 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             "not implemented",
         ))
     }
+}
 
+pub struct Crypto;
+
+#[tonic::async_trait]
+impl CryptoService for Crypto {
     async fn ripemd160(
         &self,
         request: tonic::Request<Ripemd160Request>,
