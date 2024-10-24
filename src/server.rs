@@ -7,6 +7,9 @@ use crate::proto::mainchain::{
     CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
     GenerateBlocksRequest, GenerateBlocksResponse,
 };
+use crate::proto::mainchain::{
+    HmacSha512Request, HmacSha512Response, Ripemd160Request, Ripemd160Response,
+};
 use crate::{
     proto::{
         self,
@@ -30,7 +33,10 @@ use crate::messages::CoinbaseMessage;
 use async_broadcast::RecvError;
 use bitcoin::{self, absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
+use hmac::{Hmac, Mac};
 use miette::Result;
+use ripemd::{Digest, Ripemd160};
+use sha2::Sha512;
 use tonic::{Request, Response, Status};
 
 use crate::types;
@@ -322,6 +328,7 @@ impl ValidatorService for Validator {
                         vote_count: vote_count as u32,
                         proposal_height,
                         proposal_age: 0,
+                        declaration: None,
                     }
                 },
             )
@@ -555,4 +562,45 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             "not implemented",
         ))
     }
+
+    async fn ripemd160(
+        &self,
+        request: tonic::Request<Ripemd160Request>,
+    ) -> std::result::Result<tonic::Response<Ripemd160Response>, tonic::Status> {
+        let message = request.into_inner().message;
+        let message: Vec<u8> = message
+            .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("message"))?
+            .decode_tonic::<GetBlockHeaderInfoRequest, _>("message")?;
+        let mut hasher = ripemd::Ripemd160::new();
+        hasher.update(&message);
+        let hash = hasher.finalize();
+        let response = Ripemd160Response {
+            hash: Some(ConsensusHex::encode(&hash.as_slice().to_vec())),
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn hmac_sha512(
+        &self,
+        request: tonic::Request<HmacSha512Request>,
+    ) -> std::result::Result<tonic::Response<HmacSha512Response>, tonic::Status> {
+        let HmacSha512Request { secret, message } = request.into_inner();
+        let secret: Vec<u8> = secret
+            .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("secret"))?
+            .decode_tonic::<GetBlockHeaderInfoRequest, _>("secret")?;
+        let message: Vec<u8> = message
+            .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("message"))?
+            .decode_tonic::<GetBlockHeaderInfoRequest, _>("message")?;
+
+        let mut mac = HmacSha512::new_from_slice(&secret).unwrap();
+        mac.update(&message);
+        let hash = mac.finalize().into_bytes();
+        let response = HmacSha512Response {
+            hash: Some(ConsensusHex::encode(&hash.as_slice().to_vec())),
+        };
+        Ok(tonic::Response::new(response))
+    }
 }
+
+// Create alias for HMAC-SHA512
+type HmacSha512 = Hmac<Sha512>;
