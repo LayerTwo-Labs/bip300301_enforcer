@@ -7,9 +7,6 @@ use crate::proto::mainchain::{
     CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
     GenerateBlocksRequest, GenerateBlocksResponse,
 };
-use crate::proto::mainchain::{
-    HmacSha512Request, HmacSha512Response, Ripemd160Request, Ripemd160Response,
-};
 use crate::{
     proto::{
         self,
@@ -27,6 +24,11 @@ use crate::{
         },
     },
     types::SidechainNumber,
+};
+
+use crate::proto::crypto::{
+    crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response, Ripemd160Request,
+    Ripemd160Response,
 };
 
 use crate::messages::CoinbaseMessage;

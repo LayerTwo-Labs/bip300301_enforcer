@@ -560,3 +560,7 @@ pub mod mainchain {
 pub mod sidechain {
     tonic::include_proto!("cusf.sidechain.v1");
 }
+
+pub mod crypto {
+    tonic::include_proto!("cusf.crypto.v1");
+}
