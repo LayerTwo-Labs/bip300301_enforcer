@@ -695,11 +695,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         request: tonic::Request<Ripemd160Request>,
     ) -> std::result::Result<tonic::Response<Ripemd160Response>, tonic::Status> {
-        let message = request.into_inner().message;
+        let Ripemd160Request { message } = request.into_inner();
         let message: Vec<u8> = message
-            .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("message"))?
-            .decode_tonic::<GetBlockHeaderInfoRequest, _>("message")?;
-        let mut hasher = ripemd::Ripemd160::new();
+            .ok_or_else(|| missing_field::<Ripemd160Request>("message"))?
+            .decode_tonic::<Ripemd160Request, _>("message")?;
+        let mut hasher = Ripemd160::new();
         hasher.update(&message);
         let hash = hasher.finalize();
         let response = Ripemd160Response {
@@ -714,12 +714,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
     ) -> std::result::Result<tonic::Response<HmacSha512Response>, tonic::Status> {
         let HmacSha512Request { secret, message } = request.into_inner();
         let secret: Vec<u8> = secret
-            .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("secret"))?
-            .decode_tonic::<GetBlockHeaderInfoRequest, _>("secret")?;
+            .ok_or_else(|| missing_field::<HmacSha512Request>("secret"))?
+            .decode_tonic::<HmacSha512Request, _>("secret")?;
         let message: Vec<u8> = message
-            .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("message"))?
-            .decode_tonic::<GetBlockHeaderInfoRequest, _>("message")?;
-
+            .ok_or_else(|| missing_field::<HmacSha512Request>("message"))?
+            .decode_tonic::<HmacSha512Request, _>("message")?;
         let mut mac = HmacSha512::new_from_slice(&secret).unwrap();
         mac.update(&message);
         let hash = mac.finalize().into_bytes();
