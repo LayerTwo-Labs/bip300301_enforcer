@@ -103,3 +103,8 @@ pub fn convert_bdk_error(err: bdk::Error) -> miette::Report {
         Err(json_deserialize_err) => miette::Report::new(json_deserialize_err),
     }
 }
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("BDK wallet error: {0}")]
+#[diagnostic(code(bdk_wallet_error))]
+pub struct WalletError(#[from] pub bdk::Error);

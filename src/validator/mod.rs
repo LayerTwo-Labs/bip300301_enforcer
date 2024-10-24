@@ -168,6 +168,8 @@ impl Validator {
         Ok(sequence_number)
     }
 
+    /// Returns `Some` with the Ctip for the given sidechain number. `None`
+    /// if there's no Ctip for the given sidechain number.
     pub fn get_ctip(
         &self,
         sidechain_number: SidechainNumber,

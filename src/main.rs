@@ -10,6 +10,7 @@ use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 mod cli;
+mod convert;
 mod messages;
 mod proto;
 mod rpc_client;

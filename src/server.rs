@@ -34,8 +34,8 @@ use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
 use miette::{IntoDiagnostic, Result};
 use tonic::{Request, Response, Status};
 
-use crate::types;
 pub use crate::validator::Validator;
+use crate::{convert, types};
 
 fn invalid_field_value<Message>(field_name: &str, value: &str) -> tonic::Status
 where
@@ -51,26 +51,6 @@ where
 {
     let err = proto::Error::missing_field::<Message>(field_name);
     tonic::Status::invalid_argument(err.to_string())
-}
-
-fn bdk_block_hash_to_bitcoin_block_hash(hash: bdk::bitcoin::BlockHash) -> bitcoin::BlockHash {
-    let bytes = hash.as_byte_array().to_vec();
-
-    use bitcoin::hashes::sha256d::Hash;
-    use bitcoin::hashes::Hash as Hm;
-    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
-
-    bitcoin::BlockHash::from_raw_hash(hash)
-}
-
-fn bdk_txid_to_bitcoin_txid(hash: bdk::bitcoin::Txid) -> bitcoin::Txid {
-    let bytes = hash.as_byte_array().to_vec();
-
-    use bitcoin::hashes::sha256d::Hash;
-    use bitcoin::hashes::Hash as Hm;
-    let hash: bitcoin::hashes::sha256d::Hash = Hash::from_slice(&bytes).unwrap();
-
-    bitcoin::Txid::from_raw_hash(hash)
 }
 
 trait IntoStatus {
@@ -417,16 +397,16 @@ impl ValidatorService for Validator {
             })
             .transpose()?
             .map(|bytes| {
-                bdk_block_hash_to_bitcoin_block_hash(bdk::bitcoin::BlockHash::from_byte_array(
-                    bytes,
-                ))
+                convert::bdk_block_hash_to_bitcoin_block_hash(
+                    bdk::bitcoin::BlockHash::from_byte_array(bytes),
+                )
             });
 
         let end_block_hash: BlockHash = end_block_hash
             .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("end_block_hash"))?
             .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")
             .map(bdk::bitcoin::BlockHash::from_byte_array)
-            .map(bdk_block_hash_to_bitcoin_block_hash)?;
+            .map(convert::bdk_block_hash_to_bitcoin_block_hash)?;
 
         match self.get_two_way_peg_data(start_block_hash, end_block_hash) {
             Err(err) => Err(tonic::Status::from_error(Box::new(err))),
@@ -639,7 +619,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         // If the mainchain tip has progressed beyond this, the request is already
         // expired.
-        if mainchain_tip != bdk_block_hash_to_bitcoin_block_hash(prev_bytes) {
+        if mainchain_tip != convert::bdk_block_hash_to_bitcoin_block_hash(prev_bytes) {
             let message = format!(
                 "invalid prev_bytes {}: expected {}",
                 prev_bytes, mainchain_tip
@@ -667,7 +647,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .await
             .map_err(|err| err.into_status())?;
 
-        let txid = bdk_txid_to_bitcoin_txid(txid);
+        let txid = convert::bdk_txid_to_bitcoin_txid(txid);
 
         let response = CreateBmmCriticalDataTransactionResponse {
             txid: Some(ConsensusHex::encode(&txid)),
@@ -677,11 +657,65 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
     async fn create_deposit_transaction(
         &self,
-        _request: tonic::Request<CreateDepositTransactionRequest>,
+        request: tonic::Request<CreateDepositTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateDepositTransactionResponse>, tonic::Status> {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        let CreateDepositTransactionRequest {
+            sidechain_id,
+            address,
+            value_sats,
+            fee_sats,
+        } = request.into_inner();
+
+        let value_sats = Amount::from_sat(value_sats);
+        let fee_sats = match fee_sats {
+            0 => None,
+            fee => Some(Amount::from_sat(fee)),
+        };
+
+        let sidechain_id: SidechainNumber = {
+            <u8 as TryFrom<_>>::try_from(sidechain_id)
+                .map_err(|_| {
+                    invalid_field_value::<CreateDepositTransactionRequest>(
+                        "sidechain_id",
+                        &sidechain_id.to_string(),
+                    )
+                })?
+                .into()
+        };
+
+        if value_sats.to_sat() == 0 {
+            return Err(invalid_field_value::<CreateDepositTransactionRequest>(
+                "value_sats",
+                &value_sats.to_string(),
+            ));
+        }
+
+        if address.is_empty() {
+            return Err(invalid_field_value::<CreateDepositTransactionRequest>(
+                "address", &address,
+            ));
+        }
+
+        if !self
+            .is_sidechain_active(sidechain_id)
+            .await
+            .map_err(|err| err.into_status())?
+        {
+            return Err(tonic::Status::new(
+                tonic::Code::FailedPrecondition,
+                format!("sidechain {sidechain_id} is not active"),
+            ));
+        }
+
+        let txid = self
+            .create_deposit(sidechain_id, address, value_sats, fee_sats)
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let txid = convert::bdk_txid_to_bitcoin_txid(txid);
+
+        let txid = ConsensusHex::encode(&txid);
+        let response = CreateDepositTransactionResponse { txid: Some(txid) };
+        Ok(tonic::Response::new(response))
     }
 }

@@ -1,3 +1,5 @@
+use core::fmt;
+use std::fmt::Display;
 use std::num::TryFromIntError;
 
 use bitcoin::{Amount, BlockHash, OutPoint, TxOut, Work};
@@ -13,6 +15,12 @@ pub type Hash256 = [u8; 32];
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct SidechainNumber(pub u8);
+
+impl Display for SidechainNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl From<u8> for SidechainNumber {
     #[inline(always)]

@@ -8,6 +8,7 @@
    password=password
    signetblocktime=60
    signetchallenge=00141f61d57873d70d28bd28b3c9f9d6bf818b5a0d6a
+   acceptnonstdtxn=1 # Important! Otherwise Core rejects OP_DRIVECHAIN TXs
 
    # this can also be set to a different address, as long
    # as you set the CLI arg for bip300301_enforcer
@@ -35,7 +36,7 @@ $ cargo run -- --help
 # Adjust these parameters to match your local Bitcoin
 # Core instance
 $ cargo run -- \
-  --node-rpc-port=38332 \
+  --node-rpc-addr-=localhost:38332 \
   --node-rpc-user=user \
   --node-rpc-pass=password \
   --node-zmq-addr-sequence=tcp://0.0.0.0:29000

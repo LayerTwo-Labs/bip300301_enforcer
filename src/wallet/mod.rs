@@ -6,7 +6,10 @@ use std::{
 };
 
 use bdk::{
-    bitcoin::{consensus::Encodable, hashes::Hash, BlockHash, Network},
+    bitcoin::{
+        consensus::Encodable, hashes::Hash, psbt::PartiallySignedTransaction, script::PushBytesBuf,
+        BlockHash, Network,
+    },
     blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
     electrum_client::ConfigBuilder,
@@ -22,8 +25,7 @@ use bip300301::{client::BlockchainInfo, jsonrpsee::http_client::HttpClient, Main
 use bitcoin::{
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
-    consensus::Decodable as _,
-    consensus::Encodable as _,
+    consensus::{Decodable as _, Encodable as _},
     constants::{genesis_block, SUBSIDY_HALVING_INTERVAL},
     hash_types::TxMerkleNode,
     hashes::Hash as _,
@@ -32,17 +34,20 @@ use bitcoin::{
         all::{OP_PUSHBYTES_36, OP_RETURN},
         OP_0,
     },
+    script::PushBytes,
     transaction::Version as TxVersion,
     Amount, Block, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
+use error::WalletError;
 use miette::{miette, IntoDiagnostic, Result};
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, Row};
 
 use crate::{
     cli::WalletConfig,
-    messages::{sha256d, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    types::{SidechainNumber, SidechainProposal},
+    convert,
+    messages::{self, sha256d, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
+    types::{Ctip, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 
@@ -292,7 +297,7 @@ impl Wallet {
         let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
         block.txdata[0].output.push(TxOut {
             script_pubkey,
-            value: Amount::ZERO,
+            value: bitcoin::Amount::ZERO,
         });
         let mut tx_hashes: Vec<_> = block.txdata.iter().map(Transaction::compute_txid).collect();
         block.header.merkle_root = merkle_tree::calculate_root_inline(&mut tx_hashes)
@@ -354,6 +359,132 @@ impl Wallet {
             .execute("DELETE FROM deposits;", ())
             .into_diagnostic()?;
         Ok(())
+    }
+
+    fn create_deposit_op_drivechain_output(
+        sidechain_number: SidechainNumber,
+        sidechain_ctip_amount: Amount,
+        value_sats: Amount,
+    ) -> bdk::bitcoin::TxOut {
+        let deposit_txout =
+            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value_sats);
+
+        bdk::bitcoin::TxOut {
+            script_pubkey: bdk::bitcoin::ScriptBuf::from_bytes(
+                deposit_txout.script_pubkey.to_bytes(),
+            ),
+            value: deposit_txout.value.to_sat(),
+        }
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
+    fn create_deposit_psbt(
+        &self,
+        op_drivechain_output: bdk::bitcoin::TxOut,
+        sidechain_address_data: PushBytesBuf,
+        sidechain_ctip: Option<&Ctip>,
+        fee_sats: Option<Amount>,
+    ) -> Result<PartiallySignedTransaction> {
+        let (psbt, _) = {
+            let wallet = self.bitcoin_wallet.lock();
+
+            let mut builder = wallet.build_tx();
+
+            builder
+                // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
+                .add_recipient(
+                    op_drivechain_output.script_pubkey,
+                    op_drivechain_output.value,
+                )
+                .add_data(&sidechain_address_data);
+
+            if let Some(fee_sats) = fee_sats {
+                builder.fee_absolute(fee_sats.to_sat());
+            }
+
+            // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
+            // Ctip.
+            if let Some(sidechain_ctip) = sidechain_ctip {
+                let outpoint = bdk::bitcoin::OutPoint {
+                    txid: convert::bitcoin_txid_to_bdk_txid(sidechain_ctip.outpoint.txid),
+                    vout: sidechain_ctip.outpoint.vout,
+                };
+
+                let psbt_input: bdk::bitcoin::psbt::Input = todo!("no idea how to get this");
+                let satisfaction_weight = todo!("no idea how to get this");
+
+                builder
+                    .add_foreign_utxo(outpoint, psbt_input, satisfaction_weight)
+                    .map_err(WalletError)?;
+            }
+
+            builder.finish().into_diagnostic()?
+        };
+
+        Ok(psbt)
+    }
+
+    /// Creates a deposit transaction, persists it to the database, and returns the TXID.
+    /// This is also known as a M5 message, in BIP300 nomenclature.
+    ///
+    /// https://github.com/bitcoin/bips/blob/master/bip-0300.mediawiki#m5----deposit-btc-from-l1-to-l2
+    pub async fn create_deposit(
+        &self,
+        sidechain_number: SidechainNumber,
+        sidechain_address: String,
+        value_sats: Amount,
+        fee_sats: Option<Amount>,
+    ) -> Result<bdk::bitcoin::Txid> {
+        // If this is None, there's been no deposit to this sidechain yet. We're the first one!
+        let sidechain_ctip = self.validator.get_ctip(sidechain_number)?;
+        let sidechain_ctip = sidechain_ctip.as_ref();
+
+        let sidechain_ctip_amount = sidechain_ctip
+            .map(|ctip| ctip.value)
+            .unwrap_or(Amount::ZERO);
+
+        let op_drivechain_output = Self::create_deposit_op_drivechain_output(
+            sidechain_number,
+            sidechain_ctip_amount,
+            value_sats,
+        );
+
+        tracing::debug!(
+            "Created OP_DRIVECHAIN output: {}, {} ",
+            op_drivechain_output.value,
+            op_drivechain_output.script_pubkey.to_asm_string(),
+        );
+
+        let sidechain_address_bytes = sidechain_address.into_bytes();
+        let sidechain_address_data = PushBytesBuf::try_from(sidechain_address_bytes)
+            .map_err(|err| miette!("failed to convert sidechain address to PushBytesBuf: {err}"))?;
+
+        let psbt = self.create_deposit_psbt(
+            op_drivechain_output,
+            sidechain_address_data,
+            sidechain_ctip,
+            fee_sats,
+        )?;
+
+        tracing::debug!("Created deposit PSBT: {}", psbt.to_string());
+
+        let tx = self.sign_transaction(psbt)?;
+        let txid = tx.txid();
+
+        tracing::info!("Signed deposit transaction: `{}`", txid);
+
+        let mut tx_bytes = vec![];
+        tx.consensus_encode(&mut tx_bytes).into_diagnostic()?;
+        tracing::debug!("Serialized deposit transaction: {}", hex::encode(tx_bytes));
+
+        self.broadcast_transaction(tx).await?;
+
+        tracing::info!("Broadcasted deposit transaction: `{}`", txid);
+
+        Ok(txid)
     }
 
     pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
@@ -672,6 +803,24 @@ impl Wallet {
         Ok(false)
     }
 
+    fn sign_transaction(
+        &self,
+        mut psbt: PartiallySignedTransaction,
+    ) -> Result<bdk::bitcoin::Transaction> {
+        if !self
+            .bitcoin_wallet
+            .lock()
+            .sign(&mut psbt, SignOptions::default())
+            .map_err(WalletError::from)?
+        {
+            return Err(miette!("failed to sign transaction"));
+        }
+
+        tracing::debug!("Signed PSBT: {}", psbt.to_string());
+
+        Ok(psbt.extract_tx())
+    }
+
     // Creates a BMM request transaction. Does NOT broadcast. `height` is the block height this
     // transaction MUST be included in. `amount` is the amount to spend in the BMM bid.
     pub async fn create_bmm_request(
@@ -682,7 +831,7 @@ impl Wallet {
         amount: bdk::bitcoin::Amount,
         locktime: bdk::bitcoin::absolute::LockTime,
     ) -> Result<bdk::bitcoin::Transaction> {
-        let mut psbt = self.build_bmm_tx(
+        let psbt = self.build_bmm_tx(
             sidechain_number,
             sidechain_block_hash,
             prev_mainchain_block_hash,
@@ -690,26 +839,9 @@ impl Wallet {
             locktime,
         )?;
 
-        let psbt_finalized: Result<bool, _> = self
-            .bitcoin_wallet
-            .lock()
-            .sign(&mut psbt, SignOptions::default());
-        match psbt_finalized {
-            Ok(true) => {
-                tracing::info!("BMM request psbt signed successfully");
-            }
+        let tx = self.sign_transaction(psbt)?;
 
-            Ok(false) => {
-                tracing::error!("failed to sign BMM request psbt");
-                return Err(miette!("failed to sign BMM request psbt"));
-            }
-
-            Err(e) => {
-                return Err(miette!("failed to sign BMM request psbt: {e:#}"));
-            }
-        }
-
-        let tx = psbt.extract_tx();
+        tracing::info!("BMM request psbt signed successfully");
 
         self.insert_new_bmm_request(sidechain_number, sidechain_block_hash)?;
         tracing::info!("inserted new bmm request into db");
