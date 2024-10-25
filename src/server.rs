@@ -1,49 +1,45 @@
 use std::sync::Arc;
 
-use crate::proto::mainchain::{
-    wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
-    BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
-    CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
-    CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
-    GenerateBlocksRequest, GenerateBlocksResponse,
+use bdk::bitcoin::hashes::Hash as _;
+use bitcoin::{
+    absolute::Height,
+    hashes::{hmac, ripemd160, sha512, Hash as _, HashEngine},
+    Amount, BlockHash, Transaction, TxOut,
 };
+use futures::{stream::BoxStream, StreamExt as _, TryStreamExt as _};
+use miette::{IntoDiagnostic, Result};
+use tonic::{Request, Response, Status};
+
 use crate::{
+    messages::CoinbaseMessage,
     proto::{
         self,
+        common::{ConsensusHex, ReverseHex},
+        crypto::{
+            crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response,
+            Ripemd160Request, Ripemd160Response,
+        },
         mainchain::{
             get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo, server::ValidatorService, ConsensusHex,
-            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
-            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
-            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
-            ReverseHex, SubscribeEventsRequest, SubscribeEventsResponse,
+            get_sidechains_response::SidechainInfo, server::ValidatorService,
+            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
+            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
+            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
+            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
+            GenerateBlocksRequest, GenerateBlocksResponse, GetBlockHeaderInfoRequest,
+            GetBlockHeaderInfoResponse, GetBlockInfoRequest, GetBlockInfoResponse,
+            GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse, GetChainInfoRequest,
+            GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
+            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, SubscribeEventsRequest,
+            SubscribeEventsResponse,
         },
     },
     types::SidechainNumber,
+    validator::Validator,
 };
-
-use crate::proto::crypto::{
-    crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response, Ripemd160Request,
-    Ripemd160Response,
-};
-
-use crate::messages::CoinbaseMessage;
-use async_broadcast::RecvError;
-use bdk::bitcoin::hashes::Hash as _;
-use bitcoin::{self, absolute::Height, Amount, BlockHash, Transaction, TxOut};
-use futures::{stream::BoxStream, StreamExt, TryStreamExt as _};
-use hmac::{Hmac, Mac};
-use miette::{IntoDiagnostic, Result};
-use ripemd::{Digest, Ripemd160};
-use sha2::Sha512;
-use tonic::{Request, Response, Status};
-
-use crate::types;
-pub use crate::validator::Validator;
 
 fn invalid_field_value<Message>(field_name: &str, value: &str) -> tonic::Status
 where
@@ -380,7 +376,7 @@ impl ValidatorService for Validator {
         let sidechains = sidechains
             .into_iter()
             .map(|sidechain| {
-                let types::Sidechain {
+                let crate::types::Sidechain {
                     sidechain_number,
                     data,
                     vote_count,
@@ -471,10 +467,10 @@ impl ValidatorService for Validator {
         let stream = futures::stream::try_unfold(self.subscribe_events(), |mut receiver| async {
             match receiver.recv_direct().await {
                 Ok(event) => Ok(Some((event, receiver))),
-                Err(RecvError::Closed) => Ok(None),
-                Err(RecvError::Overflowed(_)) => Err(tonic::Status::resource_exhausted(
-                    "Events stream closed due to overflow",
-                )),
+                Err(async_broadcast::RecvError::Closed) => Ok(None),
+                Err(async_broadcast::RecvError::Overflowed(_)) => Err(
+                    tonic::Status::resource_exhausted("Events stream closed due to overflow"),
+                ),
             }
         })
         .map_ok(move |event| SubscribeEventsResponse {
@@ -564,7 +560,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
     async fn broadcast_withdrawal_bundle(
         &self,
-        request: tonic::Request<BroadcastWithdrawalBundleRequest>,
+        _request: tonic::Request<BroadcastWithdrawalBundleRequest>,
     ) -> std::result::Result<tonic::Response<BroadcastWithdrawalBundleResponse>, tonic::Status>
     {
         Err(tonic::Status::new(
@@ -694,23 +690,22 @@ impl WalletService for Arc<crate::wallet::Wallet> {
     }
 }
 
-pub struct Crypto;
+#[derive(Debug, Default)]
+pub struct CryptoServiceServer;
 
 #[tonic::async_trait]
-impl CryptoService for Crypto {
+impl CryptoService for CryptoServiceServer {
     async fn ripemd160(
         &self,
         request: tonic::Request<Ripemd160Request>,
     ) -> std::result::Result<tonic::Response<Ripemd160Response>, tonic::Status> {
-        let Ripemd160Request { message } = request.into_inner();
-        let message: Vec<u8> = message
-            .ok_or_else(|| missing_field::<Ripemd160Request>("message"))?
-            .decode_tonic::<Ripemd160Request, _>("message")?;
-        let mut hasher = Ripemd160::new();
-        hasher.update(&message);
-        let hash = hasher.finalize();
+        let Ripemd160Request { msg } = request.into_inner();
+        let msg: Vec<u8> = msg
+            .ok_or_else(|| missing_field::<Ripemd160Request>("msg"))?
+            .decode_tonic::<Ripemd160Request, _>("msg")?;
+        let digest = ripemd160::Hash::hash(&msg);
         let response = Ripemd160Response {
-            hash: Some(ConsensusHex::encode(&hash.as_slice().to_vec())),
+            digest: Some(ConsensusHex::encode_hex(&digest.as_byte_array())),
         };
         Ok(tonic::Response::new(response))
     }
@@ -719,22 +714,19 @@ impl CryptoService for Crypto {
         &self,
         request: tonic::Request<HmacSha512Request>,
     ) -> std::result::Result<tonic::Response<HmacSha512Response>, tonic::Status> {
-        let HmacSha512Request { secret, message } = request.into_inner();
-        let secret: Vec<u8> = secret
-            .ok_or_else(|| missing_field::<HmacSha512Request>("secret"))?
-            .decode_tonic::<HmacSha512Request, _>("secret")?;
-        let message: Vec<u8> = message
-            .ok_or_else(|| missing_field::<HmacSha512Request>("message"))?
-            .decode_tonic::<HmacSha512Request, _>("message")?;
-        let mut mac = HmacSha512::new_from_slice(&secret).unwrap();
-        mac.update(&message);
-        let hash = mac.finalize().into_bytes();
+        let HmacSha512Request { key, msg } = request.into_inner();
+        let key: Vec<u8> = key
+            .ok_or_else(|| missing_field::<HmacSha512Request>("key"))?
+            .decode_tonic::<HmacSha512Request, _>("key")?;
+        let msg: Vec<u8> = msg
+            .ok_or_else(|| missing_field::<HmacSha512Request>("msg"))?
+            .decode_tonic::<HmacSha512Request, _>("msg")?;
+        let mut engine = hmac::HmacEngine::<sha512::Hash>::new(&key);
+        engine.input(&msg);
+        let hmac = hmac::Hmac::<sha512::Hash>::from_engine(engine);
         let response = HmacSha512Response {
-            hash: Some(ConsensusHex::encode(&hash.as_slice().to_vec())),
+            hmac: Some(ConsensusHex::encode_hex(&hmac.as_byte_array())),
         };
         Ok(tonic::Response::new(response))
     }
 }
-
-// Create alias for HMAC-SHA512
-type HmacSha512 = Hmac<Sha512>;
