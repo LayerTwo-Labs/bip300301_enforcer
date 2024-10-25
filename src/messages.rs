@@ -1,5 +1,5 @@
 use bitcoin::{
-    hashes::Hash,
+    hashes::{sha256d, Hash},
     opcodes::{
         all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
@@ -16,7 +16,9 @@ use nom::{
     IResult,
 };
 
-use crate::types::SidechainNumber;
+use crate::types::{
+    SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
+};
 
 pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
 
@@ -42,19 +44,23 @@ impl CoinbaseBuilder {
             .collect()
     }
 
-    pub fn propose_sidechain(mut self, sidechain_number: u8, data: &[u8]) -> Self {
+    pub fn propose_sidechain(mut self, proposal: SidechainProposal) -> Self {
         let message = CoinbaseMessage::M1ProposeSidechain {
-            sidechain_number,
-            data: data.to_vec(),
+            sidechain_number: proposal.sidechain_number.0,
+            data: proposal.description.0,
         };
         self.messages.push(message);
         self
     }
 
-    pub fn ack_sidechain(mut self, sidechain_number: u8, data_hash: &[u8; 32]) -> Self {
+    pub fn ack_sidechain(
+        mut self,
+        sidechain_number: SidechainNumber,
+        description_hash: sha256d::Hash,
+    ) -> Self {
         let message = CoinbaseMessage::M2AckSidechain {
-            sidechain_number,
-            data_hash: *data_hash,
+            sidechain_number: sidechain_number.0,
+            data_hash: description_hash.to_byte_array(),
         };
         self.messages.push(message);
         self
@@ -387,10 +393,6 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
     }
 }
 
-pub fn sha256d(data: &[u8]) -> [u8; 32] {
-    bitcoin::hashes::sha256d::Hash::hash(data).to_byte_array()
-}
-
 pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32] {
     let mut m6 = m6.clone();
     /*
@@ -446,8 +448,41 @@ pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32]
 
 // ... existing code ...
 
+// Returns the serialized sidechain proposal OP_RETURN output, plus the byte
+// slice encoded into the OP_RETURN output.
+pub fn create_sidechain_proposal(
+    sidechain_number: SidechainNumber,
+    declaration: &SidechainDeclaration,
+) -> Result<(bitcoin::TxOut, SidechainDescription), bitcoin::script::PushBytesError> {
+    // The only defined M1 version.
+    const VERSION: u8 = 0;
+
+    let mut description = Vec::<u8>::new();
+    description.push(VERSION);
+    description.push(declaration.title.len() as u8);
+    description.extend_from_slice(declaration.title.as_bytes());
+    description.extend_from_slice(declaration.description.as_bytes());
+    description.extend_from_slice(&declaration.hash_id_1);
+    description.extend_from_slice(&declaration.hash_id_2);
+    let description: SidechainDescription = description.into();
+
+    let proposal = SidechainProposal {
+        sidechain_number,
+        description: description.clone(),
+    };
+
+    let builder = CoinbaseBuilder::new().propose_sidechain(proposal).build()?; // TODO: better error
+
+    assert!(builder.len() == 1);
+    let tx_out = builder.first().unwrap().clone();
+    Ok((tx_out, description))
+}
+
 #[cfg(test)]
 mod tests {
+
+    use crate::types::SidechainProposal;
+
     use super::*;
 
     #[test]
@@ -481,5 +516,42 @@ mod tests {
             result.prev_mainchain_block_hash.to_vec(),
             prev_mainchain_block_hash
         );
+    }
+
+    #[test]
+    fn test_roundtrip() {
+        let declaration = SidechainDeclaration {
+            title: "title".to_owned(),
+            description: "description".to_owned(),
+            hash_id_1: [1u8; 32],
+            hash_id_2: [2u8; 20],
+        };
+        let (tx_out, _) = create_sidechain_proposal(SidechainNumber::from(13), &declaration)
+            .expect("Failed to create sidechain proposal");
+
+        let (rest, message) = parse_coinbase_script(&tx_out.script_pubkey)
+            .expect("Failed to parse sidechain proposal");
+
+        assert!(rest.is_empty());
+
+        let CoinbaseMessage::M1ProposeSidechain {
+            sidechain_number,
+            data,
+        } = message
+        else {
+            panic!("Failed to parse sidechain proposal");
+        };
+
+        assert_eq!(sidechain_number, 13);
+
+        let proposal = SidechainProposal {
+            sidechain_number: sidechain_number.into(),
+            description: data.into(),
+        };
+
+        let parsed: SidechainDeclaration =
+            (&proposal.description).try_into().expect("Failed to parse");
+
+        assert_eq!(parsed, declaration);
     }
 }

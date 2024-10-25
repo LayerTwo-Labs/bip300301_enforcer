@@ -21,6 +21,7 @@ blake3 = "1.5.4"
 byteorder = "1.5.0"
 clap = { version = "4.5.18", features = ["derive"] }
 cusf_sidechain_types = { git = "https://github.com/LayerTwo-Labs/cusf_sidechain_types" }
+derive_more = { version = "1.0.0", features = ["display"] }
 ed25519-dalek-bip32 = "0.3.0"
 either = "1.13.0"
 fallible-iterator = "0.3.0"
@@ -31,6 +32,7 @@ hex = "0.4.3"
 miette = { version = "7.1.0", features = ["fancy"] }
 num-traits = "0.2.19"
 nom = "7.1.3"
+nonempty = "0.10.0"
 parking_lot = { version = "0.12.3", features = ["send_guard"] }
 prost = "0.13.2"
 regex = "1.11.0"

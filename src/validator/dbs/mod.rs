@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use bitcoin::hashes::sha256d;
 use heed::{types::SerdeBincode, EnvOpenOptions, RoTxn};
 use thiserror::Error;
 
-use crate::types::{
-    Ctip, Hash256, PendingM6id, Sidechain, SidechainNumber, SidechainProposal, TreasuryUtxo,
-};
+use crate::types::{Ctip, Hash256, PendingM6id, Sidechain, SidechainNumber, TreasuryUtxo};
 
 mod block_hashes;
 mod util;
@@ -17,26 +16,31 @@ pub use util::{
 
 /// These DBs should all contain exacty the same keys.
 #[derive(Clone)]
-pub(super) struct SidechainNumberDbs {
+pub(super) struct ActiveSidechainDbs {
     pub ctip: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
     pub pending_m6ids: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Vec<PendingM6id>>>,
     pub sidechain: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
+    pub slot_sequence_to_treasury_utxo:
+        Database<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
     pub treasury_utxo_count: Database<SerdeBincode<SidechainNumber>, SerdeBincode<u64>>,
 }
 
-impl SidechainNumberDbs {
-    const NUM_DBS: u32 = 4;
+impl ActiveSidechainDbs {
+    const NUM_DBS: u32 = 5;
 
     fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, util::CreateDbError> {
-        let ctip = env.create_db(rwtxn, "sidechain_number_to_ctip")?;
-        let pending_m6ids = env.create_db(rwtxn, "sidechain_number_to_pending_m6ids")?;
-        let sidechain = env.create_db(rwtxn, "sidechain_number_to_sidechain")?;
+        let ctip = env.create_db(rwtxn, "active_sidechain_number_to_ctip")?;
+        let pending_m6ids = env.create_db(rwtxn, "active_sidechain_number_to_pending_m6ids")?;
+        let sidechain = env.create_db(rwtxn, "active_sidechain_number_to_sidechain")?;
+        let slot_sequence_to_treasury_utxo =
+            env.create_db(rwtxn, "active_sidechain_slot_sequence_to_treasury_utxo")?;
         let treasury_utxo_count =
-            env.create_db(rwtxn, "sidechain_number_to_treasury_utxo_count")?;
+            env.create_db(rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
         Ok(Self {
             ctip,
             pending_m6ids,
             sidechain,
+            slot_sequence_to_treasury_utxo,
             treasury_utxo_count,
         })
     }
@@ -62,20 +66,18 @@ pub enum CreateDbsError {
 #[derive(Clone)]
 pub(super) struct Dbs {
     env: Env,
+    pub active_sidechains: ActiveSidechainDbs,
     pub block_hashes: BlockHashDbs,
     /// Tip that the enforcer is synced to
     pub current_chain_tip: Database<SerdeBincode<UnitKey>, SerdeBincode<bitcoin::BlockHash>>,
-    pub data_hash_to_sidechain_proposal:
-        Database<SerdeBincode<Hash256>, SerdeBincode<SidechainProposal>>,
+    pub description_hash_to_sidechain:
+        Database<SerdeBincode<sha256d::Hash>, SerdeBincode<Sidechain>>,
     pub _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
     pub _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
-    pub sidechain_number_sequence_number_to_treasury_utxo:
-        Database<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
-    pub sidechain_numbers: SidechainNumberDbs,
 }
 
 impl Dbs {
-    const NUM_DBS: u32 = BlockHashDbs::NUM_DBS + SidechainNumberDbs::NUM_DBS + 5;
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -96,29 +98,24 @@ impl Dbs {
             unsafe { Env::open(&env_opts, db_dir.clone()) }?
         };
         let mut rwtxn = env.write_txn()?;
+        let active_sidechains = ActiveSidechainDbs::new(&env, &mut rwtxn)?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
         let current_chain_tip = env.create_db(&mut rwtxn, "current_chain_tip")?;
-        let data_hash_to_sidechain_proposal =
-            env.create_db(&mut rwtxn, "data_hash_to_sidechain_proposal")?;
+        let description_hash_to_sidechain =
+            env.create_db(&mut rwtxn, "description_hash_to_sidechain")?;
         let leading_by_50 = env.create_db(&mut rwtxn, "leading_by_50")?;
         let previous_votes = env.create_db(&mut rwtxn, "previous_votes")?;
-        let sidechain_number_sequence_number_to_treasury_utxo = env.create_db(
-            &mut rwtxn,
-            "sidechain_number_sequence_number_to_treasury_utxo",
-        )?;
-        let sidechain_numbers = SidechainNumberDbs::new(&env, &mut rwtxn)?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
         Ok(Self {
             env,
+            active_sidechains,
             block_hashes,
             current_chain_tip,
-            data_hash_to_sidechain_proposal,
+            description_hash_to_sidechain,
             _leading_by_50: leading_by_50,
             _previous_votes: previous_votes,
-            sidechain_number_sequence_number_to_treasury_utxo,
-            sidechain_numbers,
         })
     }
 
