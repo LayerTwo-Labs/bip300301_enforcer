@@ -51,7 +51,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compile_protos_with_config(&file_descriptor_path, &[COMMON_PROTO], INCLUDES, |_| Ok(()))?;
     let () = compile_protos_with_config(
         &file_descriptor_path,
-        &[CRYPTO_PROTO, MAINCHAIN_COMMON_PROTO, SIDECHAIN_PROTO, VALIDATOR_PROTO, WALLET_PROTO],
+        &[
+            CRYPTO_PROTO,
+            MAINCHAIN_COMMON_PROTO,
+            SIDECHAIN_PROTO,
+            VALIDATOR_PROTO,
+            WALLET_PROTO,
+        ],
         INCLUDES,
         |config| {
             config.extern_path(".cusf.common.v1", "crate::proto::common");

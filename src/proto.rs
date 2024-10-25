@@ -87,8 +87,6 @@ impl Error {
 pub mod common {
     tonic::include_proto!("cusf.common.v1");
 
-    use super::Error;
-
     impl ConsensusHex {
         pub fn decode<Message, T>(self, field_name: &str) -> Result<T, super::Error>
         where
@@ -196,7 +194,16 @@ pub mod mainchain {
         self as server, ValidatorService as Service, ValidatorServiceServer as Server,
     };
 
-    impl From<crate::types::SidechainDeclaration> for SidechainDeclarationV0 {
+    impl From<bitcoin::OutPoint> for OutPoint {
+        fn from(outpoint: bitcoin::OutPoint) -> Self {
+            Self {
+                txid: Some(ReverseHex::encode(&outpoint.txid)),
+                vout: Some(outpoint.vout),
+            }
+        }
+    }
+
+    impl From<crate::types::SidechainDeclaration> for sidechain_declaration::V0 {
         fn from(declaration: crate::types::SidechainDeclaration) -> Self {
             Self {
                 title: Some(declaration.title),
@@ -207,26 +214,31 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<SidechainDeclarationV0> for crate::types::SidechainDeclaration {
+    impl TryFrom<sidechain_declaration::V0> for crate::types::SidechainDeclaration {
         type Error = super::Error;
 
-        fn try_from(declaration: SidechainDeclarationV0) -> Result<Self, Self::Error> {
-            let SidechainDeclarationV0 {
+        fn try_from(declaration: sidechain_declaration::V0) -> Result<Self, Self::Error> {
+            let sidechain_declaration::V0 {
                 title,
                 description,
                 hash_id_1,
                 hash_id_2,
             } = declaration;
-            let title =
-                title.ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("title"))?;
-            let description = description
-                .ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("description"))?;
+            let title = title
+                .ok_or_else(|| super::Error::missing_field::<sidechain_declaration::V0>("title"))?;
+            let description = description.ok_or_else(|| {
+                super::Error::missing_field::<sidechain_declaration::V0>("description")
+            })?;
             let hash_id_1 = hash_id_1
-                .ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("hash_id_1"))?
-                .decode::<SidechainDeclarationV0, _>("hash_id_1")?;
+                .ok_or_else(|| {
+                    super::Error::missing_field::<sidechain_declaration::V0>("hash_id_1")
+                })?
+                .decode::<sidechain_declaration::V0, _>("hash_id_1")?;
             let hash_id_2 = hash_id_2
-                .ok_or_else(|| Error::missing_field::<SidechainDeclarationV0>("hash_id_2"))?
-                .decode_hex::<SidechainDeclarationV0, _>("hash_id_2")?;
+                .ok_or_else(|| {
+                    super::Error::missing_field::<sidechain_declaration::V0>("hash_id_2")
+                })?
+                .decode_hex::<sidechain_declaration::V0, _>("hash_id_2")?;
             Ok(Self {
                 title,
                 description,
@@ -236,17 +248,35 @@ pub mod mainchain {
         }
     }
 
-    impl From<SidechainDeclarationV0> for SidechainDeclaration {
-        fn from(declaration: SidechainDeclarationV0) -> Self {
+    impl From<sidechain_declaration::V0> for sidechain_declaration::SidechainDeclaration {
+        fn from(declaration: sidechain_declaration::V0) -> Self {
+            sidechain_declaration::SidechainDeclaration::V0(declaration)
+        }
+    }
+
+    impl From<sidechain_declaration::V0> for SidechainDeclaration {
+        fn from(declaration: sidechain_declaration::V0) -> Self {
             Self {
-                version: Some(sidechain_declaration::Version::V0(declaration)),
+                sidechain_declaration: Some(declaration.into()),
             }
         }
     }
 
     impl From<crate::types::SidechainDeclaration> for SidechainDeclaration {
         fn from(declaration: crate::types::SidechainDeclaration) -> Self {
-            SidechainDeclarationV0::from(declaration).into()
+            sidechain_declaration::V0::from(declaration).into()
+        }
+    }
+
+    impl TryFrom<sidechain_declaration::SidechainDeclaration> for crate::types::SidechainDeclaration {
+        type Error = super::Error;
+
+        fn try_from(
+            declaration: sidechain_declaration::SidechainDeclaration,
+        ) -> Result<Self, Self::Error> {
+            match declaration {
+                sidechain_declaration::SidechainDeclaration::V0(v0) => v0.try_into(),
+            }
         }
     }
 
@@ -254,12 +284,14 @@ pub mod mainchain {
         type Error = super::Error;
 
         fn try_from(declaration: SidechainDeclaration) -> Result<Self, Self::Error> {
-            let SidechainDeclaration { version } = declaration;
-            let version =
-                version.ok_or_else(|| Error::missing_field::<SidechainDeclaration>("version"))?;
-            match version {
-                sidechain_declaration::Version::V0(v0) => v0.try_into(),
-            }
+            let SidechainDeclaration {
+                sidechain_declaration,
+            } = declaration;
+            sidechain_declaration
+                .ok_or_else(|| {
+                    super::Error::missing_field::<SidechainDeclaration>("sidechain_declaration")
+                })?
+                .try_into()
         }
     }
 
@@ -465,15 +497,6 @@ pub mod mainchain {
         }
     }
 
-    impl From<bitcoin::OutPoint> for OutPoint {
-        fn from(outpoint: bitcoin::OutPoint) -> Self {
-            Self {
-                txid: Some(ReverseHex::encode(&outpoint.txid)),
-                vout: outpoint.vout,
-            }
-        }
-    }
-
     impl From<bitcoin::TxOut> for Output {
         fn from(output: bitcoin::TxOut) -> Self {
             Self {
@@ -617,6 +640,18 @@ pub mod mainchain {
     impl From<subscribe_events_response::event::Event> for subscribe_events_response::Event {
         fn from(event: subscribe_events_response::event::Event) -> Self {
             Self { event: Some(event) }
+        }
+    }
+
+    impl From<crate::types::Sidechain> for get_sidechains_response::SidechainInfo {
+        fn from(sidechain: crate::types::Sidechain) -> Self {
+            Self {
+                sidechain_number: Some(sidechain.proposal.sidechain_number.0 as u32),
+                description: Some(ConsensusHex::encode(&sidechain.proposal.description.0)),
+                vote_count: Some(sidechain.status.vote_count as u32),
+                proposal_height: Some(sidechain.status.proposal_height),
+                activation_height: sidechain.status.activation_height,
+            }
         }
     }
 }

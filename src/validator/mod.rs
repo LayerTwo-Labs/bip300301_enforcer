@@ -1,17 +1,16 @@
 use std::{future::Future, path::Path, sync::Arc};
 
-use async_broadcast::{broadcast, InactiveReceiver, Receiver};
+use async_broadcast::{broadcast, InactiveReceiver};
 use bip300301::{jsonrpsee, MainClient};
-use bitcoin::{self, BlockHash};
+use bitcoin::{self, hashes::sha256d, BlockHash};
 use fallible_iterator::FallibleIterator;
-use futures::{FutureExt as _, TryFutureExt as _};
-use miette::IntoDiagnostic;
+use futures::{stream::FusedStream, FutureExt as _, StreamExt, TryFutureExt as _};
+use miette::{Diagnostic, IntoDiagnostic};
 use thiserror::Error;
 use tokio::task::{spawn, JoinHandle};
 
 use crate::types::{
-    BlockInfo, BmmCommitments, Ctip, Event, Hash256, HeaderInfo, Sidechain, SidechainNumber,
-    SidechainProposal, TwoWayPegData,
+    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber, TwoWayPegData,
 };
 
 mod dbs;
@@ -38,7 +37,7 @@ pub enum GetBlockInfoError {
     GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetHeaderInfoError {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
@@ -60,6 +59,12 @@ pub enum TryGetBmmCommitmentsError {
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum EventsStreamError {
+    #[error("Events stream closed due to overflow")]
+    Overflow,
 }
 
 #[derive(Clone)]
@@ -117,17 +122,23 @@ impl Validator {
         self.network
     }
 
-    pub fn subscribe_events(&self) -> Receiver<Event> {
-        self.events_rx.activate_cloned()
+    pub fn subscribe_events(&self) -> impl FusedStream<Item = Result<Event, EventsStreamError>> {
+        futures::stream::try_unfold(self.events_rx.activate_cloned(), |mut receiver| async {
+            match receiver.recv_direct().await {
+                Ok(event) => Ok(Some((event, receiver))),
+                Err(async_broadcast::RecvError::Closed) => Ok(None),
+                Err(async_broadcast::RecvError::Overflowed(_)) => Err(EventsStreamError::Overflow),
+            }
+        })
+        .fuse()
     }
 
-    pub fn get_sidechain_proposals(
-        &self,
-    ) -> Result<Vec<(Hash256, SidechainProposal)>, miette::Report> {
+    /// Get (possibly unactivated) sidechains
+    pub fn get_sidechains(&self) -> Result<Vec<(sha256d::Hash, Sidechain)>, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let res = self
             .dbs
-            .data_hash_to_sidechain_proposal
+            .description_hash_to_sidechain
             .iter(&rotxn)
             .into_diagnostic()?
             .collect()
@@ -135,15 +146,18 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_sidechains(&self) -> Result<Vec<Sidechain>, miette::Report> {
+    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let res = self
             .dbs
-            .sidechain_numbers
+            .active_sidechains
             .sidechain
             .iter(&rotxn)
             .into_diagnostic()?
-            .map(|(_sidechain_number, sidechain)| Ok(sidechain))
+            .map(|(_sidechain_number, sidechain)| {
+                assert!(sidechain.status.activation_height.is_some());
+                Ok(sidechain)
+            })
             .collect()
             .into_diagnostic()?;
         Ok(res)
@@ -156,7 +170,7 @@ impl Validator {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let treasury_utxo_count = self
             .dbs
-            .sidechain_numbers
+            .active_sidechains
             .treasury_utxo_count
             .try_get(&rotxn, &sidechain_number)
             .into_diagnostic()?;
@@ -175,7 +189,7 @@ impl Validator {
         let txn = self.dbs.read_txn().into_diagnostic()?;
         let ctip = self
             .dbs
-            .sidechain_numbers
+            .active_sidechains
             .ctip
             .try_get(&txn, &sidechain_number)
             .into_diagnostic()?;

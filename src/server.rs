@@ -1,11 +1,15 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
+use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha512, Hash as _, HashEngine},
     Amount, BlockHash, Transaction, TxOut,
 };
-use futures::{stream::BoxStream, StreamExt as _, TryStreamExt as _};
+use futures::{
+    stream::{BoxStream, FusedStream},
+    StreamExt as _,
+};
 use miette::IntoDiagnostic as _;
 use tonic::{Request, Response, Status};
 
@@ -18,25 +22,25 @@ use crate::{
             Ripemd160Request, Ripemd160Response,
         },
         mainchain::{
-            get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
-            get_sidechain_proposals_response::SidechainProposal,
+            create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
+            get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, server::ValidatorService,
             wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
-            BroadcastWithdrawalBundleResponse,
-            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
-            CreateSidechainProposalResponse, GenerateBlocksRequest, GenerateBlocksResponse,
-            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
-            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
-            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
-            SubscribeEventsRequest, SubscribeEventsResponse,
+            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
+            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
+            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
+            CreateSidechainProposalRequest, CreateSidechainProposalResponse, GenerateBlocksRequest,
+            GenerateBlocksResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
+            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
+            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
+            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
+            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, SubscribeEventsRequest,
+            SubscribeEventsResponse,
         },
     },
-    types::SidechainNumber,
+    types::{Event, SidechainNumber},
     validator::Validator,
 };
 
@@ -339,22 +343,30 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetSidechainProposalsRequest>,
     ) -> Result<tonic::Response<GetSidechainProposalsResponse>, tonic::Status> {
         let GetSidechainProposalsRequest {} = request.into_inner();
-        let sidechain_proposals = self
-            .get_sidechain_proposals()
-            .map_err(|err| err.into_status())?;
+        let mainchain_tip = self.get_mainchain_tip().map_err(|err| err.into_status())?;
+        let mainchain_tip_height = self
+            .get_header_info(&mainchain_tip)
+            .into_diagnostic()
+            .map_err(|err| err.into_status())?
+            .height;
+        let sidechain_proposals = self.get_sidechains().map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
-            .map(|(data_hash, proposal)| SidechainProposal {
-                sidechain_number: u8::from(proposal.sidechain_number) as u32,
-                description: Some(proposal.data.clone()),
-                declaration: (&proposal)
-                    .try_into()
-                    .ok()
-                    .map(|(_, declaration)| declaration.into()),
-                data_hash: Some(ConsensusHex::encode(&data_hash)),
-                vote_count: proposal.vote_count as u32,
-                proposal_height: proposal.proposal_height,
-                proposal_age: 0,
+            .map(|(description_sha256d_hash, sidechain)| {
+                let description = ConsensusHex::encode(&sidechain.proposal.description.0);
+                let declaration =
+                    crate::types::SidechainDeclaration::try_from(&sidechain.proposal.description)
+                        .map(crate::proto::mainchain::SidechainDeclaration::from)
+                        .ok();
+                SidechainProposal {
+                    sidechain_number: Some(sidechain.proposal.sidechain_number.0 as u32),
+                    description: Some(description),
+                    declaration,
+                    description_sha256d_hash: Some(ReverseHex::encode(&description_sha256d_hash)),
+                    vote_count: Some(sidechain.status.vote_count as u32),
+                    proposal_height: Some(sidechain.status.proposal_height),
+                    proposal_age: Some(mainchain_tip_height - sidechain.status.proposal_height),
+                }
             })
             .collect();
         let response = GetSidechainProposalsResponse {
@@ -368,26 +380,10 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetSidechainsRequest>,
     ) -> Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
         let GetSidechainsRequest {} = request.into_inner();
-        let sidechains = self.get_sidechains().map_err(|err| err.into_status())?;
-        let sidechains = sidechains
-            .into_iter()
-            .map(|sidechain| {
-                let crate::types::Sidechain {
-                    sidechain_number,
-                    data,
-                    vote_count,
-                    proposal_height,
-                    activation_height,
-                } = sidechain;
-                SidechainInfo {
-                    sidechain_number: u8::from(sidechain_number) as u32,
-                    data: Some(data),
-                    vote_count: vote_count as u32,
-                    proposal_height,
-                    activation_height,
-                }
-            })
-            .collect();
+        let sidechains = self
+            .get_active_sidechains()
+            .map_err(|err| err.into_status())?;
+        let sidechains = sidechains.into_iter().map(SidechainInfo::from).collect();
         let response = GetSidechainsResponse { sidechains };
         Ok(Response::new(response))
     }
@@ -460,19 +456,15 @@ impl ValidatorService for Validator {
             })?
         };
 
-        let stream = futures::stream::try_unfold(self.subscribe_events(), |mut receiver| async {
-            match receiver.recv_direct().await {
-                Ok(event) => Ok(Some((event, receiver))),
-                Err(async_broadcast::RecvError::Closed) => Ok(None),
-                Err(async_broadcast::RecvError::Overflowed(_)) => Err(
-                    tonic::Status::resource_exhausted("Events stream closed due to overflow"),
-                ),
-            }
-        })
-        .map_ok(move |event| SubscribeEventsResponse {
-            event: Some(event.into_proto(sidechain_id).into()),
-        })
-        .boxed();
+        let stream = self
+            .subscribe_events()
+            .map(move |res| match res.into_diagnostic() {
+                Ok(event) => Ok(SubscribeEventsResponse {
+                    event: Some(event.into_proto(sidechain_id).into()),
+                }),
+                Err(err) => Err(err.into_status()),
+            })
+            .boxed();
         Ok(tonic::Response::new(stream))
     }
 
@@ -525,12 +517,94 @@ impl ValidatorService for Validator {
     // }
 }
 
+/// Stream (non-)confirmations for a sidechain proposal
+fn stream_proposal_confirmations(
+    validator: &Validator,
+    sidechain_proposal: crate::types::SidechainProposal,
+) -> impl FusedStream<Item = Result<CreateSidechainProposalResponse, tonic::Status>> {
+    fn connect_block_event(
+        sidechain_proposal: &crate::types::SidechainProposal,
+        confirmations: &mut HashMap<BlockHash, (u32, Arc<bitcoin::OutPoint>)>,
+        header_info: crate::types::HeaderInfo,
+        block_info: crate::types::BlockInfo,
+    ) -> CreateSidechainProposalResponse {
+        let (confirms, outpoint) = {
+            if let Some(vout) =
+                block_info
+                    .sidechain_proposals
+                    .into_iter()
+                    .find_map(|(vout, proposal)| {
+                        if proposal == *sidechain_proposal {
+                            Some(vout)
+                        } else {
+                            None
+                        }
+                    })
+            {
+                let outpoint = bitcoin::OutPoint {
+                    txid: block_info.coinbase_txid,
+                    vout,
+                };
+                (1, Arc::new(outpoint))
+            } else if let Some((prev_confirms, outpoint)) =
+                confirmations.get(&header_info.prev_block_hash).cloned()
+            {
+                (prev_confirms, outpoint)
+            } else {
+                let notconfirmed = create_sidechain_proposal_response::NotConfirmed {
+                    block_hash: Some(ReverseHex::encode(&header_info.block_hash)),
+                    height: Some(header_info.height),
+                    prev_block_hash: Some(ReverseHex::encode(&header_info.prev_block_hash)),
+                };
+                let event = create_sidechain_proposal_response::Event::NotConfirmed(notconfirmed);
+                return CreateSidechainProposalResponse { event: Some(event) };
+            }
+        };
+        let confirmed = create_sidechain_proposal_response::Confirmed {
+            block_hash: Some(ReverseHex::encode(&header_info.block_hash)),
+            confirmations: Some(confirms),
+            height: Some(header_info.height),
+            outpoint: Some((*outpoint).into()),
+            prev_block_hash: Some(ReverseHex::encode(&header_info.prev_block_hash)),
+        };
+        confirmations.insert(header_info.block_hash, (confirms, outpoint));
+        let event = create_sidechain_proposal_response::Event::Confirmed(confirmed);
+        CreateSidechainProposalResponse { event: Some(event) }
+    }
+
+    let mut confirmations = HashMap::<BlockHash, (u32, Arc<bitcoin::OutPoint>)>::new();
+    validator.subscribe_events().filter_map(move |res| {
+        let resp = match res.into_diagnostic() {
+            Ok(event) => match event {
+                Event::ConnectBlock {
+                    header_info,
+                    block_info,
+                } => {
+                    let resp = connect_block_event(
+                        &sidechain_proposal,
+                        &mut confirmations,
+                        header_info,
+                        block_info,
+                    );
+                    Some(Ok(resp))
+                }
+                Event::DisconnectBlock { .. } => None,
+            },
+            Err(err) => Some(Err(err.into_status())),
+        };
+        futures::future::ready(resp)
+    })
+}
+
 #[tonic::async_trait]
 impl WalletService for Arc<crate::wallet::Wallet> {
+    type CreateSidechainProposalStream =
+        BoxStream<'static, Result<CreateSidechainProposalResponse, tonic::Status>>;
+
     async fn create_sidechain_proposal(
         &self,
         request: tonic::Request<CreateSidechainProposalRequest>,
-    ) -> Result<tonic::Response<CreateSidechainProposalResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<Self::CreateSidechainProposalStream>, tonic::Status> {
         let CreateSidechainProposalRequest {
             sidechain_id,
             declaration,
@@ -548,21 +622,25 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let declaration = declaration
             .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("declaration"))?
             .try_into()
-            .map_err(|err: proto::Error| err.into_status())?;
-        let (proposal, data) = messages::create_sidechain_proposal(sidechain_id, &declaration)
-            .into_diagnostic()
-            .map_err(|err| err.into_status())?;
-
-        tracing::info!("Created sidechain proposal TX output: {:?}", proposal);
-
+            .map_err(|err: crate::proto::Error| err.into_status())?;
+        let (proposal_txout, description) =
+            crate::messages::create_sidechain_proposal(sidechain_id, &declaration)
+                .into_diagnostic()
+                .map_err(|err| err.into_status())?;
+        tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
+        let sidechain_proposal = crate::types::SidechainProposal {
+            sidechain_number: sidechain_id,
+            description,
+        };
         let () = self
-            .propose_sidechain(sidechain_id, &data)
+            .propose_sidechain(&sidechain_proposal)
             .map_err(|err| err.into_status())?;
 
         tracing::info!("Persisted sidechain proposal into DB",);
 
-        let response = CreateSidechainProposalResponse { txid: None };
-        Ok(tonic::Response::new(response))
+        let stream = stream_proposal_confirmations(self.validator(), sidechain_proposal).boxed();
+
+        Ok(tonic::Response::new(stream))
     }
 
     async fn create_new_address(
@@ -648,7 +726,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
                 )
             })?;
 
-        match self.is_sidechain_active(sidechain_number).await {
+        match self.is_sidechain_active(sidechain_number) {
             Ok(false) => {
                 return Err(tonic::Status::failed_precondition(
                     "sidechain is not active",
@@ -694,7 +772,6 @@ impl WalletService for Arc<crate::wallet::Wallet> {
                 amount,
                 locktime,
             )
-            .await
             .map_err(|err| err.into_status())
             .inspect_err(|err| {
                 tracing::error!("Error creating BMM critical data transaction: {}", err);

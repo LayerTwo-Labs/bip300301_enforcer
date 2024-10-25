@@ -1,8 +1,11 @@
 use std::collections::HashSet;
 
-use crate::messages::{
-    m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain, sha256d,
-    CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
+use crate::{
+    messages::{
+        m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain,
+        CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
+    },
+    types::SidechainProposalStatus,
 };
 use async_broadcast::{Sender, TrySendError};
 use bip300301::{
@@ -10,8 +13,10 @@ use bip300301::{
     jsonrpsee, MainClient,
 };
 use bitcoin::{
-    self, hashes::Hash as _, opcodes::all::OP_RETURN, Amount, Block, BlockHash, OutPoint,
-    Transaction, TxOut, Work,
+    self,
+    hashes::{sha256d, Hash as _},
+    opcodes::all::OP_RETURN,
+    Amount, Block, BlockHash, OutPoint, Transaction, TxOut, Work,
 };
 use either::Either;
 use fallible_iterator::FallibleIterator;
@@ -22,8 +27,8 @@ use thiserror::Error;
 
 use crate::{
     types::{
-        BlockInfo, BmmCommitments, Ctip, Deposit, Event, Hash256, HeaderInfo, PendingM6id,
-        Sidechain, SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
+        BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, PendingM6id, Sidechain,
+        SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
         WithdrawalBundleEventKind,
     },
     zmq::SequenceMessage,
@@ -194,43 +199,45 @@ enum SyncError {
     WriteTxn(#[from] WriteTxnError),
 }
 
+/// Returns `Some` if the sidechain proposal does not already exist
 // See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m1-1
 fn handle_m1_propose_sidechain(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
+    proposal: SidechainProposal,
     proposal_height: u32,
-    sidechain_number: SidechainNumber,
-    data: Vec<u8>,
-) -> Result<(), HandleM1ProposeSidechainError> {
-    let data_hash: Hash256 = sha256d(&data);
+) -> Result<Option<Sidechain>, HandleM1ProposeSidechainError> {
+    let description_hash: sha256d::Hash = proposal.description.sha256d_hash();
+    // FIXME: check that the proposal was made in an ancestor block
     if dbs
-        .data_hash_to_sidechain_proposal
-        .try_get(rwtxn, &data_hash)?
-        .is_some()
+        .description_hash_to_sidechain
+        .contains_key(rwtxn, &description_hash)?
     {
-        // If a proposal with the same data_hash already exists,
+        // If a proposal with the same description_hash already exists,
         // we ignore this M1.
         //
-        // Having the same data_hash means that data is the same as well.
+        // Having the same description_hash means that data is the same as well.
         //
         // Without this rule it would be possible for the miners to reset the vote count for
         // any sidechain proposal at any point.
         tracing::debug!("sidechain proposal already exists");
-        return Ok(());
+        return Ok(None);
     }
-    let sidechain_proposal = SidechainProposal {
-        sidechain_number,
-        data,
-        vote_count: 0,
-        proposal_height,
+    let sidechain = Sidechain {
+        proposal,
+        status: SidechainProposalStatus {
+            vote_count: 0,
+            proposal_height,
+            activation_height: None,
+        },
     };
 
     let () = dbs
-        .data_hash_to_sidechain_proposal
-        .put(rwtxn, &data_hash, &sidechain_proposal)?;
+        .description_hash_to_sidechain
+        .put(rwtxn, &description_hash, &sidechain)?;
 
-    tracing::info!("persisted new sidechain proposal: {sidechain_proposal:?}");
-    Ok(())
+    tracing::info!("persisted new sidechain proposal: {}", sidechain.proposal);
+    Ok(Some(sidechain))
 }
 
 // See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-1
@@ -239,57 +246,51 @@ fn handle_m2_ack_sidechain(
     dbs: &Dbs,
     height: u32,
     sidechain_number: SidechainNumber,
-    data_hash: [u8; 32],
+    description_hash: &sha256d::Hash,
 ) -> Result<(), HandleM2AckSidechainError> {
-    let sidechain_proposal = dbs
-        .data_hash_to_sidechain_proposal
-        .try_get(rwtxn, &data_hash)?;
-    let Some(mut sidechain_proposal) = sidechain_proposal else {
+    let sidechain = dbs
+        .description_hash_to_sidechain
+        .try_get(rwtxn, description_hash)?;
+    let Some(mut sidechain) = sidechain else {
         return Ok(());
     };
-    if sidechain_proposal.sidechain_number != sidechain_number {
+    if sidechain.proposal.sidechain_number != sidechain_number {
         return Ok(());
     }
-    sidechain_proposal.vote_count += 1;
-    dbs.data_hash_to_sidechain_proposal
-        .put(rwtxn, &data_hash, &sidechain_proposal)?;
+    sidechain.status.vote_count += 1;
+    dbs.description_hash_to_sidechain
+        .put(rwtxn, description_hash, &sidechain)?;
 
-    let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
+    let sidechain_proposal_age = height - sidechain.status.proposal_height;
 
     let sidechain_slot_is_used = dbs
-        .sidechain_numbers
+        .active_sidechains
         .sidechain
         .try_get(rwtxn, &sidechain_number)?
         .is_some();
 
     let new_sidechain_activated = {
         sidechain_slot_is_used
-            && sidechain_proposal.vote_count > USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
+            && sidechain.status.vote_count > USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
             && sidechain_proposal_age <= USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
     } || {
         !sidechain_slot_is_used
-            && sidechain_proposal.vote_count > UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
+            && sidechain.status.vote_count > UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD
             && sidechain_proposal_age <= UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32
     };
 
     if new_sidechain_activated {
         tracing::info!(
             "sidechain {} in slot {} was activated",
-            String::from_utf8_lossy(&sidechain_proposal.data),
+            String::from_utf8_lossy(&sidechain.proposal.description.0),
             sidechain_number.0
         );
-        let sidechain = Sidechain {
-            sidechain_number,
-            data: sidechain_proposal.data,
-            proposal_height: sidechain_proposal.proposal_height,
-            activation_height: height,
-            vote_count: sidechain_proposal.vote_count,
-        };
-        dbs.sidechain_numbers
+        sidechain.status.activation_height = Some(height);
+        dbs.active_sidechains
             .sidechain
             .put(rwtxn, &sidechain_number, &sidechain)?;
-        dbs.data_hash_to_sidechain_proposal
-            .delete(rwtxn, &data_hash)?;
+        dbs.description_hash_to_sidechain
+            .delete(rwtxn, description_hash)?;
     }
     Ok(())
 }
@@ -300,16 +301,16 @@ fn handle_failed_sidechain_proposals(
     height: u32,
 ) -> Result<(), HandleFailedSidechainProposalsError> {
     let failed_proposals: Vec<_> = dbs
-        .data_hash_to_sidechain_proposal
+        .description_hash_to_sidechain
         .iter(rwtxn)
         .map_err(db_error::Iter::from)?
         .map_err(|err| HandleFailedSidechainProposalsError::DbIter(err.into()))
-        .filter_map(|(data_hash, sidechain_proposal)| {
-            let sidechain_proposal_age = height - sidechain_proposal.proposal_height;
+        .filter_map(|(description_hash, sidechain)| {
+            let sidechain_proposal_age = height - sidechain.status.proposal_height;
             let sidechain_slot_is_used = dbs
-                .sidechain_numbers
+                .active_sidechains
                 .sidechain
-                .try_get(rwtxn, &sidechain_proposal.sidechain_number)?
+                .try_get(rwtxn, &sidechain.proposal.sidechain_number)?
                 .is_some();
             // FIXME: Do we need to check that the vote_count is below the threshold, or is it
             // enough to check that the max age was exceeded?
@@ -318,15 +319,15 @@ fn handle_failed_sidechain_proposals(
                 || !sidechain_slot_is_used
                     && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
             if failed {
-                Ok(Some(data_hash))
+                Ok(Some(description_hash))
             } else {
                 Ok(None)
             }
         })
         .collect()?;
-    for failed_proposal_data_hash in &failed_proposals {
-        dbs.data_hash_to_sidechain_proposal
-            .delete(rwtxn, failed_proposal_data_hash)?;
+    for failed_description_hash in &failed_proposals {
+        dbs.description_hash_to_sidechain
+            .delete(rwtxn, failed_description_hash)?;
     }
     Ok(())
 }
@@ -337,16 +338,15 @@ fn handle_m3_propose_bundle(
     sidechain_number: SidechainNumber,
     m6id: [u8; 32],
 ) -> Result<(), HandleM3ProposeBundleError> {
-    if dbs
-        .sidechain_numbers
+    if !dbs
+        .active_sidechains
         .sidechain
-        .try_get(rwtxn, &sidechain_number)?
-        .is_none()
+        .contains_key(rwtxn, &sidechain_number)?
     {
         return Err(HandleM3ProposeBundleError::InactiveSidechain { sidechain_number });
     }
     let pending_m6ids = dbs
-        .sidechain_numbers
+        .active_sidechains
         .pending_m6ids
         .try_get(rwtxn, &sidechain_number)?;
     let mut pending_m6ids = pending_m6ids.unwrap_or_default();
@@ -356,7 +356,7 @@ fn handle_m3_propose_bundle(
     };
     pending_m6ids.push(pending_m6id);
     let () = dbs
-        .sidechain_numbers
+        .active_sidechains
         .pending_m6ids
         .put(rwtxn, &sidechain_number, &pending_m6ids)?;
     Ok(())
@@ -374,7 +374,7 @@ fn handle_m4_votes(
             continue;
         }
         let pending_m6ids = dbs
-            .sidechain_numbers
+            .active_sidechains
             .pending_m6ids
             .try_get(rwtxn, &sidechain_number)?;
         let Some(mut pending_m6ids) = pending_m6ids else {
@@ -390,7 +390,7 @@ fn handle_m4_votes(
             pending_m6id.vote_count += 1;
         }
         let () =
-            dbs.sidechain_numbers
+            dbs.active_sidechains
                 .pending_m6ids
                 .put(rwtxn, &sidechain_number, &pending_m6ids)?;
     }
@@ -427,7 +427,7 @@ fn handle_failed_m6ids(
     let mut failed_m6ids = LinkedHashSet::new();
     let mut updated_slots = LinkedHashMap::new();
     let () = dbs
-        .sidechain_numbers
+        .active_sidechains
         .pending_m6ids
         .iter(rwtxn)
         .map_err(db_error::Iter::from)?
@@ -449,7 +449,7 @@ fn handle_failed_m6ids(
         })?;
     for (sidechain_number, pending_m6ids) in updated_slots {
         let () =
-            dbs.sidechain_numbers
+            dbs.active_sidechains
                 .pending_m6ids
                 .put(rwtxn, &sidechain_number, &pending_m6ids)?;
     }
@@ -494,7 +494,7 @@ fn handle_m5_m6(
     };
     let old_total_value = {
         if let Some(old_ctip) = dbs
-            .sidechain_numbers
+            .active_sidechains
             .ctip
             .try_get(rwtxn, &sidechain_number)?
         {
@@ -524,7 +524,7 @@ fn handle_m5_m6(
         let mut m6_valid = false;
         let m6id = m6_to_id(transaction, old_total_value.to_sat());
         if let Some(pending_m6ids) = dbs
-            .sidechain_numbers
+            .active_sidechains
             .pending_m6ids
             .try_get(rwtxn, &sidechain_number)?
         {
@@ -540,7 +540,7 @@ fn handle_m5_m6(
                     .into_iter()
                     .filter(|pending_m6id| pending_m6id.m6id != m6id)
                     .collect();
-                dbs.sidechain_numbers.pending_m6ids.put(
+                dbs.active_sidechains.pending_m6ids.put(
                     rwtxn,
                     &sidechain_number,
                     &pending_m6ids,
@@ -554,20 +554,20 @@ fn handle_m5_m6(
         }
     }
     let mut treasury_utxo_count = dbs
-        .sidechain_numbers
+        .active_sidechains
         .treasury_utxo_count
         .try_get(rwtxn, &sidechain_number)?
         .unwrap_or(0);
     // Sequence numbers begin at 0, so the total number of treasury utxos in the database
     // gives us the *next* sequence number.
     let sequence_number = treasury_utxo_count;
-    dbs.sidechain_number_sequence_number_to_treasury_utxo.put(
+    dbs.active_sidechains.slot_sequence_to_treasury_utxo.put(
         rwtxn,
         &(sidechain_number, sequence_number),
         &treasury_utxo,
     )?;
     treasury_utxo_count += 1;
-    dbs.sidechain_numbers.treasury_utxo_count.put(
+    dbs.active_sidechains.treasury_utxo_count.put(
         rwtxn,
         &sidechain_number,
         &treasury_utxo_count,
@@ -576,7 +576,7 @@ fn handle_m5_m6(
         outpoint: new_ctip,
         value: new_total_value,
     };
-    dbs.sidechain_numbers
+    dbs.active_sidechains
         .ctip
         .put(rwtxn, &sidechain_number, &new_ctip)?;
     match address {
@@ -636,8 +636,9 @@ fn connect_block(
     let coinbase = &block.txdata[0];
     let mut bmmed_sidechain_slots = HashSet::new();
     let mut accepted_bmm_requests = BmmCommitments::new();
+    let mut sidechain_proposals = Vec::new();
     let mut withdrawal_bundle_events = Vec::new();
-    for output in &coinbase.output {
+    for (vout, output) in coinbase.output.iter().enumerate() {
         let message = match parse_coinbase_script(&output.script_pubkey) {
             Ok((rest, message)) => {
                 if !rest.is_empty() {
@@ -663,23 +664,32 @@ fn connect_block(
                     "Propose sidechain number {sidechain_number} with data \"{}\"",
                     String::from_utf8_lossy(&data)
                 );
-                handle_m1_propose_sidechain(
+                let sidechain_proposal = SidechainProposal {
+                    sidechain_number: sidechain_number.into(),
+                    description: data.into(),
+                };
+                if let Some(sidechain) =
+                    handle_m1_propose_sidechain(rwtxn, dbs, sidechain_proposal, height)?
+                {
+                    // sidechain proposal is new
+                    sidechain_proposals.push((vout as u32, sidechain.proposal));
+                }
+            }
+            CoinbaseMessage::M2AckSidechain {
+                sidechain_number,
+                data_hash: description_hash,
+            } => {
+                tracing::info!(
+                    "Ack sidechain number {sidechain_number} with proposal description hash {}",
+                    hex::encode(description_hash)
+                );
+                handle_m2_ack_sidechain(
                     rwtxn,
                     dbs,
                     height,
                     sidechain_number.into(),
-                    data.clone(),
+                    &sha256d::Hash::from_byte_array(description_hash),
                 )?;
-            }
-            CoinbaseMessage::M2AckSidechain {
-                sidechain_number,
-                data_hash,
-            } => {
-                tracing::info!(
-                    "Ack sidechain number {sidechain_number} with hash {}",
-                    hex::encode(data_hash)
-                );
-                handle_m2_ack_sidechain(rwtxn, dbs, height, sidechain_number.into(), data_hash)?;
             }
             CoinbaseMessage::M3ProposeBundle {
                 sidechain_number,
@@ -750,9 +760,11 @@ fn connect_block(
         }
     }
     let block_info = BlockInfo {
-        deposits,
-        withdrawal_bundle_events,
         bmm_commitments: accepted_bmm_requests.into_iter().collect(),
+        coinbase_txid: coinbase.compute_txid(),
+        deposits,
+        sidechain_proposals,
+        withdrawal_bundle_events,
     };
     let () = dbs
         .block_hashes
