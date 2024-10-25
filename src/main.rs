@@ -3,7 +3,6 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
 use miette::{miette, IntoDiagnostic, Result};
-use proto::crypto::crypto_service_server::CryptoServiceServer;
 use tokio::{spawn, task::JoinHandle, time::interval};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
@@ -20,11 +19,11 @@ mod validator;
 mod wallet;
 mod zmq;
 
-use proto::mainchain::{
-    wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer,
+use proto::{
+    crypto::crypto_service_server::CryptoServiceServer,
+    mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
 };
-use server::Crypto;
-use server::Validator;
+use validator::Validator;
 use wallet::Wallet;
 
 /// Saturating predecessor of a log level
@@ -87,58 +86,6 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
         .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
 }
 
-async fn run_server(
-    validator: Validator,
-    wallet: Option<Arc<Wallet>>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let validator_service = ValidatorServiceServer::new(validator);
-
-    let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
-        .with_service_name(ValidatorServiceServer::<Validator>::NAME)
-        .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
-
-    tracing::info!("Listening for gRPC on {addr} with reflection");
-
-    let tracer = ServiceBuilder::new()
-        .layer(
-            TraceLayer::new_for_grpc()
-                .on_request(())
-                .on_eos(())
-                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
-        )
-        .into_inner();
-
-    let crypto_service = CryptoServiceServer::new(Crypto);
-
-    let mut builder = Server::builder()
-        .layer(tracer)
-        .add_service(validator_service)
-        .add_service(crypto_service);
-
-    if let Some(wallet) = wallet {
-        tracing::info!("gRPC: enabling wallet service");
-
-        let wallet_service = WalletServiceServer::new(Arc::clone(&wallet));
-        builder = builder.add_service(wallet_service);
-
-        reflection_service_builder =
-            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
-
-        let _sync_wallet: JoinHandle<()> = {
-            let wallet = Arc::clone(&wallet);
-            spawn(wallet_task(wallet).unwrap_or_else(|err| tracing::error!("{err:#}")))
-        };
-    }
-
-    builder
-        .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
-        .serve(addr)
-        .map_err(|err| miette!("error in validator server: {err:#}"))
-        .await
-}
-
 // TODO: return `Result<!, _>` once `never_type` is stabilized
 async fn wallet_task(wallet: Arc<wallet::Wallet>) -> Result<(), miette::Report> {
     const SYNC_INTERVAL: Duration = Duration::from_secs(15);
@@ -150,6 +97,57 @@ async fn wallet_task(wallet: Arc<wallet::Wallet>) -> Result<(), miette::Report> 
         }
     }
     Ok(())
+}
+
+async fn run_server(
+    validator: Validator,
+    wallet: Option<Arc<Wallet>>,
+    addr: SocketAddr,
+) -> Result<()> {
+    let tracer = ServiceBuilder::new()
+        .layer(
+            TraceLayer::new_for_grpc()
+                .on_request(())
+                .on_eos(())
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
+        )
+        .into_inner();
+
+    let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
+    let validator_service = ValidatorServiceServer::new(validator);
+
+    let mut builder = Server::builder()
+        .layer(tracer)
+        .add_service(crypto_service)
+        .add_service(validator_service);
+
+    let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
+        .with_service_name(CryptoServiceServer::<server::CryptoServiceServer>::NAME)
+        .with_service_name(ValidatorServiceServer::<Validator>::NAME)
+        .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
+
+    if let Some(wallet) = wallet {
+        tracing::info!("gRPC: enabling wallet service");
+
+        let wallet_service = WalletServiceServer::new(Arc::clone(&wallet));
+        builder = builder.add_service(wallet_service);
+        reflection_service_builder =
+            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
+
+        let _sync_wallet: JoinHandle<()> = {
+            let wallet = Arc::clone(&wallet);
+            spawn(wallet_task(wallet).unwrap_or_else(|err| tracing::error!("{err:#}")))
+        };
+    }
+
+    tracing::info!("Listening for gRPC on {addr} with reflection");
+
+    builder
+        .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
+        .serve(addr)
+        .map_err(|err| miette!("error in validator server: {err:#}"))
+        .await
 }
 
 #[tokio::main]
