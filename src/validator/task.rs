@@ -474,7 +474,6 @@ fn handle_m5_m6(
         if let Ok((_input, sidechain_number)) =
             parse_op_drivechain(&output.script_pubkey.to_bytes())
         {
-            let sidechain_number = sidechain_number.into();
             let new_ctip = OutPoint { txid, vout: 0 };
             let new_total_value = output.value;
 
@@ -665,7 +664,7 @@ fn connect_block(
                     String::from_utf8_lossy(&data)
                 );
                 let sidechain_proposal = SidechainProposal {
-                    sidechain_number: sidechain_number.into(),
+                    sidechain_number,
                     description: data.into(),
                 };
                 if let Some(sidechain) =
@@ -687,7 +686,7 @@ fn connect_block(
                     rwtxn,
                     dbs,
                     height,
-                    sidechain_number.into(),
+                    sidechain_number,
                     &sha256d::Hash::from_byte_array(description_hash),
                 )?;
             }
@@ -695,7 +694,6 @@ fn connect_block(
                 sidechain_number,
                 bundle_txid,
             } => {
-                let sidechain_number = sidechain_number.into();
                 let () = handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid)?;
                 let event = WithdrawalBundleEvent {
                     sidechain_id: sidechain_number,
@@ -711,7 +709,6 @@ fn connect_block(
                 sidechain_number,
                 sidechain_block_hash,
             } => {
-                let sidechain_number = sidechain_number.into();
                 if bmmed_sidechain_slots.contains(&sidechain_number) {
                     return Err(ConnectBlockError::MultipleBmmBlocks { sidechain_number });
                 }

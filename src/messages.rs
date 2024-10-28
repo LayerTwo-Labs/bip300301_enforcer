@@ -46,7 +46,7 @@ impl CoinbaseBuilder {
 
     pub fn propose_sidechain(mut self, proposal: SidechainProposal) -> Self {
         let message = CoinbaseMessage::M1ProposeSidechain {
-            sidechain_number: proposal.sidechain_number.0,
+            sidechain_number: proposal.sidechain_number,
             data: proposal.description.0,
         };
         self.messages.push(message);
@@ -59,14 +59,18 @@ impl CoinbaseBuilder {
         description_hash: sha256d::Hash,
     ) -> Self {
         let message = CoinbaseMessage::M2AckSidechain {
-            sidechain_number: sidechain_number.0,
+            sidechain_number,
             data_hash: description_hash.to_byte_array(),
         };
         self.messages.push(message);
         self
     }
 
-    pub fn propose_bundle(mut self, sidechain_number: u8, bundle_hash: &[u8; 32]) -> Self {
+    pub fn propose_bundle(
+        mut self,
+        sidechain_number: SidechainNumber,
+        bundle_hash: &[u8; 32],
+    ) -> Self {
         let message = CoinbaseMessage::M3ProposeBundle {
             sidechain_number,
             bundle_txid: *bundle_hash,
@@ -81,7 +85,7 @@ impl CoinbaseBuilder {
         self
     }
 
-    pub fn bmm_accept(mut self, sidechain_number: u8, bmm_hash: &[u8; 32]) -> Self {
+    pub fn bmm_accept(mut self, sidechain_number: SidechainNumber, bmm_hash: &[u8; 32]) -> Self {
         let message = CoinbaseMessage::M7BmmAccept {
             sidechain_number,
             sidechain_block_hash: *bmm_hash,
@@ -94,20 +98,20 @@ impl CoinbaseBuilder {
 #[derive(Debug)]
 pub enum CoinbaseMessage {
     M1ProposeSidechain {
-        sidechain_number: u8,
+        sidechain_number: SidechainNumber,
         data: Vec<u8>,
     },
     M2AckSidechain {
-        sidechain_number: u8,
+        sidechain_number: SidechainNumber,
         data_hash: [u8; 32],
     },
     M3ProposeBundle {
-        sidechain_number: u8,
+        sidechain_number: SidechainNumber,
         bundle_txid: [u8; 32],
     },
     M4AckBundles(M4AckBundles),
     M7BmmAccept {
-        sidechain_number: u8,
+        sidechain_number: SidechainNumber,
         sidechain_block_hash: [u8; 32],
     },
 }
@@ -216,12 +220,12 @@ pub fn parse_coinbase_script(script: &Script) -> IResult<&[u8], CoinbaseMessage>
     fail(input)
 }
 
-pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], u8> {
+pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], SidechainNumber> {
     let (input, _op_drivechain_tag) = tag(&[OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8()])(input)?;
     let (input, sidechain_number) = take(1usize)(input)?;
     let sidechain_number = sidechain_number[0];
     tag(&[OP_TRUE.to_u8()])(input)?;
-    Ok((input, sidechain_number))
+    Ok((input, SidechainNumber::from(sidechain_number)))
 }
 
 fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
@@ -230,7 +234,7 @@ fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
     let (input, data) = rest(input)?;
     let data = data.to_vec();
     let message = CoinbaseMessage::M1ProposeSidechain {
-        sidechain_number,
+        sidechain_number: SidechainNumber::from(sidechain_number),
         data,
     };
     Ok((input, message))
@@ -242,7 +246,7 @@ fn parse_m2_ack_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
     let (input, data_hash) = take(32usize)(input)?;
     let data_hash: [u8; 32] = data_hash.try_into().unwrap();
     let message = CoinbaseMessage::M2AckSidechain {
-        sidechain_number,
+        sidechain_number: SidechainNumber::from(sidechain_number),
         data_hash,
     };
     Ok((input, message))
@@ -254,7 +258,7 @@ fn parse_m3_propose_bundle(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
     let (input, bundle_txid) = take(32usize)(input)?;
     let bundle_txid: [u8; 32] = bundle_txid.try_into().unwrap();
     let message = CoinbaseMessage::M3ProposeBundle {
-        sidechain_number,
+        sidechain_number: SidechainNumber::from(sidechain_number),
         bundle_txid,
     };
     Ok((input, message))
@@ -296,7 +300,7 @@ fn parse_m7_bmm_accept(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
     // line.
     let sidechain_block_hash = sidechain_block_hash.try_into().unwrap();
     let message = CoinbaseMessage::M7BmmAccept {
-        sidechain_number,
+        sidechain_number: SidechainNumber::from(sidechain_number),
         sidechain_block_hash,
     };
     Ok((input, message))
@@ -338,7 +342,12 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 sidechain_number,
                 data,
             } => {
-                let message = [M1_PROPOSE_SIDECHAIN_TAG, &[sidechain_number], &data].concat();
+                let message = [
+                    M1_PROPOSE_SIDECHAIN_TAG,
+                    &[u8::from(sidechain_number)],
+                    &data,
+                ]
+                .concat();
 
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
@@ -347,7 +356,12 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 sidechain_number,
                 data_hash,
             } => {
-                let message = [M2_ACK_SIDECHAIN_TAG, &[sidechain_number], &data_hash].concat();
+                let message = [
+                    M2_ACK_SIDECHAIN_TAG,
+                    &[u8::from(sidechain_number)],
+                    &data_hash,
+                ]
+                .concat();
 
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
@@ -356,7 +370,12 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 sidechain_number,
                 bundle_txid,
             } => {
-                let message = [M3_PROPOSE_BUNDLE_TAG, &[sidechain_number], &bundle_txid].concat();
+                let message = [
+                    M3_PROPOSE_BUNDLE_TAG,
+                    &[u8::from(sidechain_number)],
+                    &bundle_txid,
+                ]
+                .concat();
 
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
@@ -381,7 +400,7 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
             } => {
                 let message = [
                     M7_BMM_ACCEPT_TAG,
-                    &[sidechain_number],
+                    &[u8::from(sidechain_number)],
                     &sidechain_block_hash,
                 ]
                 .concat();
@@ -542,10 +561,10 @@ mod tests {
             panic!("Failed to parse sidechain proposal");
         };
 
-        assert_eq!(sidechain_number, 13);
+        assert_eq!(sidechain_number, 13.into());
 
         let proposal = SidechainProposal {
-            sidechain_number: sidechain_number.into(),
+            sidechain_number: sidechain_number,
             description: data.into(),
         };
 
