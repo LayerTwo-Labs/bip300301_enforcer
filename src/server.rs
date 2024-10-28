@@ -627,14 +627,23 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             crate::messages::create_sidechain_proposal(sidechain_id, &declaration)
                 .into_diagnostic()
                 .map_err(|err| err.into_status())?;
+
         tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
         let sidechain_proposal = crate::types::SidechainProposal {
             sidechain_number: sidechain_id,
             description,
         };
-        let () = self
-            .propose_sidechain(&sidechain_proposal)
-            .map_err(|err| err.into_status())?;
+        let () = self.propose_sidechain(&sidechain_proposal).map_err(|err| {
+            if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
+                tracing::error!("SQLite error: {:?}", sqlite_err);
+
+                if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
+                    return tonic::Status::already_exists("Sidechain proposal already exists");
+                }
+            }
+
+            tonic::Status::internal(err.to_string())
+        })?;
 
         tracing::info!("Persisted sidechain proposal into DB",);
 
