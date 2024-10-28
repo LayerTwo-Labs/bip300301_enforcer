@@ -519,15 +519,12 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn propose_sidechain(&self, proposal: &SidechainProposal) -> Result<()> {
+    pub fn propose_sidechain(&self, proposal: &SidechainProposal) -> Result<(), rusqlite::Error> {
         let sidechain_number: u8 = proposal.sidechain_number.into();
-        self.db_connection
-            .lock()
-            .execute(
-                "INSERT INTO sidechain_proposals (number, data) VALUES (?1, ?2)",
-                (sidechain_number, &proposal.description.0),
-            )
-            .into_diagnostic()?;
+        self.db_connection.lock().execute(
+            "INSERT INTO sidechain_proposals (number, data) VALUES (?1, ?2)",
+            (sidechain_number, &proposal.description.0),
+        )?;
         Ok(())
     }
 
