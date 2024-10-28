@@ -14,7 +14,9 @@ use thiserror::Error;
 
 pub type Hash256 = [u8; 32];
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct SidechainNumber(pub u8);
@@ -235,7 +237,7 @@ impl TryFrom<&SidechainDescription> for SidechainDeclaration {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SidechainAck {
     pub sidechain_number: SidechainNumber,
     pub description_hash: sha256d::Hash,

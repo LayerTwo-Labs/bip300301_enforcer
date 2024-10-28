@@ -318,7 +318,7 @@ pub mod mainchain {
                 sidechain_number,
                 data,
             } = propose_sidechain;
-            let sidechain_number: u8 = {
+            let sidechain_number: SidechainNumber = {
                 let sidechain_number: u32 = sidechain_number.ok_or_else(|| {
                     Self::Error::missing_field::<ProposeSidechain>("sidechain_number")
                 })?;
@@ -350,7 +350,7 @@ pub mod mainchain {
                 sidechain_number,
                 data_hash,
             } = ack_sidechain;
-            let sidechain_number: u8 = {
+            let sidechain_number: SidechainNumber = {
                 let sidechain_number: u32 = sidechain_number.ok_or_else(|| {
                     Self::Error::missing_field::<AckSidechain>("sidechain_number")
                 })?;
@@ -382,7 +382,7 @@ pub mod mainchain {
                 sidechain_number,
                 bundle_txid,
             } = propose_bundle;
-            let sidechain_number: u8 = {
+            let sidechain_number: SidechainNumber = {
                 let sidechain_number: u32 = sidechain_number.ok_or_else(|| {
                     Self::Error::missing_field::<ProposeBundle>("sidechain_number")
                 })?;

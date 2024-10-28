@@ -410,7 +410,7 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    pub fn get_bmm_requests(&self) -> Result<Vec<(u8, [u8; 32])>> {
+    pub fn get_bmm_requests(&self) -> Result<Vec<(SidechainNumber, [u8; 32])>> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, _> {
             let mut statement = connection
@@ -421,7 +421,7 @@ impl Wallet {
                 .query_map([], |row| {
                     let sidechain_number: u8 = row.get(0)?;
                     let data_hash: [u8; 32] = row.get(1)?;
-                    Ok((sidechain_number, data_hash))
+                    Ok((SidechainNumber::from(sidechain_number), data_hash))
                 })
                 .into_diagnostic()?
                 .collect::<Result<_, _>>()
