@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(sidechain_number, 13.into());
 
         let proposal = SidechainProposal {
-            sidechain_number: sidechain_number,
+            sidechain_number,
             description: data.into(),
         };
 

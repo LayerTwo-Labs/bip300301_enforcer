@@ -210,6 +210,9 @@ impl Wallet {
             .lock()
             .get_address(AddressIndex::New)
             .into_diagnostic()?;
+
+        tracing::debug!("Generate block: fetched address: {}", addr.address);
+
         let script_pubkey = addr.script_pubkey();
 
         let BlockchainInfo {
@@ -225,9 +228,7 @@ impl Wallet {
                 error: err,
             })?;
 
-        tracing::debug!("Block height: {block_height}");
-        tracing::debug!("Best block: {best_blockhash}");
-        let prev_blockhash = best_blockhash;
+        tracing::debug!("Generate block: found best block: `{best_blockhash}` @ {block_height}",);
 
         let start = SystemTime::now();
         let time = start
@@ -239,6 +240,7 @@ impl Wallet {
             .push_int((block_height + 1) as i64)
             .push_opcode(OP_0)
             .into_script();
+
         let value = get_block_value(block_height + 1, Amount::ZERO, Network::Regtest);
 
         let output = if value > Amount::ZERO {
@@ -278,7 +280,7 @@ impl Wallet {
         let bits = genesis_block.header.bits;
         let header = bitcoin::block::Header {
             version: BlockVersion::NO_SOFT_FORK_SIGNALLING,
-            prev_blockhash,
+            prev_blockhash: best_blockhash,
             // merkle root is computed after the witness commitment is added to coinbase
             merkle_root: TxMerkleNode::all_zeros(),
             time,
@@ -309,42 +311,122 @@ impl Wallet {
         Ok(block)
     }
 
-    pub async fn generate(&self, count: u32) -> Result<()> {
+    fn validate_sidechain_ack(
+        &self,
+        ack: &SidechainAck,
+        pending_proposals: &HashMap<SidechainNumber, SidechainProposal>,
+    ) -> bool {
+        let Some(sidechain_proposal) = pending_proposals.get(&ack.sidechain_number) else {
+            tracing::error!(
+                "Handle sidechain ACK: could not find proposal: {}",
+                ack.sidechain_number
+            );
+
+            return false;
+        };
+
+        let description_hash = sidechain_proposal.description.sha256d_hash();
+        if description_hash != ack.description_hash {
+            tracing::error!(
+                "Handle sidechain ACK: invalid actual hash vs. ACK hash: {} != {}",
+                description_hash,
+                ack.description_hash,
+            );
+
+            return false;
+        }
+
+        true
+    }
+
+    pub async fn generate(&self, count: u32, ack_all_proposals: bool) -> Result<()> {
+        tracing::info!("Generate: creating {} blocks", count);
+
         for _ in 0..count {
             let sidechain_proposals = self.get_sidechain_proposals()?;
             let mut coinbase_builder = CoinbaseBuilder::new();
             for sidechain_proposal in sidechain_proposals {
                 coinbase_builder = coinbase_builder.propose_sidechain(sidechain_proposal);
             }
-            let sidechain_acks = self.get_sidechain_acks()?;
+
+            let mut sidechain_acks = self.get_sidechain_acks()?;
             let pending_sidechain_proposals = self.get_pending_sidechain_proposals().await?;
-            for sidechain_ack in sidechain_acks {
-                if let Some(sidechain_proposal) =
-                    pending_sidechain_proposals.get(&sidechain_ack.sidechain_number)
-                {
-                    let description_hash = sidechain_proposal.description.sha256d_hash();
-                    if description_hash == sidechain_ack.description_hash {
-                        coinbase_builder = coinbase_builder.ack_sidechain(
-                            sidechain_ack.sidechain_number,
-                            sidechain_ack.description_hash,
+
+            if ack_all_proposals {
+                tracing::info!(
+                    "Handle sidechain ACK: acking all sidechains irregardless of what DB says"
+                );
+
+                let acks = sidechain_acks.clone();
+                for (sidechain_number, sidechain_proposal) in &pending_sidechain_proposals {
+                    let sidechain_number = *sidechain_number;
+
+                    if !acks
+                        .iter()
+                        .any(|ack| ack.sidechain_number == sidechain_number)
+                    {
+                        tracing::debug!(
+                            "Handle sidechain ACK: adding 'fake' ACK for {}",
+                            sidechain_number
                         );
-                    } else {
-                        self.delete_sidechain_ack(&sidechain_ack)?;
+
+                        self.ack_sidechain(
+                            sidechain_number,
+                            sidechain_proposal.description.sha256d_hash(),
+                        )?;
+
+                        sidechain_acks.push(SidechainAck {
+                            sidechain_number,
+                            description_hash: sidechain_proposal.description.sha256d_hash(),
+                        });
                     }
-                } else {
-                    self.delete_sidechain_ack(&sidechain_ack)?;
                 }
             }
+
+            for sidechain_ack in sidechain_acks {
+                if !self.validate_sidechain_ack(&sidechain_ack, &pending_sidechain_proposals) {
+                    self.delete_sidechain_ack(&sidechain_ack)?;
+                    tracing::info!(
+                        "Unable to handle sidechain ack, deleted: {}",
+                        sidechain_ack.sidechain_number
+                    );
+                    continue;
+                }
+
+                tracing::debug!(
+                    "Generate: adding ACK for sidechain {}",
+                    sidechain_ack.sidechain_number
+                );
+
+                coinbase_builder = coinbase_builder.ack_sidechain(
+                    sidechain_ack.sidechain_number,
+                    sidechain_ack.description_hash,
+                );
+            }
+
             let bmm_hashes = self.get_bmm_requests()?;
             for (sidechain_number, bmm_hash) in &bmm_hashes {
+                tracing::info!(
+                    "Generate: adding BMM accept for SC {} with hash: {}",
+                    sidechain_number,
+                    hex::encode(bmm_hash)
+                );
                 coinbase_builder = coinbase_builder.bmm_accept(*sidechain_number, bmm_hash);
             }
+
             let coinbase_outputs = coinbase_builder.build().into_diagnostic()?;
             let deposits = self.get_pending_deposits(None)?;
-            let deposit_transactions = deposits
+            let deposit_transactions: Vec<Transaction> = deposits
                 .into_iter()
                 .map(|deposit| deposit.transaction)
                 .collect();
+
+            tracing::info!(
+                "Generate: mining block with {} coinbase outputs, {} deposits",
+                coinbase_outputs.len(),
+                deposit_transactions.len()
+            );
+
             self.mine(&coinbase_outputs, deposit_transactions).await?;
             self.delete_sidechain_proposals()?;
             self.delete_deposits()?;
@@ -360,7 +442,12 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
+    /// Fetches pending deposits. If `sidechain_number` is provided, only
+    /// deposits for that sidechain are returned.
+    pub fn get_pending_deposits(
+        &self,
+        sidechain_number: Option<SidechainNumber>,
+    ) -> Result<Vec<Deposit>> {
         let with_connection = |connection: &Connection| -> Result<_> {
             let mut statement = match sidechain_number {
                 Some(_sidechain_number) => connection
@@ -394,9 +481,10 @@ impl Wallet {
                 };
                 Ok(deposit)
             };
+
             let rows = match sidechain_number {
                 Some(sidechain_number) => statement
-                    .query_map([sidechain_number], func)
+                    .query_map([u8::from(sidechain_number)], func)
                     .into_diagnostic()?,
                 None => statement.query_map([], func).into_diagnostic()?,
             };
@@ -433,6 +521,8 @@ impl Wallet {
     }
 
     async fn mine(&self, coinbase_outputs: &[TxOut], transactions: Vec<Transaction>) -> Result<()> {
+        let transaction_count = transactions.len();
+
         let mut block = self.generate_block(coinbase_outputs, transactions).await?;
         loop {
             block.header.nonce += 1;
@@ -454,13 +544,11 @@ impl Wallet {
                 error: err,
             })?;
 
-        tracing::info!("Submitted block: `{}`", block.header.block_hash());
-
-        let _bmm_hashes: Vec<Vec<u8>> = self
-            .get_bmm_requests()?
-            .into_iter()
-            .map(|(_sidechain_number, bmm_hash)| bmm_hash.to_vec())
-            .collect();
+        tracing::info!(
+            "Generate: submitted block with {} transactions: `{}`",
+            transaction_count,
+            block.header.block_hash()
+        );
 
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
@@ -528,7 +616,13 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn ack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
+    pub fn ack_sidechain(
+        &self,
+        sidechain_number: SidechainNumber,
+        data_hash: sha256d::Hash,
+    ) -> Result<()> {
+        let sidechain_number: u8 = sidechain_number.into();
+        let data_hash: &[u8; 32] = data_hash.as_byte_array();
         self.db_connection
             .lock()
             .execute(
