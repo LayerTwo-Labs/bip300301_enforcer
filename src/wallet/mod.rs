@@ -343,7 +343,7 @@ impl Wallet {
         tracing::info!("Generate: creating {} blocks", count);
 
         for _ in 0..count {
-            let sidechain_proposals = self.get_sidechain_proposals()?;
+            let sidechain_proposals = self.get_our_sidechain_proposals().into_diagnostic()?;
             let mut coinbase_builder = CoinbaseBuilder::new();
             for sidechain_proposal in sidechain_proposals {
                 coinbase_builder = coinbase_builder.propose_sidechain(sidechain_proposal);
@@ -690,12 +690,14 @@ impl Wallet {
         Ok(pending_proposals)
     }
 
-    pub fn get_sidechain_proposals(&self) -> Result<Vec<SidechainProposal>> {
+    /// Returns pending sidechain proposals from the wallet. These are not yet
+    /// active on the chain, and not possible to vote on.
+    fn get_our_sidechain_proposals(&self) -> Result<Vec<SidechainProposal>, rusqlite::Error> {
         // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_> {
-            let mut statement = connection
-                .prepare("SELECT number, data FROM sidechain_proposals")
-                .into_diagnostic()?;
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            let mut statement =
+                connection.prepare("SELECT number, data FROM sidechain_proposals")?;
+
             let proposals = statement
                 .query_map([], |row| {
                     let data: Vec<u8> = row.get(1)?;
@@ -704,10 +706,9 @@ impl Wallet {
                         sidechain_number: sidechain_number.into(),
                         description: data.into(),
                     })
-                })
-                .into_diagnostic()?
-                .collect::<Result<_, _>>()
-                .into_diagnostic()?;
+                })?
+                .collect::<Result<_, _>>()?;
+
             Ok(proposals)
         };
         with_connection(&self.db_connection.lock())
