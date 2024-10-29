@@ -151,11 +151,18 @@ impl Wallet {
                     bundle_hash BLOB NOT NULL,
                     UNIQUE(sidechain_number, bundle_hash));",
                 ),
+                // TODO: delete this? Not persisting to this table anywhere.
+                // Not clear how we're going to keep this in sync with the
+                // actual mempool. Seems like we could accomplish the same
+                // thing through `listtransactions`
                 M::up(
                     "CREATE TABLE mempool
                    (txid BLOB UNIQUE NOT NULL,
                     tx_data BLOB NOT NULL);",
                 ),
+                // This is really a table of _pending_ deposits. Gets wiped
+                // upon generating a fresh block. How will this work for
+                // non-regtest?
                 M::up(
                     "CREATE TABLE deposits
                    (sidechain_number INTEGER NOT NULL,
@@ -343,6 +350,8 @@ impl Wallet {
         tracing::info!("Generate: creating {} blocks", count);
 
         for _ in 0..count {
+            // This is a list of pending sidechain proposals from /our/ wallet, fetched from
+            // the DB.
             let sidechain_proposals = self.get_our_sidechain_proposals().into_diagnostic()?;
             let mut coinbase_builder = CoinbaseBuilder::new();
             for sidechain_proposal in sidechain_proposals {
@@ -350,7 +359,10 @@ impl Wallet {
             }
 
             let mut sidechain_acks = self.get_sidechain_acks()?;
-            let pending_sidechain_proposals = self.get_pending_sidechain_proposals().await?;
+
+            // This is a map of pending sidechain proposals from the /validator/, i.e.
+            // proposals broadcasted by (potentially) someone else, and already active.
+            let active_sidechain_proposals = self.get_active_sidechain_proposals().await?;
 
             if ack_all_proposals {
                 tracing::info!(
@@ -358,7 +370,7 @@ impl Wallet {
                 );
 
                 let acks = sidechain_acks.clone();
-                for (sidechain_number, sidechain_proposal) in &pending_sidechain_proposals {
+                for (sidechain_number, sidechain_proposal) in &active_sidechain_proposals {
                     let sidechain_number = *sidechain_number;
 
                     if !acks
@@ -384,7 +396,7 @@ impl Wallet {
             }
 
             for sidechain_ack in sidechain_acks {
-                if !self.validate_sidechain_ack(&sidechain_ack, &pending_sidechain_proposals) {
+                if !self.validate_sidechain_ack(&sidechain_ack, &active_sidechain_proposals) {
                     self.delete_sidechain_ack(&sidechain_ack)?;
                     tracing::info!(
                         "Unable to handle sidechain ack, deleted: {}",
@@ -428,13 +440,13 @@ impl Wallet {
             );
 
             self.mine(&coinbase_outputs, deposit_transactions).await?;
-            self.delete_sidechain_proposals()?;
-            self.delete_deposits()?;
+            self.delete_pending_sidechain_proposals()?;
+            self.delete_pending_deposits()?;
         }
         Ok(())
     }
 
-    pub fn delete_deposits(&self) -> Result<()> {
+    fn delete_pending_deposits(&self) -> Result<()> {
         self.db_connection
             .lock()
             .execute("DELETE FROM deposits;", ())
@@ -444,7 +456,7 @@ impl Wallet {
 
     /// Fetches pending deposits. If `sidechain_number` is provided, only
     /// deposits for that sidechain are returned.
-    pub fn get_pending_deposits(
+    fn get_pending_deposits(
         &self,
         sidechain_number: Option<SidechainNumber>,
     ) -> Result<Vec<Deposit>> {
@@ -498,7 +510,7 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    pub fn get_bmm_requests(&self) -> Result<Vec<(SidechainNumber, [u8; 32])>> {
+    fn get_bmm_requests(&self) -> Result<Vec<(SidechainNumber, [u8; 32])>> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, _> {
             let mut statement = connection
@@ -587,7 +599,7 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_utxos(&self) -> Result<()> {
+    fn get_utxos(&self) -> Result<()> {
         if self.last_sync.read().is_none() {
             return Err(miette!("get utxos: wallet not synced"));
         }
@@ -607,6 +619,9 @@ impl Wallet {
         Ok(())
     }
 
+    /// Persists a sidechain proposal into our database.
+    /// On regtest: picked up by the next block generation.
+    /// On signet: TBD, but needs some way of getting communicated to the miner.
     pub fn propose_sidechain(&self, proposal: &SidechainProposal) -> Result<(), rusqlite::Error> {
         let sidechain_number: u8 = proposal.sidechain_number.into();
         self.db_connection.lock().execute(
@@ -644,7 +659,7 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
+    fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_> {
             let mut statement = connection
@@ -666,7 +681,7 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    pub fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
+    fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
         self.db_connection
             .lock()
             .execute(
@@ -677,13 +692,14 @@ impl Wallet {
         Ok(())
     }
 
-    pub async fn get_pending_sidechain_proposals(
+    /// Fetches sidechain proposals from the validator. Returns proposals that
+    /// are already included into a block, and possible to vote on.
+    async fn get_active_sidechain_proposals(
         &self,
     ) -> Result<HashMap<SidechainNumber, SidechainProposal>> {
         let pending_proposals = self
             .validator
-            .get_sidechains()
-            .map_err(|e| miette::miette!(e.to_string()))?
+            .get_sidechains()?
             .into_iter()
             .map(|(_, sidechain)| (sidechain.proposal.sidechain_number, sidechain.proposal))
             .collect();
@@ -714,11 +730,7 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    pub fn get_mainchain_tip(&self) -> Result<bitcoin::BlockHash> {
-        self.validator.get_mainchain_tip()
-    }
-
-    pub async fn get_sidechain_ctip(
+    async fn get_sidechain_ctip(
         &self,
         sidechain_number: SidechainNumber,
     ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>> {
@@ -737,7 +749,9 @@ impl Wallet {
         }
     }
 
-    pub fn delete_sidechain_proposals(&self) -> Result<()> {
+    // Gets wiped upon generating a new block.
+    // TODO: how will this work for non-regtest?
+    fn delete_pending_sidechain_proposals(&self) -> Result<()> {
         self.db_connection
             .lock()
             .execute("DELETE FROM sidechain_proposals;", ())
@@ -747,12 +761,11 @@ impl Wallet {
 
     pub fn is_sidechain_active(&self, sidechain_number: SidechainNumber) -> Result<bool> {
         let sidechains = self.validator.get_active_sidechains()?;
-        for sidechain in sidechains {
-            if sidechain.proposal.sidechain_number == sidechain_number {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let active = sidechains
+            .iter()
+            .any(|sc| sc.proposal.sidechain_number == sidechain_number);
+
+        Ok(active)
     }
 
     // Creates a BMM request transaction. Does NOT broadcast. `height` is the block height this

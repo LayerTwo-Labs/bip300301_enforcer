@@ -770,6 +770,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .map(bdk::bitcoin::BlockHash::from_byte_array)?;
 
         let mainchain_tip = self
+            .validator()
             .get_mainchain_tip()
             .map_err(|err| tonic::Status::from_error(err.into()))?;
 
