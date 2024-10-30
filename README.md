@@ -49,6 +49,25 @@ $ buf curl  --http2-prior-knowledge --protocol grpc \
 }
 ```
 
+# Regtest
+
+By default, the enforcer runs against our custom signet. If you instead want to
+run against a local regtest, you need to also run a local regtest Electrum
+server.
+
+This can be done by:
+
+```bash
+$ git clone https://github.com/romanz/electrs
+
+# from within the cloned directory
+# note that electrs does not like user + password auth!
+# you'll have to used cookie-based authentication
+$ cargo run --release -- --network regtest \
+    --daemon-dir $HOME/.bitcoin \
+    --log-filters INFO
+```
+
 # Logging
 
 The application uses the `tracing` crate for logging. Logging is configured
