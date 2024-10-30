@@ -1,26 +1,23 @@
 use std::{
+    borrow::BorrowMut,
     collections::{BTreeMap, HashMap},
     path::Path,
+    str::FromStr,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bdk::{
-    bitcoin::{
-        consensus::Encodable as _, hashes::Hash as _, psbt::PartiallySignedTransaction,
-        script::PushBytesBuf, BlockHash, Network,
-    },
-    blockchain::ElectrumBlockchain,
-    database::SqliteDatabase,
-    electrum_client::ConfigBuilder,
+use bdk_electrum::{electrum_client, BdkElectrumClient};
+
+use bdk_wallet::{
+    self, file_store,
     keys::{
         bip39::{Language, Mnemonic},
-        DerivableKey, ExtendedKey,
+        DerivableKey as _, ExtendedKey,
     },
-    template::Bip84,
-    wallet::AddressIndex,
-    KeychainKind, SignOptions, SyncOptions,
+    ChangeSet, KeychainKind,
 };
+
 use bip300301::{
     client::{BlockchainInfo, GetRawTransactionClient, GetRawTransactionVerbose},
     jsonrpsee::http_client::HttpClient,
@@ -39,7 +36,7 @@ use bitcoin::{
         OP_0,
     },
     transaction::Version as TxVersion,
-    Amount, Block, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Amount, Block, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use miette::{miette, IntoDiagnostic, Result};
 use parking_lot::{Mutex, RwLock};
@@ -49,11 +46,9 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    proto::mainchain,
     types::{Ctip, SidechainAck, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
-use error::WalletError;
 
 pub mod error;
 
@@ -82,15 +77,10 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
 pub struct Wallet {
     main_client: HttpClient,
     validator: Validator,
-    bitcoin_wallet: Arc<Mutex<bdk::Wallet<SqliteDatabase>>>,
+    bitcoin_wallet: Mutex<bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>>,
+    bitcoin_db: Mutex<file_store::Store<ChangeSet>>,
     db_connection: Arc<Mutex<rusqlite::Connection>>,
-    bitcoin_blockchain: ElectrumBlockchain,
-    _mnemonic: Mnemonic,
-    // seed
-    // sidechain number
-    // index
-    // address (20 byte hash of public key)
-    // utxos
+    bitcoin_blockchain: BdkElectrumClient<bdk_electrum::electrum_client::Client>,
     last_sync: Arc<RwLock<Option<SystemTime>>>,
 }
 
@@ -101,17 +91,6 @@ impl Wallet {
         main_client: HttpClient,
         validator: Validator,
     ) -> Result<Self> {
-        // Generate fresh mnemonic
-
-        /*
-        let mnemonic: GeneratedKey<_, miniscript::Segwitv0> =
-                                        Mnemonic::generate((WordCount::Words12, Language::English)).unwrap();
-        // Convert mnemonic to string
-        let mnemonic_words = mnemonic.to_string();
-        // Parse a mnemonic
-        let mnemonic = Mnemonic::parse(&mnemonic_words).unwrap();
-        */
-
         let mnemonic = Mnemonic::parse_in_normalized(
             Language::English,
             "betray annual dog current tomorrow media ghost dynamic mule length sure salad",
@@ -121,23 +100,50 @@ impl Wallet {
         let xkey: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
         // Get xprv from the extended key
         let network = {
-            let magic_bytes = validator.network().magic().to_bytes();
-            bdk::bitcoin::Network::from_magic(bdk::bitcoin::network::Magic::from_bytes(magic_bytes))
-                .unwrap()
+            let validator_network = validator.network();
+            bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())
+                .into_diagnostic()?
         };
+
         let xprv = xkey
             .into_xprv(network)
             .ok_or(miette!("couldn't get xprv"))?;
 
-        let wallet_database = SqliteDatabase::new(data_dir.join("wallet.sqlite"));
-        // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
-        let bitcoin_wallet = bdk::Wallet::new(
-            Bip84(xprv, KeychainKind::External),
-            Some(Bip84(xprv, KeychainKind::Internal)),
-            network,
-            wallet_database,
+        let mut wallet_database = file_store::Store::open_or_create_new(
+            b"bip300301_enforcer",
+            data_dir.join("wallet.db"),
         )
         .into_diagnostic()?;
+
+        // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
+
+        let external_desc = format!("wpkh({xprv}/84'/1'/0'/0/*)");
+        let internal_desc = format!("wpkh({xprv}/84'/1'/0'/1/*)");
+
+        tracing::debug!("Attempting load of existing BDK wallet");
+        let bitcoin_wallet = bdk_wallet::Wallet::load()
+            .descriptor(KeychainKind::External, Some(external_desc.clone()))
+            .descriptor(KeychainKind::Internal, Some(internal_desc.clone()))
+            .extract_keys()
+            .check_network(network)
+            .load_wallet(&mut wallet_database)
+            .into_diagnostic()?;
+
+        let bitcoin_wallet = match bitcoin_wallet {
+            Some(wallet) => {
+                tracing::info!("Loaded existing BDK wallet");
+                wallet
+            }
+
+            None => {
+                tracing::info!("Creating new BDK wallet");
+
+                bdk_wallet::Wallet::create(external_desc, internal_desc)
+                    .network(network)
+                    .create_wallet(&mut wallet_database)
+                    .into_diagnostic()?
+            }
+        };
 
         let bitcoin_blockchain = {
             let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
@@ -146,12 +152,14 @@ impl Wallet {
 
             // Apply a reasonably short timeout to prevent the wallet from hanging
             let timeout = 5;
-            let config = ConfigBuilder::new().timeout(Some(timeout)).build();
+            let config = electrum_client::ConfigBuilder::new()
+                .timeout(Some(timeout))
+                .build();
 
-            let electrum_client = bdk::electrum_client::Client::from_config(&electrum_url, config)
+            let electrum_client = electrum_client::Client::from_config(&electrum_url, config)
                 .map_err(|err| miette!("failed to create electrum client: {err:#}"))?;
 
-            ElectrumBlockchain::from(electrum_client)
+            BdkElectrumClient::new(electrum_client)
         };
 
         use rusqlite_migration::{Migrations, M};
@@ -226,10 +234,11 @@ impl Wallet {
         let wallet = Self {
             main_client,
             validator,
-            bitcoin_wallet: Arc::new(Mutex::new(bitcoin_wallet)),
+            // bitcoin_wallet: Arc::new(Mutex::new(bitcoin_wallet)),
+            bitcoin_wallet: Mutex::new(bitcoin_wallet),
+            bitcoin_db: Mutex::new(wallet_database),
             db_connection: Arc::new(Mutex::new(db_connection)),
             bitcoin_blockchain,
-            _mnemonic: mnemonic,
 
             last_sync: Arc::new(RwLock::new(None)),
         };
@@ -245,13 +254,9 @@ impl Wallet {
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> Result<Block> {
-        let addr = self
-            .bitcoin_wallet
-            .lock()
-            .get_address(AddressIndex::New)
-            .into_diagnostic()?;
+        let addr = self.get_new_address()?;
 
-        tracing::debug!("Generate block: fetched address: {}", addr.address);
+        tracing::debug!("Generate block: fetched address: {}", addr);
 
         let script_pubkey = addr.script_pubkey();
 
@@ -720,19 +725,22 @@ impl Wallet {
         sidechain_number: SidechainNumber,
         sidechain_ctip_amount: Amount,
         value_sats: Amount,
-    ) -> bdk::bitcoin::TxOut {
+    ) -> bdk_wallet::bitcoin::TxOut {
         let deposit_txout =
             messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value_sats);
 
-        bdk::bitcoin::TxOut {
-            script_pubkey: bdk::bitcoin::ScriptBuf::from_bytes(
+        bdk_wallet::bitcoin::TxOut {
+            script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
                 deposit_txout.script_pubkey.to_bytes(),
             ),
-            value: deposit_txout.value.to_sat(),
+            value: deposit_txout.value,
         }
     }
 
-    async fn fetch_ctip_transaction(&self, ctip_txid: Txid) -> Result<bdk::bitcoin::Transaction> {
+    async fn fetch_ctip_transaction(
+        &self,
+        ctip_txid: Txid,
+    ) -> Result<bdk_wallet::bitcoin::Transaction> {
         let block_hash = None;
 
         let rpc_res = self
@@ -759,16 +767,16 @@ impl Wallet {
     )]
     async fn create_deposit_psbt(
         &self,
-        op_drivechain_output: bdk::bitcoin::TxOut,
-        sidechain_address_data: PushBytesBuf,
+        op_drivechain_output: bdk_wallet::bitcoin::TxOut,
+        sidechain_address_data: bdk_wallet::bitcoin::script::PushBytesBuf,
         sidechain_ctip: Option<&Ctip>,
         fee_sats: Option<Amount>,
-    ) -> Result<PartiallySignedTransaction> {
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
         // Ctip.
         let ctip_foreign_utxo = match sidechain_ctip {
             Some(sidechain_ctip) => {
-                let outpoint = bdk::bitcoin::OutPoint {
+                let outpoint = bdk_wallet::bitcoin::OutPoint {
                     txid: convert::bitcoin_txid_to_bdk_txid(sidechain_ctip.outpoint.txid),
                     vout: sidechain_ctip.outpoint.vout,
                 };
@@ -777,9 +785,9 @@ impl Wallet {
                     .fetch_ctip_transaction(sidechain_ctip.outpoint.txid)
                     .await?;
 
-                let psbt_input = bdk::bitcoin::psbt::Input {
+                let psbt_input = bdk_wallet::bitcoin::psbt::Input {
                     non_witness_utxo: Some(ctip_transaction),
-                    ..bdk::bitcoin::psbt::Input::default()
+                    ..bdk_wallet::bitcoin::psbt::Input::default()
                 };
 
                 Some((psbt_input, outpoint))
@@ -787,10 +795,9 @@ impl Wallet {
             None => None,
         };
 
-        let (psbt, _) = {
-            let wallet = self.bitcoin_wallet.lock();
-
-            let mut builder = wallet.build_tx();
+        let psbt = {
+            let mut wallet = self.bitcoin_wallet.lock();
+            let mut builder = wallet.borrow_mut().build_tx();
 
             builder
                 // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
@@ -801,16 +808,16 @@ impl Wallet {
                 .add_data(&sidechain_address_data);
 
             if let Some(fee_sats) = fee_sats {
-                builder.fee_absolute(fee_sats.to_sat());
+                builder.fee_absolute(fee_sats);
             }
 
             if let Some((ctip_psbt_input, outpoint)) = ctip_foreign_utxo {
                 // This might be wrong. Seems to work!
-                let satisfaction_weight = 0;
+                let satisfaction_weight = bdk_wallet::bitcoin::Weight::ZERO;
 
                 builder
                     .add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)
-                    .map_err(WalletError)?;
+                    .into_diagnostic()?;
             }
 
             builder.finish().into_diagnostic()?
@@ -851,10 +858,10 @@ impl Wallet {
         );
 
         let sidechain_address_bytes = sidechain_address.into_bytes();
-        let sidechain_address_data =
-            PushBytesBuf::try_from(sidechain_address_bytes).map_err(|err| {
-                miette!("failed to convert sidechain address to PushBytesBuf: {err:#}")
-            })?;
+        let sidechain_address_data = bdk_wallet::bitcoin::script::PushBytesBuf::try_from(
+            sidechain_address_bytes,
+        )
+        .map_err(|err| miette!("failed to convert sidechain address to PushBytesBuf: {err:#}"))?;
 
         let psbt = self
             .create_deposit_psbt(
@@ -868,12 +875,12 @@ impl Wallet {
         tracing::debug!("Created deposit PSBT: {psbt}",);
 
         let tx = self.sign_transaction(psbt)?;
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
 
         tracing::info!("Signed deposit transaction: `{txid}`",);
 
         tracing::debug!("Serialized deposit transaction: {}", {
-            let tx_bytes = bdk::bitcoin::consensus::serialize(&tx);
+            let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
             hex::encode(tx_bytes)
         });
 
@@ -889,30 +896,40 @@ impl Wallet {
             return Err(miette!("get balance: wallet not synced"));
         }
 
-        let balance = self.bitcoin_wallet.lock().get_balance().into_diagnostic()?;
-        let immature = Amount::from_sat(balance.immature);
-        let untrusted_pending = Amount::from_sat(balance.untrusted_pending);
-        let trusted_pending = Amount::from_sat(balance.trusted_pending);
-        let confirmed = Amount::from_sat(balance.confirmed);
+        let balance = self.bitcoin_wallet.lock().balance();
 
-        tracing::trace!("Confirmed: {confirmed}");
-        tracing::trace!("Immature: {immature}");
-        tracing::trace!("Untrusted pending: {untrusted_pending}");
-        tracing::trace!("Trusted pending: {trusted_pending}");
+        tracing::trace!("Confirmed: {}", balance.confirmed);
+        tracing::trace!("Immature: {}", balance.immature);
+        tracing::trace!("Untrusted pending: {}", balance.untrusted_pending);
+        tracing::trace!("Trusted pending: {}", balance.trusted_pending);
         Ok(())
     }
 
     pub fn sync(&self) -> Result<()> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
-        self.bitcoin_wallet
-            .lock()
-            .sync(&self.bitcoin_blockchain, SyncOptions::default())
+
+        let mut wallet = self.bitcoin_wallet.lock();
+        let request = wallet.start_full_scan();
+
+        const STOP_GAP: usize = 50;
+        const BATCH_SIZE: usize = 5;
+
+        let update = self
+            .bitcoin_blockchain
+            .full_scan(request, STOP_GAP, BATCH_SIZE, false)
             .into_diagnostic()?;
+
+        wallet.apply_update(update).into_diagnostic()?;
+
+        let mut database = self.bitcoin_db.lock();
+        wallet.persist(&mut database).into_diagnostic()?;
+
         tracing::debug!(
             "wallet sync complete in {:?}",
             start.elapsed().unwrap_or_default(),
         );
+
         *self.last_sync.write() = Some(SystemTime::now());
         Ok(())
     }
@@ -922,12 +939,9 @@ impl Wallet {
             return Err(miette!("get utxos: wallet not synced"));
         }
 
-        let utxos = self
-            .bitcoin_wallet
-            .lock()
-            .list_unspent()
-            .into_diagnostic()?;
-        for utxo in &utxos {
+        let wallet = self.bitcoin_wallet.lock();
+        let utxos = wallet.list_unspent();
+        for utxo in utxos {
             tracing::trace!(
                 "address: {}, value: {}",
                 utxo.txout.script_pubkey,
@@ -990,27 +1004,27 @@ impl Wallet {
 
     fn sign_transaction(
         &self,
-        mut psbt: PartiallySignedTransaction,
-    ) -> Result<bdk::bitcoin::Transaction> {
+        mut psbt: bdk_wallet::bitcoin::psbt::Psbt,
+    ) -> Result<bdk_wallet::bitcoin::Transaction> {
         if !self
             .bitcoin_wallet
             .lock()
-            .sign(&mut psbt, SignOptions::default())
-            .map_err(WalletError::from)?
+            .sign(&mut psbt, bdk_wallet::signer::SignOptions::default())
+            .into_diagnostic()?
         {
             return Err(miette!("failed to sign transaction"));
         }
 
         tracing::debug!("Signed PSBT: {psbt}",);
 
-        Ok(psbt.extract_tx())
+        psbt.extract_tx().into_diagnostic()
     }
 
     fn bmm_request_message(
         sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: BlockHash,
+        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
         sidechain_block_hash: [u8; 32],
-    ) -> Result<bdk::bitcoin::ScriptBuf> {
+    ) -> Result<bdk_wallet::bitcoin::ScriptBuf> {
         let message = [
             &M8_BMM_REQUEST_TAG[..],
             &[sidechain_number.into()],
@@ -1018,8 +1032,9 @@ impl Wallet {
             &prev_mainchain_block_hash.to_byte_array(),
         ]
         .concat();
-        let bytes = bdk::bitcoin::script::PushBytesBuf::try_from(message).into_diagnostic()?;
-        Ok(bdk::bitcoin::ScriptBuf::new_op_return(&bytes))
+        let bytes =
+            bdk_wallet::bitcoin::script::PushBytesBuf::try_from(message).into_diagnostic()?;
+        Ok(bdk_wallet::bitcoin::ScriptBuf::new_op_return(&bytes))
     }
 
     #[allow(
@@ -1029,11 +1044,11 @@ impl Wallet {
     fn build_bmm_tx(
         &self,
         sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
         sidechain_block_hash: [u8; 32],
-        bid_amount: bdk::bitcoin::Amount,
-        locktime: bdk::bitcoin::absolute::LockTime,
-    ) -> Result<bdk::bitcoin::psbt::PartiallySignedTransaction> {
+        bid_amount: bdk_wallet::bitcoin::Amount,
+        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
         let message = Self::bmm_request_message(
             sidechain_number,
@@ -1041,12 +1056,12 @@ impl Wallet {
             sidechain_block_hash,
         )?;
 
-        let (psbt, _) = {
-            let bitcoin_wallet = self.bitcoin_wallet.lock();
+        let psbt = {
+            let mut bitcoin_wallet = self.bitcoin_wallet.lock();
             let mut builder = bitcoin_wallet.build_tx();
             builder
                 .nlocktime(locktime)
-                .add_recipient(message, bid_amount.to_sat());
+                .add_recipient(message, bid_amount);
             builder.finish().into_diagnostic()?
         };
 
@@ -1058,7 +1073,7 @@ impl Wallet {
     fn insert_new_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
-        prev_blockhash: BlockHash,
+        prev_blockhash: bdk_wallet::bitcoin::BlockHash,
         side_block_hash: [u8; 32],
     ) -> Result<bool> {
         // Satisfy clippy with a single function call per lock
@@ -1091,11 +1106,11 @@ impl Wallet {
     pub fn create_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
         sidechain_block_hash: [u8; 32],
-        bid_amount: bdk::bitcoin::Amount,
-        locktime: bdk::bitcoin::absolute::LockTime,
-    ) -> Result<Option<bdk::bitcoin::Transaction>> {
+        bid_amount: bdk_wallet::bitcoin::Amount,
+        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+    ) -> Result<Option<bdk_wallet::bitcoin::Transaction>> {
         let psbt = self.build_bmm_tx(
             sidechain_number,
             prev_mainchain_block_hash,
@@ -1119,7 +1134,7 @@ impl Wallet {
     }
 
     // Broadcasts a transaction to the Bitcoin network.
-    pub async fn broadcast_transaction(&self, tx: bdk::bitcoin::Transaction) -> Result<()> {
+    pub async fn broadcast_transaction(&self, tx: bdk_wallet::bitcoin::Transaction) -> Result<()> {
         // Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
         // because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
         // perspective). To get around this we have to pass a `maxburnamount` parameter, and
@@ -1148,19 +1163,20 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_new_address(&self) -> Result<bdk::bitcoin::Address> {
-        // Satisfy clippy with a single function call per lock
-        let with_wallet = |wallet: &bdk::Wallet<SqliteDatabase>| -> Result<bdk::bitcoin::Address> {
-            // Using AddressIndex::LastUnused here means that we get a new address
-            // when funds are received. Without this we'd need to take care not
-            // to cross the wallet scan gap.
-            let info = wallet
-                .get_address(AddressIndex::LastUnused)
-                .map_err(|e| miette!("unable to get address: {}", e))?;
-            Ok(info.address)
-        };
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn get_new_address(&self) -> Result<bdk_wallet::bitcoin::Address> {
+        // Using next_unused_address here means that we get a new address
+        // when funds are received. Without this we'd need to take care not
+        // to cross the wallet scan gap.
+        let mut wallet = self.bitcoin_wallet.lock();
+        let info = wallet
+            .borrow_mut()
+            .next_unused_address(bdk_wallet::KeychainKind::External);
 
-        with_wallet(&self.bitcoin_wallet.lock())
+        let mut bitcoin_db = self.bitcoin_db.lock();
+        let bitcoin_db = bitcoin_db.borrow_mut();
+        wallet.persist(bitcoin_db).into_diagnostic()?;
+        Ok(info.address)
     }
 }
 
