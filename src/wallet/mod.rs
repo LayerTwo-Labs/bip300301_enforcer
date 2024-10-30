@@ -7,7 +7,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bdk_electrum::{electrum_client, BdkElectrumClient};
+use bdk_electrum::{
+    electrum_client::{self, ElectrumApi},
+    BdkElectrumClient,
+};
 
 use bdk_wallet::{
     self, file_store,
@@ -146,7 +149,19 @@ impl Wallet {
         };
 
         let bitcoin_blockchain = {
-            let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
+            let (default_host, default_port) = match network {
+                Network::Signet => ("drivechain.live", 50001),
+                Network::Regtest => ("127.0.0.1", 60401),
+                default => return Err(miette!("unsupported network: {default}")),
+            };
+
+            let electrum_host = config
+                .electrum_host
+                .clone()
+                .unwrap_or(default_host.to_string());
+            let electrum_port = config.electrum_port.unwrap_or(default_port);
+
+            let electrum_url = format!("{}:{}", electrum_host, electrum_port);
 
             tracing::debug!("creating electrum client: {electrum_url}");
 

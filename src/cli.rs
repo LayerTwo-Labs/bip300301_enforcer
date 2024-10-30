@@ -80,10 +80,15 @@ pub struct NodeRpcConfig {
 
 #[derive(Clone, Args)]
 pub struct WalletConfig {
-    #[arg(default_value = "drivechain.live", long = "wallet-electrum-host")]
-    pub electrum_host: String,
-    #[arg(default_value = "50001", long = "wallet-electrum-port")]
-    pub electrum_port: u16,
+    /// If no host is provided, a default value is used based on the network
+    /// we're on.
+    #[arg(long = "wallet-electrum-host")]
+    pub electrum_host: Option<String>,
+
+    /// If no port is provided, a default value is used based on the network
+    /// we're on.
+    #[arg(long = "wallet-electrum-port")]
+    pub electrum_port: Option<u16>,
 }
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
