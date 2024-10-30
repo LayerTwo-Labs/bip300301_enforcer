@@ -200,11 +200,12 @@ async fn main() -> Result<()> {
     let wallet: Option<Arc<wallet::Wallet>> = if cli.enable_wallet {
         let wallet = Wallet::new(
             &wallet_data_dir,
+            &cli.node_rpc_opts,
             &cli.wallet_opts,
             mainchain_client,
             validator.clone(),
         )
-        .map_err(|e| miette!("failed to create wallet: {:?}", e))
+        .map_err(|e| miette!("failed to create wallet: {:#}", e))
         .await?;
         Some(Arc::new(wallet))
     } else {

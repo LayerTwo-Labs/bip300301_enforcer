@@ -1,9 +1,31 @@
+use bdk::blockchain::rpc::Auth;
 use bip300301::jsonrpsee::http_client::HttpClient;
-use miette::{miette, IntoDiagnostic};
+use miette::{miette, IntoDiagnostic, Result};
 
 use crate::cli::NodeRpcConfig;
 
-pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, miette::Report> {
+pub fn create_auth(conf: &NodeRpcConfig) -> Result<bdk::blockchain::rpc::Auth> {
+    if let Some(ref cookie) = conf.cookie_path {
+        return Ok(Auth::Cookie {
+            file: cookie.into(),
+        });
+    }
+
+    let Some(ref user) = conf.user else {
+        return Err(miette!("RPC user must be set"));
+    };
+
+    let Some(ref pass) = conf.pass else {
+        return Err(miette!("RPC password must be set"));
+    };
+
+    Ok(Auth::UserPass {
+        username: user.clone(),
+        password: pass.clone(),
+    })
+}
+
+pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient> {
     if conf.user.is_none() != conf.pass.is_none() {
         return Err(miette!("RPC user and password must be set together"));
     }

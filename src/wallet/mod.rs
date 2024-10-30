@@ -10,9 +10,7 @@ use bdk::{
         consensus::Encodable as _, hashes::Hash as _, psbt::PartiallySignedTransaction,
         script::PushBytesBuf, BlockHash, Network,
     },
-    blockchain::ElectrumBlockchain,
     database::SqliteDatabase,
-    electrum_client::ConfigBuilder,
     keys::{
         bip39::{Language, Mnemonic},
         DerivableKey, ExtendedKey,
@@ -46,7 +44,7 @@ use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, Row};
 
 use crate::{
-    cli::WalletConfig,
+    cli::{NodeRpcConfig, WalletConfig},
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
     types::{Ctip, SidechainAck, SidechainNumber, SidechainProposal},
@@ -54,6 +52,7 @@ use crate::{
 };
 use error::WalletError;
 
+mod blockchain;
 pub mod error;
 
 pub struct Wallet {
@@ -61,7 +60,7 @@ pub struct Wallet {
     validator: Validator,
     bitcoin_wallet: Arc<Mutex<bdk::Wallet<SqliteDatabase>>>,
     db_connection: Arc<Mutex<rusqlite::Connection>>,
-    bitcoin_blockchain: ElectrumBlockchain,
+    bitcoin_blockchain: blockchain::Type,
     _mnemonic: Mnemonic,
     // seed
     // sidechain number
@@ -74,7 +73,8 @@ pub struct Wallet {
 impl Wallet {
     pub async fn new(
         data_dir: &Path,
-        config: &WalletConfig,
+        node_config: &NodeRpcConfig,
+        wallet_config: &WalletConfig,
         main_client: HttpClient,
         validator: Validator,
     ) -> Result<Self> {
@@ -116,20 +116,8 @@ impl Wallet {
         )
         .into_diagnostic()?;
 
-        let bitcoin_blockchain = {
-            let electrum_url = format!("{}:{}", config.electrum_host, config.electrum_port);
-
-            tracing::debug!("creating electrum client: {electrum_url}");
-
-            // Apply a reasonably short timeout to prevent the wallet from hanging
-            let timeout = 5;
-            let config = ConfigBuilder::new().timeout(Some(timeout)).build();
-
-            let electrum_client = bdk::electrum_client::Client::from_config(&electrum_url, config)
-                .map_err(|err| miette!("failed to create electrum client: {err:#}"))?;
-
-            ElectrumBlockchain::from(electrum_client)
-        };
+        let bitcoin_blockchain =
+            blockchain::Type::new(network, node_config, wallet_config, &bitcoin_wallet)?;
 
         use rusqlite_migration::{Migrations, M};
 
