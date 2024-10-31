@@ -993,7 +993,7 @@ impl CryptoService for CryptoServiceServer {
             })?;
         let signature =
             bitcoin::secp256k1::ecdsa::Signature::from_compact(&signature).map_err(|_err| {
-                invalid_field_value::<Secp256k1VerifyRequest>("signature", &hex::encode(&signature))
+                invalid_field_value::<Secp256k1VerifyRequest>("signature", &hex::encode(signature))
             })?;
         let public_key: [u8; SECP256K1_PUBLIC_KEY_LENGTH] = public_key
             .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("public_key"))?
@@ -1002,7 +1002,7 @@ impl CryptoService for CryptoServiceServer {
             bitcoin::secp256k1::PublicKey::from_slice(&public_key).map_err(|_err| {
                 invalid_field_value::<Secp256k1VerifyRequest>(
                     "public_key",
-                    &hex::encode(&public_key),
+                    &hex::encode(public_key),
                 )
             })?;
         let secp = Secp256k1::new();
