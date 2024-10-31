@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
@@ -12,7 +11,6 @@ use futures::{
     StreamExt as _,
 };
 use miette::IntoDiagnostic as _;
-use serde::Serialize;
 use tonic::{Request, Response, Status};
 
 use crate::{
