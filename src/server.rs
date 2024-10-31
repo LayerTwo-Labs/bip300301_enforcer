@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use bdk::bitcoin::hashes::Hash;
 use bitcoin::{
     absolute::Height,
     hashes::Hash as _,
