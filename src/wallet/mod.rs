@@ -49,12 +49,35 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
+    proto::mainchain,
     types::{Ctip, SidechainAck, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 use error::WalletError;
 
 pub mod error;
+
+#[derive(Debug)]
+pub struct Deposit {
+    pub sidechain_number: u8,
+    pub address: Vec<u8>,
+    pub amount: u64,
+    pub transaction: Transaction,
+}
+
+fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
+    let subsidy_sats = 50 * Amount::ONE_BTC.to_sat();
+    let subsidy_halving_interval = match network {
+        Network::Regtest => 150,
+        _ => SUBSIDY_HALVING_INTERVAL,
+    };
+    let halvings = height / subsidy_halving_interval;
+    if halvings >= 64 {
+        fees
+    } else {
+        fees + Amount::from_sat(subsidy_sats >> halvings)
+    }
+}
 
 pub struct Wallet {
     main_client: HttpClient,
@@ -182,8 +205,9 @@ impl Wallet {
                 M::up(
                     "CREATE TABLE bmm_requests
                     (sidechain_number INTEGER NOT NULL,
+                     prev_block_hash BLOB NOT NULL,
                      side_block_hash BLOB NOT NULL,
-                     UNIQUE(sidechain_number, side_block_hash));",
+                     UNIQUE(sidechain_number, prev_block_hash));",
                 ),
             ]);
 
@@ -327,6 +351,83 @@ impl Wallet {
         Ok(block)
     }
 
+    /// Returns pending sidechain proposals from the wallet. These are not yet
+    /// active on the chain, and not possible to vote on.
+    fn get_our_sidechain_proposals(&self) -> Result<Vec<SidechainProposal>, rusqlite::Error> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            let mut statement =
+                connection.prepare("SELECT number, data FROM sidechain_proposals")?;
+
+            let proposals = statement
+                .query_map([], |row| {
+                    let data: Vec<u8> = row.get(1)?;
+                    let sidechain_number: u8 = row.get::<_, u8>(0)?;
+                    Ok(SidechainProposal {
+                        sidechain_number: sidechain_number.into(),
+                        description: data.into(),
+                    })
+                })?
+                .collect::<Result<_, _>>()?;
+
+            Ok(proposals)
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
+    fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = connection
+                .prepare("SELECT number, data_hash FROM sidechain_acks")
+                .into_diagnostic()?;
+            let rows = statement
+                .query_map([], |row| {
+                    let description_hash: [u8; 32] = row.get(1)?;
+                    Ok(SidechainAck {
+                        sidechain_number: SidechainNumber(row.get(0)?),
+                        description_hash: sha256d::Hash::from_byte_array(description_hash),
+                    })
+                })
+                .into_diagnostic()?
+                .collect::<Result<_, _>>()
+                .into_diagnostic()?;
+            Ok(rows)
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
+    /// Fetches sidechain proposals from the validator. Returns proposals that
+    /// are already included into a block, and possible to vote on.
+    async fn get_active_sidechain_proposals(
+        &self,
+    ) -> Result<HashMap<SidechainNumber, SidechainProposal>> {
+        let pending_proposals = self
+            .validator
+            .get_sidechains()?
+            .into_iter()
+            .map(|(_, sidechain)| (sidechain.proposal.sidechain_number, sidechain.proposal))
+            .collect();
+        Ok(pending_proposals)
+    }
+
+    pub fn ack_sidechain(
+        &self,
+        sidechain_number: SidechainNumber,
+        data_hash: sha256d::Hash,
+    ) -> Result<()> {
+        let sidechain_number: u8 = sidechain_number.into();
+        let data_hash: &[u8; 32] = data_hash.as_byte_array();
+        self.db_connection
+            .lock()
+            .execute(
+                "INSERT INTO sidechain_acks (number, data_hash) VALUES (?1, ?2)",
+                (sidechain_number, data_hash),
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
     fn validate_sidechain_ack(
         &self,
         ack: &SidechainAck,
@@ -337,22 +438,180 @@ impl Wallet {
                 "Handle sidechain ACK: could not find proposal: {}",
                 ack.sidechain_number
             );
-
             return false;
         };
-
         let description_hash = sidechain_proposal.description.sha256d_hash();
-        if description_hash != ack.description_hash {
+        if description_hash == ack.description_hash {
+            true
+        } else {
             tracing::error!(
                 "Handle sidechain ACK: invalid actual hash vs. ACK hash: {} != {}",
                 description_hash,
                 ack.description_hash,
             );
-
-            return false;
+            false
         }
+    }
 
-        true
+    fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
+        self.db_connection
+            .lock()
+            .execute(
+                "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
+                (ack.sidechain_number.0, ack.description_hash.as_byte_array()),
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    /// Get BMM requests with the specified previous blockhash.
+    /// Returns pairs of sidechain numbers and side blockhash.
+    fn get_bmm_requests(
+        &self,
+        prev_blockhash: &bitcoin::BlockHash,
+    ) -> Result<Vec<(SidechainNumber, [u8; 32])>> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_, _> {
+            let mut statement = connection
+                .prepare(
+                    "SELECT sidechain_number, side_block_hash FROM bmm_requests WHERE prev_block_hash = ?"
+                )
+                .into_diagnostic()?;
+
+            let queried = statement
+                .query_map([prev_blockhash.as_byte_array()], |row| {
+                    let sidechain_number: u8 = row.get(0)?;
+                    let side_blockhash: [u8; 32] = row.get(1)?;
+                    Ok((SidechainNumber::from(sidechain_number), side_blockhash))
+                })
+                .into_diagnostic()?
+                .collect::<Result<_, _>>()
+                .into_diagnostic()?;
+
+            Ok(queried)
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
+    // Gets wiped upon generating a new block.
+    // TODO: how will this work for non-regtest?
+    fn delete_pending_sidechain_proposals(&self) -> Result<()> {
+        self.db_connection
+            .lock()
+            .execute("DELETE FROM sidechain_proposals;", ())
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    fn delete_pending_deposits(&self) -> Result<()> {
+        self.db_connection
+            .lock()
+            .execute("DELETE FROM deposits;", ())
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    // Gets wiped upon generating a new block.
+    // TODO: how will this work for non-regtest?
+    fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
+        self.db_connection
+            .lock()
+            .execute(
+                "DELETE FROM bmm_requests where prev_block_hash = ?;",
+                [prev_blockhash.as_byte_array()],
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    /// Fetches pending deposits. If `sidechain_number` is provided, only
+    /// deposits for that sidechain are returned.
+    fn get_pending_deposits(
+        &self,
+        sidechain_number: Option<SidechainNumber>,
+    ) -> Result<Vec<Deposit>> {
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = match sidechain_number {
+                Some(_sidechain_number) => connection
+                    .prepare(
+                        "SELECT sidechain_number, address, amount, tx_data
+                         FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
+                         WHERE sidechain_number = ?1;",
+                    )
+                    .into_diagnostic()?,
+                None => connection
+                    .prepare(
+                        "SELECT sidechain_number, address, amount, tx_data
+                     FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid;",
+                    )
+                    .into_diagnostic()?,
+            };
+            // FIXME: Make this code more sane.
+            let func = |row: &Row| {
+                let sidechain_number: u8 = row.get(0)?;
+                let address: Vec<u8> = row.get(1)?;
+                let amount: u64 = row.get(2)?;
+                let tx_data: Vec<u8> = row.get(3)?;
+                let transaction =
+                    Transaction::consensus_decode_from_finite_reader(&mut tx_data.as_slice())
+                        .unwrap();
+                let deposit = Deposit {
+                    sidechain_number,
+                    address,
+                    amount,
+                    transaction,
+                };
+                Ok(deposit)
+            };
+
+            let rows = match sidechain_number {
+                Some(sidechain_number) => statement
+                    .query_map([u8::from(sidechain_number)], func)
+                    .into_diagnostic()?,
+                None => statement.query_map([], func).into_diagnostic()?,
+            };
+            let mut deposits = vec![];
+            for deposit in rows {
+                let deposit = deposit.into_diagnostic()?;
+                deposits.push(deposit);
+            }
+            Ok(deposits)
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
+    async fn mine(&self, coinbase_outputs: &[TxOut], transactions: Vec<Transaction>) -> Result<()> {
+        let transaction_count = transactions.len();
+
+        let mut block = self.generate_block(coinbase_outputs, transactions).await?;
+        loop {
+            block.header.nonce += 1;
+            if block.header.validate_pow(block.header.target()).is_ok() {
+                break;
+            }
+        }
+        let mut block_bytes = vec![];
+        block
+            .consensus_encode(&mut block_bytes)
+            .map_err(error::EncodeBlock)?;
+
+        let () = self
+            .main_client
+            .submit_block(hex::encode(block_bytes))
+            .await
+            .map_err(|err| error::BitcoinCoreRPC {
+                method: "submitblock".to_string(),
+                error: err,
+            })?;
+
+        tracing::info!(
+            "Generate: submitted block with {} transactions: `{}`",
+            transaction_count,
+            block.header.block_hash()
+        );
+
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
     }
 
     pub async fn generate(&self, count: u32, ack_all_proposals: bool) -> Result<()> {
@@ -425,7 +684,8 @@ impl Wallet {
                 );
             }
 
-            let bmm_hashes = self.get_bmm_requests()?;
+            let mainchain_tip = self.validator.get_mainchain_tip()?;
+            let bmm_hashes = self.get_bmm_requests(&mainchain_tip)?;
             for (sidechain_number, bmm_hash) in &bmm_hashes {
                 tracing::info!(
                     "Generate: adding BMM accept for SC {} with hash: {}",
@@ -451,16 +711,8 @@ impl Wallet {
             self.mine(&coinbase_outputs, deposit_transactions).await?;
             self.delete_pending_sidechain_proposals()?;
             self.delete_pending_deposits()?;
-            self.delete_bmm_requests()?;
+            self.delete_bmm_requests(&mainchain_tip)?;
         }
-        Ok(())
-    }
-
-    fn delete_pending_deposits(&self) -> Result<()> {
-        self.db_connection
-            .lock()
-            .execute("DELETE FROM deposits;", ())
-            .into_diagnostic()?;
         Ok(())
     }
 
@@ -632,118 +884,6 @@ impl Wallet {
         Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
 
-    /// Fetches pending deposits. If `sidechain_number` is provided, only
-    /// deposits for that sidechain are returned.
-    fn get_pending_deposits(
-        &self,
-        sidechain_number: Option<SidechainNumber>,
-    ) -> Result<Vec<Deposit>> {
-        let with_connection = |connection: &Connection| -> Result<_> {
-            let mut statement = match sidechain_number {
-                Some(_sidechain_number) => connection
-                    .prepare(
-                        "SELECT sidechain_number, address, amount, tx_data
-                         FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
-                         WHERE sidechain_number = ?1;",
-                    )
-                    .into_diagnostic()?,
-                None => connection
-                    .prepare(
-                        "SELECT sidechain_number, address, amount, tx_data
-                     FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid;",
-                    )
-                    .into_diagnostic()?,
-            };
-            // FIXME: Make this code more sane.
-            let func = |row: &Row| {
-                let sidechain_number: u8 = row.get(0)?;
-                let address: Vec<u8> = row.get(1)?;
-                let amount: u64 = row.get(2)?;
-                let tx_data: Vec<u8> = row.get(3)?;
-                let transaction =
-                    Transaction::consensus_decode_from_finite_reader(&mut tx_data.as_slice())
-                        .unwrap();
-                let deposit = Deposit {
-                    sidechain_number,
-                    address,
-                    amount,
-                    transaction,
-                };
-                Ok(deposit)
-            };
-
-            let rows = match sidechain_number {
-                Some(sidechain_number) => statement
-                    .query_map([u8::from(sidechain_number)], func)
-                    .into_diagnostic()?,
-                None => statement.query_map([], func).into_diagnostic()?,
-            };
-            let mut deposits = vec![];
-            for deposit in rows {
-                let deposit = deposit.into_diagnostic()?;
-                deposits.push(deposit);
-            }
-            Ok(deposits)
-        };
-        with_connection(&self.db_connection.lock())
-    }
-
-    fn get_bmm_requests(&self) -> Result<Vec<(SidechainNumber, [u8; 32])>> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_, _> {
-            let mut statement = connection
-                .prepare("SELECT sidechain_number, side_block_hash FROM bmm_requests")
-                .into_diagnostic()?;
-
-            let queried = statement
-                .query_map([], |row| {
-                    let sidechain_number: u8 = row.get(0)?;
-                    let data_hash: [u8; 32] = row.get(1)?;
-                    Ok((SidechainNumber::from(sidechain_number), data_hash))
-                })
-                .into_diagnostic()?
-                .collect::<Result<_, _>>()
-                .into_diagnostic()?;
-
-            Ok(queried)
-        };
-        with_connection(&self.db_connection.lock())
-    }
-
-    async fn mine(&self, coinbase_outputs: &[TxOut], transactions: Vec<Transaction>) -> Result<()> {
-        let transaction_count = transactions.len();
-
-        let mut block = self.generate_block(coinbase_outputs, transactions).await?;
-        loop {
-            block.header.nonce += 1;
-            if block.header.validate_pow(block.header.target()).is_ok() {
-                break;
-            }
-        }
-        let mut block_bytes = vec![];
-        block
-            .consensus_encode(&mut block_bytes)
-            .map_err(error::EncodeBlock)?;
-
-        let () = self
-            .main_client
-            .submit_block(hex::encode(block_bytes))
-            .await
-            .map_err(|err| error::BitcoinCoreRPC {
-                method: "submitblock".to_string(),
-                error: err,
-            })?;
-
-        tracing::info!(
-            "Generate: submitted block with {} transactions: `{}`",
-            transaction_count,
-            block.header.block_hash()
-        );
-
-        std::thread::sleep(Duration::from_millis(500));
-        Ok(())
-    }
-
     pub fn get_balance(&self) -> Result<()> {
         if self.last_sync.read().is_none() {
             return Err(miette!("get balance: wallet not synced"));
@@ -809,23 +949,6 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn ack_sidechain(
-        &self,
-        sidechain_number: SidechainNumber,
-        data_hash: sha256d::Hash,
-    ) -> Result<()> {
-        let sidechain_number: u8 = sidechain_number.into();
-        let data_hash: &[u8; 32] = data_hash.as_byte_array();
-        self.db_connection
-            .lock()
-            .execute(
-                "INSERT INTO sidechain_acks (number, data_hash) VALUES (?1, ?2)",
-                (sidechain_number, data_hash),
-            )
-            .into_diagnostic()?;
-        Ok(())
-    }
-
     pub fn nack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
         self.db_connection
             .lock()
@@ -835,77 +958,6 @@ impl Wallet {
             )
             .into_diagnostic()?;
         Ok(())
-    }
-
-    fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_> {
-            let mut statement = connection
-                .prepare("SELECT number, data_hash FROM sidechain_acks")
-                .into_diagnostic()?;
-            let rows = statement
-                .query_map([], |row| {
-                    let description_hash: [u8; 32] = row.get(1)?;
-                    Ok(SidechainAck {
-                        sidechain_number: SidechainNumber(row.get(0)?),
-                        description_hash: sha256d::Hash::from_byte_array(description_hash),
-                    })
-                })
-                .into_diagnostic()?
-                .collect::<Result<_, _>>()
-                .into_diagnostic()?;
-            Ok(rows)
-        };
-        with_connection(&self.db_connection.lock())
-    }
-
-    fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
-        self.db_connection
-            .lock()
-            .execute(
-                "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
-                (ack.sidechain_number.0, ack.description_hash.as_byte_array()),
-            )
-            .into_diagnostic()?;
-        Ok(())
-    }
-
-    /// Fetches sidechain proposals from the validator. Returns proposals that
-    /// are already included into a block, and possible to vote on.
-    async fn get_active_sidechain_proposals(
-        &self,
-    ) -> Result<HashMap<SidechainNumber, SidechainProposal>> {
-        let pending_proposals = self
-            .validator
-            .get_sidechains()?
-            .into_iter()
-            .map(|(_, sidechain)| (sidechain.proposal.sidechain_number, sidechain.proposal))
-            .collect();
-        Ok(pending_proposals)
-    }
-
-    /// Returns pending sidechain proposals from the wallet. These are not yet
-    /// active on the chain, and not possible to vote on.
-    fn get_our_sidechain_proposals(&self) -> Result<Vec<SidechainProposal>, rusqlite::Error> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
-            let mut statement =
-                connection.prepare("SELECT number, data FROM sidechain_proposals")?;
-
-            let proposals = statement
-                .query_map([], |row| {
-                    let data: Vec<u8> = row.get(1)?;
-                    let sidechain_number: u8 = row.get::<_, u8>(0)?;
-                    Ok(SidechainProposal {
-                        sidechain_number: sidechain_number.into(),
-                        description: data.into(),
-                    })
-                })?
-                .collect::<Result<_, _>>()?;
-
-            Ok(proposals)
-        };
-        with_connection(&self.db_connection.lock())
     }
 
     async fn get_sidechain_ctip(
@@ -925,26 +977,6 @@ impl Wallet {
         } else {
             Ok(None)
         }
-    }
-
-    // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
-    fn delete_pending_sidechain_proposals(&self) -> Result<()> {
-        self.db_connection
-            .lock()
-            .execute("DELETE FROM sidechain_proposals;", ())
-            .into_diagnostic()?;
-        Ok(())
-    }
-
-    // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
-    fn delete_bmm_requests(&self) -> Result<()> {
-        self.db_connection
-            .lock()
-            .execute("DELETE FROM bmm_requests;", ())
-            .into_diagnostic()?;
-        Ok(())
     }
 
     pub fn is_sidechain_active(&self, sidechain_number: SidechainNumber) -> Result<bool> {
@@ -974,70 +1006,18 @@ impl Wallet {
         Ok(psbt.extract_tx())
     }
 
-    // Creates a BMM request transaction. Does NOT broadcast. `height` is the block height this
-    // transaction MUST be included in. `amount` is the amount to spend in the BMM bid.
-    pub fn create_bmm_request(
-        &self,
-        sidechain_number: SidechainNumber,
-        sidechain_block_hash: bdk::bitcoin::BlockHash,
-        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
-        amount: bdk::bitcoin::Amount,
-        locktime: bdk::bitcoin::absolute::LockTime,
-    ) -> Result<bdk::bitcoin::Transaction> {
-        let psbt = self.build_bmm_tx(
-            sidechain_number,
-            sidechain_block_hash,
-            prev_mainchain_block_hash,
-            amount,
-            locktime,
-        )?;
-
-        let tx = self.sign_transaction(psbt)?;
-
-        tracing::info!("BMM request psbt signed successfully");
-
-        self.insert_new_bmm_request(sidechain_number, sidechain_block_hash)?;
-        tracing::info!("inserted new bmm request into db");
-
-        Ok(tx)
-    }
-
-    fn insert_new_bmm_request(
-        &self,
-        sidechain_number: SidechainNumber,
-        side_block_hash: BlockHash,
-    ) -> Result<()> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_> {
-            connection
-                .prepare(
-                    "INSERT INTO bmm_requests (sidechain_number, side_block_hash) VALUES (?1, ?2)",
-                )
-                .into_diagnostic()?
-                .execute((
-                    u8::from(sidechain_number),
-                    side_block_hash.to_byte_array().to_vec(),
-                ))
-                .into_diagnostic()
-        };
-
-        with_connection(&self.db_connection.lock())?;
-        Ok(())
-    }
-
     fn bmm_request_message(
         sidechain_number: SidechainNumber,
-        sidechain_block_hash: BlockHash,
         prev_mainchain_block_hash: BlockHash,
+        sidechain_block_hash: [u8; 32],
     ) -> Result<bdk::bitcoin::ScriptBuf> {
         let message = [
-            M8_BMM_REQUEST_TAG.to_vec(),
-            vec![sidechain_number.into()],
-            BlockHash::to_byte_array(sidechain_block_hash).to_vec(),
-            BlockHash::to_byte_array(prev_mainchain_block_hash).to_vec(),
+            &M8_BMM_REQUEST_TAG[..],
+            &[sidechain_number.into()],
+            &sidechain_block_hash,
+            &prev_mainchain_block_hash.to_byte_array(),
         ]
         .concat();
-
         let bytes = bdk::bitcoin::script::PushBytesBuf::try_from(message).into_diagnostic()?;
         Ok(bdk::bitcoin::ScriptBuf::new_op_return(&bytes))
     }
@@ -1049,16 +1029,16 @@ impl Wallet {
     fn build_bmm_tx(
         &self,
         sidechain_number: SidechainNumber,
-        sidechain_block_hash: bdk::bitcoin::BlockHash,
         prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
-        amount: bdk::bitcoin::Amount,
+        sidechain_block_hash: [u8; 32],
+        bid_amount: bdk::bitcoin::Amount,
         locktime: bdk::bitcoin::absolute::LockTime,
     ) -> Result<bdk::bitcoin::psbt::PartiallySignedTransaction> {
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
         let message = Self::bmm_request_message(
             sidechain_number,
-            sidechain_block_hash,
             prev_mainchain_block_hash,
+            sidechain_block_hash,
         )?;
 
         let (psbt, _) = {
@@ -1066,11 +1046,76 @@ impl Wallet {
             let mut builder = bitcoin_wallet.build_tx();
             builder
                 .nlocktime(locktime)
-                .add_recipient(message, amount.to_sat());
+                .add_recipient(message, bid_amount.to_sat());
             builder.finish().into_diagnostic()?
         };
 
         Ok(psbt)
+    }
+
+    /// Returns `true` if a BMM request was inserted, `false` if a BMM request
+    /// already exists for that sidechain and previous blockhash
+    fn insert_new_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        prev_blockhash: BlockHash,
+        side_block_hash: [u8; 32],
+    ) -> Result<bool> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<bool, rusqlite::Error> {
+            connection
+                .prepare(
+                    "INSERT OR ABORT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) VALUES (?1, ?2, ?3)",
+                )?
+                .execute((
+                    u8::from(sidechain_number),
+                    prev_blockhash.to_byte_array(),
+                    side_block_hash,
+                ))
+                .map_or_else(
+                    |err| if err.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
+                        Ok(false)
+                    } else {
+                        Err(err)
+                    },
+                    |_| Ok(true)
+                )
+        };
+        with_connection(&self.db_connection.lock()).into_diagnostic()
+    }
+
+    /// Creates a BMM request transaction. Does NOT broadcast.
+    /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
+    /// request was not stored due to pre-existing request with the same
+    /// `sidechain_number` and `prev_mainchain_block_hash`.
+    pub fn create_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        prev_mainchain_block_hash: bdk::bitcoin::BlockHash,
+        sidechain_block_hash: [u8; 32],
+        bid_amount: bdk::bitcoin::Amount,
+        locktime: bdk::bitcoin::absolute::LockTime,
+    ) -> Result<Option<bdk::bitcoin::Transaction>> {
+        let psbt = self.build_bmm_tx(
+            sidechain_number,
+            prev_mainchain_block_hash,
+            sidechain_block_hash,
+            bid_amount,
+            locktime,
+        )?;
+        let tx = self.sign_transaction(psbt)?;
+        tracing::info!("BMM request psbt signed successfully");
+        if self.insert_new_bmm_request(
+            sidechain_number,
+            prev_mainchain_block_hash,
+            sidechain_block_hash,
+        )? {
+            tracing::info!("inserted new bmm request into db");
+            Ok(Some(tx))
+        } else {
+            tracing::warn!("Ignored BMM request; request exists with same sidechain slot and previous block hash");
+            Ok(None)
+        }
     }
 
     // Broadcasts a transaction to the Bitcoin network.
@@ -1126,25 +1171,3 @@ type PendingTransactions = (
 );
 
 type SidechainUTXOs = BTreeMap<u64, (cusf_sidechain_types::OutPoint, u32, u64, Option<u64>)>;
-
-fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
-    let subsidy_sats = 50 * Amount::ONE_BTC.to_sat();
-    let subsidy_halving_interval = match network {
-        Network::Regtest => 150,
-        _ => SUBSIDY_HALVING_INTERVAL,
-    };
-    let halvings = height / subsidy_halving_interval;
-    if halvings >= 64 {
-        fees
-    } else {
-        fees + Amount::from_sat(subsidy_sats >> halvings)
-    }
-}
-
-#[derive(Debug)]
-pub struct Deposit {
-    pub sidechain_number: u8,
-    pub address: Vec<u8>,
-    pub amount: u64,
-    pub transaction: Transaction,
-}
