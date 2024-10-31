@@ -2,7 +2,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use bitcoin::{
     absolute::Height,
+    hashes::Hash as _,
     hashes::{hmac, ripemd160, sha512, Hash as _, HashEngine},
+    key::Secp256k1,
     Amount, BlockHash, Transaction, TxOut,
 };
 use futures::{
@@ -19,7 +21,9 @@ use crate::{
         common::{ConsensusHex, ReverseHex},
         crypto::{
             crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response,
-            Ripemd160Request, Ripemd160Response,
+            Ripemd160Request, Ripemd160Response, Secp256k1PrivKeyToPubKeyRequest,
+            Secp256k1PrivKeyToPubKeyResponse, Secp256k1SignRequest, Secp256k1SignResponse,
+            Secp256k1VerifyRequest, Secp256k1VerifyResponse,
         },
         mainchain::{
             create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
@@ -908,5 +912,40 @@ impl CryptoService for CryptoServiceServer {
             hmac: Some(ConsensusHex::encode_hex(&hmac.as_byte_array())),
         };
         Ok(tonic::Response::new(response))
+    }
+
+    async fn secp256k1_priv_key_to_pub_key(
+        &self,
+        request: tonic::Request<Secp256k1PrivKeyToPubKeyRequest>,
+    ) -> std::result::Result<tonic::Response<Secp256k1PrivKeyToPubKeyResponse>, tonic::Status> {
+        let Secp256k1PrivKeyToPubKeyRequest { priv_key } = request.into_inner();
+        let priv_key: [u8; 32] = priv_key
+            .ok_or_else(|| missing_field::<Secp256k1PrivKeyToPubKeyRequest>("priv_key"))?
+            .decode_tonic::<Secp256k1PrivKeyToPubKeyRequest, _>("priv_key")?;
+        let secp = Secp256k1::new();
+        let priv_key = bitcoin::key::PrivateKey::from_slice(&priv_key, bitcoin::Network::Regtest)
+            .map_err(|_err| {
+            tonic::Status::new(tonic::Code::InvalidArgument, format!("invalid priv_key"))
+        })?;
+        let pub_key = bitcoin::key::PublicKey::from_private_key(&secp, &priv_key);
+        let pub_key = pub_key.to_bytes();
+        let response = Secp256k1PrivKeyToPubKeyResponse {
+            pub_key: Some(ConsensusHex::encode_hex(&pub_key)),
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn secp256k1_sign(
+        &self,
+        request: tonic::Request<Secp256k1SignRequest>,
+    ) -> std::result::Result<tonic::Response<Secp256k1SignResponse>, tonic::Status> {
+        todo!();
+    }
+
+    async fn secp256k1_verify(
+        &self,
+        request: tonic::Request<Secp256k1VerifyRequest>,
+    ) -> std::result::Result<tonic::Response<Secp256k1VerifyResponse>, tonic::Status> {
+        todo!();
     }
 }
