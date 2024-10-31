@@ -82,11 +82,15 @@ pub struct NodeRpcConfig {
 pub struct WalletConfig {
     /// If no host is provided, a default value is used based on the network
     /// we're on.
+    ///
+    /// Signet: drivechain.live, regtest: 127.0.0.1  
     #[arg(long = "wallet-electrum-host")]
     pub electrum_host: Option<String>,
 
     /// If no port is provided, a default value is used based on the network
     /// we're on.
+    ///
+    /// Signet: 50001, regtest: 60401
     #[arg(long = "wallet-electrum-port")]
     pub electrum_port: Option<u16>,
 }

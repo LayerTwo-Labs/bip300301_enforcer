@@ -149,7 +149,7 @@ impl Wallet {
         let bitcoin_blockchain = {
             let (default_host, default_port) = match network {
                 Network::Signet => ("drivechain.live", 50001),
-                Network::Regtest => ("127.0.0.1", 60401),
+                Network::Regtest => ("127.0.0.1", 60401), // Default for romanz/electrs
                 default => return Err(miette!("unsupported network: {default}")),
             };
 
