@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use bip300301::MainClient;
 use clap::Parser;
 use futures::{future::TryFutureExt, FutureExt, StreamExt};
 use miette::{miette, IntoDiagnostic, Result};
@@ -161,17 +162,6 @@ async fn main() -> Result<()> {
         cli.data_dir.display()
     );
 
-    // Both wallet data and validator data are stored under the same root
-    // directory. Add a subdirectories to clearly indicate which
-    // is which.
-    let validator_data_dir = cli.data_dir.join("validator");
-    let wallet_data_dir = cli.data_dir.join("wallet");
-
-    // Ensure that the data directories exists
-    for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
-        std::fs::create_dir_all(data_dir).into_diagnostic()?;
-    }
-
     let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
 
     tracing::info!(
@@ -184,6 +174,22 @@ async fn main() -> Result<()> {
             .unwrap_or("cookie"),
         cli.node_rpc_opts.addr,
     );
+
+    let info = mainchain_client
+        .get_blockchain_info()
+        .await
+        .into_diagnostic()?;
+
+    // Both wallet data and validator data are stored under the same root
+    // directory. Add a subdirectories to clearly indicate which
+    // is which.
+    let validator_data_dir = cli.data_dir.join("validator").join(info.chain.to_string());
+    let wallet_data_dir = cli.data_dir.join("wallet").join(info.chain.to_string());
+
+    // Ensure that the data directories exists
+    for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
+        std::fs::create_dir_all(data_dir).into_diagnostic()?;
+    }
 
     let (err_tx, err_rx) = futures::channel::oneshot::channel();
     let validator = Validator::new(

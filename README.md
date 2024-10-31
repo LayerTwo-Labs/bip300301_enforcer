@@ -49,6 +49,33 @@ $ buf curl  --http2-prior-knowledge --protocol grpc \
 }
 ```
 
+# Regtest
+
+By default, the enforcer runs against our custom signet. If you instead want to
+run against a local regtest, you need to also run a local regtest Electrum
+server. There are multiple implementations of Electrum servers, an easy-to-use
+one is [`romanz/electrs`](https://github.com/romanz/electrs).
+
+For complete instructions on how to do this, consult the
+[official docs](https://github.com/romanz/electrs/blob/master/doc/install.md).
+
+A quickstart (that might not work, in case you're missing some dependencies):
+
+```bash
+$ git clone https://github.com/romanz/electrs
+
+$ cd electrs
+
+# Set up credentials for electrs. Username + password cannot be given
+# over the CLI, so we need to set them in the config file.
+$ echo 'auth = "user:password"' > ./electrs.conf
+
+$ cargo run --release -- \
+    --network regtest \
+    --conf $PWD/electrs.conf \
+    --log-filters INFO
+```
+
 # Logging
 
 The application uses the `tracing` crate for logging. Logging is configured

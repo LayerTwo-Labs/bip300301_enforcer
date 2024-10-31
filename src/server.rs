@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha512, Hash as _, HashEngine},
@@ -405,14 +404,14 @@ impl ValidatorService for Validator {
             .transpose()?
             .map(|bytes| {
                 convert::bdk_block_hash_to_bitcoin_block_hash(
-                    bdk::bitcoin::BlockHash::from_byte_array(bytes),
+                    bdk_wallet::bitcoin::BlockHash::from_byte_array(bytes),
                 )
             });
 
         let end_block_hash: BlockHash = end_block_hash
             .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("end_block_hash"))?
             .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")
-            .map(bdk::bitcoin::BlockHash::from_byte_array)
+            .map(bdk_wallet::bitcoin::BlockHash::from_byte_array)
             .map(convert::bdk_block_hash_to_bitcoin_block_hash)?;
 
         match self.get_two_way_peg_data(start_block_hash, end_block_hash) {
@@ -709,7 +708,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         let amount = value_sats
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("value_sats"))
-            .map(bdk::bitcoin::Amount::from_sat)
+            .map(bdk_wallet::bitcoin::Amount::from_sat)
             .map_err(|_| {
                 invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
                     "value_sats",
@@ -719,7 +718,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         let locktime = height
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("height"))
-            .map(bdk::bitcoin::absolute::LockTime::from_height)?
+            .map(bdk_wallet::bitcoin::absolute::LockTime::from_height)?
             .map_err(|_| {
                 invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
                     "height",
@@ -757,7 +756,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let prev_bytes = prev_bytes
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("prev_bytes"))?
             .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("prev_bytes")
-            .map(bdk::bitcoin::BlockHash::from_byte_array)?;
+            .map(bdk_wallet::bitcoin::BlockHash::from_byte_array)?;
 
         let mainchain_tip = self
             .validator()
@@ -796,7 +795,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
                 tracing::error!("Error creating BMM critical data transaction: {}", err);
             })?;
 
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
         self.broadcast_transaction(tx)
             .await
             .map_err(|err| err.into_status())?;
