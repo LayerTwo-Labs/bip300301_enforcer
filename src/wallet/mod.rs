@@ -451,6 +451,7 @@ impl Wallet {
             self.mine(&coinbase_outputs, deposit_transactions).await?;
             self.delete_pending_sidechain_proposals()?;
             self.delete_pending_deposits()?;
+            self.delete_bmm_requests()?;
         }
         Ok(())
     }
@@ -932,6 +933,16 @@ impl Wallet {
         self.db_connection
             .lock()
             .execute("DELETE FROM sidechain_proposals;", ())
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    // Gets wiped upon generating a new block.
+    // TODO: how will this work for non-regtest?
+    fn delete_bmm_requests(&self) -> Result<()> {
+        self.db_connection
+            .lock()
+            .execute("DELETE FROM bmm_requests;", ())
             .into_diagnostic()?;
         Ok(())
     }

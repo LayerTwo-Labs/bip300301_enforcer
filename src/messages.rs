@@ -206,6 +206,7 @@ pub fn parse_coinbase_script(script: &Script) -> IResult<&[u8], CoinbaseMessage>
         tag(M2_ACK_SIDECHAIN_TAG),
         tag(M3_PROPOSE_BUNDLE_TAG),
         tag(M4_ACK_BUNDLES_TAG),
+        tag(M7_BMM_ACCEPT_TAG),
     ))(input)?;
     if message_tag == M1_PROPOSE_SIDECHAIN_TAG {
         return parse_m1_propose_sidechain(input);
