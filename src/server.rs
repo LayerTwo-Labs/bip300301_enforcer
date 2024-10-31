@@ -1,10 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bdk::bitcoin::hashes::Hash;
+use bdk::bitcoin::hashes::Hash as _;
 use bitcoin::{
     absolute::Height,
-    hashes::Hash as _,
-    hashes::{hmac, ripemd160, sha512, Hash as _, HashEngine},
+    hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
     key::Secp256k1,
     Amount, BlockHash, Transaction, TxOut,
 };
@@ -923,11 +922,11 @@ impl CryptoService for CryptoServiceServer {
         let priv_key: [u8; 32] = priv_key
             .ok_or_else(|| missing_field::<Secp256k1PrivKeyToPubKeyRequest>("priv_key"))?
             .decode_tonic::<Secp256k1PrivKeyToPubKeyRequest, _>("priv_key")?;
-        let secp = Secp256k1::new();
         let priv_key = bitcoin::key::PrivateKey::from_slice(&priv_key, bitcoin::Network::Regtest)
             .map_err(|_err| {
-            tonic::Status::new(tonic::Code::InvalidArgument, format!("invalid priv_key"))
+            tonic::Status::new(tonic::Code::InvalidArgument, "invalid priv_key".to_string())
         })?;
+        let secp = Secp256k1::new();
         let pub_key = bitcoin::key::PublicKey::from_private_key(&secp, &priv_key);
         let pub_key = pub_key.to_bytes();
         let response = Secp256k1PrivKeyToPubKeyResponse {
@@ -940,7 +939,26 @@ impl CryptoService for CryptoServiceServer {
         &self,
         request: tonic::Request<Secp256k1SignRequest>,
     ) -> std::result::Result<tonic::Response<Secp256k1SignResponse>, tonic::Status> {
-        todo!();
+        let Secp256k1SignRequest { message, priv_key } = request.into_inner();
+        let message: Vec<u8> = message
+            .ok_or_else(|| missing_field::<Secp256k1SignRequest>("message"))?
+            .decode_tonic::<Secp256k1SignRequest, _>("message")?;
+        let digest = sha256::Hash::hash(&message).to_byte_array();
+        let message = bitcoin::secp256k1::Message::from_digest(digest);
+        let priv_key: [u8; 32] = priv_key
+            .ok_or_else(|| missing_field::<Secp256k1SignRequest>("priv_key"))?
+            .decode_tonic::<Secp256k1SignRequest, _>("priv_key")?;
+        let priv_key = bitcoin::key::PrivateKey::from_slice(&priv_key, bitcoin::Network::Regtest)
+            .map_err(|_err| {
+            tonic::Status::new(tonic::Code::InvalidArgument, "invalid priv_key".to_string())
+        })?;
+        let secp = Secp256k1::new();
+        let signature = secp.sign_ecdsa(&message, &priv_key.inner);
+        let signature = signature.serialize_compact();
+        let response = Secp256k1SignResponse {
+            signature: Some(ConsensusHex::encode_hex(&signature)),
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn secp256k1_verify(
