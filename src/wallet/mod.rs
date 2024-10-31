@@ -11,7 +11,6 @@ use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
     BdkElectrumClient,
 };
-
 use bdk_wallet::{
     self, file_store,
     keys::{
@@ -20,7 +19,6 @@ use bdk_wallet::{
     },
     ChangeSet, KeychainKind,
 };
-
 use bip300301::{
     client::{BlockchainInfo, GetRawTransactionClient, GetRawTransactionVerbose},
     jsonrpsee::http_client::HttpClient,
@@ -936,8 +934,9 @@ impl Wallet {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
 
-        let mut wallet = self.bitcoin_wallet.lock();
-        let request = wallet.start_full_scan();
+        let mut wallet_lock = self.bitcoin_wallet.lock();
+        let mut last_sync_write = self.last_sync.write();
+        let request = wallet_lock.start_full_scan();
 
         const STOP_GAP: usize = 50;
         const BATCH_SIZE: usize = 5;
@@ -947,27 +946,33 @@ impl Wallet {
             .full_scan(request, STOP_GAP, BATCH_SIZE, false)
             .into_diagnostic()?;
 
-        wallet.apply_update(update).into_diagnostic()?;
+        wallet_lock.apply_update(update).into_diagnostic()?;
 
         let mut database = self.bitcoin_db.lock();
-        wallet.persist(&mut database).into_diagnostic()?;
+        wallet_lock.persist(&mut database).into_diagnostic()?;
 
         tracing::debug!(
             "wallet sync complete in {:?}",
             start.elapsed().unwrap_or_default(),
         );
 
-        *self.last_sync.write() = Some(SystemTime::now());
+        *last_sync_write = Some(SystemTime::now());
+        drop(last_sync_write);
+        drop(wallet_lock);
         Ok(())
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
     fn get_utxos(&self) -> Result<()> {
         if self.last_sync.read().is_none() {
             return Err(miette!("get utxos: wallet not synced"));
         }
 
-        let wallet = self.bitcoin_wallet.lock();
-        let utxos = wallet.list_unspent();
+        let wallet_lock = self.bitcoin_wallet.lock();
+        let utxos = wallet_lock.list_unspent();
         for utxo in utxos {
             tracing::trace!(
                 "address: {}, value: {}",
