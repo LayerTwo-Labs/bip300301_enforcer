@@ -125,12 +125,12 @@ pub struct M8BmmRequest {
     pub prev_mainchain_block_hash: [u8; 32],
 }
 
-pub const M1_PROPOSE_SIDECHAIN_TAG: &[u8] = &[0xD5, 0xE0, 0xC4, 0xAF];
-pub const M2_ACK_SIDECHAIN_TAG: &[u8] = &[0xD6, 0xE1, 0xC5, 0xDF];
-pub const M3_PROPOSE_BUNDLE_TAG: &[u8] = &[0xD4, 0x5A, 0xA9, 0x43];
-pub const M4_ACK_BUNDLES_TAG: &[u8] = &[0xD7, 0x7D, 0x17, 0x76];
-pub const M7_BMM_ACCEPT_TAG: &[u8] = &[0xD1, 0x61, 0x73, 0x68];
-pub const M8_BMM_REQUEST_TAG: &[u8] = &[0x00, 0xBF, 0x00];
+pub const M1_PROPOSE_SIDECHAIN_TAG: [u8; 4] = [0xD5, 0xE0, 0xC4, 0xAF];
+pub const M2_ACK_SIDECHAIN_TAG: [u8; 4] = [0xD6, 0xE1, 0xC5, 0xDF];
+pub const M3_PROPOSE_BUNDLE_TAG: [u8; 4] = [0xD4, 0x5A, 0xA9, 0x43];
+pub const M4_ACK_BUNDLES_TAG: [u8; 4] = [0xD7, 0x7D, 0x17, 0x76];
+pub const M7_BMM_ACCEPT_TAG: [u8; 4] = [0xD1, 0x61, 0x73, 0x68];
+pub const M8_BMM_REQUEST_TAG: [u8; 3] = [0x00, 0xBF, 0x00];
 
 pub const ABSTAIN_ONE_BYTE: u8 = 0xFF;
 pub const ABSTAIN_TWO_BYTES: u16 = 0xFFFF;
@@ -146,10 +146,10 @@ pub enum M4AckBundles {
     LeadingBy50,
 }
 
-const REPEAT_PREVIOUS_TAG: &[u8] = &[0x00];
-const ONE_BYTE_TAG: &[u8] = &[0x01];
-const TWO_BYTES_TAG: &[u8] = &[0x02];
-const LEADING_BY_50_TAG: &[u8] = &[0x03];
+const REPEAT_PREVIOUS_TAG: [u8; 1] = [0x00];
+const ONE_BYTE_TAG: [u8; 1] = [0x01];
+const TWO_BYTES_TAG: [u8; 1] = [0x02];
+const LEADING_BY_50_TAG: [u8; 1] = [0x03];
 
 /// 0xFF
 // 0xFFFF
@@ -160,12 +160,12 @@ const LEADING_BY_50_TAG: &[u8] = &[0x03];
 // const ALARM_TAG: &[u8] = &[0xFE];
 
 impl M4AckBundles {
-    fn tag(&self) -> u8 {
+    fn tag(&self) -> [u8; 1] {
         match self {
-            Self::RepeatPrevious => REPEAT_PREVIOUS_TAG[0],
-            Self::OneByte { .. } => ONE_BYTE_TAG[0],
-            Self::TwoBytes { .. } => TWO_BYTES_TAG[0],
-            Self::LeadingBy50 { .. } => LEADING_BY_50_TAG[0],
+            Self::RepeatPrevious => REPEAT_PREVIOUS_TAG,
+            Self::OneByte { .. } => ONE_BYTE_TAG,
+            Self::TwoBytes { .. } => TWO_BYTES_TAG,
+            Self::LeadingBy50 { .. } => LEADING_BY_50_TAG,
         }
     }
 }
@@ -363,12 +363,11 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 data,
             } => {
                 let message = [
-                    M1_PROPOSE_SIDECHAIN_TAG,
-                    &[u8::from(sidechain_number)],
+                    &M1_PROPOSE_SIDECHAIN_TAG[..],
+                    &[sidechain_number.into()],
                     &data,
                 ]
                 .concat();
-
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
             }
@@ -377,12 +376,11 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 data_hash,
             } => {
                 let message = [
-                    M2_ACK_SIDECHAIN_TAG,
-                    &[u8::from(sidechain_number)],
+                    &M2_ACK_SIDECHAIN_TAG[..],
+                    &[sidechain_number.into()],
                     &data_hash,
                 ]
                 .concat();
-
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
             }
@@ -391,12 +389,11 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 bundle_txid,
             } => {
                 let message = [
-                    M3_PROPOSE_BUNDLE_TAG,
-                    &[u8::from(sidechain_number)],
+                    &M3_PROPOSE_BUNDLE_TAG[..],
+                    &[sidechain_number.into()],
                     &bundle_txid,
                 ]
                 .concat();
-
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
             }
@@ -409,8 +406,7 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                         .collect(),
                     _ => vec![],
                 };
-                let message = [M4_ACK_BUNDLES_TAG, &[m4_ack_bundles.tag()], &upvotes].concat();
-
+                let message = [&M4_ACK_BUNDLES_TAG[..], &m4_ack_bundles.tag(), &upvotes].concat();
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
             }
@@ -419,12 +415,11 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
                 sidechain_block_hash,
             } => {
                 let message = [
-                    M7_BMM_ACCEPT_TAG,
-                    &[u8::from(sidechain_number)],
+                    &M7_BMM_ACCEPT_TAG[..],
+                    &[sidechain_number.into()],
                     &sidechain_block_hash,
                 ]
                 .concat();
-
                 let data = PushBytesBuf::try_from(message)?;
                 Ok(ScriptBuf::new_op_return(&data))
             }

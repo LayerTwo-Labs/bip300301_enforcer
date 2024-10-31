@@ -752,8 +752,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .ok_or_else(|| {
                 missing_field::<CreateBmmCriticalDataTransactionRequest>("critical_hash")
             })?
-            .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("critical_hash")
-            .map(bdk::bitcoin::BlockHash::from_byte_array)?;
+            .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("critical_hash")?;
 
         let prev_bytes = prev_bytes
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("prev_bytes"))?
@@ -779,12 +778,20 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let tx = self
             .create_bmm_request(
                 sidechain_number,
-                critical_hash,
                 prev_bytes,
+                critical_hash,
                 amount,
                 locktime,
             )
             .map_err(|err| err.into_status())
+            .and_then(|tx| {
+                tx.ok_or_else(|| {
+                    tonic::Status::new(
+                        tonic::Code::AlreadyExists,
+                        "BMM request with same `sidechain_number` and `prev_bytes` already exists",
+                    )
+                })
+            })
             .inspect_err(|err| {
                 tracing::error!("Error creating BMM critical data transaction: {}", err);
             })?;
