@@ -936,14 +936,14 @@ impl Wallet {
 
         let mut wallet_lock = self.bitcoin_wallet.lock();
         let mut last_sync_write = self.last_sync.write();
-        let request = wallet_lock.start_full_scan();
+        let request = wallet_lock.start_sync_with_revealed_spks();
 
-        const STOP_GAP: usize = 50;
         const BATCH_SIZE: usize = 5;
+        const FETCH_PREV_TXOUTS: bool = false;
 
         let update = self
             .bitcoin_blockchain
-            .full_scan(request, STOP_GAP, BATCH_SIZE, false)
+            .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
             .into_diagnostic()?;
 
         wallet_lock.apply_update(update).into_diagnostic()?;
