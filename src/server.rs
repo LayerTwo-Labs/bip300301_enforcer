@@ -20,8 +20,8 @@ use crate::{
         common::{ConsensusHex, ReverseHex},
         crypto::{
             crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response,
-            Ripemd160Request, Ripemd160Response, Secp256k1PrivKeyToPubKeyRequest,
-            Secp256k1PrivKeyToPubKeyResponse, Secp256k1SignRequest, Secp256k1SignResponse,
+            Ripemd160Request, Ripemd160Response, Secp256k1SecretKeyToPublicKeyRequest,
+            Secp256k1SecretKeyToPublicKeyResponse, Secp256k1SignRequest, Secp256k1SignResponse,
             Secp256k1VerifyRequest, Secp256k1VerifyResponse,
         },
         mainchain::{
@@ -876,6 +876,10 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 #[derive(Debug, Default)]
 pub struct CryptoServiceServer;
 
+const SECP256K1_SECRET_KEY_LENGTH: usize = 32;
+const SECP256K1_PUBLIC_KEY_LENGTH: usize = 33;
+const SECP256K1_SIGNATURE_COMPACT_SERIALIZATION_LENGTH: usize = 64;
+
 #[tonic::async_trait]
 impl CryptoService for CryptoServiceServer {
     async fn ripemd160(
@@ -913,22 +917,24 @@ impl CryptoService for CryptoServiceServer {
         Ok(tonic::Response::new(response))
     }
 
-    async fn secp256k1_priv_key_to_pub_key(
+    async fn secp256k1_secret_key_to_public_key(
         &self,
-        request: tonic::Request<Secp256k1PrivKeyToPubKeyRequest>,
-    ) -> std::result::Result<tonic::Response<Secp256k1PrivKeyToPubKeyResponse>, tonic::Status> {
-        let Secp256k1PrivKeyToPubKeyRequest { priv_key } = request.into_inner();
-        let priv_key: [u8; SECP256K1_PRIV_KEY_LENGTH] = priv_key
-            .ok_or_else(|| missing_field::<Secp256k1PrivKeyToPubKeyRequest>("priv_key"))?
-            .decode_tonic::<Secp256k1PrivKeyToPubKeyRequest, _>("priv_key")?;
-        let priv_key = bitcoin::secp256k1::SecretKey::from_slice(&priv_key).map_err(|_err| {
-            tonic::Status::new(tonic::Code::InvalidArgument, "invalid priv_key".to_string())
-        })?;
+        request: tonic::Request<Secp256k1SecretKeyToPublicKeyRequest>,
+    ) -> std::result::Result<tonic::Response<Secp256k1SecretKeyToPublicKeyResponse>, tonic::Status>
+    {
+        let Secp256k1SecretKeyToPublicKeyRequest { secret_key } = request.into_inner();
+        let secret_key: [u8; SECP256K1_SECRET_KEY_LENGTH] = secret_key
+            .ok_or_else(|| missing_field::<Secp256k1SecretKeyToPublicKeyRequest>("secret_key"))?
+            .decode_tonic::<Secp256k1SecretKeyToPublicKeyRequest, _>("secret_key")?;
+        let secret_key =
+            bitcoin::secp256k1::SecretKey::from_slice(&secret_key).map_err(|_err| {
+                invalid_field_value::<Secp256k1SecretKeyToPublicKeyRequest>("secret_key", "")
+            })?;
         let secp = Secp256k1::new();
-        let pub_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &priv_key);
-        let pub_key: [u8; SECP256K1_PUB_KEY_LENGTH] = pub_key.serialize();
-        let response = Secp256k1PrivKeyToPubKeyResponse {
-            pub_key: Some(ConsensusHex::encode_hex(&pub_key)),
+        let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let public_key: [u8; SECP256K1_PUBLIC_KEY_LENGTH] = public_key.serialize();
+        let response = Secp256k1SecretKeyToPublicKeyResponse {
+            public_key: Some(ConsensusHex::encode_hex(&public_key)),
         };
         Ok(tonic::Response::new(response))
     }
@@ -937,20 +943,22 @@ impl CryptoService for CryptoServiceServer {
         &self,
         request: tonic::Request<Secp256k1SignRequest>,
     ) -> std::result::Result<tonic::Response<Secp256k1SignResponse>, tonic::Status> {
-        let Secp256k1SignRequest { message, priv_key } = request.into_inner();
+        let Secp256k1SignRequest {
+            message,
+            secret_key,
+        } = request.into_inner();
         let message: Vec<u8> = message
             .ok_or_else(|| missing_field::<Secp256k1SignRequest>("message"))?
             .decode_tonic::<Secp256k1SignRequest, _>("message")?;
         let digest = sha256::Hash::hash(&message).to_byte_array();
         let message = bitcoin::secp256k1::Message::from_digest(digest);
-        let priv_key: [u8; SECP256K1_PRIV_KEY_LENGTH] = priv_key
-            .ok_or_else(|| missing_field::<Secp256k1SignRequest>("priv_key"))?
-            .decode_tonic::<Secp256k1SignRequest, _>("priv_key")?;
-        let priv_key = bitcoin::secp256k1::SecretKey::from_slice(&priv_key).map_err(|_err| {
-            tonic::Status::new(tonic::Code::InvalidArgument, "invalid priv_key".to_string())
-        })?;
+        let secret_key: [u8; SECP256K1_SECRET_KEY_LENGTH] = secret_key
+            .ok_or_else(|| missing_field::<Secp256k1SignRequest>("secret_key"))?
+            .decode_tonic::<Secp256k1SignRequest, _>("secret_key")?;
+        let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&secret_key)
+            .map_err(|_err| invalid_field_value::<Secp256k1SignRequest>("secret_key", ""))?;
         let secp = Secp256k1::new();
-        let signature = secp.sign_ecdsa(&message, &priv_key);
+        let signature = secp.sign_ecdsa(&message, &secret_key);
         let signature = signature.serialize_compact();
         let response = Secp256k1SignResponse {
             signature: Some(ConsensusHex::encode_hex(&signature)),
@@ -965,7 +973,7 @@ impl CryptoService for CryptoServiceServer {
         let Secp256k1VerifyRequest {
             message,
             signature,
-            pub_key,
+            public_key,
         } = request.into_inner();
         let message: Vec<u8> = message
             .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("message"))?
@@ -984,25 +992,22 @@ impl CryptoService for CryptoServiceServer {
                 )
             })?;
         let signature =
-            bitcoin::secp256k1::ecdsa::Signature::from_compact(&signature).map_err(|err| {
-                tonic::Status::new(
-                    tonic::Code::InvalidArgument,
-                    format!("invalid compact signature serialization: {err}"),
+            bitcoin::secp256k1::ecdsa::Signature::from_compact(&signature).map_err(|_err| {
+                invalid_field_value::<Secp256k1VerifyRequest>("signature", &hex::encode(&signature))
+            })?;
+        let public_key: [u8; SECP256K1_PUBLIC_KEY_LENGTH] = public_key
+            .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("public_key"))?
+            .decode_tonic::<Secp256k1VerifyRequest, _>("public_key")?;
+        let public_key =
+            bitcoin::secp256k1::PublicKey::from_slice(&public_key).map_err(|_err| {
+                invalid_field_value::<Secp256k1VerifyRequest>(
+                    "public_key",
+                    &hex::encode(&public_key),
                 )
             })?;
-        let pub_key: [u8; SECP256K1_PUB_KEY_LENGTH] = pub_key
-            .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("pub_key"))?
-            .decode_tonic::<Secp256k1VerifyRequest, _>("pub_key")?;
-        let pub_key = bitcoin::secp256k1::PublicKey::from_slice(&pub_key).map_err(|_err| {
-            tonic::Status::new(tonic::Code::InvalidArgument, "invalid pub_key".to_string())
-        })?;
         let secp = Secp256k1::new();
-        let valid = secp.verify_ecdsa(&message, &signature, &pub_key).is_ok();
+        let valid = secp.verify_ecdsa(&message, &signature, &public_key).is_ok();
         let response = Secp256k1VerifyResponse { valid };
         Ok(tonic::Response::new(response))
     }
 }
-
-const SECP256K1_PRIV_KEY_LENGTH: usize = 32;
-const SECP256K1_PUB_KEY_LENGTH: usize = 33;
-const SECP256K1_SIGNATURE_COMPACT_SERIALIZATION_LENGTH: usize = 64;
