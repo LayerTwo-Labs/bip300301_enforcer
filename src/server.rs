@@ -965,6 +965,44 @@ impl CryptoService for CryptoServiceServer {
         &self,
         request: tonic::Request<Secp256k1VerifyRequest>,
     ) -> std::result::Result<tonic::Response<Secp256k1VerifyResponse>, tonic::Status> {
-        todo!();
+        let Secp256k1VerifyRequest {
+            message,
+            signature,
+            pub_key,
+        } = request.into_inner();
+        let message: Vec<u8> = message
+            .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("message"))?
+            .decode_tonic::<Secp256k1VerifyRequest, _>("message")?;
+        let digest = sha256::Hash::hash(&message).to_byte_array();
+        let message = bitcoin::secp256k1::Message::from_digest(digest);
+        let signature: Vec<u8> = signature
+            .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("signature"))?
+            .decode_tonic::<Secp256k1VerifyRequest, _>("signature")?;
+        let signature_len = signature.len();
+        let signature: [u8; 64] = signature.try_into().map_err(|_err| {
+            tonic::Status::new(
+                tonic::Code::InvalidArgument,
+                format!("invalid signature length: {signature_len}"),
+            )
+        })?;
+        let signature =
+            bitcoin::secp256k1::ecdsa::Signature::from_compact(&signature).map_err(|err| {
+                tonic::Status::new(
+                    tonic::Code::InvalidArgument,
+                    format!("invalid compact signature serialization: {err}"),
+                )
+            })?;
+        let pub_key: [u8; 32] = pub_key
+            .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("pub_key"))?
+            .decode_tonic::<Secp256k1VerifyRequest, _>("pub_key")?;
+        let pub_key = bitcoin::key::PublicKey::from_slice(&pub_key).map_err(|_err| {
+            tonic::Status::new(tonic::Code::InvalidArgument, "invalid pub_key".to_string())
+        })?;
+        let secp = Secp256k1::new();
+        let valid = secp
+            .verify_ecdsa(&message, &signature, &pub_key.inner)
+            .is_ok();
+        let response = Secp256k1VerifyResponse { valid };
+        Ok(tonic::Response::new(response))
     }
 }
