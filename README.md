@@ -49,6 +49,60 @@ $ buf curl  --http2-prior-knowledge --protocol grpc \
 }
 ```
 
+# Interacting with the enforcer
+
+The CUSF enforcer exposes multiple gRPC services. These can be interacted with
+using a gRPC client of your choice, for example
+[`buf curl`](https://buf.build/docs/installation/) or
+[`grpcurl`](https://github.com/fullstorydev/grpcurl).
+
+Some examples of interacting with the enforcer using `buf curl`, assuming you
+expose the server at the default address `localhost:50051`:
+
+```bash
+# Define an alias for ease of use
+$ alias buf_curl='buf curl --http2-prior-knowledge --protocol grpc --emit-defaults'
+
+# List all the available RPCs
+$ buf_curl --list-methods http://localhost:50051
+cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
+cusf.mainchain.v1.ValidatorService/GetChainInfo
+cusf.mainchain.v1.ValidatorService/GetChainTip
+cusf.mainchain.v1.ValidatorService/GetSidechains
+cusf.mainchain.v1.WalletService/CreateNewAddress
+cusf.mainchain.v1.WalletService/CreateSidechainProposal
+... list continues
+
+# Fetching data with a RPC that takes no input data
+$ buf_curl http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetChainInfo
+{
+  "network": "NETWORK_SIGNET"
+}
+
+# Fetching data with a RPC that takes input data
+$ request='{"block_hash": {"hex": "000002a78fc54150bb2d4cdb0fb19bcf744f2877faf90a172972fca5daf5fe92"}}'
+$ buf_curl -d "$request" http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
+{
+  "headerInfo": {
+    "blockHash": {
+      "hex": "000002a78fc54150bb2d4cdb0fb19bcf744f2877faf90a172972fca5daf5fe92"
+    },
+    "prevBlockHash": {
+      "hex": "000002501d569e62a56ea175896d4348dd9cfef1d700e5b06250486df07c9225"
+    },
+    "height": 34998,
+    "work": {
+      "hex": "14d4490000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
+
+# Note that the request can also be read from a file. This can come in handy if
+# you're working on more complex requests that's hard to write out on the terminal
+echo "$request" > request.json
+$ buf_curl -d @request.json http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
+```
+
 # Regtest
 
 By default, the enforcer runs against our custom signet. If you instead want to
