@@ -106,6 +106,12 @@ impl Wallet {
                 .into_diagnostic()?
         };
 
+        tracing::info!(
+            "Instantiating {} wallet with data dir: {}",
+            network,
+            data_dir.display()
+        );
+
         let xprv = xkey
             .into_xprv(network)
             .ok_or(miette!("couldn't get xprv"))?;
@@ -128,7 +134,7 @@ impl Wallet {
             .extract_keys()
             .check_network(network)
             .load_wallet(&mut wallet_database)
-            .into_diagnostic()?;
+            .map_err(|err| miette!("failed to load wallet: {err:#}"))?;
 
         let bitcoin_wallet = match bitcoin_wallet {
             Some(wallet) => {
@@ -142,7 +148,7 @@ impl Wallet {
                 bdk_wallet::Wallet::create(external_desc, internal_desc)
                     .network(network)
                     .create_wallet(&mut wallet_database)
-                    .into_diagnostic()?
+                    .map_err(|err| miette!("failed to create wallet: {err:#}"))?
             }
         };
 

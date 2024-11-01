@@ -210,7 +210,6 @@ async fn main() -> Result<()> {
             mainchain_client,
             validator.clone(),
         )
-        .map_err(|e| miette!("failed to create wallet: {:?}", e))
         .await?;
         Some(Arc::new(wallet))
     } else {
