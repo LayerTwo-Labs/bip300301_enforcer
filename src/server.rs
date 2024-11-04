@@ -11,6 +11,7 @@ use futures::{
     StreamExt as _,
 };
 use miette::IntoDiagnostic as _;
+use thiserror::Error;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -47,11 +48,16 @@ use crate::{
     validator::Validator,
 };
 
-fn invalid_field_value<Message>(field_name: &str, value: &str) -> tonic::Status
+fn invalid_field_value<Message, Error>(
+    field_name: &str,
+    value: &str,
+    source: Error,
+) -> tonic::Status
 where
     Message: prost::Name,
+    Error: std::error::Error + Send + Sync + 'static,
 {
-    let err = crate::proto::Error::invalid_field_value::<Message>(field_name, value);
+    let err = crate::proto::Error::invalid_field_value::<Message, _>(field_name, value, source);
     tonic::Status::invalid_argument(err.to_string())
 }
 
@@ -125,8 +131,12 @@ impl ValidatorService for Validator {
             let raw_id =
                 sidechain_id.ok_or_else(|| missing_field::<GetBlockInfoRequest>("sidechain_id"))?;
 
-            SidechainNumber::try_from(raw_id).map_err(|_| {
-                invalid_field_value::<GetBlockInfoRequest>("sidechain_id", &raw_id.to_string())
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<GetBlockInfoRequest, _>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                    err,
+                )
             })?
         };
 
@@ -159,10 +169,11 @@ impl ValidatorService for Validator {
             let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("sidechain_id"))?;
 
-            SidechainNumber::try_from(raw_id).map_err(|_| {
-                invalid_field_value::<GetBmmHStarCommitmentRequest>(
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<GetBmmHStarCommitmentRequest, _>(
                     "sidechain_id",
                     &raw_id.to_string(),
+                    err,
                 )
             })?
         };
@@ -281,8 +292,12 @@ impl ValidatorService for Validator {
             let raw_id = sidechain_number
                 .ok_or_else(|| missing_field::<GetCtipRequest>("sidechain_number"))?;
 
-            SidechainNumber::try_from(raw_id).map_err(|_| {
-                invalid_field_value::<GetCtipRequest>("sidechain_number", &raw_id.to_string())
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<GetCtipRequest, _>(
+                    "sidechain_number",
+                    &raw_id.to_string(),
+                    err,
+                )
             })?
         };
 
@@ -395,8 +410,12 @@ impl ValidatorService for Validator {
             let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("sidechain_id"))?;
 
-            SidechainNumber::try_from(raw_id).map_err(|_| {
-                invalid_field_value::<GetTwoWayPegDataRequest>("sidechain_id", &raw_id.to_string())
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<GetTwoWayPegDataRequest, _>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                    err,
+                )
             })?
         };
 
@@ -444,8 +463,12 @@ impl ValidatorService for Validator {
             let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<SubscribeEventsRequest>("sidechain_id"))?;
 
-            SidechainNumber::try_from(raw_id).map_err(|_| {
-                invalid_field_value::<SubscribeEventsRequest>("sidechain_id", &raw_id.to_string())
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<SubscribeEventsRequest, _>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                    err,
+                )
             })?
         };
 
@@ -605,10 +628,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let sidechain_id = {
             let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("sidechain_id"))?;
-            SidechainNumber::try_from(raw_id).map_err(|_| {
-                invalid_field_value::<CreateSidechainProposalRequest>(
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<CreateSidechainProposalRequest, _>(
                     "sidechain_id",
                     &raw_id.to_string(),
+                    err,
                 )
             })?
         };
@@ -713,30 +737,33 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let amount = value_sats
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("value_sats"))
             .map(bdk_wallet::bitcoin::Amount::from_sat)
-            .map_err(|_| {
-                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+            .map_err(|err| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest, _>(
                     "value_sats",
                     &value_sats.unwrap_or_default().to_string(),
+                    err,
                 )
             })?;
 
         let locktime = height
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("height"))
             .map(bdk_wallet::bitcoin::absolute::LockTime::from_height)?
-            .map_err(|_| {
-                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+            .map_err(|err| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest, _>(
                     "height",
                     &height.unwrap_or_default().to_string(),
+                    err,
                 )
             })?;
 
         let sidechain_number = sidechain_id
             .ok_or_else(|| missing_field::<CreateBmmCriticalDataTransactionRequest>("sidechain_id"))
             .map(SidechainNumber::try_from)?
-            .map_err(|_| {
-                invalid_field_value::<CreateBmmCriticalDataTransactionRequest>(
+            .map_err(|err| {
+                invalid_field_value::<CreateBmmCriticalDataTransactionRequest, _>(
                     "sidechain_id",
                     &sidechain_id.unwrap_or_default().to_string(),
+                    err,
                 )
             })?;
 
@@ -827,28 +854,31 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let sidechain_number = sidechain_id
             .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("sidechain_id"))
             .map(SidechainNumber::try_from)?
-            .map_err(|_| {
-                invalid_field_value::<CreateDepositTransactionRequest>(
+            .map_err(|err| {
+                invalid_field_value::<CreateDepositTransactionRequest, _>(
                     "sidechain_id",
                     &sidechain_id.unwrap_or_default().to_string(),
+                    err,
                 )
             })?;
         let address: Vec<u8> = address
             .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("address"))?
             .decode_tonic::<CreateDepositTransactionRequest, _>("address")?;
         if address.is_empty() {
-            return Err(invalid_field_value::<CreateDepositTransactionRequest>(
+            return Err(invalid_field_value::<CreateDepositTransactionRequest, _>(
                 "address",
                 &hex::encode(address),
+                Error::AddressMustBeNonEmpty,
             ));
         }
         let value = value_sats
             .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("value_sats"))
             .map(Amount::from_sat)?;
         if value == Amount::ZERO {
-            return Err(invalid_field_value::<CreateDepositTransactionRequest>(
+            return Err(invalid_field_value::<CreateDepositTransactionRequest, _>(
                 "value_sats",
                 &value.to_string(),
+                Error::ValueMustBeGreaterThanZero,
             ));
         }
         let fee = fee_sats
@@ -874,6 +904,15 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let response = CreateDepositTransactionResponse { txid: Some(txid) };
         Ok(tonic::Response::new(response))
     }
+}
+
+#[derive(Debug, Error)]
+enum Error {
+    #[error("value must be greater than zero")]
+    ValueMustBeGreaterThanZero,
+
+    #[error("address must be non-empty")]
+    AddressMustBeNonEmpty,
 }
 
 #[derive(Debug, Default)]
@@ -929,10 +968,9 @@ impl CryptoService for CryptoServiceServer {
         let secret_key: [u8; SECP256K1_SECRET_KEY_LENGTH] = secret_key
             .ok_or_else(|| missing_field::<Secp256k1SecretKeyToPublicKeyRequest>("secret_key"))?
             .decode_tonic::<Secp256k1SecretKeyToPublicKeyRequest, _>("secret_key")?;
-        let secret_key =
-            bitcoin::secp256k1::SecretKey::from_slice(&secret_key).map_err(|_err| {
-                invalid_field_value::<Secp256k1SecretKeyToPublicKeyRequest>("secret_key", "")
-            })?;
+        let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&secret_key).map_err(|err| {
+            invalid_field_value::<Secp256k1SecretKeyToPublicKeyRequest, _>("secret_key", "", err)
+        })?;
         let secp = Secp256k1::new();
         let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
         let public_key: [u8; SECP256K1_PUBLIC_KEY_LENGTH] = public_key.serialize();
@@ -959,7 +997,7 @@ impl CryptoService for CryptoServiceServer {
             .ok_or_else(|| missing_field::<Secp256k1SignRequest>("secret_key"))?
             .decode_tonic::<Secp256k1SignRequest, _>("secret_key")?;
         let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&secret_key)
-            .map_err(|_err| invalid_field_value::<Secp256k1SignRequest>("secret_key", ""))?;
+            .map_err(|err| invalid_field_value::<Secp256k1SignRequest, _>("secret_key", "", err))?;
         let secp = Secp256k1::new();
         let signature = secp.sign_ecdsa(&message, &secret_key);
         let signature = signature.serialize_compact();
@@ -995,19 +1033,23 @@ impl CryptoService for CryptoServiceServer {
                 )
             })?;
         let signature =
-            bitcoin::secp256k1::ecdsa::Signature::from_compact(&signature).map_err(|_err| {
-                invalid_field_value::<Secp256k1VerifyRequest>("signature", &hex::encode(signature))
+            bitcoin::secp256k1::ecdsa::Signature::from_compact(&signature).map_err(|err| {
+                invalid_field_value::<Secp256k1VerifyRequest, _>(
+                    "signature",
+                    &hex::encode(signature),
+                    err,
+                )
             })?;
         let public_key: [u8; SECP256K1_PUBLIC_KEY_LENGTH] = public_key
             .ok_or_else(|| missing_field::<Secp256k1VerifyRequest>("public_key"))?
             .decode_tonic::<Secp256k1VerifyRequest, _>("public_key")?;
-        let public_key =
-            bitcoin::secp256k1::PublicKey::from_slice(&public_key).map_err(|_err| {
-                invalid_field_value::<Secp256k1VerifyRequest>(
-                    "public_key",
-                    &hex::encode(public_key),
-                )
-            })?;
+        let public_key = bitcoin::secp256k1::PublicKey::from_slice(&public_key).map_err(|err| {
+            invalid_field_value::<Secp256k1VerifyRequest, _>(
+                "public_key",
+                &hex::encode(public_key),
+                err,
+            )
+        })?;
         let secp = Secp256k1::new();
         let valid = secp.verify_ecdsa(&message, &signature, &public_key).is_ok();
         let response = Secp256k1VerifyResponse { valid };
