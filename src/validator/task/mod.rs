@@ -15,8 +15,7 @@ use bip300301::{
 use bitcoin::{
     self,
     hashes::{sha256d, Hash as _},
-    opcodes::all::OP_RETURN,
-    Amount, Block, BlockHash, OutPoint, Transaction, TxOut, Work,
+    Amount, Block, BlockHash, OutPoint, Transaction, Work,
 };
 use either::Either;
 use fallible_iterator::FallibleIterator;
@@ -308,6 +307,45 @@ fn handle_failed_m6ids(
 /// Deposit or (sidechain_id, m6id)
 type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, [u8; 32])>;
 
+/// Returns (sidechain_id, m6id)
+fn handle_m6(
+    rwtxn: &mut RwTxn,
+    dbs: &Dbs,
+    transaction: &Transaction,
+    sidechain_number: SidechainNumber,
+    old_total_value: Amount,
+) -> Result<Option<[u8; 32]>, error::HandleM5M6> {
+    let mut m6_valid = false;
+    let m6id = m6_to_id(transaction, old_total_value.to_sat());
+    if let Some(pending_m6ids) = dbs
+        .active_sidechains
+        .pending_m6ids
+        .try_get(rwtxn, &sidechain_number)?
+    {
+        for pending_m6id in &pending_m6ids {
+            if pending_m6id.m6id == m6id
+                && pending_m6id.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD
+            {
+                m6_valid = true;
+            }
+        }
+        if m6_valid {
+            let pending_m6ids: Vec<_> = pending_m6ids
+                .into_iter()
+                .filter(|pending_m6id| pending_m6id.m6id != m6id)
+                .collect();
+            dbs.active_sidechains
+                .pending_m6ids
+                .put(rwtxn, &sidechain_number, &pending_m6ids)?;
+        }
+    }
+    if m6_valid {
+        Ok(Some(m6id))
+    } else {
+        Err(error::HandleM5M6::InvalidM6)
+    }
+}
+
 fn handle_m5_m6(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
@@ -332,13 +370,8 @@ fn handle_m5_m6(
         }
     };
     let address = {
-        let output = &transaction.output[1];
-        let script = output.script_pubkey.to_bytes();
-        if script[0] == OP_RETURN.to_u8() {
-            Some(script[1..].to_vec())
-        } else {
-            None
-        }
+        let spk = &transaction.output[1].script_pubkey;
+        crate::messages::try_parse_op_return_address(spk)
     };
     let old_total_value = {
         if let Some(old_ctip) = dbs
@@ -365,42 +398,7 @@ fn handle_m5_m6(
         previous_total_value: old_total_value,
     };
 
-    let mut res = None;
-    // M6
-    if new_total_value < old_total_value {
-        let mut m6_valid = false;
-        let m6id = m6_to_id(transaction, old_total_value.to_sat());
-        if let Some(pending_m6ids) = dbs
-            .active_sidechains
-            .pending_m6ids
-            .try_get(rwtxn, &sidechain_number)?
-        {
-            for pending_m6id in &pending_m6ids {
-                if pending_m6id.m6id == m6id
-                    && pending_m6id.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD
-                {
-                    m6_valid = true;
-                }
-            }
-            if m6_valid {
-                let pending_m6ids: Vec<_> = pending_m6ids
-                    .into_iter()
-                    .filter(|pending_m6id| pending_m6id.m6id != m6id)
-                    .collect();
-                dbs.active_sidechains.pending_m6ids.put(
-                    rwtxn,
-                    &sidechain_number,
-                    &pending_m6ids,
-                )?;
-            }
-        }
-        if m6_valid {
-            res = Some(Either::Right((sidechain_number, m6id)));
-        } else {
-            return Err(error::HandleM5M6::InvalidM6);
-        }
-    }
-    let mut treasury_utxo_count = dbs
+    let treasury_utxo_count = dbs
         .active_sidechains
         .treasury_utxo_count
         .try_get(rwtxn, &sidechain_number)?
@@ -408,16 +406,35 @@ fn handle_m5_m6(
     // Sequence numbers begin at 0, so the total number of treasury utxos in the database
     // gives us the *next* sequence number.
     let sequence_number = treasury_utxo_count;
+    // M6
+    let res = if new_total_value < old_total_value {
+        if let Some(m6id) = handle_m6(rwtxn, dbs, transaction, sidechain_number, old_total_value)? {
+            Either::Right((sidechain_number, m6id))
+        } else {
+            return Ok(None);
+        }
+    } else if let Some(address) = address {
+        let deposit = Deposit {
+            sequence_number,
+            sidechain_id: sidechain_number,
+            outpoint: new_ctip,
+            address,
+            value: new_total_value - old_total_value,
+        };
+        Either::Left(deposit)
+    } else {
+        return Ok(None);
+    };
     dbs.active_sidechains.slot_sequence_to_treasury_utxo.put(
         rwtxn,
         &(sidechain_number, sequence_number),
         &treasury_utxo,
     )?;
-    treasury_utxo_count += 1;
+    let new_treasury_utxo_count = treasury_utxo_count + 1;
     dbs.active_sidechains.treasury_utxo_count.put(
         rwtxn,
         &sidechain_number,
-        &treasury_utxo_count,
+        &new_treasury_utxo_count,
     )?;
     let new_ctip = Ctip {
         outpoint: new_ctip,
@@ -426,22 +443,7 @@ fn handle_m5_m6(
     dbs.active_sidechains
         .ctip
         .put(rwtxn, &sidechain_number, &new_ctip)?;
-    match address {
-        Some(address) if new_total_value >= old_total_value && res.is_none() => {
-            let deposit = Deposit {
-                sequence_number,
-                sidechain_id: sidechain_number,
-                outpoint: OutPoint { txid, vout: 0 },
-                output: TxOut {
-                    value: new_total_value - old_total_value,
-                    script_pubkey: address.into(),
-                },
-            };
-            res = Some(Either::Left(deposit));
-        }
-        Some(_) | None => (),
-    }
-    Ok(res)
+    Ok(Some(res))
 }
 
 /// Handles a (potential) M8 BMM request.

@@ -33,7 +33,7 @@ use bitcoin::{
     consensus::Encodable as _,
     constants::{genesis_block, SUBSIDY_HALVING_INTERVAL},
     hash_types::TxMerkleNode,
-    hashes::{sha256d, Hash as _},
+    hashes::{sha256, sha256d, Hash as _, HashEngine},
     merkle_tree,
     opcodes::{
         all::{OP_PUSHBYTES_36, OP_RETURN},
@@ -717,12 +717,115 @@ impl Wallet {
                 error: err,
             })?;
 
-        let transaction_bytes = hex::decode(transaction_hex).unwrap();
         let transaction =
-            bitcoin::consensus::encode::deserialize::<Transaction>(&transaction_bytes)
+            bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)
                 .into_diagnostic()?;
 
         convert::bitcoin_tx_to_bdk_tx(transaction).into_diagnostic()
+    }
+
+    /// [`bdk_wallet::TxOrdering`] for deposit txs
+    fn deposit_txordering(
+        sidechain_addrs: HashMap<Vec<u8>, SidechainNumber>,
+    ) -> bdk_wallet::TxOrdering {
+        use bitcoin::hashes::{Hash, Hmac, HmacEngine};
+        use std::cmp::Ordering;
+        let hmac_engine = || {
+            let key = {
+                use rand::RngCore;
+                let mut bytes = vec![0u8; <sha256::Hash as Hash>::Engine::BLOCK_SIZE];
+                rand::thread_rng().fill_bytes(&mut bytes);
+                bytes
+            };
+            HmacEngine::<sha256::Hash>::new(&key)
+        };
+        fn hmac_sha256<T>(mut engine: HmacEngine<sha256::Hash>, value: &T) -> Hmac<sha256::Hash>
+        where
+            T: bitcoin::consensus::Encodable,
+        {
+            value
+                .consensus_encode(&mut engine)
+                .expect("should encode correctly");
+            Hmac::<sha256::Hash>::from_engine(engine)
+        }
+        let input_sort = {
+            let hmac_engine = hmac_engine();
+            move |txin_l: &bdk_wallet::bitcoin::TxIn, txin_r: &bdk_wallet::bitcoin::TxIn| {
+                let txin_l_hmac = hmac_sha256(hmac_engine.clone(), txin_l);
+                let txin_r_hmac = hmac_sha256(hmac_engine.clone(), txin_r);
+                txin_l_hmac.cmp(&txin_r_hmac)
+            }
+        };
+        enum TxOutKind {
+            OpDrivechain(SidechainNumber),
+            OpReturnAddress(SidechainNumber),
+            Other,
+        }
+        // classify as an op_drivechain output or an
+        // op_return address
+        fn classify_txout(
+            sidechain_addrs: &HashMap<Vec<u8>, SidechainNumber>,
+            txout: &bdk_wallet::bitcoin::TxOut,
+        ) -> TxOutKind {
+            if let Ok((_, sidechain_id)) =
+                crate::messages::parse_op_drivechain(txout.script_pubkey.as_bytes())
+            {
+                return TxOutKind::OpDrivechain(sidechain_id);
+            }
+            if let Some(address) =
+                crate::messages::try_parse_op_return_address(&txout.script_pubkey)
+            {
+                if let Some(sidechain_id) = sidechain_addrs.get(&address) {
+                    return TxOutKind::OpReturnAddress(*sidechain_id);
+                }
+            }
+            TxOutKind::Other
+        }
+        let output_sort = {
+            let hmac_engine = hmac_engine();
+            move |txout_l: &bdk_wallet::bitcoin::TxOut, txout_r: &bdk_wallet::bitcoin::TxOut| match (
+                classify_txout(&sidechain_addrs, txout_l),
+                classify_txout(&sidechain_addrs, txout_r),
+            ) {
+                (TxOutKind::OpDrivechain(_) | TxOutKind::OpReturnAddress(_), TxOutKind::Other) => {
+                    Ordering::Less
+                }
+                (TxOutKind::Other, TxOutKind::OpDrivechain(_) | TxOutKind::OpReturnAddress(_)) => {
+                    Ordering::Greater
+                }
+                (
+                    TxOutKind::OpDrivechain(sidechain_id_l),
+                    TxOutKind::OpDrivechain(sidechain_id_r),
+                )
+                | (
+                    TxOutKind::OpReturnAddress(sidechain_id_l),
+                    TxOutKind::OpReturnAddress(sidechain_id_r),
+                ) => sidechain_id_l.cmp(&sidechain_id_r),
+                (
+                    TxOutKind::OpDrivechain(sidechain_id_l),
+                    TxOutKind::OpReturnAddress(sidechain_id_r),
+                ) => match sidechain_id_l.cmp(&sidechain_id_r) {
+                    Ordering::Equal => Ordering::Less,
+                    ordering => ordering,
+                },
+                (
+                    TxOutKind::OpReturnAddress(sidechain_id_l),
+                    TxOutKind::OpDrivechain(sidechain_id_r),
+                ) => match sidechain_id_l.cmp(&sidechain_id_r) {
+                    Ordering::Equal => Ordering::Greater,
+                    ordering => ordering,
+                },
+                (TxOutKind::Other, TxOutKind::Other) => {
+                    let txout_l_hmac = hmac_sha256(hmac_engine.clone(), txout_l);
+                    let txout_r_hmac = hmac_sha256(hmac_engine.clone(), txout_r);
+                    txout_l_hmac.cmp(&txout_r_hmac)
+                }
+            }
+        };
+        bdk_wallet::TxOrdering::Custom {
+            input_sort: Arc::new(input_sort),
+            output_sort: Arc::new(output_sort),
+        }
     }
 
     #[allow(
@@ -736,6 +839,12 @@ impl Wallet {
         sidechain_ctip: Option<&Ctip>,
         fee: Option<Amount>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+        let sidechain_number = match crate::messages::parse_op_drivechain(
+            op_drivechain_output.script_pubkey.as_bytes(),
+        ) {
+            Ok((_, sidechain_number)) => sidechain_number,
+            Err(_) => return Err(miette::miette!("Failed to parse sidechain number")),
+        };
         // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
         // Ctip.
         let ctip_foreign_utxo = match sidechain_ctip {
@@ -781,6 +890,15 @@ impl Wallet {
                     .add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)
                     .into_diagnostic()?;
             }
+
+            builder.ordering(Self::deposit_txordering(
+                [(
+                    sidechain_address_data.as_bytes().to_owned(),
+                    sidechain_number,
+                )]
+                .into_iter()
+                .collect(),
+            ));
 
             builder.finish().into_diagnostic()?
         };

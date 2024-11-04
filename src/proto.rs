@@ -99,17 +99,6 @@ pub mod common {
                 .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
         }
 
-        pub fn decode_hex<Message, T>(self, field_name: &str) -> Result<T, super::Error>
-        where
-            Message: prost::Name,
-            T: hex::FromHex,
-        {
-            let Self { hex } = self;
-            let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
-            T::from_hex(&hex)
-                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
-        }
-
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
@@ -127,8 +116,31 @@ pub mod common {
             let hex = bitcoin::consensus::encode::serialize_hex(value);
             Self { hex: Some(hex) }
         }
+    }
 
-        pub fn encode_hex<T>(value: &T) -> Self
+    impl Hex {
+        pub fn decode<Message, T>(self, field_name: &str) -> Result<T, super::Error>
+        where
+            Message: prost::Name,
+            T: hex::FromHex,
+        {
+            let Self { hex } = self;
+            let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            T::from_hex(&hex)
+                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+        }
+
+        /// Variant of [`Self::decode`] that returns a `tonic::Status` error
+        pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
+        where
+            Message: prost::Name,
+            T: hex::FromHex,
+        {
+            self.decode::<Message, _>(field_name)
+                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+        }
+
+        pub fn encode<T>(value: &T) -> Self
         where
             T: hex::ToHex,
         {
@@ -182,7 +194,7 @@ pub mod crypto {
 pub mod mainchain {
     use crate::{
         messages::{CoinbaseMessage, M4AckBundles},
-        proto::common::{ConsensusHex, ReverseHex},
+        proto::common::{ConsensusHex, Hex, ReverseHex},
         types::SidechainNumber,
     };
 
@@ -209,7 +221,7 @@ pub mod mainchain {
                 title: Some(declaration.title),
                 description: Some(declaration.description),
                 hash_id_1: Some(ConsensusHex::encode(&declaration.hash_id_1)),
-                hash_id_2: Some(ConsensusHex::encode_hex(&declaration.hash_id_2)),
+                hash_id_2: Some(Hex::encode(&declaration.hash_id_2)),
             }
         }
     }
@@ -238,7 +250,7 @@ pub mod mainchain {
                 .ok_or_else(|| {
                     super::Error::missing_field::<sidechain_declaration::V0>("hash_id_2")
                 })?
-                .decode_hex::<sidechain_declaration::V0, _>("hash_id_2")?;
+                .decode::<sidechain_declaration::V0, _>("hash_id_2")?;
             Ok(Self {
                 title,
                 description,
@@ -497,27 +509,23 @@ pub mod mainchain {
         }
     }
 
-    impl From<bitcoin::TxOut> for Output {
-        fn from(output: bitcoin::TxOut) -> Self {
-            Self {
-                address: Some(ConsensusHex::encode(&output.script_pubkey)),
-                value_sats: output.value.to_sat(),
-            }
-        }
-    }
-
     impl From<crate::types::Deposit> for (SidechainNumber, Deposit) {
         fn from(deposit: crate::types::Deposit) -> Self {
             let crate::types::Deposit {
                 sidechain_id,
                 sequence_number,
                 outpoint,
-                output,
+                address,
+                value,
             } = deposit;
+            let output = deposit::Output {
+                address: Some(Hex::encode(&address)),
+                value_sats: Some(value.to_sat()),
+            };
             let deposit = Deposit {
-                sequence_number,
+                sequence_number: Some(sequence_number),
                 outpoint: Some(outpoint.into()),
-                output: Some(output.into()),
+                output: Some(output),
             };
             (sidechain_id, deposit)
         }
