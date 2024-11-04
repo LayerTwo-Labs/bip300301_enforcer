@@ -598,24 +598,13 @@ fn connect_block(
             transaction,
             &accepted_bmm_requests,
             &prev_mainchain_block_hash,
-        )
-        // We need to differentiate fatal and non-fatal errors. Non-fatal
-        // errors should not cause the initial sync to exit! We therefore must take
-        // care to not use the ? operator to exit from connect_block with an error
-        .or_else(|err| match err.split() {
-            Ok(just_for_info) => {
-                tracing::warn!("Non-fatal error handling M8: {just_for_info:#}");
-                Ok(false)
-            }
-            Err(err) => return Err(error::ConnectBlock::M8(err.into())),
-        })? {
+        )? {
             tracing::trace!(
                 "Handled valid M8 BMM request in tx `{}`",
                 transaction.compute_txid()
             );
         }
     }
-
     let block_info = BlockInfo {
         bmm_commitments: accepted_bmm_requests.into_iter().collect(),
         coinbase_txid: coinbase.compute_txid(),
@@ -812,10 +801,7 @@ pub(super) async fn task(
         .or_else(|err| {
             let non_fatal: <error::Sync as fatality::Split>::Jfyi = err.split()?;
             let non_fatal = anyhow::Error::from(non_fatal);
-
-            // In a way, this doesn't make sense. The initial sync exits, at
-            // this point. We'd need to restart it?
-            tracing::warn!("Non-fatal error during initial sync: {non_fatal:#}");
+            tracing::warn!("Error during initial sync: {non_fatal:#}");
             Ok::<(), error::Fatal>(())
         })?;
     zmq_sequence
