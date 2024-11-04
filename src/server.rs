@@ -821,49 +821,49 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             value_sats,
             fee_sats,
         } = request.into_inner();
-
-        let value_sats = Amount::from_sat(value_sats);
-        let fee_sats = match fee_sats {
-            0 => None,
-            fee => Some(Amount::from_sat(fee)),
-        };
-
-        let sidechain_id: SidechainNumber = {
-            <u8 as TryFrom<_>>::try_from(sidechain_id)
-                .map_err(|_| {
-                    invalid_field_value::<CreateDepositTransactionRequest>(
-                        "sidechain_id",
-                        &sidechain_id.to_string(),
-                    )
-                })?
-                .into()
-        };
-
-        if value_sats.to_sat() == 0 {
-            return Err(invalid_field_value::<CreateDepositTransactionRequest>(
-                "value_sats",
-                &value_sats.to_string(),
-            ));
-        }
-
+        let sidechain_number = sidechain_id
+            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("sidechain_id"))
+            .map(SidechainNumber::try_from)?
+            .map_err(|_| {
+                invalid_field_value::<CreateDepositTransactionRequest>(
+                    "sidechain_id",
+                    &sidechain_id.unwrap_or_default().to_string(),
+                )
+            })?;
+        let address: Vec<u8> = address
+            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("address"))?
+            .decode_tonic::<CreateDepositTransactionRequest, _>("address")?;
         if address.is_empty() {
             return Err(invalid_field_value::<CreateDepositTransactionRequest>(
-                "address", &address,
+                "address",
+                &hex::encode(address),
             ));
         }
+        let value = value_sats
+            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("value_sats"))
+            .map(Amount::from_sat)?;
+        if value == Amount::ZERO {
+            return Err(invalid_field_value::<CreateDepositTransactionRequest>(
+                "value_sats",
+                &value.to_string(),
+            ));
+        }
+        let fee = fee_sats
+            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("fee_sats"))
+            .map(Amount::from_sat)?;
 
         if !self
-            .is_sidechain_active(sidechain_id)
+            .is_sidechain_active(sidechain_number)
             .map_err(|err| err.into_status())?
         {
             return Err(tonic::Status::new(
                 tonic::Code::FailedPrecondition,
-                format!("sidechain {sidechain_id} is not active"),
+                format!("sidechain {sidechain_number} is not active"),
             ));
         }
 
         let txid = self
-            .create_deposit(sidechain_id, address, value_sats, fee_sats)
+            .create_deposit(sidechain_number, address, value, Some(fee))
             .await
             .map_err(|err| err.into_status())?;
 
