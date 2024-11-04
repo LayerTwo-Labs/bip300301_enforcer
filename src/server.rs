@@ -17,7 +17,7 @@ use crate::{
     convert,
     messages::CoinbaseMessage,
     proto::{
-        common::{ConsensusHex, ReverseHex},
+        common::{ConsensusHex, Hex, ReverseHex},
         crypto::{
             crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response,
             Ripemd160Request, Ripemd160Response, Secp256k1SecretKeyToPublicKeyRequest,
@@ -799,9 +799,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             })?;
 
         let txid = tx.compute_txid();
+        /*
         self.broadcast_transaction(tx)
             .await
             .map_err(|err| err.into_status())?;
+        */
 
         let txid = convert::bdk_txid_to_bitcoin_txid(txid);
 
@@ -892,7 +894,7 @@ impl CryptoService for CryptoServiceServer {
             .decode_tonic::<Ripemd160Request, _>("msg")?;
         let digest = ripemd160::Hash::hash(&msg);
         let response = Ripemd160Response {
-            digest: Some(ConsensusHex::encode_hex(&digest.as_byte_array())),
+            digest: Some(Hex::encode(&digest.as_byte_array())),
         };
         Ok(tonic::Response::new(response))
     }
@@ -912,7 +914,7 @@ impl CryptoService for CryptoServiceServer {
         engine.input(&msg);
         let hmac = hmac::Hmac::<sha512::Hash>::from_engine(engine);
         let response = HmacSha512Response {
-            hmac: Some(ConsensusHex::encode_hex(&hmac.as_byte_array())),
+            hmac: Some(Hex::encode(&hmac.as_byte_array())),
         };
         Ok(tonic::Response::new(response))
     }
@@ -934,7 +936,7 @@ impl CryptoService for CryptoServiceServer {
         let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
         let public_key: [u8; SECP256K1_PUBLIC_KEY_LENGTH] = public_key.serialize();
         let response = Secp256k1SecretKeyToPublicKeyResponse {
-            public_key: Some(ConsensusHex::encode_hex(&public_key)),
+            public_key: Some(ConsensusHex::encode(&public_key)),
         };
         Ok(tonic::Response::new(response))
     }
@@ -961,7 +963,7 @@ impl CryptoService for CryptoServiceServer {
         let signature = secp.sign_ecdsa(&message, &secret_key);
         let signature = signature.serialize_compact();
         let response = Secp256k1SignResponse {
-            signature: Some(ConsensusHex::encode_hex(&signature)),
+            signature: Some(Hex::encode(&signature)),
         };
         Ok(tonic::Response::new(response))
     }

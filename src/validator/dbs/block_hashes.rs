@@ -454,7 +454,7 @@ impl BlockHashDbs {
                 });
             };
             prev_block = current_block;
-            current_block = two_way_peg_data.header_info.block_hash;
+            current_block = two_way_peg_data.header_info.prev_block_hash;
             res.push(two_way_peg_data);
         }
         res.reverse();

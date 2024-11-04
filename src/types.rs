@@ -2,7 +2,7 @@ use std::num::TryFromIntError;
 
 use bitcoin::{
     hashes::{sha256d, Hash as _},
-    Amount, BlockHash, OutPoint, TxOut, Txid, Work,
+    Amount, BlockHash, OutPoint, Txid, Work,
 };
 use derive_more::derive::Display;
 use hashlink::LinkedHashMap;
@@ -249,9 +249,10 @@ pub struct PendingM6id {
     pub vote_count: u16,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(derive_more::Debug, Deserialize, Serialize)]
 pub struct TreasuryUtxo {
     pub outpoint: OutPoint,
+    #[debug("{:?}", address.as_ref().map(hex::encode))]
     pub address: Option<Vec<u8>>,
     pub total_value: Amount,
     pub previous_total_value: Amount,
@@ -262,7 +263,8 @@ pub struct Deposit {
     pub sidechain_id: SidechainNumber,
     pub sequence_number: u64,
     pub outpoint: OutPoint,
-    pub output: TxOut,
+    pub address: Vec<u8>,
+    pub value: Amount,
 }
 
 #[derive(Clone, Copy, Debug)]

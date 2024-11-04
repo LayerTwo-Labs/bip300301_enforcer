@@ -230,6 +230,20 @@ pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], SidechainNumber> {
     Ok((input, SidechainNumber::from(sidechain_number)))
 }
 
+pub fn try_parse_op_return_address(script: &Script) -> Option<Vec<u8>> {
+    let mut instructions = script.instructions();
+    let Some(Ok(Instruction::Op(OP_RETURN))) = instructions.next() else {
+        return None;
+    };
+    let Some(Ok(Instruction::PushBytes(address))) = instructions.next() else {
+        return None;
+    };
+    let None = instructions.next() else {
+        return None;
+    };
+    Some(address.as_bytes().to_owned())
+}
+
 pub fn create_m5_deposit_output(
     sidechain_number: SidechainNumber,
     old_ctip_amount: Amount,
