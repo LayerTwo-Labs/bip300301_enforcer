@@ -755,10 +755,10 @@ impl Wallet {
     fn create_deposit_op_drivechain_output(
         sidechain_number: SidechainNumber,
         sidechain_ctip_amount: Amount,
-        value_sats: Amount,
+        value: Amount,
     ) -> bdk_wallet::bitcoin::TxOut {
         let deposit_txout =
-            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value_sats);
+            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value);
 
         bdk_wallet::bitcoin::TxOut {
             script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
@@ -801,7 +801,7 @@ impl Wallet {
         op_drivechain_output: bdk_wallet::bitcoin::TxOut,
         sidechain_address_data: bdk_wallet::bitcoin::script::PushBytesBuf,
         sidechain_ctip: Option<&Ctip>,
-        fee_sats: Option<Amount>,
+        fee: Option<Amount>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
         // Ctip.
@@ -838,8 +838,8 @@ impl Wallet {
                 )
                 .add_data(&sidechain_address_data);
 
-            if let Some(fee_sats) = fee_sats {
-                builder.fee_absolute(fee_sats);
+            if let Some(fee) = fee {
+                builder.fee_absolute(fee);
             }
 
             if let Some((ctip_psbt_input, outpoint)) = ctip_foreign_utxo {
@@ -864,9 +864,9 @@ impl Wallet {
     pub async fn create_deposit(
         &self,
         sidechain_number: SidechainNumber,
-        sidechain_address: String,
-        value_sats: Amount,
-        fee_sats: Option<Amount>,
+        sidechain_address: Vec<u8>,
+        value: Amount,
+        fee: Option<Amount>,
     ) -> Result<bitcoin::Txid> {
         // If this is None, there's been no deposit to this sidechain yet. We're the first one!
         let sidechain_ctip = self.validator.try_get_ctip(sidechain_number)?;
@@ -879,7 +879,7 @@ impl Wallet {
         let op_drivechain_output = Self::create_deposit_op_drivechain_output(
             sidechain_number,
             sidechain_ctip_amount,
-            value_sats,
+            value,
         );
 
         tracing::debug!(
@@ -888,9 +888,8 @@ impl Wallet {
             op_drivechain_output.script_pubkey.to_asm_string(),
         );
 
-        let sidechain_address_bytes = sidechain_address.into_bytes();
         let sidechain_address_data = bdk_wallet::bitcoin::script::PushBytesBuf::try_from(
-            sidechain_address_bytes,
+            sidechain_address,
         )
         .map_err(|err| miette!("failed to convert sidechain address to PushBytesBuf: {err:#}"))?;
 
@@ -899,7 +898,7 @@ impl Wallet {
                 op_drivechain_output,
                 sidechain_address_data,
                 sidechain_ctip,
-                fee_sats,
+                fee,
             )
             .await?;
 
