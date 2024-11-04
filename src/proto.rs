@@ -17,6 +17,7 @@ pub enum Error {
         field_name: String,
         message_name: String,
         value: String,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
     #[error(
         "Invalid value in repeated field `{field_name}` of message `{message_name}`: `{value}`"
@@ -51,14 +52,16 @@ impl Error {
         }
     }
 
-    pub fn invalid_field_value<Message>(field_name: &str, value: &str) -> Self
+    pub fn invalid_field_value<Message, Error>(field_name: &str, value: &str, source: Error) -> Self
     where
         Message: prost::Name,
+        Error: std::error::Error + Send + Sync + 'static,
     {
         Self::InvalidFieldValue {
             field_name: field_name.to_owned(),
             message_name: Message::full_name(),
             value: value.to_owned(),
+            source: Box::new(source),
         }
     }
 
@@ -85,6 +88,8 @@ impl Error {
 }
 
 pub mod common {
+    use std::error::Error as _;
+
     tonic::include_proto!("cusf.common.v1");
 
     impl ConsensusHex {
@@ -95,8 +100,9 @@ pub mod common {
         {
             let Self { hex } = self;
             let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
-            bitcoin::consensus::encode::deserialize_hex(&hex)
-                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+            bitcoin::consensus::encode::deserialize_hex(&hex).map_err(|err| {
+                super::Error::invalid_field_value::<Message, _>(field_name, &hex, err)
+            })
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
@@ -105,8 +111,13 @@ pub mod common {
             Message: prost::Name,
             T: bitcoin::consensus::Decodable,
         {
-            self.decode::<Message, _>(field_name)
-                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+            self.decode::<Message, _>(field_name).map_err(|err| {
+                let mut msg = err.to_string();
+                if let Some(source) = err.source() {
+                    msg = format!("{msg}: {source:#}")
+                }
+                tonic::Status::new(tonic::Code::InvalidArgument, msg)
+            })
         }
 
         pub fn encode<T>(value: &T) -> Self
@@ -123,11 +134,13 @@ pub mod common {
         where
             Message: prost::Name,
             T: hex::FromHex,
+            <T as hex::FromHex>::Error: std::error::Error + Send + Sync + 'static,
         {
             let Self { hex } = self;
             let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
-            T::from_hex(&hex)
-                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+            T::from_hex(&hex).map_err(|err| {
+                super::Error::invalid_field_value::<Message, _>(field_name, &hex, err)
+            })
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
@@ -135,9 +148,15 @@ pub mod common {
         where
             Message: prost::Name,
             T: hex::FromHex,
+            <T as hex::FromHex>::Error: std::error::Error + Send + Sync + 'static,
         {
-            self.decode::<Message, _>(field_name)
-                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+            self.decode::<Message, _>(field_name).map_err(|err| {
+                let mut msg = err.to_string();
+                if let Some(source) = err.source() {
+                    msg = format!("{msg}: {source:#}")
+                }
+                tonic::Status::new(tonic::Code::InvalidArgument, msg)
+            })
         }
 
         pub fn encode<T>(value: &T) -> Self
@@ -157,11 +176,13 @@ pub mod common {
         {
             let Self { hex } = self;
             let hex = hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
-            let mut bytes = hex::decode(&hex)
-                .map_err(|_| super::Error::invalid_field_value::<Message>(field_name, &hex))?;
+            let mut bytes = hex::decode(&hex).map_err(|err| {
+                super::Error::invalid_field_value::<Message, _>(field_name, &hex, err)
+            })?;
             bytes.reverse();
-            bitcoin::consensus::deserialize(&bytes)
-                .map_err(|_err| super::Error::invalid_field_value::<Message>(field_name, &hex))
+            bitcoin::consensus::deserialize(&bytes).map_err(|err| {
+                super::Error::invalid_field_value::<Message, _>(field_name, &hex, err)
+            })
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
@@ -170,8 +191,13 @@ pub mod common {
             Message: prost::Name,
             T: bitcoin::consensus::Decodable,
         {
-            self.decode::<Message, _>(field_name)
-                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+            self.decode::<Message, _>(field_name).map_err(|err| {
+                let mut msg = err.to_string();
+                if let Some(source) = err.source() {
+                    msg = format!("{msg}: {source:#}")
+                }
+                tonic::Status::new(tonic::Code::InvalidArgument, msg)
+            })
         }
 
         pub fn encode<T>(value: &T) -> Self
@@ -334,10 +360,11 @@ pub mod mainchain {
                 let sidechain_number: u32 = sidechain_number.ok_or_else(|| {
                     Self::Error::missing_field::<ProposeSidechain>("sidechain_number")
                 })?;
-                sidechain_number.try_into().map_err(|_| {
-                    Self::Error::invalid_field_value::<ProposeSidechain>(
+                sidechain_number.try_into().map_err(|err| {
+                    Self::Error::invalid_field_value::<ProposeSidechain, _>(
                         "sidechain_number",
                         &sidechain_number.to_string(),
+                        err,
                     )
                 })?
             };
@@ -366,10 +393,11 @@ pub mod mainchain {
                 let sidechain_number: u32 = sidechain_number.ok_or_else(|| {
                     Self::Error::missing_field::<AckSidechain>("sidechain_number")
                 })?;
-                sidechain_number.try_into().map_err(|_| {
-                    Self::Error::invalid_field_value::<AckSidechain>(
+                sidechain_number.try_into().map_err(|err| {
+                    Self::Error::invalid_field_value::<AckSidechain, _>(
                         "sidechain_number",
                         &sidechain_number.to_string(),
+                        err,
                     )
                 })?
             };
@@ -398,10 +426,11 @@ pub mod mainchain {
                 let sidechain_number: u32 = sidechain_number.ok_or_else(|| {
                     Self::Error::missing_field::<ProposeBundle>("sidechain_number")
                 })?;
-                sidechain_number.try_into().map_err(|_| {
-                    Self::Error::invalid_field_value::<ProposeBundle>(
+                sidechain_number.try_into().map_err(|err| {
+                    Self::Error::invalid_field_value::<ProposeBundle, _>(
                         "sidechain_number",
                         &sidechain_number.to_string(),
+                        err,
                     )
                 })?
             };
