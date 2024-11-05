@@ -87,7 +87,7 @@ impl IntoStatus for miette::Report {
         }
 
         tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
-        tonic::Status::new(tonic::Code::Unknown, self.to_string())
+        tonic::Status::new(tonic::Code::Unknown, format!("{self:#}"))
     }
 }
 
