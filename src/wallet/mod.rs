@@ -20,14 +20,17 @@ use bdk_wallet::{
     ChangeSet, KeychainKind,
 };
 use bip300301::{
-    client::{BlockchainInfo, GetRawTransactionClient, GetRawTransactionVerbose},
+    client::{
+        BlockchainInfo, BoolWitness, GetRawMempoolClient, GetRawTransactionClient,
+        GetRawTransactionVerbose,
+    },
     jsonrpsee::http_client::HttpClient,
     MainClient,
 };
 use bitcoin::{
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
-    consensus::{Decodable as _, Encodable as _},
+    consensus::Encodable as _,
     constants::{genesis_block, SUBSIDY_HALVING_INTERVAL},
     hash_types::TxMerkleNode,
     hashes::{sha256d, Hash as _},
@@ -41,7 +44,7 @@ use bitcoin::{
 };
 use miette::{miette, IntoDiagnostic, Result};
 use parking_lot::{Mutex, RwLock};
-use rusqlite::{Connection, Row};
+use rusqlite::Connection;
 
 use crate::{
     cli::WalletConfig,
@@ -221,25 +224,6 @@ impl Wallet {
                    (sidechain_number INTEGER NOT NULL,
                     bundle_hash BLOB NOT NULL,
                     UNIQUE(sidechain_number, bundle_hash));",
-                ),
-                // TODO: delete this? Not persisting to this table anywhere.
-                // Not clear how we're going to keep this in sync with the
-                // actual mempool. Seems like we could accomplish the same
-                // thing through `listtransactions`
-                M::up(
-                    "CREATE TABLE mempool
-                   (txid BLOB UNIQUE NOT NULL,
-                    tx_data BLOB NOT NULL);",
-                ),
-                // This is really a table of _pending_ deposits. Gets wiped
-                // upon generating a fresh block. How will this work for
-                // non-regtest?
-                M::up(
-                    "CREATE TABLE deposits
-                   (sidechain_number INTEGER NOT NULL,
-                    address BLOB NOT NULl,
-                    amount INTEGER NOT NULL,
-                    txid BLOB NOT NULL);",
                 ),
                 M::up(
                     "CREATE TABLE bmm_requests
@@ -539,14 +523,6 @@ impl Wallet {
         Ok(())
     }
 
-    fn delete_pending_deposits(&self) -> Result<()> {
-        self.db_connection
-            .lock()
-            .execute("DELETE FROM deposits;", ())
-            .into_diagnostic()?;
-        Ok(())
-    }
-
     // Gets wiped upon generating a new block.
     // TODO: how will this work for non-regtest?
     fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
@@ -558,62 +534,6 @@ impl Wallet {
             )
             .into_diagnostic()?;
         Ok(())
-    }
-
-    /// Fetches pending deposits. If `sidechain_number` is provided, only
-    /// deposits for that sidechain are returned.
-    fn get_pending_deposits(
-        &self,
-        sidechain_number: Option<SidechainNumber>,
-    ) -> Result<Vec<Deposit>> {
-        let with_connection = |connection: &Connection| -> Result<_> {
-            let mut statement = match sidechain_number {
-                Some(_sidechain_number) => connection
-                    .prepare(
-                        "SELECT sidechain_number, address, amount, tx_data
-                         FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
-                         WHERE sidechain_number = ?1;",
-                    )
-                    .into_diagnostic()?,
-                None => connection
-                    .prepare(
-                        "SELECT sidechain_number, address, amount, tx_data
-                     FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid;",
-                    )
-                    .into_diagnostic()?,
-            };
-            // FIXME: Make this code more sane.
-            let func = |row: &Row| {
-                let sidechain_number: u8 = row.get(0)?;
-                let address: Vec<u8> = row.get(1)?;
-                let amount: u64 = row.get(2)?;
-                let tx_data: Vec<u8> = row.get(3)?;
-                let transaction =
-                    Transaction::consensus_decode_from_finite_reader(&mut tx_data.as_slice())
-                        .unwrap();
-                let deposit = Deposit {
-                    sidechain_number,
-                    address,
-                    amount,
-                    transaction,
-                };
-                Ok(deposit)
-            };
-
-            let rows = match sidechain_number {
-                Some(sidechain_number) => statement
-                    .query_map([u8::from(sidechain_number)], func)
-                    .into_diagnostic()?,
-                None => statement.query_map([], func).into_diagnostic()?,
-            };
-            let mut deposits = vec![];
-            for deposit in rows {
-                let deposit = deposit.into_diagnostic()?;
-                deposits.push(deposit);
-            }
-            Ok(deposits)
-        };
-        with_connection(&self.db_connection.lock())
     }
 
     async fn mine(&self, coinbase_outputs: &[TxOut], transactions: Vec<Transaction>) -> Result<()> {
@@ -668,7 +588,7 @@ impl Wallet {
             // proposals broadcasted by (potentially) someone else, and already active.
             let active_sidechain_proposals = self.get_active_sidechain_proposals().await?;
 
-            if ack_all_proposals {
+            if ack_all_proposals && !active_sidechain_proposals.is_empty() {
                 tracing::info!(
                     "Handle sidechain ACK: acking all sidechains irregardless of what DB says"
                 );
@@ -732,21 +652,38 @@ impl Wallet {
             }
 
             let coinbase_outputs = coinbase_builder.build().into_diagnostic()?;
-            let deposits = self.get_pending_deposits(None)?;
-            let deposit_transactions: Vec<Transaction> = deposits
-                .into_iter()
-                .map(|deposit| deposit.transaction)
-                .collect();
+
+            // We want to include all transactions from the mempool into our newly generated block.
+            // This approach is perhaps a bit naive, and could fail if there are conflicting TXs
+            // pending. On signet the block is constructed using `getblocktemplate`, so this will not
+            // be an issue there.
+            //
+            // Including all the mempool transactions here ensure that pending sidechain deposit
+            // transactions get included into a block.
+            let raw_mempool = self
+                .main_client
+                .get_raw_mempool(BoolWitness::<false>, BoolWitness::<false>)
+                .await
+                .map_err(|err| error::BitcoinCoreRPC {
+                    method: "getrawmempool".to_string(),
+                    error: err,
+                })?;
+
+            let mut mempool_transactions = vec![];
+
+            for txid in raw_mempool {
+                let transaction = self.fetch_transaction(txid).await?;
+                mempool_transactions.push(transaction);
+            }
 
             tracing::info!(
-                "Generate: mining block with {} coinbase outputs, {} deposits",
+                "Generate: mining block with {} coinbase outputs, {} transactions",
                 coinbase_outputs.len(),
-                deposit_transactions.len()
+                mempool_transactions.len()
             );
 
-            self.mine(&coinbase_outputs, deposit_transactions).await?;
+            self.mine(&coinbase_outputs, mempool_transactions).await?;
             self.delete_pending_sidechain_proposals()?;
-            self.delete_pending_deposits()?;
             self.delete_bmm_requests(&mainchain_tip)?;
         }
         Ok(())
@@ -768,21 +705,17 @@ impl Wallet {
         }
     }
 
-    async fn fetch_ctip_transaction(
-        &self,
-        ctip_txid: Txid,
-    ) -> Result<bdk_wallet::bitcoin::Transaction> {
+    async fn fetch_transaction(&self, txid: Txid) -> Result<bdk_wallet::bitcoin::Transaction> {
         let block_hash = None;
 
-        let rpc_res = self
+        let transaction_hex = self
             .main_client
-            .get_raw_transaction(ctip_txid, GetRawTransactionVerbose::<true>, block_hash)
+            .get_raw_transaction(txid, GetRawTransactionVerbose::<false>, block_hash)
             .await
-            .into_diagnostic()?;
-
-        let Some(transaction_hex) = rpc_res.as_str() else {
-            return Err(miette!("failed to fetch ctip transaction"));
-        };
+            .map_err(|err| error::BitcoinCoreRPC {
+                method: "getrawtransaction".to_string(),
+                error: err,
+            })?;
 
         let transaction_bytes = hex::decode(transaction_hex).unwrap();
         let transaction =
@@ -812,9 +745,7 @@ impl Wallet {
                     vout: sidechain_ctip.outpoint.vout,
                 };
 
-                let ctip_transaction = self
-                    .fetch_ctip_transaction(sidechain_ctip.outpoint.txid)
-                    .await?;
+                let ctip_transaction = self.fetch_transaction(sidechain_ctip.outpoint.txid).await?;
 
                 let psbt_input = bdk_wallet::bitcoin::psbt::Input {
                     non_witness_utxo: Some(ctip_transaction),
