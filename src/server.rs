@@ -671,11 +671,12 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         }
 
         // FIXME: Remove `optional` from the `blocks` parameter in the proto file.
-        let count = request.into_inner().blocks.unwrap_or(1);
+        let GenerateBlocksRequest {
+            blocks,
+            ack_all_proposals,
+        } = request.into_inner();
+        let count = blocks.unwrap_or(1);
 
-        // TODO: take this in from the protobuf request, once https://github.com/LayerTwo-Labs/cusf_sidechain_proto/pull/21
-        // is merged.
-        let ack_all_proposals = true;
         self.generate(count, ack_all_proposals)
             .await
             .map_err(|err| err.into_status())?;
