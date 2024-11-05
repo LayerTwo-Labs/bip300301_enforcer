@@ -364,7 +364,6 @@ fn handle_m5_m6(
         total_value: new_total_value,
         previous_total_value: old_total_value,
     };
-    dbg!(&treasury_utxo);
 
     let mut res = None;
     // M6
