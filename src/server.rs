@@ -34,14 +34,14 @@ use crate::{
             CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
             CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
             CreateSidechainProposalRequest, CreateSidechainProposalResponse, GenerateBlocksRequest,
-            GenerateBlocksResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
-            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
-            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
-            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, SubscribeEventsRequest,
-            SubscribeEventsResponse,
+            GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
+            SubscribeEventsRequest, SubscribeEventsResponse,
         },
     },
     types::{Event, SidechainNumber},
@@ -902,6 +902,27 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         let txid = ReverseHex::encode(&txid);
         let response = CreateDepositTransactionResponse { txid: Some(txid) };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_balance(
+        &self,
+        request: tonic::Request<GetBalanceRequest>,
+    ) -> Result<tonic::Response<GetBalanceResponse>, tonic::Status> {
+        let GetBalanceRequest {} = request.into_inner();
+
+        let balance = self
+            .get_wallet_balance()
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let response = GetBalanceResponse {
+            confirmed_sats: balance.confirmed.to_sat(),
+            pending_sats: balance.immature.to_sat()
+                + balance.trusted_pending.to_sat()
+                + balance.untrusted_pending.to_sat(),
+        };
+
         Ok(tonic::Response::new(response))
     }
 }

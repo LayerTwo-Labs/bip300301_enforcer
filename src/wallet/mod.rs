@@ -970,18 +970,14 @@ impl Wallet {
         Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
 
-    pub fn get_balance(&self) -> Result<()> {
+    pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance> {
         if self.last_sync.read().is_none() {
             return Err(miette!("get balance: wallet not synced"));
         }
 
         let balance = self.bitcoin_wallet.lock().balance();
 
-        tracing::trace!("Confirmed: {}", balance.confirmed);
-        tracing::trace!("Immature: {}", balance.immature);
-        tracing::trace!("Untrusted pending: {}", balance.untrusted_pending);
-        tracing::trace!("Trusted pending: {}", balance.trusted_pending);
-        Ok(())
+        Ok(balance)
     }
 
     pub fn sync(&self) -> Result<()> {
