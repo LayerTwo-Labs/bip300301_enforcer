@@ -1,5 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, vec};
 
+use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
@@ -11,6 +12,7 @@ use futures::{
     StreamExt as _,
 };
 use miette::IntoDiagnostic as _;
+use prost_types::Timestamp;
 use thiserror::Error;
 use tonic::{Request, Response, Status};
 
@@ -29,19 +31,21 @@ use crate::{
             create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
             get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, server::ValidatorService,
-            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
-            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
-            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
-            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
-            CreateSidechainProposalRequest, CreateSidechainProposalResponse, GenerateBlocksRequest,
-            GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
-            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
-            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
-            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
-            SubscribeEventsRequest, SubscribeEventsResponse,
+            wallet_service_server::WalletService, wallet_transaction::Confirmation,
+            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
+            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
+            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
+            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
+            CreateSidechainProposalResponse, GenerateBlocksRequest, GenerateBlocksResponse,
+            GetBalanceRequest, GetBalanceResponse, GetBlockHeaderInfoRequest,
+            GetBlockHeaderInfoResponse, GetBlockInfoRequest, GetBlockInfoResponse,
+            GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse, GetChainInfoRequest,
+            GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
+            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, ListTransactionsRequest,
+            ListTransactionsResponse, Network, SubscribeEventsRequest, SubscribeEventsResponse,
+            WalletTransaction,
         },
     },
     types::{Event, SidechainNumber},
@@ -923,6 +927,50 @@ impl WalletService for Arc<crate::wallet::Wallet> {
                 + balance.untrusted_pending.to_sat(),
         };
 
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn list_transactions(
+        &self,
+        _: tonic::Request<ListTransactionsRequest>,
+    ) -> Result<tonic::Response<ListTransactionsResponse>, tonic::Status> {
+        let transactions = self
+            .list_wallet_transactions()
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let response = ListTransactionsResponse {
+            transactions: transactions
+                .into_iter()
+                .map(|tx| WalletTransaction {
+                    txid: Some(ReverseHex::encode(&tx.txid)),
+                    fee_sats: tx.fee.to_sat(),
+                    received_sats: tx.received.to_sat(),
+                    sent_sats: tx.sent.to_sat(),
+                    confirmation_info: match tx.chain_position {
+                        ChainPosition::Confirmed(ConfirmationBlockTime {
+                            block_id,
+                            confirmation_time,
+                        }) => Some(Confirmation {
+                            height: block_id.height,
+                            block_hash: Some(ReverseHex::encode(&block_id.hash)),
+                            timestamp: Some(Timestamp {
+                                seconds: confirmation_time as i64,
+                                nanos: 0,
+                            }),
+                        }),
+                        ChainPosition::Unconfirmed(last_seen) => Some(Confirmation {
+                            height: 0,
+                            block_hash: None,
+                            timestamp: Some(Timestamp {
+                                seconds: last_seen as i64,
+                                nanos: 0,
+                            }),
+                        }),
+                    },
+                })
+                .collect(),
+        };
         Ok(tonic::Response::new(response))
     }
 }

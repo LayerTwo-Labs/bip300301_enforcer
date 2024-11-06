@@ -50,7 +50,8 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    types::{Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    proto::mainchain::WalletTransaction,
+    types::{BDKWalletTransaction, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 
@@ -978,6 +979,104 @@ impl Wallet {
         let balance = self.bitcoin_wallet.lock().balance();
 
         Ok(balance)
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
+    pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
+        // Massage the wallet data into a format that we can use to calculate fees, etc.
+        let wallet_data = {
+            let mut guard = self.bitcoin_wallet.lock();
+            let wallet = guard.borrow_mut();
+            let transactions = wallet.transactions();
+
+            transactions
+                .into_iter()
+                .map(|tx| {
+                    let txid = tx.tx_node.txid;
+                    let chain_position = tx.chain_position.cloned();
+                    let tx = tx.tx_node.tx.clone();
+
+                    let output_ownership: Vec<_> = tx
+                        .output
+                        .iter()
+                        .map(|output| (output.value, wallet.is_mine(output.script_pubkey.clone())))
+                        .collect();
+
+                    // Just collect the inputs - we'll get their values using getrawtransaction later
+                    let inputs = tx.input.clone();
+
+                    (txid, chain_position, output_ownership, inputs)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Calculate fees, received, and sent amounts
+        let mut txs = Vec::new();
+        for (txid, chain_position, output_ownership, inputs) in wallet_data {
+            let mut input_value = Amount::ZERO;
+            let mut output_value = Amount::ZERO;
+            let mut received = Amount::ZERO;
+            let mut sent = Amount::ZERO;
+
+            // Calculate output value and received amount
+            for (value, is_mine) in output_ownership {
+                output_value += value;
+                if is_mine {
+                    received += value;
+                }
+            }
+
+            // Get input values using getrawtransaction
+            for input in inputs {
+                let transaction_hex = self
+                    .main_client
+                    .get_raw_transaction(
+                        input.previous_output.txid,
+                        GetRawTransactionVerbose::<false>,
+                        None,
+                    )
+                    .await
+                    .map_err(|err| error::BitcoinCoreRPC {
+                        method: "getrawtransaction".to_string(),
+                        error: err,
+                    })?;
+
+                let prev_output =
+                    bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)
+                        .into_diagnostic()?;
+
+                let value = prev_output.output[input.previous_output.vout as usize].value;
+                if self.bitcoin_wallet.lock().is_mine(
+                    prev_output.output[input.previous_output.vout as usize]
+                        .script_pubkey
+                        .clone(),
+                ) {
+                    sent += value;
+                }
+                input_value += value;
+            }
+
+            let fee = input_value - output_value;
+            // Calculate net wallet change (excluding fee)
+            // We need to handle received and sent separately since Amount can't be negative
+            let (final_received, final_sent) = if received >= sent {
+                (received - sent, Amount::from_sat(0)) // Net gain to wallet
+            } else {
+                (Amount::from_sat(0), sent - received - fee) // Net loss from wallet
+            };
+
+            txs.push(BDKWalletTransaction {
+                txid,
+                chain_position,
+                fee,
+                received: final_received,
+                sent: final_sent,
+            });
+        }
+        Ok(txs)
     }
 
     pub fn sync(&self) -> Result<()> {

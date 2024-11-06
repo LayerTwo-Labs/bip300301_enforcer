@@ -1,5 +1,6 @@
 use std::num::TryFromIntError;
 
+use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
     hashes::{sha256d, Hash as _},
     Amount, BlockHash, OutPoint, Txid, Work,
@@ -319,6 +320,15 @@ pub enum Event {
     DisconnectBlock {
         block_hash: BlockHash,
     },
+}
+
+#[derive(Debug)]
+pub struct BDKWalletTransaction {
+    pub txid: bitcoin::Txid,
+    pub chain_position: ChainPosition<ConfirmationBlockTime>,
+    pub fee: Amount,
+    pub received: Amount,
+    pub sent: Amount,
 }
 
 #[cfg(test)]
