@@ -26,7 +26,7 @@ use proto::{
     mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
 };
 use validator::Validator;
-use wallet::Wallet;
+use wallet::{error, Wallet};
 
 /// Saturating predecessor of a log level
 fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
@@ -178,7 +178,16 @@ async fn main() -> Result<()> {
     let info = mainchain_client
         .get_blockchain_info()
         .await
-        .into_diagnostic()?;
+        .map_err(|err| error::BitcoinCoreRPC {
+            method: "getblockchaininfo".to_string(),
+            error: err,
+        })?;
+
+    tracing::info!(
+        "Connected to mainchain client: network={} blocks={}",
+        info.chain,
+        info.blocks
+    );
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which
