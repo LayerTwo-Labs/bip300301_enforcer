@@ -17,6 +17,7 @@ use nom::{
     IResult,
 };
 
+use crate::proto::common::Hex;
 use crate::types::{
     SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
 };
@@ -259,6 +260,20 @@ pub fn create_m5_deposit_output(
         script_pubkey,
         // All deposits INCREASE the amount locked in the OP_DRIVECHAIN output.
         value: old_ctip_amount + deposit_amount,
+    }
+}
+
+pub fn create_op_return_output(message: Hex) -> TxOut {
+    let mut script_bytes = vec![OP_RETURN.to_u8()];
+    let hex_value = message.hex.as_ref().expect("hex value must be present");
+    script_bytes.push(hex_value.len() as u8);
+    script_bytes.extend(hex_value.as_bytes());
+
+    let script_pubkey = ScriptBuf::from_bytes(script_bytes);
+
+    TxOut {
+        script_pubkey,
+        value: Amount::ZERO,
     }
 }
 
