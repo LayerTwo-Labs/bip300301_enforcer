@@ -712,13 +712,43 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
     async fn broadcast_withdrawal_bundle(
         &self,
-        _request: tonic::Request<BroadcastWithdrawalBundleRequest>,
+        request: tonic::Request<BroadcastWithdrawalBundleRequest>,
     ) -> std::result::Result<tonic::Response<BroadcastWithdrawalBundleResponse>, tonic::Status>
     {
-        Err(tonic::Status::new(
-            tonic::Code::Unimplemented,
-            "not implemented",
-        ))
+        let BroadcastWithdrawalBundleRequest {
+            sidechain_id,
+            transaction,
+        } = request.into_inner();
+        let _sidechain_id = {
+            let raw_id = sidechain_id
+                .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("sidechain_id"))?;
+            SidechainNumber::try_from(raw_id).map_err(|err| {
+                invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
+                    "sidechain_id",
+                    &raw_id.to_string(),
+                    err,
+                )
+            })?
+        };
+        let transaction_bytes = transaction
+            .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("transaction"))?;
+        let transaction: Transaction = bitcoin::consensus::deserialize(&transaction_bytes)
+            .map_err(|err| {
+                invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
+                    "transaction",
+                    &hex::encode(transaction_bytes),
+                    err,
+                )
+            })?;
+        let (_m6id, _sidechain_number) = self
+            .put_withdrawal_bundle(transaction.clone())
+            .map_err(|err| err.into_status())?;
+
+        self.broadcast_transaction(transaction)
+            .await
+            .map_err(|err| err.into_status())?;
+        let response = BroadcastWithdrawalBundleResponse {};
+        Ok(tonic::Response::new(response))
     }
 
     // Legacy Bitcoin Core-based implementation

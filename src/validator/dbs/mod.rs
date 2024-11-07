@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use bitcoin::hashes::sha256d;
+use bitcoin::{hashes::sha256d, Amount, OutPoint};
 use heed::{types::SerdeBincode, EnvOpenOptions, RoTxn};
+use ordermap::OrderMap;
 use thiserror::Error;
+use util::RoDatabase;
 
-use crate::types::{Ctip, Hash256, PendingM6id, Sidechain, SidechainNumber, TreasuryUtxo};
+use crate::types::{Ctip, Hash256, M6id, Sidechain, SidechainNumber, TreasuryUtxo};
 
 mod block_hashes;
 mod util;
@@ -14,11 +16,17 @@ pub use util::{
     db_error, CommitWriteTxnError, Database, Env, ReadTxnError, RwTxn, UnitKey, WriteTxnError,
 };
 
+/// Map of pending M6ids to vote count
+pub type PendingM6ids = OrderMap<M6id, u16>;
+
 /// These DBs should all contain exacty the same keys.
 #[derive(Clone)]
 pub(super) struct ActiveSidechainDbs {
-    pub ctip: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
-    pub pending_m6ids: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Vec<PendingM6id>>>,
+    ctip: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
+    /// MUST contain ALL keys/values that `ctip` has ever contained.
+    ctip_outpoint_to_value:
+        Database<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount)>>,
+    pub pending_m6ids: Database<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>>,
     pub sidechain: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
     pub slot_sequence_to_treasury_utxo:
         Database<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
@@ -26,10 +34,12 @@ pub(super) struct ActiveSidechainDbs {
 }
 
 impl ActiveSidechainDbs {
-    const NUM_DBS: u32 = 5;
+    const NUM_DBS: u32 = 6;
 
     fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, util::CreateDbError> {
         let ctip = env.create_db(rwtxn, "active_sidechain_number_to_ctip")?;
+        let ctip_outpoint_to_value =
+            env.create_db(rwtxn, "active_sidechain_ctip_outpoint_to_value")?;
         let pending_m6ids = env.create_db(rwtxn, "active_sidechain_number_to_pending_m6ids")?;
         let sidechain = env.create_db(rwtxn, "active_sidechain_number_to_sidechain")?;
         let slot_sequence_to_treasury_utxo =
@@ -38,11 +48,33 @@ impl ActiveSidechainDbs {
             env.create_db(rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
         Ok(Self {
             ctip,
+            ctip_outpoint_to_value,
             pending_m6ids,
             sidechain,
             slot_sequence_to_treasury_utxo,
             treasury_utxo_count,
         })
+    }
+
+    pub fn ctip(&self) -> &RoDatabase<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>> {
+        &self.ctip
+    }
+
+    pub fn ctip_outpoint_to_value(
+        &self,
+    ) -> &RoDatabase<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount)>> {
+        &self.ctip_outpoint_to_value
+    }
+
+    pub fn put_ctip(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: SidechainNumber,
+        ctip: &Ctip,
+    ) -> Result<(), db_error::Put> {
+        self.ctip.put(rwtxn, &sidechain_number, ctip)?;
+        self.ctip_outpoint_to_value
+            .put(rwtxn, &ctip.outpoint, &(sidechain_number, ctip.value))
     }
 }
 

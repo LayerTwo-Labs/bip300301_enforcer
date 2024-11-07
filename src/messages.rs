@@ -1,3 +1,4 @@
+use bitcoin::amount::CheckedSum;
 use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{
     hashes::{sha256d, Hash},
@@ -16,9 +17,10 @@ use nom::{
     multi::many0,
     IResult,
 };
+use thiserror::Error;
 
 use crate::types::{
-    SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
+    M6id, SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
 };
 
 pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
@@ -453,51 +455,92 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
     }
 }
 
-pub fn m6_to_id(m6: &Transaction, previous_treasury_utxo_total: u64) -> [u8; 32] {
-    let mut m6 = m6.clone();
-    /*
-    1. Remove the single input spending the previous treasury UTXO from the `vin`
-       vector, so that the `vin` vector is empty.
-            */
-    m6.input.clear();
-    /*
-    2. Compute `P_total` by summing the `nValue`s of all pay out outputs in this
-       `M6`, so `P_total` = sum of `nValue`s of all outputs of this `M6` except for
-       the new treasury UTXO at index 0.
-            */
-    let p_total: Amount = m6.output[1..].iter().map(|o| o.value).sum();
-    /*
-    3. Set `T_n` equal to the `nValue` of the treasury UTXO created in this `M6`.
-        */
-    let t_n = m6.output[0].value.to_sat();
-    /*
-    4. Compute `F_total = T_n-1 - T_n - P_total`, since we know that `T_n = T_n-1 -
-       P_total - F_total`, `T_n-1` was passed as an argument, and `T_n` and
-       `P_total` were computed in previous steps..
-        */
+#[derive(Debug, Error)]
+enum M6idErrorInner {
+    #[error(
+        "Insufficient previous treasury utxo balance to spend {} sats: {} sats",
+        spend_sats,
+        treasury_sats
+    )]
+    InsufficientTreasury { spend_sats: u64, treasury_sats: u64 },
+    #[error("Invalid spk for treasury output: {}", script_pubkey)]
+    InvalidSpk {
+        script_pubkey: ScriptBuf,
+        source: nom::Err<nom::error::Error<Vec<u8>>>,
+    },
+    #[error("More than 1 input: {n_inputs}")]
+    ManyInputs { n_inputs: usize },
+    #[error("Missing treasury input")]
+    MissingTreasuryInput,
+    #[error("Missing treasury output")]
+    MissingTreasuryOutput,
+    #[error("Total output amount overflow")]
+    TotalOutputAmountOverflow,
+    #[error("Withdrawal amount overflow")]
+    WithdrawalAmountOverflow,
+}
+
+#[derive(Debug, Error)]
+#[error("M6id error")]
+pub struct M6idError(#[from] M6idErrorInner);
+
+pub fn compute_m6id(
+    mut tx: Transaction,
+    previous_treasury_utxo_total: Amount,
+) -> Result<(M6id, SidechainNumber), M6idError> {
+    // Check that a new treasury UTXO is created at index 0
+    let Some(treasury_output) = tx.output.first() else {
+        return Err(M6idErrorInner::MissingTreasuryOutput.into());
+    };
+    let (_, sidechain_number) = parse_op_drivechain(treasury_output.script_pubkey.as_bytes())
+        .map_err(|err| M6idErrorInner::InvalidSpk {
+            script_pubkey: treasury_output.script_pubkey.clone(),
+            source: err.to_owned(),
+        })?;
+    // Set `T_n` equal to the `nValue` of the treasury UTXO created in this `M6`.
+    let t_n = treasury_output.value;
+    // Remove the single input spending the previous treasury UTXO from the `vin`
+    // vector, so that the `vin` vector is empty.
+    match tx.input.len() {
+        0 => return Err(M6idErrorInner::MissingTreasuryInput.into()),
+        1 => (),
+        n_inputs => return Err(M6idErrorInner::ManyInputs { n_inputs }.into()),
+    }
+    tx.input.clear();
+    // Compute `P_total` by summing the `nValue`s of all pay out outputs in this
+    // `M6`, so `P_total` = sum of `nValue`s of all outputs of this `M6` except for
+    // the new treasury UTXO at index 0.
+    let p_total: Amount = tx.output[1..]
+        .iter()
+        .map(|o| o.value)
+        .checked_sum()
+        .ok_or(M6idErrorInner::WithdrawalAmountOverflow)?;
+    // Compute `F_total = T_n-1 - T_n - P_total`, since we know that `T_n = T_n-1 -
+    // P_total - F_total`, `T_n-1` was passed as an argument, and `T_n` and
+    // `P_total` were computed in previous steps..
     let t_n_minus_1 = previous_treasury_utxo_total;
-    let f_total = t_n_minus_1 - t_n - p_total.to_sat();
-    /*
-    5. Encode `F_total` as `F_total_be_bytes`, an array of 8 bytes encoding the 64
-       bit unsigned integer in big endian order.
-        */
-    let f_total_be_bytes = f_total.to_be_bytes();
-    /*
-    6. Push an output to the end of `vout` of this `M6` with the `nValue = 0` and
-       `scriptPubKey = OP_RETURN F_total_be_bytes`.
-        */
-    let script_bytes = [vec![OP_RETURN.to_u8()], f_total_be_bytes.to_vec()].concat();
-    let script_pubkey = ScriptBuf::from_bytes(script_bytes);
+    let total_output_amount = t_n
+        .checked_add(p_total)
+        .ok_or(M6idErrorInner::TotalOutputAmountOverflow)?;
+    let f_total = t_n_minus_1
+        .checked_sub(total_output_amount)
+        .ok_or_else(|| M6idErrorInner::InsufficientTreasury {
+            spend_sats: total_output_amount.to_sat(),
+            treasury_sats: t_n_minus_1.to_sat(),
+        })?;
+    // Encode `F_total` as `F_total_be_bytes`, an array of 8 bytes encoding the 64
+    // bit unsigned integer in big endian order.
+    let f_total_be_bytes: [u8; 8] = f_total.to_sat().to_be_bytes();
+    // Push an output to the end of `vout` of this `M6` with the `nValue = 0` and
+    // `scriptPubKey = OP_RETURN F_total_be_bytes`.
+    let script_pubkey = ScriptBuf::new_op_return(f_total_be_bytes);
     let txout = TxOut {
         script_pubkey,
         value: Amount::ZERO,
     };
-    m6.output.push(txout);
-    /*
-    At this point we have constructed `M6_blinded`.
-        */
-    let m6_blinded = m6;
-    m6_blinded.compute_txid().as_raw_hash().to_byte_array()
+    tx.output.push(txout);
+    // At this point we have constructed `M6_blinded`
+    Ok((M6id(tx.compute_txid()), sidechain_number))
 }
 
 // Move all non-consensus components out of Bitcoin Core.

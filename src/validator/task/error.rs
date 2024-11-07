@@ -97,6 +97,8 @@ pub(in crate::validator::task) enum HandleM5M6 {
     DbTryGet(#[from] db_error::TryGet),
     #[error("Invalid M6")]
     InvalidM6,
+    #[error(transparent)]
+    M6id(#[from] crate::messages::M6idError),
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
     OldCtipUnspent { sidechain_number: SidechainNumber },
 }
