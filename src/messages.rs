@@ -262,6 +262,18 @@ pub fn create_m5_deposit_output(
     }
 }
 
+pub fn create_op_return_output<Msg>(
+    msg: Msg,
+) -> Result<TxOut, <PushBytesBuf as TryFrom<Msg>>::Error>
+where
+    PushBytesBuf: TryFrom<Msg>,
+{
+    Ok(TxOut {
+        script_pubkey: ScriptBuf::new_op_return(PushBytesBuf::try_from(msg)?),
+        value: Amount::ZERO,
+    })
+}
+
 fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
     let (input, sidechain_number) = take(1usize)(input)?;
     let sidechain_number = sidechain_number[0];

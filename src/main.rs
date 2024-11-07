@@ -178,7 +178,16 @@ async fn main() -> Result<()> {
     let info = mainchain_client
         .get_blockchain_info()
         .await
-        .into_diagnostic()?;
+        .map_err(|err| wallet::error::BitcoinCoreRPC {
+            method: "getblockchaininfo".to_string(),
+            error: err,
+        })?;
+
+    tracing::info!(
+        network = %info.chain,
+        blocks = %info.blocks,
+        "Connected to mainchain client",
+    );
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which

@@ -41,6 +41,7 @@ nonempty = "0.10.0"
 parking_lot = { version = "0.12.3", features = ["send_guard"] }
 prost = "0.13.2"
 rand = "0.8.5"
+prost-types = "0.13.3"
 regex = "1.11.0"
 rusqlite = { version = "0.28.0", features = ["bundled"] }
 rusqlite_migration = "1.0.2"

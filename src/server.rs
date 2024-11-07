@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use bitcoin::{
     absolute::Height,
@@ -34,14 +34,16 @@ use crate::{
             CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
             CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
             CreateSidechainProposalRequest, CreateSidechainProposalResponse, GenerateBlocksRequest,
-            GenerateBlocksResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
-            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
-            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
-            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network, SubscribeEventsRequest,
-            SubscribeEventsResponse,
+            GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
+            ListTransactionsRequest, ListTransactionsResponse, Network, SendTransactionRequest,
+            SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
+            WalletTransaction,
         },
     },
     types::{Event, SidechainNumber},
@@ -851,6 +853,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             value_sats,
             fee_sats,
         } = request.into_inner();
+
         let sidechain_number = sidechain_id
             .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("sidechain_id"))
             .map(SidechainNumber::try_from)?
@@ -902,6 +905,86 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         let txid = ReverseHex::encode(&txid);
         let response = CreateDepositTransactionResponse { txid: Some(txid) };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_balance(
+        &self,
+        request: tonic::Request<GetBalanceRequest>,
+    ) -> Result<tonic::Response<GetBalanceResponse>, tonic::Status> {
+        let GetBalanceRequest {} = request.into_inner();
+
+        let balance = self
+            .get_wallet_balance()
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let response = GetBalanceResponse {
+            confirmed_sats: balance.confirmed.to_sat(),
+            pending_sats: (balance.total() - balance.confirmed).to_sat(),
+        };
+
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn list_transactions(
+        &self,
+        _: tonic::Request<ListTransactionsRequest>,
+    ) -> Result<tonic::Response<ListTransactionsResponse>, tonic::Status> {
+        let transactions = self
+            .list_wallet_transactions()
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let response = ListTransactionsResponse {
+            transactions: transactions.iter().map(WalletTransaction::from).collect(),
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn send_transaction(
+        &self,
+        request: tonic::Request<SendTransactionRequest>,
+    ) -> Result<tonic::Response<SendTransactionResponse>, tonic::Status> {
+        let SendTransactionRequest {
+            destinations,
+            fee_rate,
+            op_return_message,
+        } = request.into_inner();
+
+        // Parse and validate all destination addresses, but assume network valid
+        let destinations_validated = destinations
+            .iter()
+            .map(|(address, amount)| {
+                bdk_wallet::bitcoin::Address::from_str(address)
+                    .map_err(|e| {
+                        tonic::Status::invalid_argument(format!(
+                            "could not parse bitcoin address: {}",
+                            e
+                        ))
+                    })
+                    .map(|addr| (addr.assume_checked(), *amount))
+            })
+            .collect::<Result<HashMap<bdk_wallet::bitcoin::Address, u64>, tonic::Status>>()?;
+
+        let fee_policy = fee_rate
+            .map(|fee_rate| fee_rate.try_into())
+            .transpose()
+            .map_err(|err: crate::proto::Error| err.into_status())?;
+
+        let op_return_message = op_return_message
+            .map(|op_return_message| {
+                op_return_message.decode_tonic::<SendTransactionRequest, _>("op_return_message")
+            })
+            .transpose()?;
+
+        let txid = self
+            .send_wallet_transaction(destinations_validated, fee_policy, op_return_message)
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let txid = ReverseHex::encode(&txid);
+        let response = SendTransactionResponse { txid: Some(txid) };
         Ok(tonic::Response::new(response))
     }
 }

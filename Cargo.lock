@@ -487,6 +487,7 @@ dependencies = [
  "parking_lot",
  "prost",
  "prost-build",
+ "prost-types",
  "protox",
  "rand",
  "regex",

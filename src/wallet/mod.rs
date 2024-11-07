@@ -39,6 +39,7 @@ use bitcoin::{
         all::{OP_PUSHBYTES_36, OP_RETURN},
         OP_0,
     },
+    script::PushBytesBuf,
     transaction::Version as TxVersion,
     Amount, Block, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
@@ -50,7 +51,7 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    types::{Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    types::{BDKWalletTransaction, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 
@@ -705,6 +706,21 @@ impl Wallet {
         }
     }
 
+    fn create_op_return_output<Msg>(
+        msg: Msg,
+    ) -> Result<bdk_wallet::bitcoin::TxOut, <bitcoin::script::PushBytesBuf as TryFrom<Msg>>::Error>
+    where
+        PushBytesBuf: TryFrom<Msg>,
+    {
+        let op_return_txout = messages::create_op_return_output(msg)?;
+        Ok(bdk_wallet::bitcoin::TxOut {
+            script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
+                op_return_txout.script_pubkey.to_bytes(),
+            ),
+            value: op_return_txout.value,
+        })
+    }
+
     async fn fetch_transaction(&self, txid: Txid) -> Result<bdk_wallet::bitcoin::Transaction> {
         let block_hash = None;
 
@@ -970,18 +986,186 @@ impl Wallet {
         Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
 
-    pub fn get_balance(&self) -> Result<()> {
+    pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance> {
         if self.last_sync.read().is_none() {
             return Err(miette!("get balance: wallet not synced"));
         }
 
         let balance = self.bitcoin_wallet.lock().balance();
 
-        tracing::trace!("Confirmed: {}", balance.confirmed);
-        tracing::trace!("Immature: {}", balance.immature);
-        tracing::trace!("Untrusted pending: {}", balance.untrusted_pending);
-        tracing::trace!("Trusted pending: {}", balance.trusted_pending);
-        Ok(())
+        Ok(balance)
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
+    pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
+        // Massage the wallet data into a format that we can use to calculate fees, etc.
+        let wallet_data = {
+            let mut guard = self.bitcoin_wallet.lock();
+            let wallet = guard.borrow_mut();
+            let transactions = wallet.transactions();
+
+            transactions
+                .into_iter()
+                .map(|tx| {
+                    let txid = tx.tx_node.txid;
+                    let chain_position = tx.chain_position.cloned();
+                    let tx = tx.tx_node.tx.clone();
+
+                    let output_ownership: Vec<_> = tx
+                        .output
+                        .iter()
+                        .map(|output| (output.value, wallet.is_mine(output.script_pubkey.clone())))
+                        .collect();
+
+                    // Just collect the inputs - we'll get their values using getrawtransaction later
+                    let inputs = tx.input.clone();
+
+                    (txid, chain_position, output_ownership, inputs)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Calculate fees, received, and sent amounts
+        let mut txs = Vec::new();
+        for (txid, chain_position, output_ownership, inputs) in wallet_data {
+            let mut input_value = Amount::ZERO;
+            let mut output_value = Amount::ZERO;
+            let mut received = Amount::ZERO;
+            let mut sent = Amount::ZERO;
+
+            // Calculate output value and received amount
+            for (value, is_mine) in output_ownership {
+                output_value += value;
+                if is_mine {
+                    received += value;
+                }
+            }
+
+            // Get input values using getrawtransaction
+            for input in inputs {
+                let transaction_hex = self
+                    .main_client
+                    .get_raw_transaction(
+                        input.previous_output.txid,
+                        GetRawTransactionVerbose::<false>,
+                        None,
+                    )
+                    .await
+                    .map_err(|err| error::BitcoinCoreRPC {
+                        method: "getrawtransaction".to_string(),
+                        error: err,
+                    })?;
+
+                let prev_output =
+                    bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)
+                        .into_diagnostic()?;
+
+                let value = prev_output.output[input.previous_output.vout as usize].value;
+                if self.bitcoin_wallet.lock().is_mine(
+                    prev_output.output[input.previous_output.vout as usize]
+                        .script_pubkey
+                        .clone(),
+                ) {
+                    sent += value;
+                }
+                input_value += value;
+            }
+
+            let fee = input_value - output_value;
+            // Calculate net wallet change (excluding fee)
+            // We need to handle received and sent separately since Amount can't be negative
+            let (final_received, final_sent) = if received >= sent {
+                (received - sent, Amount::from_sat(0)) // Net gain to wallet
+            } else {
+                (Amount::from_sat(0), sent - received - fee) // Net loss from wallet
+            };
+
+            txs.push(BDKWalletTransaction {
+                txid,
+                chain_position,
+                fee,
+                received: final_received,
+                sent: final_sent,
+            });
+        }
+        Ok(txs)
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive for `bitcoin_wallet`"
+    )]
+    async fn create_send_psbt(
+        &self,
+        destinations: HashMap<bitcoin::Address, u64>,
+        fee_policy: Option<crate::types::FeePolicy>,
+        op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+        let psbt = {
+            let mut wallet = self.bitcoin_wallet.lock();
+            let mut builder = wallet.borrow_mut().build_tx();
+
+            if let Some(op_return_output) = op_return_output {
+                builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
+            }
+
+            // Add outputs for each destination address
+            for (address, value) in destinations {
+                builder.add_recipient(address.script_pubkey(), Amount::from_sat(value));
+            }
+
+            match fee_policy {
+                Some(crate::types::FeePolicy::Absolute(fee)) => {
+                    builder.fee_absolute(fee);
+                }
+                Some(crate::types::FeePolicy::Rate(rate)) => {
+                    builder.fee_rate(rate);
+                }
+                None => (),
+            }
+
+            builder.finish().into_diagnostic()?
+        };
+
+        Ok(psbt)
+    }
+
+    /// Creates a transaction, sends it, and returns the TXID.
+    pub async fn send_wallet_transaction(
+        &self,
+        destinations: HashMap<bdk_wallet::bitcoin::Address, u64>,
+        fee_policy: Option<crate::types::FeePolicy>,
+        op_return_message: Option<Vec<u8>>,
+    ) -> Result<bitcoin::Txid> {
+        let op_return_output = op_return_message
+            .map(Self::create_op_return_output)
+            .transpose()
+            .into_diagnostic()?;
+
+        let psbt = self
+            .create_send_psbt(destinations, fee_policy, op_return_output)
+            .await?;
+
+        tracing::debug!("Created send PSBT: {psbt}",);
+
+        let tx = self.sign_transaction(psbt)?;
+        let txid = tx.compute_txid();
+
+        tracing::info!("Signed send transaction: `{txid}`",);
+
+        tracing::debug!("Serialized send transaction: {}", {
+            let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
+            hex::encode(tx_bytes)
+        });
+
+        self.broadcast_transaction(tx).await?;
+
+        tracing::info!("Broadcasted send transaction: `{txid}`",);
+
+        Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
 
     pub fn sync(&self) -> Result<()> {

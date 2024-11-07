@@ -691,6 +691,90 @@ pub mod mainchain {
             }
         }
     }
+
+    impl From<&bdk_wallet::chain::ChainPosition<bdk_wallet::chain::ConfirmationBlockTime>>
+        for wallet_transaction::Confirmation
+    {
+        fn from(
+            chain_position: &bdk_wallet::chain::ChainPosition<
+                bdk_wallet::chain::ConfirmationBlockTime,
+            >,
+        ) -> Self {
+            match chain_position {
+                bdk_wallet::chain::ChainPosition::Confirmed(conf_block_time) => Self {
+                    height: conf_block_time.block_id.height,
+                    block_hash: Some(ReverseHex::encode(&conf_block_time.block_id.hash)),
+                    timestamp: Some(prost_types::Timestamp {
+                        seconds: conf_block_time.confirmation_time as i64,
+                        nanos: 0,
+                    }),
+                },
+                bdk_wallet::chain::ChainPosition::Unconfirmed(last_seen) => Self {
+                    height: 0,
+                    block_hash: None,
+                    timestamp: Some(prost_types::Timestamp {
+                        seconds: *last_seen as i64,
+                        nanos: 0,
+                    }),
+                },
+            }
+        }
+    }
+
+    impl From<&crate::types::BDKWalletTransaction> for WalletTransaction {
+        fn from(tx: &crate::types::BDKWalletTransaction) -> Self {
+            Self {
+                txid: Some(ReverseHex::encode(&tx.txid)),
+                fee_sats: tx.fee.to_sat(),
+                received_sats: tx.received.to_sat(),
+                sent_sats: tx.sent.to_sat(),
+                confirmation_info: Some((&tx.chain_position).into()),
+            }
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("Invalid sats per vbyte")]
+    pub struct InvalidSatsPerVbyte {
+        pub sats_per_vbyte: u64,
+    }
+
+    impl TryFrom<send_transaction_request::fee_rate::Fee> for crate::types::FeePolicy {
+        type Error = InvalidSatsPerVbyte;
+
+        fn try_from(fee: send_transaction_request::fee_rate::Fee) -> Result<Self, Self::Error> {
+            use send_transaction_request::fee_rate::Fee;
+            match fee {
+                Fee::SatPerVbyte(sats_per_vbyte) => {
+                    let rate = bitcoin::FeeRate::from_sat_per_vb(sats_per_vbyte)
+                        .ok_or(InvalidSatsPerVbyte { sats_per_vbyte })?;
+                    Ok(rate.into())
+                }
+                Fee::Sats(sats) => {
+                    let amount = bitcoin::Amount::from_sat(sats);
+                    Ok(amount.into())
+                }
+            }
+        }
+    }
+
+    impl TryFrom<send_transaction_request::FeeRate> for crate::types::FeePolicy {
+        type Error = super::Error;
+
+        fn try_from(fee_rate: send_transaction_request::FeeRate) -> Result<Self, Self::Error> {
+            use send_transaction_request::FeeRate;
+            let FeeRate { fee } = fee_rate;
+            fee.ok_or_else(|| Self::Error::missing_field::<FeeRate>("fee"))?
+                .try_into()
+                .map_err(|err: InvalidSatsPerVbyte| {
+                    Self::Error::invalid_field_value::<FeeRate, _>(
+                        "fee",
+                        &err.sats_per_vbyte.to_string(),
+                        err,
+                    )
+                })
+        }
+    }
 }
 
 pub mod sidechain {
