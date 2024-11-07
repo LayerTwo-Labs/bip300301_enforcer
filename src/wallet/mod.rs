@@ -39,6 +39,7 @@ use bitcoin::{
         all::{OP_PUSHBYTES_36, OP_RETURN},
         OP_0,
     },
+    script::PushBytesBuf,
     transaction::Version as TxVersion,
     Amount, Block, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
@@ -50,7 +51,6 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    proto::common::Hex,
     types::{BDKWalletTransaction, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
@@ -706,15 +706,19 @@ impl Wallet {
         }
     }
 
-    fn create_op_return_output(message: Hex) -> bdk_wallet::bitcoin::TxOut {
-        let op_return_txout = messages::create_op_return_output(message);
-
-        bdk_wallet::bitcoin::TxOut {
+    fn create_op_return_output<Msg>(
+        msg: Msg,
+    ) -> Result<bdk_wallet::bitcoin::TxOut, <bitcoin::script::PushBytesBuf as TryFrom<Msg>>::Error>
+    where
+        PushBytesBuf: TryFrom<Msg>,
+    {
+        let op_return_txout = messages::create_op_return_output(msg)?;
+        Ok(bdk_wallet::bitcoin::TxOut {
             script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
                 op_return_txout.script_pubkey.to_bytes(),
             ),
             value: op_return_txout.value,
-        }
+        })
     }
 
     async fn fetch_transaction(&self, txid: Txid) -> Result<bdk_wallet::bitcoin::Transaction> {
@@ -1097,8 +1101,7 @@ impl Wallet {
     async fn create_send_psbt(
         &self,
         destinations: HashMap<bitcoin::Address, u64>,
-        fee_rate_per_vbyte: Option<Amount>,
-        fee: Option<Amount>,
+        fee_policy: Option<crate::types::FeePolicy>,
         op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         let psbt = {
@@ -1114,14 +1117,14 @@ impl Wallet {
                 builder.add_recipient(address.script_pubkey(), Amount::from_sat(value));
             }
 
-            if let Some(fee) = fee {
-                builder.fee_absolute(fee);
-            }
-
-            if let Some(rate) = fee_rate_per_vbyte {
-                let fee_rate = bitcoin::FeeRate::from_sat_per_vb(rate.to_sat())
-                    .expect("could not create fee rate");
-                builder.fee_rate(fee_rate);
+            match fee_policy {
+                Some(crate::types::FeePolicy::Absolute(fee)) => {
+                    builder.fee_absolute(fee);
+                }
+                Some(crate::types::FeePolicy::Rate(rate)) => {
+                    builder.fee_rate(rate);
+                }
+                None => (),
             }
 
             builder.finish().into_diagnostic()?
@@ -1134,19 +1137,16 @@ impl Wallet {
     pub async fn send_wallet_transaction(
         &self,
         destinations: HashMap<bdk_wallet::bitcoin::Address, u64>,
-        fee_rate_sats_per_vbyte: Option<Amount>,
-        fee_rate_sats: Option<Amount>,
-        op_return_message: Option<Hex>,
+        fee_policy: Option<crate::types::FeePolicy>,
+        op_return_message: Option<Vec<u8>>,
     ) -> Result<bitcoin::Txid> {
-        let op_return_output = op_return_message.map(Self::create_op_return_output);
+        let op_return_output = op_return_message
+            .map(Self::create_op_return_output)
+            .transpose()
+            .into_diagnostic()?;
 
         let psbt = self
-            .create_send_psbt(
-                destinations,
-                fee_rate_sats_per_vbyte,
-                fee_rate_sats,
-                op_return_output,
-            )
+            .create_send_psbt(destinations, fee_policy, op_return_output)
             .await?;
 
         tracing::debug!("Created send PSBT: {psbt}",);

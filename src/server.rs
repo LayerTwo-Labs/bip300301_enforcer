@@ -1,6 +1,5 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc, vec};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
-use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
@@ -12,7 +11,6 @@ use futures::{
     StreamExt as _,
 };
 use miette::IntoDiagnostic as _;
-use prost_types::Timestamp;
 use thiserror::Error;
 use tonic::{Request, Response, Status};
 
@@ -29,27 +27,23 @@ use crate::{
         },
         mainchain::{
             create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
-            get_ctip_response::Ctip,
-            get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo,
-            send_transaction_request::{self},
-            server::ValidatorService,
-            wallet_service_server::WalletService,
-            wallet_transaction::Confirmation,
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
-            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
-            CreateSidechainProposalResponse, GenerateBlocksRequest, GenerateBlocksResponse,
-            GetBalanceRequest, GetBalanceResponse, GetBlockHeaderInfoRequest,
-            GetBlockHeaderInfoResponse, GetBlockInfoRequest, GetBlockInfoResponse,
-            GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse, GetChainInfoRequest,
-            GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, ListTransactionsRequest,
-            ListTransactionsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, WalletTransaction,
+            get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
+            get_sidechains_response::SidechainInfo, server::ValidatorService,
+            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
+            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
+            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
+            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
+            CreateSidechainProposalRequest, CreateSidechainProposalResponse, GenerateBlocksRequest,
+            GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
+            ListTransactionsRequest, ListTransactionsResponse, Network, SendTransactionRequest,
+            SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
+            WalletTransaction,
         },
     },
     types::{Event, SidechainNumber},
@@ -927,9 +921,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
 
         let response = GetBalanceResponse {
             confirmed_sats: balance.confirmed.to_sat(),
-            pending_sats: balance.immature.to_sat()
-                + balance.trusted_pending.to_sat()
-                + balance.untrusted_pending.to_sat(),
+            pending_sats: (balance.total() - balance.confirmed).to_sat(),
         };
 
         Ok(tonic::Response::new(response))
@@ -945,36 +937,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .map_err(|err| err.into_status())?;
 
         let response = ListTransactionsResponse {
-            transactions: transactions
-                .into_iter()
-                .map(|tx| WalletTransaction {
-                    txid: Some(ReverseHex::encode(&tx.txid)),
-                    fee_sats: tx.fee.to_sat(),
-                    received_sats: tx.received.to_sat(),
-                    sent_sats: tx.sent.to_sat(),
-                    confirmation_info: match tx.chain_position {
-                        ChainPosition::Confirmed(ConfirmationBlockTime {
-                            block_id,
-                            confirmation_time,
-                        }) => Some(Confirmation {
-                            height: block_id.height,
-                            block_hash: Some(ReverseHex::encode(&block_id.hash)),
-                            timestamp: Some(Timestamp {
-                                seconds: confirmation_time as i64,
-                                nanos: 0,
-                            }),
-                        }),
-                        ChainPosition::Unconfirmed(last_seen) => Some(Confirmation {
-                            height: 0,
-                            block_hash: None,
-                            timestamp: Some(Timestamp {
-                                seconds: last_seen as i64,
-                                nanos: 0,
-                            }),
-                        }),
-                    },
-                })
-                .collect(),
+            transactions: transactions.iter().map(WalletTransaction::from).collect(),
         };
         Ok(tonic::Response::new(response))
     }
@@ -988,28 +951,6 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             fee_rate,
             op_return_message,
         } = request.into_inner();
-
-        // Extract fee rate per vbyte
-        let fee_rate_per_vbyte = match fee_rate {
-            Some(fee_rate) => match fee_rate.fee {
-                Some(send_transaction_request::fee_rate::Fee::SatPerVbyte(rate)) => {
-                    Some(Amount::from_sat(rate))
-                }
-                _ => None,
-            },
-            None => None,
-        };
-
-        // Or hard-coded fee
-        let fee = match fee_rate {
-            Some(fee_rate) => match fee_rate.fee {
-                Some(send_transaction_request::fee_rate::Fee::Sats(sats)) => {
-                    Some(Amount::from_sat(sats))
-                }
-                _ => None,
-            },
-            None => None,
-        };
 
         // Parse and validate all destination addresses, but assume network valid
         let destinations_validated = destinations
@@ -1026,13 +967,19 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             })
             .collect::<Result<HashMap<bdk_wallet::bitcoin::Address, u64>, tonic::Status>>()?;
 
+        let fee_policy = fee_rate
+            .map(|fee_rate| fee_rate.try_into())
+            .transpose()
+            .map_err(|err: crate::proto::Error| err.into_status())?;
+
+        let op_return_message = op_return_message
+            .map(|op_return_message| {
+                op_return_message.decode_tonic::<SendTransactionRequest, _>("op_return_message")
+            })
+            .transpose()?;
+
         let txid = self
-            .send_wallet_transaction(
-                destinations_validated,
-                fee_rate_per_vbyte,
-                fee,
-                op_return_message,
-            )
+            .send_wallet_transaction(destinations_validated, fee_policy, op_return_message)
             .await
             .map_err(|err| err.into_status())?;
 

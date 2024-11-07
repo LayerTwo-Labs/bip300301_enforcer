@@ -331,6 +331,24 @@ pub struct BDKWalletTransaction {
     pub sent: Amount,
 }
 
+#[derive(Debug)]
+pub enum FeePolicy {
+    Absolute(Amount),
+    Rate(bitcoin::FeeRate),
+}
+
+impl From<Amount> for FeePolicy {
+    fn from(amount: Amount) -> Self {
+        Self::Absolute(amount)
+    }
+}
+
+impl From<bitcoin::FeeRate> for FeePolicy {
+    fn from(fee_rate: bitcoin::FeeRate) -> Self {
+        Self::Rate(fee_rate)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use miette::Diagnostic as _;

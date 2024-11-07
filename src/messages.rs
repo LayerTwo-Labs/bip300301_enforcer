@@ -17,7 +17,6 @@ use nom::{
     IResult,
 };
 
-use crate::proto::common::Hex;
 use crate::types::{
     SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
 };
@@ -263,18 +262,16 @@ pub fn create_m5_deposit_output(
     }
 }
 
-pub fn create_op_return_output(message: Hex) -> TxOut {
-    let mut script_bytes = vec![OP_RETURN.to_u8()];
-    let hex_value = message.hex.as_ref().expect("hex value must be present");
-    script_bytes.push(hex_value.len() as u8);
-    script_bytes.extend(hex_value.as_bytes());
-
-    let script_pubkey = ScriptBuf::from_bytes(script_bytes);
-
-    TxOut {
-        script_pubkey,
+pub fn create_op_return_output<Msg>(
+    msg: Msg,
+) -> Result<TxOut, <PushBytesBuf as TryFrom<Msg>>::Error>
+where
+    PushBytesBuf: TryFrom<Msg>,
+{
+    Ok(TxOut {
+        script_pubkey: ScriptBuf::new_op_return(PushBytesBuf::try_from(msg)?),
         value: Amount::ZERO,
-    }
+    })
 }
 
 fn parse_m1_propose_sidechain(input: &[u8]) -> IResult<&[u8], CoinbaseMessage> {
