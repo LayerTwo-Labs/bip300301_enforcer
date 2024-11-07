@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 use crate::{
     messages::{
-        m6_to_id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain,
+        compute_m6id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain,
         CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
     },
-    types::SidechainProposalStatus,
+    types::{M6id, SidechainProposalStatus},
 };
 use async_broadcast::{Sender, TrySendError};
 use bip300301::{
@@ -26,9 +26,8 @@ use heed::RoTxn;
 
 use crate::{
     types::{
-        BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, PendingM6id, Sidechain,
-        SidechainNumber, SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent,
-        WithdrawalBundleEventKind,
+        BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, Sidechain, SidechainNumber,
+        SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent, WithdrawalBundleEventKind,
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
     zmq::SequenceMessage,
@@ -184,7 +183,7 @@ fn handle_m3_propose_bundle(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     sidechain_number: SidechainNumber,
-    m6id: [u8; 32],
+    m6id: M6id,
 ) -> Result<(), error::HandleM3ProposeBundle> {
     if !dbs
         .active_sidechains
@@ -198,11 +197,7 @@ fn handle_m3_propose_bundle(
         .pending_m6ids
         .try_get(rwtxn, &sidechain_number)?;
     let mut pending_m6ids = pending_m6ids.unwrap_or_default();
-    let pending_m6id = PendingM6id {
-        m6id,
-        vote_count: 0,
-    };
-    pending_m6ids.push(pending_m6id);
+    pending_m6ids.insert(m6id, 0);
     let () = dbs
         .active_sidechains
         .pending_m6ids
@@ -221,21 +216,21 @@ fn handle_m4_votes(
         if vote == ABSTAIN_TWO_BYTES {
             continue;
         }
-        let pending_m6ids = dbs
+        let Some(mut pending_m6ids) = dbs
             .active_sidechains
             .pending_m6ids
-            .try_get(rwtxn, &sidechain_number)?;
-        let Some(mut pending_m6ids) = pending_m6ids else {
+            .try_get(rwtxn, &sidechain_number)?
+        else {
             continue;
         };
         if vote == ALARM_TWO_BYTES {
-            for pending_m6id in &mut pending_m6ids {
-                if pending_m6id.vote_count > 0 {
-                    pending_m6id.vote_count -= 1;
+            pending_m6ids.values_mut().for_each(|vote_count| {
+                if *vote_count > 0 {
+                    *vote_count -= 1;
                 }
-            }
-        } else if let Some(pending_m6id) = pending_m6ids.get_mut(vote as usize) {
-            pending_m6id.vote_count += 1;
+            });
+        } else if let Some((_m6id, vote_count)) = pending_m6ids.get_index_mut(vote as usize) {
+            *vote_count += 1;
         }
         let () =
             dbs.active_sidechains
@@ -271,7 +266,7 @@ fn handle_m4_ack_bundles(
 fn handle_failed_m6ids(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
-) -> Result<LinkedHashSet<(SidechainNumber, [u8; 32])>, error::HandleFailedM6Ids> {
+) -> Result<LinkedHashSet<(SidechainNumber, M6id)>, error::HandleFailedM6Ids> {
     let mut failed_m6ids = LinkedHashSet::new();
     let mut updated_slots = LinkedHashMap::new();
     let () = dbs
@@ -280,18 +275,15 @@ fn handle_failed_m6ids(
         .iter(rwtxn)
         .map_err(db_error::Iter::from)?
         .map_err(db_error::Iter::from)
-        .for_each(|(sidechain_number, pending_m6ids)| {
-            for pending_m6id in &pending_m6ids {
-                if pending_m6id.vote_count > WITHDRAWAL_BUNDLE_MAX_AGE {
-                    failed_m6ids.insert((sidechain_number, pending_m6id.m6id));
+        .for_each(|(sidechain_number, mut pending_m6ids)| {
+            pending_m6ids.retain(|m6id, vote_count| {
+                if *vote_count > WITHDRAWAL_BUNDLE_MAX_AGE {
+                    failed_m6ids.replace((sidechain_number, *m6id));
+                    false
+                } else {
+                    true
                 }
-            }
-            let pending_m6ids: Vec<_> = pending_m6ids
-                .into_iter()
-                .filter(|pending_m6id| {
-                    !failed_m6ids.contains(&(sidechain_number, pending_m6id.m6id))
-                })
-                .collect();
+            });
             updated_slots.insert(sidechain_number, pending_m6ids);
             Ok(())
         })?;
@@ -305,51 +297,43 @@ fn handle_failed_m6ids(
 }
 
 /// Deposit or (sidechain_id, m6id)
-type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, [u8; 32])>;
+type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, M6id)>;
 
 /// Returns (sidechain_id, m6id)
 fn handle_m6(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
-    transaction: &Transaction,
-    sidechain_number: SidechainNumber,
+    transaction: Transaction,
     old_total_value: Amount,
-) -> Result<Option<[u8; 32]>, error::HandleM5M6> {
-    let mut m6_valid = false;
-    let m6id = m6_to_id(transaction, old_total_value.to_sat());
-    if let Some(pending_m6ids) = dbs
+) -> Result<(M6id, SidechainNumber), error::HandleM5M6> {
+    let (m6id, sidechain_number) = compute_m6id(transaction, old_total_value)?;
+    if let Some(mut pending_m6ids) = dbs
         .active_sidechains
         .pending_m6ids
         .try_get(rwtxn, &sidechain_number)?
     {
-        for pending_m6id in &pending_m6ids {
-            if pending_m6id.m6id == m6id
-                && pending_m6id.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD
+        match pending_m6ids.entry(m6id) {
+            ordermap::map::Entry::Occupied(entry)
+                if *entry.get() > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD =>
             {
-                m6_valid = true;
+                entry.remove();
+                dbs.active_sidechains.pending_m6ids.put(
+                    rwtxn,
+                    &sidechain_number,
+                    &pending_m6ids,
+                )?;
+                return Ok((m6id, sidechain_number));
             }
-        }
-        if m6_valid {
-            let pending_m6ids: Vec<_> = pending_m6ids
-                .into_iter()
-                .filter(|pending_m6id| pending_m6id.m6id != m6id)
-                .collect();
-            dbs.active_sidechains
-                .pending_m6ids
-                .put(rwtxn, &sidechain_number, &pending_m6ids)?;
+            _ => (),
         }
     }
-    if m6_valid {
-        Ok(Some(m6id))
-    } else {
-        Err(error::HandleM5M6::InvalidM6)
-    }
+    Err(error::HandleM5M6::InvalidM6)
 }
 
 fn handle_m5_m6(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
-    transaction: &Transaction,
+    transaction: Cow<'_, Transaction>,
 ) -> Result<Option<DepositOrSuccessfulWithdrawal>, error::HandleM5M6> {
     let txid = transaction.compute_txid();
     // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
@@ -376,7 +360,7 @@ fn handle_m5_m6(
     let old_total_value = {
         if let Some(old_ctip) = dbs
             .active_sidechains
-            .ctip
+            .ctip()
             .try_get(rwtxn, &sidechain_number)?
         {
             let old_ctip_found = transaction
@@ -408,11 +392,10 @@ fn handle_m5_m6(
     let sequence_number = treasury_utxo_count;
     // M6
     let res = if new_total_value < old_total_value {
-        if let Some(m6id) = handle_m6(rwtxn, dbs, transaction, sidechain_number, old_total_value)? {
-            Either::Right((sidechain_number, m6id))
-        } else {
-            return Ok(None);
-        }
+        let (m6id, sidechain_number_) =
+            handle_m6(rwtxn, dbs, transaction.into_owned(), old_total_value)?;
+        assert_eq!(sidechain_number, sidechain_number_);
+        Either::Right((sidechain_number, m6id))
     } else if let Some(address) = address {
         let deposit = Deposit {
             sequence_number,
@@ -441,8 +424,7 @@ fn handle_m5_m6(
         value: new_total_value,
     };
     dbs.active_sidechains
-        .ctip
-        .put(rwtxn, &sidechain_number, &new_ctip)?;
+        .put_ctip(rwtxn, sidechain_number, &new_ctip)?;
     Ok(Some(res))
 }
 
@@ -544,10 +526,11 @@ fn connect_block(
                 sidechain_number,
                 bundle_txid,
             } => {
-                let () = handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid)?;
+                let () =
+                    handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid.into())?;
                 let event = WithdrawalBundleEvent {
                     sidechain_id: sidechain_number,
-                    m6id: bundle_txid,
+                    m6id: bundle_txid.into(),
                     kind: WithdrawalBundleEventKind::Submitted,
                 };
                 withdrawal_bundle_events.push(event);
@@ -583,7 +566,7 @@ fn connect_block(
         }
     }));
     for transaction in &block.txdata[1..] {
-        match handle_m5_m6(rwtxn, dbs, transaction)? {
+        match handle_m5_m6(rwtxn, dbs, Cow::Borrowed(transaction))? {
             Some(Either::Left(deposit)) => deposits.push(deposit),
             Some(Either::Right((sidechain_id, m6id))) => {
                 let withdrawal_bundle_event = WithdrawalBundleEvent {

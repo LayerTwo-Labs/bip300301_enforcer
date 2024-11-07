@@ -484,6 +484,7 @@ dependencies = [
  "nom",
  "nonempty",
  "num-traits",
+ "ordermap",
  "parking_lot",
  "prost",
  "prost-build",
@@ -2178,7 +2179,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4979f22fdb869068da03c9f7528f8297c6fd2606bc3a4affe42e6a823fdb8da4"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -2473,6 +2474,16 @@ name = "openssl-probe"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
+
+[[package]]
+name = "ordermap"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31f2bd7b03bf2c767e1bb7b91505dbe022833776e60480275e6f2fb0db0c7503"
+dependencies = [
+ "indexmap 2.6.0",
+ "serde",
+]
 
 [[package]]
 name = "overload"

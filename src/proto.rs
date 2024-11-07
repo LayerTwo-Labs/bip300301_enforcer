@@ -585,7 +585,7 @@ pub mod mainchain {
             } = event;
             let withdrawal_bundle_event_type = WithdrawalBundleEventType::from(kind) as i32;
             let event = WithdrawalBundleEvent {
-                m6id: Some(ConsensusHex::encode(&m6id)),
+                m6id: Some(ConsensusHex::encode(&m6id.0)),
                 withdrawal_bundle_event_type,
             };
             (sidechain_id, event)

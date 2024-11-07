@@ -51,7 +51,7 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    types::{BDKWalletTransaction, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    types::{BDKWalletTransaction, Ctip, M6id, SidechainAck, SidechainNumber, SidechainProposal},
     validator::Validator,
 };
 
@@ -218,6 +218,7 @@ impl Wallet {
                     "CREATE TABLE bundle_proposals
                    (sidechain_number INTEGER NOT NULL,
                     bundle_hash BLOB NOT NULL,
+                    bundle_tx BLOB NOT NULL,
                     UNIQUE(sidechain_number, bundle_hash));",
                 ),
                 M::up(
@@ -1447,6 +1448,35 @@ impl Wallet {
         let bitcoin_db = bitcoin_db.borrow_mut();
         wallet.persist(bitcoin_db).into_diagnostic()?;
         Ok(info.address)
+    }
+
+    pub fn put_withdrawal_bundle(&self, tx: Transaction) -> Result<(M6id, SidechainNumber)> {
+        let (prev_treasury_utxo_sidechain_number, prev_treasury_utxo_total) =
+            if let Some(input) = tx.input.first() {
+                let (sidechain_number, amount) =
+                    self.validator().get_ctip_value(&input.previous_output)?;
+                (Some(sidechain_number), amount)
+            } else {
+                (None, Amount::ZERO)
+            };
+        let tx_bytes = bitcoin::consensus::serialize(&tx);
+        let (m6id, sidechain_number) =
+            crate::messages::compute_m6id(tx, prev_treasury_utxo_total).into_diagnostic()?;
+        if prev_treasury_utxo_sidechain_number.is_some_and(|prev_treasury_utxo_sidechain_number| {
+            prev_treasury_utxo_sidechain_number != sidechain_number
+        }) {
+            return Err(miette::miette!(
+                "M6 sidechain number does not match previous treasury UTXO"
+            ));
+        }
+        self.db_connection
+            .lock()
+            .execute(
+                "INSERT INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
+                (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),
+            )
+            .into_diagnostic()?;
+        Ok((m6id, sidechain_number))
     }
 }
 

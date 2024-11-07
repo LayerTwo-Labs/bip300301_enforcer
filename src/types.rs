@@ -46,6 +46,17 @@ impl From<SidechainNumber> for u8 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, derive_more::Display, Eq, Hash, PartialEq, Serialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct M6id(pub Txid);
+
+impl From<[u8; 32]> for M6id {
+    fn from(bytes: <Txid as bitcoin::hashes::Hash>::Bytes) -> Self {
+        Self(Txid::from_byte_array(bytes))
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Ctip {
     pub outpoint: OutPoint,
@@ -244,12 +255,6 @@ pub struct SidechainAck {
     pub description_hash: sha256d::Hash,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PendingM6id {
-    pub m6id: Hash256,
-    pub vote_count: u16,
-}
-
 #[derive(derive_more::Debug, Deserialize, Serialize)]
 pub struct TreasuryUtxo {
     pub outpoint: OutPoint,
@@ -286,7 +291,7 @@ pub enum WithdrawalBundleEventKind {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WithdrawalBundleEvent {
     pub sidechain_id: SidechainNumber,
-    pub m6id: Hash256,
+    pub m6id: M6id,
     pub kind: WithdrawalBundleEventKind,
 }
 

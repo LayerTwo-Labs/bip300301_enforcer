@@ -2,7 +2,7 @@ use std::{future::Future, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver};
 use bip300301::{jsonrpsee, MainClient};
-use bitcoin::{self, hashes::sha256d, BlockHash};
+use bitcoin::{self, hashes::sha256d, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
 use futures::{stream::FusedStream, FutureExt as _, StreamExt, TryFutureExt as _};
 use miette::{Diagnostic, IntoDiagnostic};
@@ -193,10 +193,24 @@ impl Validator {
         let ctip = self
             .dbs
             .active_sidechains
-            .ctip
+            .ctip()
             .try_get(&txn, &sidechain_number)
             .into_diagnostic()?;
         Ok(ctip)
+    }
+
+    /// Returns the value and sidechain number for a Ctip outpoint,
+    /// if it exists. Returns an error otherwise
+    pub fn get_ctip_value(
+        &self,
+        outpoint: &OutPoint,
+    ) -> Result<(SidechainNumber, Amount), miette::Report> {
+        let txn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .active_sidechains
+            .ctip_outpoint_to_value()
+            .get(&txn, outpoint)
+            .into_diagnostic()
     }
 
     pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, GetBlockInfoError> {
