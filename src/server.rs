@@ -1002,12 +1002,6 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .transpose()
             .map_err(|err: crate::proto::Error| err.into_status())?;
 
-        let op_return_message = op_return_message
-            .map(|op_return_message| {
-                op_return_message.decode_tonic::<SendTransactionRequest, _>("op_return_message")
-            })
-            .transpose()?;
-
         let txid = self
             .send_wallet_transaction(destinations_validated, fee_policy, op_return_message)
             .await
