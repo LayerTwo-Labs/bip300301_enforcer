@@ -560,35 +560,54 @@ pub mod mainchain {
         }
     }
 
-    impl From<crate::types::WithdrawalBundleEventKind> for WithdrawalBundleEventType {
-        fn from(kind: crate::types::WithdrawalBundleEventKind) -> Self {
-            match kind {
-                crate::types::WithdrawalBundleEventKind::Failed => {
-                    WithdrawalBundleEventType::Failed
-                }
-                crate::types::WithdrawalBundleEventKind::Submitted => {
-                    WithdrawalBundleEventType::Submitted
-                }
-                crate::types::WithdrawalBundleEventKind::Succeeded => {
-                    WithdrawalBundleEventType::Succeded
-                }
+    impl From<withdrawal_bundle_event::event::Failed> for withdrawal_bundle_event::event::Event {
+        fn from(failed: withdrawal_bundle_event::event::Failed) -> Self {
+            Self::Failed(failed)
+        }
+    }
+
+    impl From<withdrawal_bundle_event::event::Submitted> for withdrawal_bundle_event::event::Event {
+        fn from(submitted: withdrawal_bundle_event::event::Submitted) -> Self {
+            Self::Submitted(submitted)
+        }
+    }
+
+    impl From<withdrawal_bundle_event::event::Succeeded> for withdrawal_bundle_event::event::Event {
+        fn from(succeeded: withdrawal_bundle_event::event::Succeeded) -> Self {
+            Self::Succeeded(succeeded)
+        }
+    }
+
+    impl From<&crate::types::WithdrawalBundleEventKind> for withdrawal_bundle_event::event::Event {
+        fn from(event_kind: &crate::types::WithdrawalBundleEventKind) -> Self {
+            use crate::types::WithdrawalBundleEventKind;
+            use withdrawal_bundle_event::event::{Failed, Submitted, Succeeded};
+            match event_kind {
+                WithdrawalBundleEventKind::Failed => Self::from(Failed {}),
+                WithdrawalBundleEventKind::Submitted => Self::from(Submitted {}),
+                WithdrawalBundleEventKind::Succeeded { transaction } => Self::from(Succeeded {
+                    transaction: Some(ConsensusHex::encode(transaction)),
+                }),
             }
         }
     }
 
-    impl From<crate::types::WithdrawalBundleEvent> for (SidechainNumber, WithdrawalBundleEvent) {
-        fn from(event: crate::types::WithdrawalBundleEvent) -> Self {
-            let crate::types::WithdrawalBundleEvent {
-                sidechain_id,
-                m6id,
-                kind,
-            } = event;
-            let withdrawal_bundle_event_type = WithdrawalBundleEventType::from(kind) as i32;
+    impl From<&crate::types::WithdrawalBundleEventKind> for withdrawal_bundle_event::Event {
+        fn from(event_kind: &crate::types::WithdrawalBundleEventKind) -> Self {
+            Self {
+                event: Some(event_kind.into()),
+            }
+        }
+    }
+
+    impl From<&crate::types::WithdrawalBundleEvent> for (SidechainNumber, WithdrawalBundleEvent) {
+        fn from(event: &crate::types::WithdrawalBundleEvent) -> Self {
+            let sidechain_number = event.sidechain_id;
             let event = WithdrawalBundleEvent {
-                m6id: Some(ConsensusHex::encode(&m6id.0)),
-                withdrawal_bundle_event_type,
+                m6id: Some(ConsensusHex::encode(&event.m6id.0)),
+                event: Some((&event.kind).into()),
             };
-            (sidechain_id, event)
+            (sidechain_number, event)
         }
     }
 
@@ -608,7 +627,7 @@ pub mod mainchain {
                 .collect();
             let withdrawal_bundle_events = self
                 .withdrawal_bundle_events
-                .into_iter()
+                .iter()
                 .filter_map(|event| {
                     let (event_sidechain_number, event) = event.into();
                     if event_sidechain_number == sidechain_number {

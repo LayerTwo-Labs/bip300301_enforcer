@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 
 use bitcoin::{
     absolute::Height,
@@ -46,7 +46,7 @@ use crate::{
             WalletTransaction,
         },
     },
-    types::{Event, SidechainNumber},
+    types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
 };
 
@@ -719,7 +719,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             sidechain_id,
             transaction,
         } = request.into_inner();
-        let _sidechain_id = {
+        let sidechain_id = {
             let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("sidechain_id"))?;
             SidechainNumber::try_from(raw_id).map_err(|err| {
@@ -736,15 +736,24 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .map_err(|err| {
                 invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
                     "transaction",
-                    &hex::encode(transaction_bytes),
+                    &hex::encode(&transaction_bytes),
                     err,
                 )
             })?;
-        let (_m6id, _sidechain_number) = self
-            .put_withdrawal_bundle(transaction.clone())
+        let transaction: BlindedM6 =
+            Cow::<Transaction>::Owned(transaction)
+                .try_into()
+                .map_err(|err| {
+                    invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
+                        "transaction",
+                        &hex::encode(transaction_bytes),
+                        err,
+                    )
+                })?;
+        let _m6id = self
+            .put_withdrawal_bundle(sidechain_id, &transaction)
             .map_err(|err| err.into_status())?;
-
-        self.broadcast_transaction(transaction)
+        self.broadcast_transaction(transaction.tx().into_owned())
             .await
             .map_err(|err| err.into_status())?;
         let response = BroadcastWithdrawalBundleResponse {};

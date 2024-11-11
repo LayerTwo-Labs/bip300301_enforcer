@@ -43,6 +43,7 @@ use bitcoin::{
     transaction::Version as TxVersion,
     Amount, Block, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use miette::{miette, IntoDiagnostic, Result};
 use parking_lot::{Mutex, RwLock};
 use rusqlite::Connection;
@@ -51,7 +52,10 @@ use crate::{
     cli::WalletConfig,
     convert,
     messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
-    types::{BDKWalletTransaction, Ctip, M6id, SidechainAck, SidechainNumber, SidechainProposal},
+    types::{
+        BDKWalletTransaction, BlindedM6, Ctip, M6id, SidechainAck, SidechainNumber,
+        SidechainProposal,
+    },
     validator::Validator,
 };
 
@@ -419,6 +423,47 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
+    fn get_bundle_proposals(&self) -> Result<HashMap<SidechainNumber, Vec<M6id>>> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_> {
+            let mut statement = connection
+                .prepare("SELECT sidechain_number, bundle_hash FROM bundle_proposals")
+                .into_diagnostic()?;
+            let mut bundle_proposals = HashMap::<_, Vec<_>>::new();
+            let () = statement
+                .query_map([], |row| {
+                    let sidechain_number = SidechainNumber(row.get(0)?);
+                    let m6id_bytes: [u8; 32] = row.get(1)?;
+                    let m6id = M6id::from(m6id_bytes);
+                    Ok((sidechain_number, m6id))
+                })
+                .into_diagnostic()?
+                .transpose_into_fallible()
+                .for_each(|(sidechain_number, m6id)| {
+                    bundle_proposals
+                        .entry(sidechain_number)
+                        .or_default()
+                        .push(m6id);
+                    Ok(())
+                })
+                .into_diagnostic()?;
+            Ok(bundle_proposals)
+        };
+        let mut bundle_proposals = with_connection(&self.db_connection.lock())?;
+        // Filter out proposals that have already been created
+        let () = bundle_proposals
+            .iter_mut()
+            .map(Ok::<_, miette::Report>)
+            .transpose_into_fallible()
+            .for_each(|(sidechain_id, m6ids)| {
+                let pending_m6ids = self.validator.get_pending_withdrawals(sidechain_id)?;
+                m6ids.retain(|m6id| !pending_m6ids.contains_key(m6id));
+                miette::Result::Ok(())
+            })?;
+        bundle_proposals.retain(|_, m6ids| !m6ids.is_empty());
+        Ok(bundle_proposals)
+    }
+
     /// Fetches sidechain proposals from the validator. Returns proposals that
     /// are already included into a block, and possible to vote on.
     async fn get_active_sidechain_proposals(
@@ -651,6 +696,11 @@ impl Wallet {
                     hex::encode(bmm_hash)
                 );
                 coinbase_builder = coinbase_builder.bmm_accept(*sidechain_number, bmm_hash);
+            }
+            for (sidechain_id, m6ids) in self.get_bundle_proposals()? {
+                for m6id in m6ids {
+                    coinbase_builder = coinbase_builder.propose_bundle(sidechain_id, m6id);
+                }
             }
 
             let coinbase_outputs = coinbase_builder.build().into_diagnostic()?;
@@ -1450,25 +1500,13 @@ impl Wallet {
         Ok(info.address)
     }
 
-    pub fn put_withdrawal_bundle(&self, tx: Transaction) -> Result<(M6id, SidechainNumber)> {
-        let (prev_treasury_utxo_sidechain_number, prev_treasury_utxo_total) =
-            if let Some(input) = tx.input.first() {
-                let (sidechain_number, amount) =
-                    self.validator().get_ctip_value(&input.previous_output)?;
-                (Some(sidechain_number), amount)
-            } else {
-                (None, Amount::ZERO)
-            };
-        let tx_bytes = bitcoin::consensus::serialize(&tx);
-        let (m6id, sidechain_number) =
-            crate::messages::compute_m6id(tx, prev_treasury_utxo_total).into_diagnostic()?;
-        if prev_treasury_utxo_sidechain_number.is_some_and(|prev_treasury_utxo_sidechain_number| {
-            prev_treasury_utxo_sidechain_number != sidechain_number
-        }) {
-            return Err(miette::miette!(
-                "M6 sidechain number does not match previous treasury UTXO"
-            ));
-        }
+    pub fn put_withdrawal_bundle(
+        &self,
+        sidechain_number: SidechainNumber,
+        blinded_m6: &BlindedM6,
+    ) -> Result<M6id> {
+        let m6id = blinded_m6.compute_m6id();
+        let tx_bytes = bitcoin::consensus::serialize(blinded_m6.as_ref());
         self.db_connection
             .lock()
             .execute(
@@ -1476,7 +1514,7 @@ impl Wallet {
                 (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),
             )
             .into_diagnostic()?;
-        Ok((m6id, sidechain_number))
+        Ok(m6id)
     }
 }
 

@@ -16,7 +16,7 @@ use crate::types::{
 mod dbs;
 mod task;
 
-use dbs::{CreateDbsError, Dbs};
+use dbs::{CreateDbsError, Dbs, PendingM6ids};
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -199,6 +199,17 @@ impl Validator {
         Ok(ctip)
     }
 
+    /// Returns the Ctip for the specified sidechain, or an error
+    /// if there is no Ctip.
+    pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
+        let txn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .active_sidechains
+            .ctip()
+            .get(&txn, &sidechain_number)
+            .into_diagnostic()
+    }
+
     /// Returns the value and sidechain number for a Ctip outpoint,
     /// if it exists. Returns an error otherwise
     pub fn get_ctip_value(
@@ -260,6 +271,18 @@ impl Validator {
             .bmm_commitments()
             .try_get(&rotxn, block_hash)?;
         Ok(res)
+    }
+
+    pub fn get_pending_withdrawals(
+        &self,
+        sidechain_number: &SidechainNumber,
+    ) -> Result<PendingM6ids, miette::Report> {
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .active_sidechains
+            .pending_m6ids
+            .get(&rotxn, sidechain_number)
+            .into_diagnostic()
     }
 
     /*

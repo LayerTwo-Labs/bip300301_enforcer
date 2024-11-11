@@ -572,7 +572,9 @@ fn connect_block(
                 let withdrawal_bundle_event = WithdrawalBundleEvent {
                     m6id,
                     sidechain_id,
-                    kind: WithdrawalBundleEventKind::Succeeded,
+                    kind: WithdrawalBundleEventKind::Succeeded {
+                        transaction: transaction.clone(),
+                    },
                 };
                 withdrawal_bundle_events.push(withdrawal_bundle_event);
             }

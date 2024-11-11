@@ -3,11 +3,11 @@ use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{
     hashes::{sha256d, Hash},
     opcodes::{
-        all::{OP_NOP5, OP_PUSHBYTES_1, OP_RETURN},
+        all::{OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
     },
     script::PushBytesBuf,
-    Amount, Opcode, Script, ScriptBuf, Transaction, TxOut,
+    Amount, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use nom::{
@@ -21,9 +21,8 @@ use thiserror::Error;
 
 use crate::types::{
     M6id, SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
+    OP_DRIVECHAIN,
 };
-
-pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
 
 pub struct CoinbaseBuilder {
     messages: Vec<CoinbaseMessage>,
@@ -69,14 +68,10 @@ impl CoinbaseBuilder {
         self
     }
 
-    pub fn propose_bundle(
-        mut self,
-        sidechain_number: SidechainNumber,
-        bundle_hash: &[u8; 32],
-    ) -> Self {
+    pub fn propose_bundle(mut self, sidechain_number: SidechainNumber, m6id: M6id) -> Self {
         let message = CoinbaseMessage::M3ProposeBundle {
             sidechain_number,
-            bundle_txid: *bundle_hash,
+            bundle_txid: m6id.0.to_byte_array(),
         };
         self.messages.push(message);
         self

@@ -1,9 +1,15 @@
-use std::num::TryFromIntError;
+use std::{borrow::Cow, num::TryFromIntError};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
+    amount::CheckedSum as _,
     hashes::{sha256d, Hash as _},
-    Amount, BlockHash, OutPoint, Txid, Work,
+    opcodes::{
+        all::{OP_NOP5, OP_RETURN},
+        OP_TRUE,
+    },
+    script::{Instruction, Instructions},
+    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Txid, Work,
 };
 use derive_more::derive::Display;
 use hashlink::LinkedHashMap;
@@ -281,11 +287,11 @@ pub struct HeaderInfo {
     pub work: Work,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum WithdrawalBundleEventKind {
     Submitted,
     Failed,
-    Succeeded,
+    Succeeded { transaction: bitcoin::Transaction },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -351,6 +357,190 @@ impl From<Amount> for FeePolicy {
 impl From<bitcoin::FeeRate> for FeePolicy {
     fn from(fee_rate: bitcoin::FeeRate) -> Self {
         Self::Rate(fee_rate)
+    }
+}
+
+pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
+
+/// Create an OP_DRIVECHAIN script for the specified sidechain
+pub fn op_drivechain_script(sidechain_number: SidechainNumber) -> ScriptBuf {
+    let mut res = ScriptBuf::new();
+    res.push_opcode(OP_DRIVECHAIN);
+    res.push_slice([sidechain_number.0]);
+    res.push_opcode(OP_TRUE);
+    res
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Amount overflow")]
+pub struct AmountOverflowError;
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Amount underflow")]
+pub struct AmountUnderflowError;
+
+#[derive(Debug, Diagnostic, Error)]
+enum BlindedM6FeeOutputError {
+    #[error("Invalid spk: {spk}")]
+    InvalidSpk { spk: ScriptBuf },
+    #[error("Nonzero value")]
+    NonZeroValue,
+    #[error("Failed to parse script")]
+    Script(#[from] bitcoin::script::Error),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum BlindedM6ErrorInner {
+    #[error("Invalid fee output")]
+    InvalidFeeOutput(#[from] BlindedM6FeeOutputError),
+    #[error("Missing fee output")]
+    MissingFeeOutput,
+    #[error("Inputs must be empty")]
+    NonEmptyInputs,
+    #[error(transparent)]
+    OutputAmountOverflow(#[from] AmountOverflowError),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Blinded M6 error")]
+pub struct BlindedM6Error(#[from] BlindedM6ErrorInner);
+
+impl From<AmountOverflowError> for BlindedM6Error {
+    fn from(err: AmountOverflowError) -> Self {
+        BlindedM6ErrorInner::from(err).into()
+    }
+}
+
+impl From<BlindedM6FeeOutputError> for BlindedM6Error {
+    fn from(err: BlindedM6FeeOutputError) -> Self {
+        BlindedM6ErrorInner::from(err).into()
+    }
+}
+
+#[derive(Debug)]
+pub struct BlindedM6<'a> {
+    fee: Amount,
+    payout: Amount,
+    tx: Cow<'a, bitcoin::Transaction>,
+}
+
+#[allow(dead_code, reason = "will be used later for M4/M6")]
+impl<'a> BlindedM6<'a> {
+    pub fn fee(&self) -> &Amount {
+        &self.fee
+    }
+
+    pub fn payout(&self) -> &Amount {
+        &self.payout
+    }
+
+    pub fn tx(self) -> Cow<'a, bitcoin::Transaction> {
+        self.tx
+    }
+
+    pub fn into_owned(self) -> BlindedM6<'static> {
+        BlindedM6 {
+            fee: self.fee,
+            payout: self.payout,
+            tx: Cow::Owned(self.tx.into_owned()),
+        }
+    }
+
+    pub fn compute_m6id(&self) -> M6id {
+        M6id(self.tx.compute_txid())
+    }
+
+    // TODO: remove sidechain_number param
+    pub fn into_m6(
+        self,
+        sidechain_number: SidechainNumber,
+        treasury_outpoint: OutPoint,
+        treasury_value: Amount,
+    ) -> Result<bitcoin::Transaction, AmountUnderflowError> {
+        let Self { fee, payout, tx } = self;
+        let mut tx = tx.into_owned();
+        assert!(tx.output.pop().is_some());
+        // Push treasury output
+        let treasury_output = {
+            let value = treasury_value
+                .checked_sub(payout)
+                .ok_or(AmountUnderflowError)?
+                .checked_sub(fee)
+                .ok_or(AmountUnderflowError)?;
+            bitcoin::TxOut {
+                script_pubkey: op_drivechain_script(sidechain_number),
+                value,
+            }
+        };
+        tx.output.push(treasury_output);
+        // Push treasury input
+        assert!(tx.input.is_empty());
+        let treasury_input = bitcoin::TxIn {
+            previous_output: treasury_outpoint,
+            ..Default::default()
+        };
+        tx.input.push(treasury_input);
+        Ok(tx)
+    }
+}
+
+impl<'a> AsRef<bitcoin::Transaction> for BlindedM6<'a> {
+    fn as_ref(&self) -> &bitcoin::Transaction {
+        &self.tx
+    }
+}
+
+impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
+    type Error = BlindedM6Error;
+
+    fn try_from(tx: Cow<'a, bitcoin::Transaction>) -> Result<Self, Self::Error> {
+        if !tx.input.is_empty() {
+            return Err(BlindedM6ErrorInner::NonEmptyInputs.into());
+        }
+        let Some(fee_output) = tx.output.last() else {
+            return Err(BlindedM6ErrorInner::MissingFeeOutput.into());
+        };
+        if fee_output.value != Amount::ZERO {
+            return Err(BlindedM6FeeOutputError::NonZeroValue.into());
+        }
+        let payout = tx
+            .output
+            .iter()
+            .map(|output| output.value)
+            .checked_sum()
+            .ok_or(AmountOverflowError)?;
+        let mut instructions = fee_output.script_pubkey.instructions();
+        fn next_instruction<'a>(
+            instructions: &'a mut Instructions,
+        ) -> Result<Option<Instruction<'a>>, BlindedM6FeeOutputError> {
+            instructions
+                .next()
+                .transpose()
+                .map_err(BlindedM6FeeOutputError::from)
+        }
+        fn invalid_spk(tx: Cow<'_, bitcoin::Transaction>) -> BlindedM6FeeOutputError {
+            let spk = match tx {
+                Cow::Borrowed(tx) => tx.output.last().unwrap().script_pubkey.clone(),
+                Cow::Owned(mut tx) => tx.output.pop().unwrap().script_pubkey,
+            };
+            BlindedM6FeeOutputError::InvalidSpk { spk }
+        }
+        let Some(Instruction::Op(OP_RETURN)) = next_instruction(&mut instructions)? else {
+            return Err(invalid_spk(tx).into());
+        };
+        let Some(Instruction::PushBytes(fee_be_bytes)) = next_instruction(&mut instructions)?
+        else {
+            return Err(invalid_spk(tx).into());
+        };
+        let Some(fee_be_bytes): Option<[u8; 8]> = fee_be_bytes.as_bytes().try_into().ok() else {
+            return Err(invalid_spk(tx).into());
+        };
+        let fee = Amount::from_sat(u64::from_be_bytes(fee_be_bytes));
+        if instructions.next().is_none() {
+            Ok(Self { fee, payout, tx })
+        } else {
+            Err(invalid_spk(tx).into())
+        }
     }
 }
 
