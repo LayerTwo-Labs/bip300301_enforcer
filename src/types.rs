@@ -19,6 +19,9 @@ use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
+pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
+
 pub type Hash256 = [u8; 32];
 
 #[derive(
@@ -255,7 +258,22 @@ impl TryFrom<&SidechainDescription> for SidechainDeclaration {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SidechainProposalId {
+    pub sidechain_number: SidechainNumber,
+    pub description_hash: sha256d::Hash,
+}
+
+impl From<&SidechainProposal> for SidechainProposalId {
+    fn from(proposal: &SidechainProposal) -> Self {
+        Self {
+            sidechain_number: proposal.sidechain_number,
+            description_hash: proposal.description.sha256d_hash(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SidechainAck {
     pub sidechain_number: SidechainNumber,
     pub description_hash: sha256d::Hash,
@@ -263,9 +281,8 @@ pub struct SidechainAck {
 
 #[derive(derive_more::Debug, Deserialize, Serialize)]
 pub struct TreasuryUtxo {
+    pub sidechain_number: SidechainNumber,
     pub outpoint: OutPoint,
-    #[debug("{:?}", address.as_ref().map(hex::encode))]
-    pub address: Option<Vec<u8>>,
     pub total_value: Amount,
     pub previous_total_value: Amount,
 }
@@ -399,6 +416,8 @@ enum BlindedM6ErrorInner {
     NonEmptyInputs,
     #[error(transparent)]
     OutputAmountOverflow(#[from] AmountOverflowError),
+    #[error("Payout cannot be zero")]
+    ZeroPayout,
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -420,6 +439,7 @@ impl From<BlindedM6FeeOutputError> for BlindedM6Error {
 #[derive(Debug)]
 pub struct BlindedM6<'a> {
     fee: Amount,
+    /// MUST be non-zero
     payout: Amount,
     tx: Cow<'a, bitcoin::Transaction>,
 }
@@ -459,7 +479,10 @@ impl<'a> BlindedM6<'a> {
     ) -> Result<bitcoin::Transaction, AmountUnderflowError> {
         let Self { fee, payout, tx } = self;
         let mut tx = tx.into_owned();
-        assert!(tx.output.pop().is_some());
+        let first_output = tx
+            .output
+            .first_mut()
+            .expect("Blinded M6 should have a fee output at index 0");
         // Push treasury output
         let treasury_output = {
             let value = treasury_value
@@ -472,7 +495,7 @@ impl<'a> BlindedM6<'a> {
                 value,
             }
         };
-        tx.output.push(treasury_output);
+        *first_output = treasury_output;
         // Push treasury input
         assert!(tx.input.is_empty());
         let treasury_input = bitcoin::TxIn {
@@ -497,7 +520,7 @@ impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
         if !tx.input.is_empty() {
             return Err(BlindedM6ErrorInner::NonEmptyInputs.into());
         }
-        let Some(fee_output) = tx.output.last() else {
+        let Some(fee_output) = tx.output.first() else {
             return Err(BlindedM6ErrorInner::MissingFeeOutput.into());
         };
         if fee_output.value != Amount::ZERO {
@@ -509,6 +532,9 @@ impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
             .map(|output| output.value)
             .checked_sum()
             .ok_or(AmountOverflowError)?;
+        if payout == Amount::ZERO {
+            return Err(BlindedM6ErrorInner::ZeroPayout.into());
+        }
         let mut instructions = fee_output.script_pubkey.instructions();
         fn next_instruction<'a>(
             instructions: &'a mut Instructions,
@@ -519,10 +545,7 @@ impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
                 .map_err(BlindedM6FeeOutputError::from)
         }
         fn invalid_spk(tx: Cow<'_, bitcoin::Transaction>) -> BlindedM6FeeOutputError {
-            let spk = match tx {
-                Cow::Borrowed(tx) => tx.output.last().unwrap().script_pubkey.clone(),
-                Cow::Owned(mut tx) => tx.output.pop().unwrap().script_pubkey,
-            };
+            let spk = tx.output.first().unwrap().script_pubkey.clone();
             BlindedM6FeeOutputError::InvalidSpk { spk }
         }
         let Some(Instruction::Op(OP_RETURN)) = next_instruction(&mut instructions)? else {
@@ -540,6 +563,21 @@ impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
             Ok(Self { fee, payout, tx })
         } else {
             Err(invalid_spk(tx).into())
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct PendingM6idInfo {
+    pub vote_count: u16,
+    pub proposal_height: u32,
+}
+
+impl PendingM6idInfo {
+    pub fn new(proposal_height: u32) -> Self {
+        Self {
+            vote_count: 0,
+            proposal_height,
         }
     }
 }

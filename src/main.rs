@@ -2,9 +2,13 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use bip300301::MainClient;
 use clap::Parser;
-use futures::{future::TryFutureExt, FutureExt, StreamExt};
+use futures::{future::TryFutureExt, FutureExt, StreamExt, TryStreamExt};
 use miette::{miette, IntoDiagnostic, Result};
-use tokio::{spawn, task::JoinHandle, time::interval};
+use tokio::{
+    spawn,
+    task::JoinHandle,
+    time::{interval, Instant},
+};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
@@ -90,12 +94,27 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
 
 // TODO: return `Result<!, _>` once `never_type` is stabilized
 async fn wallet_task(wallet: Arc<wallet::Wallet>) -> Result<(), miette::Report> {
+    enum StreamItem {
+        Interval(Instant),
+        Event(crate::types::Event),
+    }
     const SYNC_INTERVAL: Duration = Duration::from_secs(15);
-    let mut interval_stream = tokio_stream::wrappers::IntervalStream::new(interval(SYNC_INTERVAL));
-    while let Some(_tick) = interval_stream.next().await {
-        match wallet.sync() {
-            Ok(_) => (),
-            Err(err) => tracing::error!("wallet sync error: {err:#}"),
+    let interval_stream = tokio_stream::wrappers::IntervalStream::new(interval(SYNC_INTERVAL));
+    let event_stream = wallet.validator().subscribe_events();
+    let mut combined_stream = futures::stream::select(
+        interval_stream.map(|interval| Ok(StreamItem::Interval(interval))),
+        event_stream.map_ok(StreamItem::Event).boxed(),
+    );
+    while let Some(stream_item) = combined_stream.try_next().await? {
+        match stream_item {
+            StreamItem::Interval(_instant) => match wallet.sync() {
+                Ok(_) => (),
+                Err(err) => tracing::error!("wallet sync error: {err:#}"),
+            },
+            StreamItem::Event(event) => match wallet.handle_event(event) {
+                Ok(()) => (),
+                Err(err) => tracing::error!("wallet error while handling event: {err:#}"),
+            },
         }
     }
     Ok(())

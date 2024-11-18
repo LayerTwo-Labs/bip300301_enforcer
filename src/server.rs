@@ -16,7 +16,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     convert,
-    messages::CoinbaseMessage,
+    messages::{CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle},
     proto::{
         common::{ConsensusHex, Hex, ReverseHex},
         crypto::{
@@ -237,22 +237,22 @@ impl ValidatorService for Validator {
         let request = request.into_inner();
         let mut messages = Vec::<CoinbaseMessage>::new();
         for propose_sidechain in request.propose_sidechains {
-            let message = propose_sidechain
+            let m1: M1ProposeSidechain = propose_sidechain
                 .try_into()
                 .map_err(|err: crate::proto::Error| err.into_status())?;
-            messages.push(message);
+            messages.push(m1.into());
         }
         for ack_sidechain in request.ack_sidechains {
-            let message = ack_sidechain
+            let m2: M2AckSidechain = ack_sidechain
                 .try_into()
                 .map_err(|err: crate::proto::Error| err.into_status())?;
-            messages.push(message);
+            messages.push(m2.into());
         }
         for propose_bundle in request.propose_bundles {
-            let message = propose_bundle
+            let m3: M3ProposeBundle = propose_bundle
                 .try_into()
                 .map_err(|err: crate::proto::Error| err.into_status())?;
-            messages.push(message);
+            messages.push(m3.into());
         }
         let ack_bundles = request
             .ack_bundles
@@ -362,7 +362,7 @@ impl ValidatorService for Validator {
         let sidechain_proposals = self.get_sidechains().map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
-            .map(|(description_sha256d_hash, sidechain)| {
+            .map(|(proposal_id, sidechain)| {
                 let description = ConsensusHex::encode(&sidechain.proposal.description.0);
                 let declaration =
                     crate::types::SidechainDeclaration::try_from(&sidechain.proposal.description)
@@ -372,7 +372,9 @@ impl ValidatorService for Validator {
                     sidechain_number: Some(sidechain.proposal.sidechain_number.0 as u32),
                     description: Some(description),
                     declaration,
-                    description_sha256d_hash: Some(ReverseHex::encode(&description_sha256d_hash)),
+                    description_sha256d_hash: Some(ReverseHex::encode(
+                        &proposal_id.description_hash,
+                    )),
                     vote_count: Some(sidechain.status.vote_count as u32),
                     proposal_height: Some(sidechain.status.proposal_height),
                     proposal_age: Some(mainchain_tip_height - sidechain.status.proposal_height),
@@ -753,9 +755,11 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         let _m6id = self
             .put_withdrawal_bundle(sidechain_id, &transaction)
             .map_err(|err| err.into_status())?;
+        /*
         self.broadcast_transaction(transaction.tx().into_owned())
             .await
             .map_err(|err| err.into_status())?;
+        */
         let response = BroadcastWithdrawalBundleResponse {};
         Ok(tonic::Response::new(response))
     }

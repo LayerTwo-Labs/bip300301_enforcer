@@ -1,12 +1,5 @@
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, cmp::Ordering, collections::HashMap};
 
-use crate::{
-    messages::{
-        compute_m6id, parse_coinbase_script, parse_m8_bmm_request, parse_op_drivechain,
-        CoinbaseMessage, M4AckBundles, ABSTAIN_TWO_BYTES, ALARM_TWO_BYTES,
-    },
-    types::{M6id, SidechainProposalStatus},
-};
 use async_broadcast::{Sender, TrySendError};
 use bip300301::{
     client::{GetBlockClient, U8Witness},
@@ -21,13 +14,19 @@ use either::Either;
 use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
 use futures::{TryFutureExt as _, TryStreamExt as _};
-use hashlink::{LinkedHashMap, LinkedHashSet};
+use hashlink::LinkedHashSet;
 use heed::RoTxn;
 
 use crate::{
+    messages::{
+        compute_m6id, parse_op_drivechain, CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain,
+        M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept, M8BmmRequest,
+    },
     types::{
-        BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, Sidechain, SidechainNumber,
-        SidechainProposal, TreasuryUtxo, WithdrawalBundleEvent, WithdrawalBundleEventKind,
+        BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
+        SidechainNumber, SidechainProposal, SidechainProposalId, SidechainProposalStatus,
+        TreasuryUtxo, WithdrawalBundleEvent, WithdrawalBundleEventKind,
+        WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
     zmq::SequenceMessage,
@@ -35,10 +34,7 @@ use crate::{
 
 mod error;
 
-const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
-const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
-
-const USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = WITHDRAWAL_BUNDLE_MAX_AGE; // 5
+const USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 10;
 const USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 = USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE / 2;
 
 const UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 10;
@@ -54,11 +50,11 @@ fn handle_m1_propose_sidechain(
     proposal: SidechainProposal,
     proposal_height: u32,
 ) -> Result<Option<Sidechain>, error::HandleM1ProposeSidechain> {
-    let description_hash: sha256d::Hash = proposal.description.sha256d_hash();
+    let proposal_id: SidechainProposalId = (&proposal).into();
     // FIXME: check that the proposal was made in an ancestor block
     if dbs
-        .description_hash_to_sidechain
-        .contains_key(rwtxn, &description_hash)?
+        .proposal_id_to_sidechain
+        .contains_key(rwtxn, &proposal_id)?
     {
         // If a proposal with the same description_hash already exists,
         // we ignore this M1.
@@ -80,8 +76,8 @@ fn handle_m1_propose_sidechain(
     };
 
     let () = dbs
-        .description_hash_to_sidechain
-        .put(rwtxn, &description_hash, &sidechain)?;
+        .proposal_id_to_sidechain
+        .put(rwtxn, &proposal_id, &sidechain)?;
 
     tracing::info!("persisted new sidechain proposal: {}", sidechain.proposal);
     Ok(Some(sidechain))
@@ -93,26 +89,28 @@ fn handle_m2_ack_sidechain(
     dbs: &Dbs,
     height: u32,
     sidechain_number: SidechainNumber,
-    description_hash: &sha256d::Hash,
+    description_hash: sha256d::Hash,
 ) -> Result<(), error::HandleM2AckSidechain> {
-    let sidechain = dbs
-        .description_hash_to_sidechain
-        .try_get(rwtxn, description_hash)?;
-    let Some(mut sidechain) = sidechain else {
-        return Ok(());
+    let proposal_id = SidechainProposalId {
+        sidechain_number,
+        description_hash,
     };
-    if sidechain.proposal.sidechain_number != sidechain_number {
-        return Ok(());
-    }
+    let sidechain = dbs.proposal_id_to_sidechain.try_get(rwtxn, &proposal_id)?;
+    let Some(mut sidechain) = sidechain else {
+        return Err(error::HandleM2AckSidechain::MissingProposal {
+            sidechain_slot: sidechain_number,
+            description_hash,
+        });
+    };
     sidechain.status.vote_count += 1;
-    dbs.description_hash_to_sidechain
-        .put(rwtxn, description_hash, &sidechain)?;
+    dbs.proposal_id_to_sidechain
+        .put(rwtxn, &proposal_id, &sidechain)?;
 
     let sidechain_proposal_age = height - sidechain.status.proposal_height;
 
     let sidechain_slot_is_used = dbs
         .active_sidechains
-        .sidechain
+        .sidechain()
         .try_get(rwtxn, &sidechain_number)?
         .is_some();
 
@@ -133,11 +131,10 @@ fn handle_m2_ack_sidechain(
             sidechain_number.0
         );
         sidechain.status.activation_height = Some(height);
-        dbs.active_sidechains
-            .sidechain
-            .put(rwtxn, &sidechain_number, &sidechain)?;
-        dbs.description_hash_to_sidechain
-            .delete(rwtxn, description_hash)?;
+        let () = dbs
+            .active_sidechains
+            .put_sidechain(rwtxn, &sidechain_number, &sidechain)?;
+        dbs.proposal_id_to_sidechain.delete(rwtxn, &proposal_id)?;
     }
     Ok(())
 }
@@ -148,17 +145,16 @@ fn handle_failed_sidechain_proposals(
     height: u32,
 ) -> Result<(), error::HandleFailedSidechainProposals> {
     let failed_proposals: Vec<_> = dbs
-        .description_hash_to_sidechain
+        .proposal_id_to_sidechain
         .iter(rwtxn)
         .map_err(db_error::Iter::from)?
         .map_err(|err| error::HandleFailedSidechainProposals::DbIter(err.into()))
-        .filter_map(|(description_hash, sidechain)| {
+        .filter_map(|(proposal_id, sidechain)| {
             let sidechain_proposal_age = height - sidechain.status.proposal_height;
             let sidechain_slot_is_used = dbs
                 .active_sidechains
-                .sidechain
-                .try_get(rwtxn, &sidechain.proposal.sidechain_number)?
-                .is_some();
+                .sidechain()
+                .contains_key(rwtxn, &sidechain.proposal.sidechain_number)?;
             // FIXME: Do we need to check that the vote_count is below the threshold, or is it
             // enough to check that the max age was exceeded?
             let failed = sidechain_slot_is_used
@@ -166,15 +162,15 @@ fn handle_failed_sidechain_proposals(
                 || !sidechain_slot_is_used
                     && sidechain_proposal_age > UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE as u32;
             if failed {
-                Ok(Some(description_hash))
+                Ok(Some(proposal_id))
             } else {
                 Ok(None)
             }
         })
         .collect()?;
-    for failed_description_hash in &failed_proposals {
-        dbs.description_hash_to_sidechain
-            .delete(rwtxn, failed_description_hash)?;
+    for failed_proposal_id in &failed_proposals {
+        dbs.proposal_id_to_sidechain
+            .delete(rwtxn, failed_proposal_id)?;
     }
     Ok(())
 }
@@ -184,25 +180,16 @@ fn handle_m3_propose_bundle(
     dbs: &Dbs,
     sidechain_number: SidechainNumber,
     m6id: M6id,
+    block_height: u32,
 ) -> Result<(), error::HandleM3ProposeBundle> {
-    if !dbs
+    if dbs
         .active_sidechains
-        .sidechain
-        .contains_key(rwtxn, &sidechain_number)?
+        .try_put_pending_m6id(rwtxn, &sidechain_number, m6id, block_height)?
     {
-        return Err(error::HandleM3ProposeBundle::InactiveSidechain { sidechain_number });
+        Ok(())
+    } else {
+        Err(error::HandleM3ProposeBundle::InactiveSidechain { sidechain_number })
     }
-    let pending_m6ids = dbs
-        .active_sidechains
-        .pending_m6ids
-        .try_get(rwtxn, &sidechain_number)?;
-    let mut pending_m6ids = pending_m6ids.unwrap_or_default();
-    pending_m6ids.insert(m6id, 0);
-    let () = dbs
-        .active_sidechains
-        .pending_m6ids
-        .put(rwtxn, &sidechain_number, &pending_m6ids)?;
-    Ok(())
 }
 
 fn handle_m4_votes(
@@ -210,32 +197,41 @@ fn handle_m4_votes(
     dbs: &Dbs,
     upvotes: &[u16],
 ) -> Result<(), error::HandleM4Votes> {
-    for (sidechain_number, vote) in upvotes.iter().enumerate() {
-        let sidechain_number = (sidechain_number as u8).into();
+    let active_sidechains: Vec<_> = dbs
+        .active_sidechains
+        .sidechain()
+        .iter(rwtxn)
+        .map_err(db_error::Iter::from)?
+        .map(|(sidechain_number, _)| Ok(sidechain_number))
+        .collect()
+        .map_err(db_error::Iter::from)?;
+    if upvotes.len() != active_sidechains.len() {
+        return Err(error::HandleM4Votes::InvalidVotes {
+            expected: active_sidechains.len(),
+            len: upvotes.len(),
+        });
+    }
+    for (idx, vote) in upvotes.iter().enumerate() {
+        let sidechain_number = active_sidechains[idx];
         let vote = *vote;
-        if vote == ABSTAIN_TWO_BYTES {
+        if vote == M4AckBundles::ABSTAIN_TWO_BYTES {
             continue;
         }
-        let Some(mut pending_m6ids) = dbs
-            .active_sidechains
-            .pending_m6ids
-            .try_get(rwtxn, &sidechain_number)?
-        else {
-            continue;
-        };
-        if vote == ALARM_TWO_BYTES {
-            pending_m6ids.values_mut().for_each(|vote_count| {
-                if *vote_count > 0 {
-                    *vote_count -= 1;
-                }
+        if vote == M4AckBundles::ALARM_TWO_BYTES {
+            let _: bool = dbs
+                .active_sidechains
+                .try_alarm_pending_m6ids(rwtxn, &sidechain_number)
+                .map_err(error::HandleM4Votes::TryAlarmPendingM6ids)?;
+        } else if !dbs.active_sidechains.try_upvote_pending_withdrawal(
+            rwtxn,
+            &sidechain_number,
+            vote as usize,
+        )? {
+            return Err(error::HandleM4Votes::UpvoteFailed {
+                sidechain_number,
+                index: vote,
             });
-        } else if let Some((_m6id, vote_count)) = pending_m6ids.get_index_mut(vote as usize) {
-            *vote_count += 1;
-        }
-        let () =
-            dbs.active_sidechains
-                .pending_m6ids
-                .put(rwtxn, &sidechain_number, &pending_m6ids)?;
+        };
     }
     Ok(())
 }
@@ -253,7 +249,14 @@ fn handle_m4_ack_bundles(
             todo!();
         }
         M4AckBundles::OneByte { upvotes } => {
-            let upvotes: Vec<u16> = upvotes.iter().map(|vote| *vote as u16).collect();
+            let upvotes: Vec<u16> = upvotes
+                .iter()
+                .map(|vote| match *vote {
+                    M4AckBundles::ABSTAIN_ONE_BYTE => M4AckBundles::ABSTAIN_TWO_BYTES,
+                    M4AckBundles::ALARM_ONE_BYTE => M4AckBundles::ALARM_TWO_BYTES,
+                    vote => vote as u16,
+                })
+                .collect();
             handle_m4_votes(rwtxn, dbs, &upvotes).map_err(error::HandleM4AckBundles::from)
         }
         M4AckBundles::TwoBytes { upvotes } => {
@@ -266,33 +269,20 @@ fn handle_m4_ack_bundles(
 fn handle_failed_m6ids(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
+    block_height: u32,
 ) -> Result<LinkedHashSet<(SidechainNumber, M6id)>, error::HandleFailedM6Ids> {
     let mut failed_m6ids = LinkedHashSet::new();
-    let mut updated_slots = LinkedHashMap::new();
-    let () = dbs
-        .active_sidechains
-        .pending_m6ids
-        .iter(rwtxn)
-        .map_err(db_error::Iter::from)?
-        .map_err(db_error::Iter::from)
-        .for_each(|(sidechain_number, mut pending_m6ids)| {
-            pending_m6ids.retain(|m6id, vote_count| {
-                if *vote_count > WITHDRAWAL_BUNDLE_MAX_AGE {
-                    failed_m6ids.replace((sidechain_number, *m6id));
-                    false
-                } else {
-                    true
-                }
-            });
-            updated_slots.insert(sidechain_number, pending_m6ids);
-            Ok(())
+
+    dbs.active_sidechains
+        .retain_pending_withdrawals(rwtxn, |sidechain_number, m6id, info| {
+            let age = block_height.saturating_sub(info.proposal_height);
+            if age > WITHDRAWAL_BUNDLE_MAX_AGE as u32 {
+                failed_m6ids.replace((sidechain_number, *m6id));
+                false
+            } else {
+                true
+            }
         })?;
-    for (sidechain_number, pending_m6ids) in updated_slots {
-        let () =
-            dbs.active_sidechains
-                .pending_m6ids
-                .put(rwtxn, &sidechain_number, &pending_m6ids)?;
-    }
     Ok(failed_m6ids)
 }
 
@@ -304,30 +294,27 @@ fn handle_m6(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
     transaction: Transaction,
-    old_total_value: Amount,
+    old_treasury_value: Amount,
 ) -> Result<(M6id, SidechainNumber), error::HandleM5M6> {
-    let (m6id, sidechain_number) = compute_m6id(transaction, old_total_value)?;
-    if let Some(mut pending_m6ids) = dbs
+    let (m6id, sidechain_number) = compute_m6id(transaction, old_treasury_value)?;
+
+    if dbs
         .active_sidechains
-        .pending_m6ids
-        .try_get(rwtxn, &sidechain_number)?
-    {
-        match pending_m6ids.entry(m6id) {
+        .try_with_pending_withdrawal_entry(rwtxn, &sidechain_number, m6id, |entry| match entry {
             ordermap::map::Entry::Occupied(entry)
-                if *entry.get() > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD =>
+                if entry.get().vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD =>
             {
                 entry.remove();
-                dbs.active_sidechains.pending_m6ids.put(
-                    rwtxn,
-                    &sidechain_number,
-                    &pending_m6ids,
-                )?;
-                return Ok((m6id, sidechain_number));
+                true
             }
-            _ => (),
-        }
+            _ => false,
+        })?
+        .is_some_and(|ok| ok)
+    {
+        Ok((m6id, sidechain_number))
+    } else {
+        Err(error::HandleM5M6::InvalidM6)
     }
-    Err(error::HandleM5M6::InvalidM6)
 }
 
 fn handle_m5_m6(
@@ -337,27 +324,23 @@ fn handle_m5_m6(
 ) -> Result<Option<DepositOrSuccessfulWithdrawal>, error::HandleM5M6> {
     let txid = transaction.compute_txid();
     // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
-    let (sidechain_number, new_ctip, new_total_value) = {
-        let output = &transaction.output[0];
+    let (sidechain_number, new_ctip, new_treasury_value) = {
+        let Some(treasury_output) = transaction.output.first() else {
+            return Ok(None);
+        };
         // If OP_DRIVECHAIN script is invalid,
         // for example if it is missing OP_TRUE at the end,
         // it will just be ignored.
         if let Ok((_input, sidechain_number)) =
-            parse_op_drivechain(&output.script_pubkey.to_bytes())
+            parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
         {
             let new_ctip = OutPoint { txid, vout: 0 };
-            let new_total_value = output.value;
-
-            (sidechain_number, new_ctip, new_total_value)
+            (sidechain_number, new_ctip, treasury_output.value)
         } else {
             return Ok(None);
         }
     };
-    let address = {
-        let spk = &transaction.output[1].script_pubkey;
-        crate::messages::try_parse_op_return_address(spk)
-    };
-    let old_total_value = {
+    let old_treasury_value = {
         if let Some(old_ctip) = dbs
             .active_sidechains
             .ctip()
@@ -376,10 +359,10 @@ fn handle_m5_m6(
         }
     };
     let treasury_utxo = TreasuryUtxo {
+        sidechain_number,
         outpoint: new_ctip,
-        address: address.clone(),
-        total_value: new_total_value,
-        previous_total_value: old_total_value,
+        total_value: new_treasury_value,
+        previous_total_value: old_treasury_value,
     };
 
     let treasury_utxo_count = dbs
@@ -390,23 +373,40 @@ fn handle_m5_m6(
     // Sequence numbers begin at 0, so the total number of treasury utxos in the database
     // gives us the *next* sequence number.
     let sequence_number = treasury_utxo_count;
-    // M6
-    let res = if new_total_value < old_total_value {
-        let (m6id, sidechain_number_) =
-            handle_m6(rwtxn, dbs, transaction.into_owned(), old_total_value)?;
-        assert_eq!(sidechain_number, sidechain_number_);
-        Either::Right((sidechain_number, m6id))
-    } else if let Some(address) = address {
-        let deposit = Deposit {
-            sequence_number,
-            sidechain_id: sidechain_number,
-            outpoint: new_ctip,
-            address,
-            value: new_total_value - old_total_value,
-        };
-        Either::Left(deposit)
-    } else {
-        return Ok(None);
+    let res = match new_treasury_value.cmp(&old_treasury_value) {
+        // M6
+        Ordering::Less => {
+            if transaction.input.len() != 1 {
+                return Ok(None);
+            }
+            let (m6id, sidechain_number_) =
+                handle_m6(rwtxn, dbs, transaction.into_owned(), old_treasury_value)?;
+            assert_eq!(sidechain_number, sidechain_number_);
+            Either::Right((sidechain_number, m6id))
+        }
+        // M5
+        Ordering::Greater => {
+            let Some(address_output) = transaction.output.get(1) else {
+                return Ok(None);
+            };
+            let Some(address) =
+                crate::messages::try_parse_op_return_address(&address_output.script_pubkey)
+            else {
+                return Ok(None);
+            };
+            let deposit = Deposit {
+                sequence_number,
+                sidechain_id: sidechain_number,
+                outpoint: new_ctip,
+                address,
+                value: new_treasury_value - old_treasury_value,
+            };
+            Either::Left(deposit)
+        }
+        Ordering::Equal => {
+            // FIXME: is it ok to treat this as a regular TX?
+            return Ok(None);
+        }
     };
     dbs.active_sidechains.slot_sequence_to_treasury_utxo.put(
         rwtxn,
@@ -421,7 +421,7 @@ fn handle_m5_m6(
     )?;
     let new_ctip = Ctip {
         outpoint: new_ctip,
-        value: new_total_value,
+        value: new_treasury_value,
     };
     dbs.active_sidechains
         .put_ctip(rwtxn, sidechain_number, &new_ctip)?;
@@ -439,7 +439,7 @@ fn handle_m8(
     let output = &transaction.output[0];
     let script = output.script_pubkey.to_bytes();
 
-    if let Ok((_input, bmm_request)) = parse_m8_bmm_request(&script) {
+    if let Ok((_input, bmm_request)) = M8BmmRequest::parse(&script) {
         if !accepted_bmm_requests
             .get(&bmm_request.sidechain_number)
             .is_some_and(|commitment| *commitment == bmm_request.sidechain_block_hash)
@@ -456,6 +456,135 @@ fn handle_m8(
     }
 }
 
+#[derive(Debug)]
+enum CoinbaseMessageEvent {
+    NewSidechainProposal { sidechain: Sidechain },
+    WithdrawalBundle(WithdrawalBundleEvent),
+}
+
+fn handle_coinbase_message(
+    rwtxn: &mut RwTxn,
+    dbs: &Dbs,
+    height: u32,
+    accepted_bmm_requests: &mut BmmCommitments,
+    message: CoinbaseMessage,
+) -> Result<Option<CoinbaseMessageEvent>, error::ConnectBlock> {
+    match message {
+        CoinbaseMessage::M1ProposeSidechain(M1ProposeSidechain {
+            sidechain_number,
+            description,
+        }) => {
+            tracing::info!(
+                "Propose sidechain number {sidechain_number} with data \"{}\"",
+                String::from_utf8_lossy(&description.0)
+            );
+            let sidechain_proposal = SidechainProposal {
+                sidechain_number,
+                description,
+            };
+            if let Some(sidechain) =
+                handle_m1_propose_sidechain(rwtxn, dbs, sidechain_proposal, height)?
+            {
+                let event = CoinbaseMessageEvent::NewSidechainProposal { sidechain };
+                Ok(Some(event))
+            } else {
+                Ok(None)
+            }
+        }
+        CoinbaseMessage::M2AckSidechain(M2AckSidechain {
+            sidechain_number,
+            description_hash,
+        }) => {
+            tracing::info!(
+                "Ack sidechain number {sidechain_number} with proposal description hash {}",
+                hex::encode(description_hash)
+            );
+            handle_m2_ack_sidechain(rwtxn, dbs, height, sidechain_number, description_hash)?;
+            Ok(None)
+        }
+        CoinbaseMessage::M3ProposeBundle(M3ProposeBundle {
+            sidechain_number,
+            bundle_txid,
+        }) => {
+            let () =
+                handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid.into(), height)?;
+            let event = CoinbaseMessageEvent::WithdrawalBundle(WithdrawalBundleEvent {
+                sidechain_id: sidechain_number,
+                m6id: bundle_txid.into(),
+                kind: WithdrawalBundleEventKind::Submitted,
+            });
+            Ok(Some(event))
+        }
+        CoinbaseMessage::M4AckBundles(m4) => {
+            let () = handle_m4_ack_bundles(rwtxn, dbs, &m4)?;
+            Ok(None)
+        }
+        CoinbaseMessage::M7BmmAccept(M7BmmAccept {
+            sidechain_number,
+            sidechain_block_hash,
+        }) => {
+            if accepted_bmm_requests.contains_key(&sidechain_number) {
+                return Err(error::ConnectBlock::MultipleBmmBlocks { sidechain_number });
+            }
+            accepted_bmm_requests.insert(sidechain_number, sidechain_block_hash);
+            Ok(None)
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TransactionEvent {
+    Deposit(Deposit),
+    WithdrawalBundle(WithdrawalBundleEvent),
+}
+
+fn handle_transaction(
+    rwtxn: &mut RwTxn,
+    dbs: &Dbs,
+    accepted_bmm_requests: &mut BmmCommitments,
+    prev_mainchain_block_hash: &BlockHash,
+    transaction: &Transaction,
+) -> Result<Option<TransactionEvent>, error::ConnectBlock> {
+    let mut res = None;
+    match handle_m5_m6(rwtxn, dbs, Cow::Borrowed(transaction))? {
+        Some(Either::Left(deposit)) => {
+            res = Some(TransactionEvent::Deposit(deposit));
+        }
+        Some(Either::Right((sidechain_id, m6id))) => {
+            let withdrawal_bundle_event = WithdrawalBundleEvent {
+                m6id,
+                sidechain_id,
+                kind: WithdrawalBundleEventKind::Succeeded {
+                    transaction: transaction.clone(),
+                },
+            };
+            res = Some(TransactionEvent::WithdrawalBundle(withdrawal_bundle_event));
+        }
+        None => (),
+    };
+    if handle_m8(
+        transaction,
+        accepted_bmm_requests,
+        prev_mainchain_block_hash,
+    )
+    // We need to differentiate fatal and non-fatal errors. Non-fatal
+    // errors should not cause the initial sync to exit! We therefore must take
+    // care to not use the ? operator to exit from connect_block with an error
+    .or_else(|err| match err.split() {
+        Ok(just_for_info) => {
+            tracing::warn!("Non-fatal error handling M8: {just_for_info:#}");
+            Ok(false)
+        }
+        Err(err) => Err(error::ConnectBlock::M8(err.into())),
+    })? {
+        tracing::trace!(
+            "Handled valid M8 BMM request in tx `{}`",
+            transaction.compute_txid()
+        );
+    };
+    Ok(res)
+}
+
 fn connect_block(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
@@ -463,101 +592,62 @@ fn connect_block(
     block: &Block,
     height: u32,
 ) -> Result<(), error::ConnectBlock> {
-    // TODO: Check that there are no duplicate M2s.
     let coinbase = &block.txdata[0];
-    let mut bmmed_sidechain_slots = HashSet::new();
-    let mut accepted_bmm_requests = BmmCommitments::new();
-    let mut sidechain_proposals = Vec::new();
-    let mut withdrawal_bundle_events = Vec::new();
+    let mut coinbase_messages = CoinbaseMessages::new();
+    // map of sidechain proposals to first vout
+    let mut m1_sidechain_proposals = HashMap::new();
     for (vout, output) in coinbase.output.iter().enumerate() {
-        let message = match parse_coinbase_script(&output.script_pubkey) {
+        let message = match CoinbaseMessage::parse(&output.script_pubkey) {
             Ok((rest, message)) => {
                 if !rest.is_empty() {
                     tracing::warn!("Extra data in coinbase script: {:?}", hex::encode(rest));
                 }
                 message
             }
-
             Err(err) => {
                 // Happens all the time. Would be nice to differentiate between "this isn't a BIP300 message"
                 // and "we failed real bad".
+                // TODO: format script as hex in error
                 tracing::trace!("Failed to parse coinbase script: {:?}", err);
                 continue;
             }
         };
-
-        match message {
-            CoinbaseMessage::M1ProposeSidechain {
-                sidechain_number,
-                data,
-            } => {
-                tracing::info!(
-                    "Propose sidechain number {sidechain_number} with data \"{}\"",
-                    String::from_utf8_lossy(&data)
-                );
-                let sidechain_proposal = SidechainProposal {
-                    sidechain_number,
-                    description: data.into(),
-                };
-                if let Some(sidechain) =
-                    handle_m1_propose_sidechain(rwtxn, dbs, sidechain_proposal, height)?
-                {
-                    // sidechain proposal is new
-                    sidechain_proposals.push((vout as u32, sidechain.proposal));
-                }
-            }
-            CoinbaseMessage::M2AckSidechain {
-                sidechain_number,
-                data_hash: description_hash,
-            } => {
-                tracing::info!(
-                    "Ack sidechain number {sidechain_number} with proposal description hash {}",
-                    hex::encode(description_hash)
-                );
-                handle_m2_ack_sidechain(
-                    rwtxn,
-                    dbs,
-                    height,
-                    sidechain_number,
-                    &sha256d::Hash::from_byte_array(description_hash),
-                )?;
-            }
-            CoinbaseMessage::M3ProposeBundle {
-                sidechain_number,
-                bundle_txid,
-            } => {
-                let () =
-                    handle_m3_propose_bundle(rwtxn, dbs, sidechain_number, bundle_txid.into())?;
-                let event = WithdrawalBundleEvent {
-                    sidechain_id: sidechain_number,
-                    m6id: bundle_txid.into(),
-                    kind: WithdrawalBundleEventKind::Submitted,
-                };
-                withdrawal_bundle_events.push(event);
-            }
-            CoinbaseMessage::M4AckBundles(m4) => {
-                handle_m4_ack_bundles(rwtxn, dbs, &m4)?;
-            }
-            CoinbaseMessage::M7BmmAccept {
-                sidechain_number,
-                sidechain_block_hash,
-            } => {
-                if bmmed_sidechain_slots.contains(&sidechain_number) {
-                    return Err(error::ConnectBlock::MultipleBmmBlocks { sidechain_number });
-                }
-                bmmed_sidechain_slots.insert(sidechain_number);
-                accepted_bmm_requests.insert(sidechain_number, sidechain_block_hash);
-            }
+        if let CoinbaseMessage::M1ProposeSidechain(M1ProposeSidechain {
+            sidechain_number,
+            description,
+        }) = &message
+        {
+            let description_hash = description.sha256d_hash();
+            m1_sidechain_proposals
+                .entry((*sidechain_number, description_hash))
+                .or_insert(vout as u32);
         }
+        coinbase_messages.push(message)?;
+    }
+    let mut accepted_bmm_requests = BmmCommitments::new();
+    let mut new_sidechain_proposals = Vec::new();
+    let mut withdrawal_bundle_events = Vec::new();
+    let m4_exists = coinbase_messages.m4_exists();
+    for message in coinbase_messages {
+        match handle_coinbase_message(rwtxn, dbs, height, &mut accepted_bmm_requests, message)? {
+            Some(CoinbaseMessageEvent::NewSidechainProposal { sidechain }) => {
+                new_sidechain_proposals.push(sidechain.proposal);
+            }
+            Some(CoinbaseMessageEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
+                withdrawal_bundle_events.push(withdrawal_bundle_event);
+            }
+            None => (),
+        };
+    }
+    if !m4_exists {
+        let active_sidechains_count = dbs.active_sidechains.sidechain().len(rwtxn)?;
+        let upvotes = vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
+        let m4 = M4AckBundles::OneByte { upvotes };
+        let () = handle_m4_ack_bundles(rwtxn, dbs, &m4)?;
     }
 
     let () = handle_failed_sidechain_proposals(rwtxn, dbs, height)?;
-    let failed_m6ids = handle_failed_m6ids(rwtxn, dbs)?;
-
-    let block_hash = block.header.block_hash();
-    let prev_mainchain_block_hash = block.header.prev_blockhash;
-
-    let mut deposits = Vec::new();
+    let failed_m6ids = handle_failed_m6ids(rwtxn, dbs, height)?;
     withdrawal_bundle_events.extend(failed_m6ids.into_iter().map(|(sidechain_id, m6id)| {
         WithdrawalBundleEvent {
             m6id,
@@ -565,43 +655,37 @@ fn connect_block(
             kind: WithdrawalBundleEventKind::Failed,
         }
     }));
+
+    let block_hash = block.header.block_hash();
+    let prev_mainchain_block_hash = block.header.prev_blockhash;
+
+    let mut deposits = Vec::new();
     for transaction in &block.txdata[1..] {
-        match handle_m5_m6(rwtxn, dbs, Cow::Borrowed(transaction))? {
-            Some(Either::Left(deposit)) => deposits.push(deposit),
-            Some(Either::Right((sidechain_id, m6id))) => {
-                let withdrawal_bundle_event = WithdrawalBundleEvent {
-                    m6id,
-                    sidechain_id,
-                    kind: WithdrawalBundleEventKind::Succeeded {
-                        transaction: transaction.clone(),
-                    },
-                };
+        match handle_transaction(
+            rwtxn,
+            dbs,
+            &mut accepted_bmm_requests,
+            &prev_mainchain_block_hash,
+            transaction,
+        )? {
+            Some(TransactionEvent::Deposit(deposit)) => {
+                deposits.push(deposit);
+            }
+            Some(TransactionEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
                 withdrawal_bundle_events.push(withdrawal_bundle_event);
             }
             None => (),
-        };
-        if handle_m8(
-            transaction,
-            &accepted_bmm_requests,
-            &prev_mainchain_block_hash,
-        )
-        // We need to differentiate fatal and non-fatal errors. Non-fatal
-        // errors should not cause the initial sync to exit! We therefore must take
-        // care to not use the ? operator to exit from connect_block with an error
-        .or_else(|err| match err.split() {
-            Ok(just_for_info) => {
-                tracing::warn!("Non-fatal error handling M8: {just_for_info:#}");
-                Ok(false)
-            }
-            Err(err) => Err(error::ConnectBlock::M8(err.into())),
-        })? {
-            tracing::trace!(
-                "Handled valid M8 BMM request in tx `{}`",
-                transaction.compute_txid()
-            );
         }
     }
 
+    let sidechain_proposals = new_sidechain_proposals
+        .into_iter()
+        .map(|proposal| {
+            let description_hash = proposal.description.sha256d_hash();
+            let index = m1_sidechain_proposals[&(proposal.sidechain_number, description_hash)];
+            (index, proposal)
+        })
+        .collect();
     let block_info = BlockInfo {
         bmm_commitments: accepted_bmm_requests.into_iter().collect(),
         coinbase_txid: coinbase.compute_txid(),
@@ -789,7 +873,6 @@ pub(super) async fn task(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
 ) -> Result<(), error::Fatal> {
-    // FIXME: use this instead of polling
     let zmq_sequence = crate::zmq::subscribe_sequence(zmq_addr_sequence)
         .await
         .map_err(error::Fatal::from)?;

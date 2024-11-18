@@ -41,7 +41,7 @@ use bitcoin::{
     },
     script::PushBytesBuf,
     transaction::Version as TxVersion,
-    Amount, Block, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Amount, Block, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use miette::{miette, IntoDiagnostic, Result};
@@ -51,10 +51,11 @@ use rusqlite::Connection;
 use crate::{
     cli::WalletConfig,
     convert,
-    messages::{self, CoinbaseBuilder, M8_BMM_REQUEST_TAG},
+    messages::{self, CoinbaseBuilder, M4AckBundles, M8BmmRequest},
     types::{
-        BDKWalletTransaction, BlindedM6, Ctip, M6id, SidechainAck, SidechainNumber,
-        SidechainProposal,
+        BDKWalletTransaction, BlindedM6, Ctip, M6id, PendingM6idInfo, SidechainAck,
+        SidechainNumber, SidechainProposal, WithdrawalBundleEventKind,
+        WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD,
     },
     validator::Validator,
 };
@@ -82,6 +83,8 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
         fees + Amount::from_sat(subsidy_sats >> halvings)
     }
 }
+
+type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
 pub struct Wallet {
     main_client: HttpClient,
@@ -423,11 +426,11 @@ impl Wallet {
         with_connection(&self.db_connection.lock())
     }
 
-    fn get_bundle_proposals(&self) -> Result<HashMap<SidechainNumber, Vec<M6id>>> {
+    fn get_bundle_proposals(&self) -> Result<HashMap<SidechainNumber, BundleProposals>> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_> {
             let mut statement = connection
-                .prepare("SELECT sidechain_number, bundle_hash FROM bundle_proposals")
+                .prepare("SELECT sidechain_number, bundle_hash, bundle_tx FROM bundle_proposals")
                 .into_diagnostic()?;
             let mut bundle_proposals = HashMap::<_, Vec<_>>::new();
             let () = statement
@@ -435,33 +438,45 @@ impl Wallet {
                     let sidechain_number = SidechainNumber(row.get(0)?);
                     let m6id_bytes: [u8; 32] = row.get(1)?;
                     let m6id = M6id::from(m6id_bytes);
-                    Ok((sidechain_number, m6id))
+                    let bundle_tx_bytes: Vec<u8> = row.get(2)?;
+                    Ok((sidechain_number, m6id, bundle_tx_bytes))
                 })
                 .into_diagnostic()?
+                .map(|item| item.into_diagnostic())
                 .transpose_into_fallible()
-                .for_each(|(sidechain_number, m6id)| {
+                .for_each(|(sidechain_number, m6id, bundle_tx_bytes)| {
+                    let bundle_proposal_tx =
+                        bitcoin::consensus::deserialize(&bundle_tx_bytes).into_diagnostic()?;
+                    let bundle_proposal_tx =
+                        BlindedM6::try_from(std::borrow::Cow::Owned(bundle_proposal_tx))?;
                     bundle_proposals
                         .entry(sidechain_number)
                         .or_default()
-                        .push(m6id);
+                        .push((m6id, bundle_proposal_tx));
                     Ok(())
-                })
-                .into_diagnostic()?;
+                })?;
             Ok(bundle_proposals)
         };
-        let mut bundle_proposals = with_connection(&self.db_connection.lock())?;
+        let bundle_proposals = with_connection(&self.db_connection.lock())?;
         // Filter out proposals that have already been created
-        let () = bundle_proposals
-            .iter_mut()
+        let res = bundle_proposals
+            .into_iter()
             .map(Ok::<_, miette::Report>)
             .transpose_into_fallible()
-            .for_each(|(sidechain_id, m6ids)| {
-                let pending_m6ids = self.validator.get_pending_withdrawals(sidechain_id)?;
-                m6ids.retain(|m6id| !pending_m6ids.contains_key(m6id));
-                miette::Result::Ok(())
-            })?;
-        bundle_proposals.retain(|_, m6ids| !m6ids.is_empty());
-        Ok(bundle_proposals)
+            .filter_map(|(sidechain_id, m6ids)| {
+                let pending_m6ids = self.validator.get_pending_withdrawals(&sidechain_id)?;
+                let res: Vec<_> = m6ids
+                    .into_iter()
+                    .map(|(m6id, blinded_m6)| (m6id, blinded_m6, pending_m6ids.get(&m6id).copied()))
+                    .collect();
+                if res.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some((sidechain_id, res)))
+                }
+            })
+            .collect()?;
+        Ok(res)
     }
 
     /// Fetches sidechain proposals from the validator. Returns proposals that
@@ -583,6 +598,25 @@ impl Wallet {
         Ok(())
     }
 
+    // Gets wiped upon generating a new block.
+    // TODO: how will this work for non-regtest?
+    fn delete_bundle_proposals<I>(&self, iter: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (SidechainNumber, M6id)>,
+    {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_, _> {
+            for (sidechain_number, m6id) in iter {
+                let _ = connection.execute(
+                    "DELETE FROM bundle_proposals where sidechain_number = ?1 AND bundle_hash = ?2;",
+                    (sidechain_number.0, m6id.0.as_byte_array())
+                ).into_diagnostic()?;
+            }
+            Ok(())
+        };
+        with_connection(&self.db_connection.lock())
+    }
+
     async fn mine(&self, coinbase_outputs: &[TxOut], transactions: Vec<Transaction>) -> Result<()> {
         let transaction_count = transactions.len();
 
@@ -626,7 +660,7 @@ impl Wallet {
             let sidechain_proposals = self.get_our_sidechain_proposals().into_diagnostic()?;
             let mut coinbase_builder = CoinbaseBuilder::new();
             for sidechain_proposal in sidechain_proposals {
-                coinbase_builder = coinbase_builder.propose_sidechain(sidechain_proposal);
+                coinbase_builder.propose_sidechain(sidechain_proposal)?;
             }
 
             let mut sidechain_acks = self.get_sidechain_acks()?;
@@ -637,7 +671,7 @@ impl Wallet {
 
             if ack_all_proposals && !active_sidechain_proposals.is_empty() {
                 tracing::info!(
-                    "Handle sidechain ACK: acking all sidechains irregardless of what DB says"
+                    "Handle sidechain ACK: acking all sidechains regardless of what DB says"
                 );
 
                 let acks = sidechain_acks.clone();
@@ -681,11 +715,13 @@ impl Wallet {
                     sidechain_ack.sidechain_number
                 );
 
-                coinbase_builder = coinbase_builder.ack_sidechain(
+                coinbase_builder.ack_sidechain(
                     sidechain_ack.sidechain_number,
                     sidechain_ack.description_hash,
-                );
+                )?;
             }
+
+            let mut mempool_transactions = vec![];
 
             let mainchain_tip = self.validator.get_mainchain_tip()?;
             let bmm_hashes = self.get_bmm_requests(&mainchain_tip)?;
@@ -695,12 +731,58 @@ impl Wallet {
                     sidechain_number,
                     hex::encode(bmm_hash)
                 );
-                coinbase_builder = coinbase_builder.bmm_accept(*sidechain_number, bmm_hash);
+                coinbase_builder.bmm_accept(*sidechain_number, bmm_hash)?;
             }
             for (sidechain_id, m6ids) in self.get_bundle_proposals()? {
-                for m6id in m6ids {
-                    coinbase_builder = coinbase_builder.propose_bundle(sidechain_id, m6id);
+                let mut ctip = None;
+                for (m6id, blinded_m6, m6id_info) in m6ids {
+                    match m6id_info {
+                        Some(m6id_info)
+                            if m6id_info.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD =>
+                        {
+                            let Ctip { outpoint, value } = if let Some(ctip) = ctip {
+                                ctip
+                            } else {
+                                self.validator.get_ctip(sidechain_id)?
+                            };
+                            let new_value = (value - *blinded_m6.fee()) - *blinded_m6.payout();
+                            let m6 = blinded_m6.into_m6(sidechain_id, outpoint, value)?;
+                            ctip = Some(Ctip {
+                                outpoint: OutPoint {
+                                    txid: m6.compute_txid(),
+                                    vout: (m6.output.len() - 1) as u32,
+                                },
+                                value: new_value,
+                            });
+                            mempool_transactions.push(m6);
+                        }
+                        Some(_) => (),
+                        None => {
+                            coinbase_builder.propose_bundle(sidechain_id, m6id)?;
+                        }
+                    }
                 }
+            }
+            // Ack bundles
+            // TODO: Exclusively ack bundles that are known to the wallet
+            // TODO: ack bundles when M2 messages are present
+            if ack_all_proposals && coinbase_builder.messages().m2_acks().is_empty() {
+                let active_sidechains = self.validator.get_active_sidechains()?;
+                let upvotes = active_sidechains
+                    .into_iter()
+                    .map(|sidechain| {
+                        if self
+                            .validator
+                            .get_pending_withdrawals(&sidechain.proposal.sidechain_number)?
+                            .is_empty()
+                        {
+                            Ok(M4AckBundles::ABSTAIN_ONE_BYTE)
+                        } else {
+                            Ok(0)
+                        }
+                    })
+                    .collect::<Result<_, miette::Report>>()?;
+                coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
             }
 
             let coinbase_outputs = coinbase_builder.build().into_diagnostic()?;
@@ -720,8 +802,6 @@ impl Wallet {
                     method: "getrawmempool".to_string(),
                     error: err,
                 })?;
-
-            let mut mempool_transactions = vec![];
 
             for txid in raw_mempool {
                 let transaction = self.fetch_transaction(txid).await?;
@@ -1347,7 +1427,7 @@ impl Wallet {
         sidechain_block_hash: [u8; 32],
     ) -> Result<bdk_wallet::bitcoin::ScriptBuf> {
         let message = [
-            &M8_BMM_REQUEST_TAG[..],
+            &M8BmmRequest::TAG[..],
             &[sidechain_number.into()],
             &sidechain_block_hash,
             &prev_mainchain_block_hash.to_byte_array(),
@@ -1510,11 +1590,41 @@ impl Wallet {
         self.db_connection
             .lock()
             .execute(
-                "INSERT INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
+                "INSERT OR IGNORE INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
                 (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),
             )
             .into_diagnostic()?;
         Ok(m6id)
+    }
+
+    fn handle_connect_block(&self, block_info: crate::types::BlockInfo) -> Result<()> {
+        let finalized_withdrawal_bundles = block_info
+            .withdrawal_bundle_events
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                WithdrawalBundleEventKind::Failed
+                | WithdrawalBundleEventKind::Succeeded { transaction: _ } => {
+                    Some((event.sidechain_id, event.m6id))
+                }
+                WithdrawalBundleEventKind::Submitted => None,
+            });
+        let () = self.delete_bundle_proposals(finalized_withdrawal_bundles)?;
+        Ok(())
+    }
+
+    pub fn handle_event(&self, event: crate::types::Event) -> Result<()> {
+        match event {
+            crate::types::Event::ConnectBlock {
+                header_info: _,
+                block_info,
+            } => {
+                let () = self.handle_connect_block(block_info)?;
+                Ok(())
+            }
+            crate::types::Event::DisconnectBlock { block_hash: _ } => {
+                todo!()
+            }
+        }
     }
 }
 

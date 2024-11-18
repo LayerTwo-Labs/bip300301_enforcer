@@ -219,7 +219,9 @@ pub mod crypto {
 
 pub mod mainchain {
     use crate::{
-        messages::{CoinbaseMessage, M4AckBundles},
+        messages::{
+            CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle, M4AckBundles,
+        },
         proto::common::{ConsensusHex, Hex, ReverseHex},
         types::SidechainNumber,
     };
@@ -345,7 +347,7 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ProposeSidechain> for CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::ProposeSidechain> for M1ProposeSidechain {
         type Error = super::Error;
 
         fn try_from(
@@ -368,17 +370,17 @@ pub mod mainchain {
                     )
                 })?
             };
-            let data: Vec<u8> = data
+            let description: Vec<u8> = data
                 .ok_or_else(|| Self::Error::missing_field::<ProposeSidechain>("data"))?
                 .decode::<ProposeSidechain, _>("data")?;
-            Ok(CoinbaseMessage::M1ProposeSidechain {
+            Ok(M1ProposeSidechain {
                 sidechain_number,
-                data,
+                description: description.into(),
             })
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::AckSidechain> for CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::AckSidechain> for M2AckSidechain {
         type Error = super::Error;
 
         fn try_from(
@@ -401,17 +403,17 @@ pub mod mainchain {
                     )
                 })?
             };
-            let data_hash: [u8; 32] = data_hash
+            let description_hash = data_hash
                 .ok_or_else(|| Self::Error::missing_field::<AckSidechain>("data_hash"))?
                 .decode::<AckSidechain, _>("data_hash")?;
-            Ok(CoinbaseMessage::M2AckSidechain {
+            Ok(M2AckSidechain {
                 sidechain_number,
-                data_hash,
+                description_hash,
             })
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ProposeBundle> for CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::ProposeBundle> for M3ProposeBundle {
         type Error = super::Error;
 
         fn try_from(
@@ -437,7 +439,7 @@ pub mod mainchain {
             let bundle_txid: [u8; 32] = bundle_txid
                 .ok_or_else(|| Self::Error::missing_field::<ProposeBundle>("bundle_txid"))?
                 .decode::<ProposeBundle, _>("bundle_txid")?;
-            Ok(CoinbaseMessage::M3ProposeBundle {
+            Ok(M3ProposeBundle {
                 sidechain_number,
                 bundle_txid,
             })

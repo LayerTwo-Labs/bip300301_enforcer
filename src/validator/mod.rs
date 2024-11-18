@@ -2,7 +2,7 @@ use std::{future::Future, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver};
 use bip300301::{jsonrpsee, MainClient};
-use bitcoin::{self, hashes::sha256d, Amount, BlockHash, OutPoint};
+use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
 use futures::{stream::FusedStream, FutureExt as _, StreamExt, TryFutureExt as _};
 use miette::{Diagnostic, IntoDiagnostic};
@@ -10,7 +10,8 @@ use thiserror::Error;
 use tokio::task::{spawn, JoinHandle};
 
 use crate::types::{
-    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber, TwoWayPegData,
+    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
+    SidechainProposalId, TwoWayPegData,
 };
 
 mod dbs;
@@ -135,11 +136,11 @@ impl Validator {
     }
 
     /// Get (possibly unactivated) sidechains
-    pub fn get_sidechains(&self) -> Result<Vec<(sha256d::Hash, Sidechain)>, miette::Report> {
+    pub fn get_sidechains(&self) -> Result<Vec<(SidechainProposalId, Sidechain)>, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let res = self
             .dbs
-            .description_hash_to_sidechain
+            .proposal_id_to_sidechain
             .iter(&rotxn)
             .into_diagnostic()?
             .collect()
@@ -152,7 +153,7 @@ impl Validator {
         let res = self
             .dbs
             .active_sidechains
-            .sidechain
+            .sidechain()
             .iter(&rotxn)
             .into_diagnostic()?
             .map(|(_sidechain_number, sidechain)| {
@@ -280,7 +281,7 @@ impl Validator {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs
             .active_sidechains
-            .pending_m6ids
+            .pending_m6ids()
             .get(&rotxn, sidechain_number)
             .into_diagnostic()
     }
