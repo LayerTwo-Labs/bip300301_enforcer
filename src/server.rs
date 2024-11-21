@@ -615,7 +615,7 @@ fn stream_proposal_confirmations(
 }
 
 #[tonic::async_trait]
-impl WalletService for Arc<crate::wallet::Wallet> {
+impl WalletService for crate::wallet::Wallet {
     type CreateSidechainProposalStream =
         BoxStream<'static, Result<CreateSidechainProposalResponse, tonic::Status>>;
 
@@ -677,9 +677,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         _request: tonic::Request<CreateNewAddressRequest>,
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
-        let wallet = self as &Arc<crate::wallet::Wallet>;
-
-        let address = wallet.get_new_address().map_err(|err| err.into_status())?;
+        let address = self.get_new_address().map_err(|err| err.into_status())?;
 
         let response = CreateNewAddressResponse {
             address: address.to_string(),
