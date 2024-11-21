@@ -23,7 +23,7 @@ use crate::{
         M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept, M8BmmRequest,
     },
     types::{
-        BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
+        BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
         SidechainNumber, SidechainProposal, SidechainProposalId, SidechainProposalStatus,
         TreasuryUtxo, WithdrawalBundleEvent, WithdrawalBundleEventKind,
         WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
@@ -286,8 +286,8 @@ fn handle_failed_m6ids(
     Ok(failed_m6ids)
 }
 
-/// Deposit or (sidechain_id, m6id)
-type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, M6id)>;
+/// Deposit or (sidechain_id, m6id, sequence_number)
+type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, M6id, u64)>;
 
 /// Returns (sidechain_id, m6id)
 fn handle_m6(
@@ -382,7 +382,7 @@ fn handle_m5_m6(
             let (m6id, sidechain_number_) =
                 handle_m6(rwtxn, dbs, transaction.into_owned(), old_treasury_value)?;
             assert_eq!(sidechain_number, sidechain_number_);
-            Either::Right((sidechain_number, m6id))
+            Either::Right((sidechain_number, m6id, sequence_number))
         }
         // M5
         Ordering::Greater => {
@@ -550,11 +550,12 @@ fn handle_transaction(
         Some(Either::Left(deposit)) => {
             res = Some(TransactionEvent::Deposit(deposit));
         }
-        Some(Either::Right((sidechain_id, m6id))) => {
+        Some(Either::Right((sidechain_id, m6id, sequence_number))) => {
             let withdrawal_bundle_event = WithdrawalBundleEvent {
                 m6id,
                 sidechain_id,
                 kind: WithdrawalBundleEventKind::Succeeded {
+                    sequence_number,
                     transaction: transaction.clone(),
                 },
             };
@@ -625,16 +626,21 @@ fn connect_block(
         coinbase_messages.push(message)?;
     }
     let mut accepted_bmm_requests = BmmCommitments::new();
-    let mut new_sidechain_proposals = Vec::new();
-    let mut withdrawal_bundle_events = Vec::new();
+    let mut events = Vec::<BlockEvent>::new();
     let m4_exists = coinbase_messages.m4_exists();
     for message in coinbase_messages {
         match handle_coinbase_message(rwtxn, dbs, height, &mut accepted_bmm_requests, message)? {
             Some(CoinbaseMessageEvent::NewSidechainProposal { sidechain }) => {
-                new_sidechain_proposals.push(sidechain.proposal);
+                let proposal = sidechain.proposal;
+                let description_hash = proposal.description.sha256d_hash();
+                let index = m1_sidechain_proposals[&(proposal.sidechain_number, description_hash)];
+                events.push(BlockEvent::SidechainProposal {
+                    vout: index,
+                    proposal,
+                })
             }
             Some(CoinbaseMessageEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
-                withdrawal_bundle_events.push(withdrawal_bundle_event);
+                events.push(withdrawal_bundle_event.into());
             }
             None => (),
         };
@@ -648,18 +654,18 @@ fn connect_block(
 
     let () = handle_failed_sidechain_proposals(rwtxn, dbs, height)?;
     let failed_m6ids = handle_failed_m6ids(rwtxn, dbs, height)?;
-    withdrawal_bundle_events.extend(failed_m6ids.into_iter().map(|(sidechain_id, m6id)| {
+    events.extend(failed_m6ids.into_iter().map(|(sidechain_id, m6id)| {
         WithdrawalBundleEvent {
             m6id,
             sidechain_id,
             kind: WithdrawalBundleEventKind::Failed,
         }
+        .into()
     }));
 
     let block_hash = block.header.block_hash();
     let prev_mainchain_block_hash = block.header.prev_blockhash;
 
-    let mut deposits = Vec::new();
     for transaction in &block.txdata[1..] {
         match handle_transaction(
             rwtxn,
@@ -669,29 +675,19 @@ fn connect_block(
             transaction,
         )? {
             Some(TransactionEvent::Deposit(deposit)) => {
-                deposits.push(deposit);
+                events.push(deposit.into());
             }
             Some(TransactionEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
-                withdrawal_bundle_events.push(withdrawal_bundle_event);
+                events.push(withdrawal_bundle_event.into());
             }
             None => (),
         }
     }
 
-    let sidechain_proposals = new_sidechain_proposals
-        .into_iter()
-        .map(|proposal| {
-            let description_hash = proposal.description.sha256d_hash();
-            let index = m1_sidechain_proposals[&(proposal.sidechain_number, description_hash)];
-            (index, proposal)
-        })
-        .collect();
     let block_info = BlockInfo {
         bmm_commitments: accepted_bmm_requests.into_iter().collect(),
         coinbase_txid: coinbase.compute_txid(),
-        deposits,
-        sidechain_proposals,
-        withdrawal_bundle_events,
+        events,
     };
     let () = dbs
         .block_hashes

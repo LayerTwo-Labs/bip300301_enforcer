@@ -308,7 +308,10 @@ pub struct HeaderInfo {
 pub enum WithdrawalBundleEventKind {
     Submitted,
     Failed,
-    Succeeded { transaction: bitcoin::Transaction },
+    Succeeded {
+        sequence_number: u64,
+        transaction: bitcoin::Transaction,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -321,15 +324,56 @@ pub struct WithdrawalBundleEvent {
 /// BMM commitments for a single block
 pub type BmmCommitments = LinkedHashMap<SidechainNumber, Hash256>;
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum BlockEvent {
+    Deposit(Deposit),
+    SidechainProposal {
+        /// Coinbase vout
+        vout: u32,
+        proposal: SidechainProposal,
+    },
+    WithdrawalBundle(WithdrawalBundleEvent),
+}
+
+impl From<Deposit> for BlockEvent {
+    fn from(deposit: Deposit) -> Self {
+        Self::Deposit(deposit)
+    }
+}
+
+impl From<WithdrawalBundleEvent> for BlockEvent {
+    fn from(bundle_event: WithdrawalBundleEvent) -> Self {
+        Self::WithdrawalBundle(bundle_event)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockInfo {
     /// Sequential map of sidechain IDs to BMM commitments
     pub bmm_commitments: BmmCommitments,
     pub coinbase_txid: Txid,
-    pub deposits: Vec<Deposit>,
-    /// Sidechain proposals, sorted by coinbase vout
-    pub sidechain_proposals: Vec<(u32, SidechainProposal)>,
-    pub withdrawal_bundle_events: Vec<WithdrawalBundleEvent>,
+    pub events: Vec<BlockEvent>,
+}
+
+impl BlockInfo {
+    // Iterator over (vout, proposal)
+    pub fn sidechain_proposals(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (u32, &SidechainProposal)> {
+        self.events.iter().filter_map(|event| match event {
+            BlockEvent::SidechainProposal { vout, proposal } => Some((*vout, proposal)),
+            BlockEvent::Deposit(_) | BlockEvent::WithdrawalBundle(_) => None,
+        })
+    }
+
+    pub fn withdrawal_bundle_events(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &WithdrawalBundleEvent> {
+        self.events.iter().filter_map(|event| match event {
+            BlockEvent::WithdrawalBundle(bundle_event) => Some(bundle_event),
+            BlockEvent::Deposit(_) | BlockEvent::SidechainProposal { .. } => None,
+        })
+    }
 }
 
 /// Two-way peg data for a single block
