@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 
 use bip300301::MainClient;
 use clap::Parser;
-use futures::{FutureExt as _, TryFutureExt as _};
+use futures::{future::Either, FutureExt as _, TryFutureExt as _};
 use miette::{miette, IntoDiagnostic, Result};
-use tokio::{spawn, task::JoinHandle};
+use tokio::{signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
@@ -202,13 +202,24 @@ async fn main() -> Result<()> {
         None
     };
 
-    let _handle_validator_errors: JoinHandle<()> = spawn({
-        err_rx.map(|err| {
-            if let Ok(err) = err {
-                tracing::error!("{err:#}");
-            }
-        })
-    });
+    let _server_task: JoinHandle<()> = spawn(
+        run_server(validator, wallet, cli.serve_rpc_addr)
+            .unwrap_or_else(|err| tracing::error!("{err:#}")),
+    );
 
-    run_server(validator, wallet, cli.serve_rpc_addr).await
+    match futures::future::select(err_rx, ctrl_c().boxed()).await {
+        Either::Left((Ok(err), _ctrl_c_handler)) => {
+            tracing::error!("{err:#}")
+        }
+        Either::Left((Err(futures::channel::oneshot::Canceled), _ctrl_c_handler)) => {
+            tracing::info!("Shutting down due to validator error")
+        }
+        Either::Right((Ok(()), _err_rx)) => {
+            tracing::info!("Shutting down")
+        }
+        Either::Right((Err(ctrl_c_err), _err_rx)) => {
+            tracing::error!("Shutting down due to error in ctrl-c handler: {ctrl_c_err:#}")
+        }
+    }
+    Ok(())
 }
