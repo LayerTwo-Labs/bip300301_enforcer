@@ -569,6 +569,12 @@ impl CoinbaseBuilder {
     }
 }
 
+impl Default for CoinbaseBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct M8BmmRequest {
     pub sidechain_number: SidechainNumber,

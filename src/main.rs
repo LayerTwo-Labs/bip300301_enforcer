@@ -10,22 +10,20 @@ use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
-mod cli;
-mod convert;
-mod messages;
-mod proto;
-mod rpc_client;
-mod server;
-mod types;
-mod validator;
-mod wallet;
-mod zmq;
-
-use proto::{
-    crypto::crypto_service_server::CryptoServiceServer,
-    mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
+use bip300301_enforcer_lib::{
+    cli,
+    proto::{
+        self,
+        crypto::crypto_service_server::CryptoServiceServer,
+        mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
+    },
+    server,
+    validator::Validator,
+    wallet,
 };
-use validator::Validator;
+
+mod rpc_client;
+
 use wallet::Wallet;
 
 /// Saturating predecessor of a log level

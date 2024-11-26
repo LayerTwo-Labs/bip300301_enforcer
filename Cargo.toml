@@ -69,6 +69,11 @@ version = "0.6.0"
 default-features = false
 features = ["Clone", "Debug"]
 
+[dev-dependencies]
+indicatif = { version = "0.17.9", features = ["futures"] }
+libtest-mimic = "0.8.1"
+temp-dir = "0.1.14"
+
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 assertions_on_result_states = "allow"
@@ -88,3 +93,18 @@ let_underscore_drop = "deny"
 [patch.crates-io.zeromq]
 git = "https://github.com/PaoloPana/zmq.rs.git"
 rev = "cf71ae341e67bccc6b45ac634a45718ea0a1adb4"
+
+[[bin]]
+name = "bip300301_enforcer"
+path = "src/main.rs"
+
+[lib]
+name = "bip300301_enforcer_lib"
+path = "src/lib.rs"
+
+[[example]]
+name = "integration_tests"
+path = "integration_tests/main.rs"
+harness = false
+test = false
+crate-type = ["bin"]
