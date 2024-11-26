@@ -128,7 +128,7 @@ pub enum SequenceStreamError {
 
 pub struct SequenceStream<'a>(BoxStream<'a, Result<SequenceMessage, SequenceStreamError>>);
 
-impl<'a> Stream for SequenceStream<'a> {
+impl Stream for SequenceStream<'_> {
     type Item = Result<SequenceMessage, SequenceStreamError>;
 
     fn poll_next(

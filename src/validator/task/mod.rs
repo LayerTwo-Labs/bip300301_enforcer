@@ -440,9 +440,9 @@ fn handle_m8(
     let script = output.script_pubkey.to_bytes();
 
     if let Ok((_input, bmm_request)) = M8BmmRequest::parse(&script) {
-        if !accepted_bmm_requests
+        if accepted_bmm_requests
             .get(&bmm_request.sidechain_number)
-            .is_some_and(|commitment| *commitment == bmm_request.sidechain_block_hash)
+            .is_none_or(|commitment| *commitment != bmm_request.sidechain_block_hash)
         {
             Err(error::HandleM8::NotAcceptedByMiners)
         } else if bmm_request.prev_mainchain_block_hash != prev_mainchain_block_hash.to_byte_array()
