@@ -219,8 +219,12 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetChainTipRequest>,
     ) -> Result<tonic::Response<GetChainTipResponse>, tonic::Status> {
         let GetChainTipRequest {} = request.into_inner();
-        let tip_hash = self.get_mainchain_tip().map_err(|err| err.into_status())?;
-
+        let Some(tip_hash) = self
+            .try_get_mainchain_tip()
+            .map_err(|err| err.into_status())?
+        else {
+            return Err(tonic::Status::unavailable("Validator is not synced"));
+        };
         let header_info = self
             .get_header_info(&tip_hash)
             .map_err(|err| tonic::Status::from_error(err.into()))?;
@@ -353,7 +357,15 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetSidechainProposalsRequest>,
     ) -> Result<tonic::Response<GetSidechainProposalsResponse>, tonic::Status> {
         let GetSidechainProposalsRequest {} = request.into_inner();
-        let mainchain_tip = self.get_mainchain_tip().map_err(|err| err.into_status())?;
+        let Some(mainchain_tip) = self
+            .try_get_mainchain_tip()
+            .map_err(|err| err.into_status())?
+        else {
+            let response = GetSidechainProposalsResponse {
+                sidechain_proposals: Vec::new(),
+            };
+            return Ok(Response::new(response));
+        };
         let mainchain_tip_height = self
             .get_header_info(&mainchain_tip)
             .into_diagnostic()

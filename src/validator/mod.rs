@@ -282,6 +282,16 @@ impl Validator {
         Ok(res)
     }
 
+    /// Get the mainchain tip. Returns `None` if not synced
+    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, miette::Report> {
+        let txn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .current_chain_tip
+            .try_get(&txn, &dbs::UnitKey)
+            .into_diagnostic()
+    }
+
+    /// Get the mainchain tip. Returns an error if not synced
     pub fn get_mainchain_tip(&self) -> Result<BlockHash, miette::Report> {
         let txn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs

@@ -857,7 +857,9 @@ impl Wallet {
 
         let mut mempool_transactions = vec![];
 
-        let mainchain_tip = self.inner.validator.get_mainchain_tip()?;
+        let Some(mainchain_tip) = self.inner.validator.try_get_mainchain_tip()? else {
+            return Err(miette!("Validator is not synced"));
+        };
         let bmm_hashes = self.get_bmm_requests(&mainchain_tip)?;
         for (sidechain_number, bmm_hash) in &bmm_hashes {
             tracing::info!(
