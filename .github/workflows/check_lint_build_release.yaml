@@ -1,6 +1,9 @@
-on: [pull_request, push]
-
 name: Check, Lint, Test, Build, Release
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,6 +24,8 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu
 
       - name: Check Prettier formatting
         uses: actionsx/prettier@v2
@@ -35,6 +40,70 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features
+
+  integration-test:
+    name: Integration test
+    runs-on: ubuntu-latest
+    needs: [check-lint]
+    steps:
+      - name: Install latest Bitcoin Core
+        run: |
+          pushd ..
+          BITCOIN_CORE_URL='https://bitcoincore.org/bin/bitcoin-core-28.0/bitcoin-28.0-x86_64-linux-gnu.tar.gz'
+          curl "${BITCOIN_CORE_URL}" | tar xz
+          popd
+
+      - name: Check that Bitcoin Core is installed
+        run: |
+          ls '../bitcoin-28.0'
+          ls '../bitcoin-28.0/bin'
+
+      - name: Checkout electrs
+        run: |
+          pushd ..
+          git clone https://github.com/romanz/electrs.git
+          popd
+
+      - name: Install latest stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Rust Cache (electrs)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v0-rust-electrs"
+          workspaces: ../electrs -> target
+
+      - name: Install electrs
+        run: |
+          pushd ../electrs
+          cargo build --locked --release
+          popd
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu
+
+      - name: Build (debug)
+        run: cargo build
+
+      - name: Run integration tests
+        run: |
+          BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          BITCOIND='../bitcoin-28.0/bin/bitcoind'
+          BITCOIN_CLI='../bitcoin-28.0/bin/bitcoin-cli'
+          ELECTRS='../electrs/target/release/electrs'
+          cargo run --example integration_tests -- \
+            --bip300301-enforcer "${BIP300301_ENFORCER}" \
+            --bitcoind "${BITCOIND}" \
+            --bitcoin-cli "${BITCOIN_CLI}" \
+            --electrs "${ELECTRS}"
 
   test-build-release:
     strategy:
@@ -121,7 +190,7 @@ jobs:
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [test-build-release]
+    needs: [integration-test, test-build-release]
     if: github.ref == 'refs/heads/master'
     steps:
       - name: Download artifacts
