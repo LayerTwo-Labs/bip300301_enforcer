@@ -175,3 +175,11 @@ the repo:
 ```bash
 $ prettier --write .
 ```
+
+# Integration tests
+
+Integration tests can be run using
+
+```bash
+$ cargo run --example integration_tests -- <TEST ARGS>
+```

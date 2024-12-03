@@ -48,7 +48,7 @@ pub struct RwTxn<'a> {
     db_dir: &'a Path,
 }
 
-impl<'rwtxn> RwTxn<'rwtxn> {
+impl RwTxn<'_> {
     pub fn commit(self) -> Result<(), CommitWriteTxnError> {
         self.inner.commit().map_err(|err| CommitWriteTxnError {
             db_dir: self.db_dir.to_owned(),
@@ -64,7 +64,7 @@ impl<'rwtxn> std::ops::Deref for RwTxn<'rwtxn> {
     }
 }
 
-impl<'rwtxn> std::ops::DerefMut for RwTxn<'rwtxn> {
+impl std::ops::DerefMut for RwTxn<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -288,14 +288,11 @@ impl<KC, DC> RoDatabase<KC, DC> {
         })
     }
 
-    pub fn iter<'txn>(
-        &self,
-        rotxn: &'txn RoTxn<'_>,
+    pub fn iter<'a, 'txn>(
+        &'a self,
+        rotxn: &'txn RoTxn<'a>,
     ) -> Result<
-        fallible_iterator::MapErr<
-            fallible_iterator::Convert<heed::RoIter<'txn, KC, DC>>,
-            impl FnMut(heed::Error) -> db_error::IterItem + '_,
-        >,
+        impl FallibleIterator<Item = (KC::DItem, DC::DItem), Error = db_error::IterItem> + 'txn,
         db_error::IterInit,
     >
     where
@@ -306,7 +303,7 @@ impl<KC, DC> RoDatabase<KC, DC> {
             Ok(it) => Ok(it.transpose_into_fallible().map_err({
                 let db_path = self.path.clone();
                 move |err| db_error::IterItem {
-                    db_name: self.name,
+                    db_name: self.name(),
                     db_path: (*db_path).clone(),
                     source: err,
                 }

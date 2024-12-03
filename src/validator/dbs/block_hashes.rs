@@ -81,7 +81,7 @@ pub mod error {
     }
 
     #[derive(Debug, Error)]
-    pub enum GetTwoWayPegDataRange {
+    pub(crate) enum GetTwoWayPegDataRange {
         #[error("End block `{end_block}` not found")]
         EndBlockNotFound { end_block: BlockHash },
         #[error("Previous block `{prev_block}` not found for block `{block}`")]

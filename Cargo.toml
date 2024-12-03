@@ -58,7 +58,7 @@ tower = "0.5.1"
 tower-http = { version = "0.6.1", features = ["trace"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-zeromq = "0.4.0"
+zeromq = "0.4.1"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
@@ -68,6 +68,11 @@ rev = "91a34cca7e811ef6eba32b8413abe59709381ae6"
 version = "0.6.0"
 default-features = false
 features = ["Clone", "Debug"]
+
+[dev-dependencies]
+indicatif = { version = "0.17.9", features = ["futures"] }
+libtest-mimic = "0.8.1"
+temp-dir = "0.1.14"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -82,9 +87,17 @@ wildcard_imports = "deny"
 [lints.rust]
 let_underscore_drop = "deny"
 
-# Remove once the issue is resolved: 
-# https://github.com/zeromq/zmq.rs/issues/199,
-# https://github.com/zeromq/zmq.rs/pull/198
-[patch.crates-io.zeromq]
-git = "https://github.com/PaoloPana/zmq.rs.git"
-rev = "cf71ae341e67bccc6b45ac634a45718ea0a1adb4"
+[[bin]]
+name = "bip300301_enforcer"
+path = "src/main.rs"
+
+[lib]
+name = "bip300301_enforcer_lib"
+path = "src/lib.rs"
+
+[[example]]
+name = "integration_tests"
+path = "integration_tests/main.rs"
+harness = false
+test = false
+crate-type = ["bin"]

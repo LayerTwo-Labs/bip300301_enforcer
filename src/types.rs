@@ -551,7 +551,7 @@ impl<'a> BlindedM6<'a> {
     }
 }
 
-impl<'a> AsRef<bitcoin::Transaction> for BlindedM6<'a> {
+impl AsRef<bitcoin::Transaction> for BlindedM6<'_> {
     fn as_ref(&self) -> &bitcoin::Transaction {
         &self.tx
     }

@@ -31,15 +31,29 @@ pub enum InitError {
 }
 
 #[derive(Debug, Error)]
-pub enum GetBlockInfoError {
+enum GetBlockInfoErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
     GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
 }
 
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetBlockInfoError(GetBlockInfoErrorInner);
+
+impl<T> From<T> for GetBlockInfoError
+where
+    GetBlockInfoErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetHeaderInfoError {
+enum GetHeaderInfoErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
@@ -47,11 +61,39 @@ pub enum GetHeaderInfoError {
 }
 
 #[derive(Debug, Error)]
-pub enum GetTwoWayPegDataRangeError {
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetHeaderInfoError(GetHeaderInfoErrorInner);
+
+impl<T> From<T> for GetHeaderInfoError
+where
+    GetHeaderInfoErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+enum GetTwoWayPegDataRangeErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
     GetTwoWayPegDataRange(#[from] dbs::block_hash_dbs_error::GetTwoWayPegDataRange),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetTwoWayPegDataRangeError(GetTwoWayPegDataRangeErrorInner);
+
+impl<T> From<T> for GetTwoWayPegDataRangeError
+where
+    GetTwoWayPegDataRangeErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
 }
 
 #[derive(Debug, Error)]
