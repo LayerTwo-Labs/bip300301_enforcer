@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 
 use bitcoin::{
     absolute::Height,
@@ -16,7 +16,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     convert,
-    messages::CoinbaseMessage,
+    messages::{CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle},
     proto::{
         common::{ConsensusHex, Hex, ReverseHex},
         crypto::{
@@ -46,7 +46,7 @@ use crate::{
             WalletTransaction,
         },
     },
-    types::{Event, SidechainNumber},
+    types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
 };
 
@@ -150,7 +150,7 @@ impl ValidatorService for Validator {
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
         let resp = GetBlockInfoResponse {
             header_info: Some(header_info.into()),
-            block_info: Some(block_info.into_proto(sidechain_id)),
+            block_info: Some(block_info.as_proto(sidechain_id)),
         };
         Ok(tonic::Response::new(resp))
     }
@@ -237,22 +237,22 @@ impl ValidatorService for Validator {
         let request = request.into_inner();
         let mut messages = Vec::<CoinbaseMessage>::new();
         for propose_sidechain in request.propose_sidechains {
-            let message = propose_sidechain
+            let m1: M1ProposeSidechain = propose_sidechain
                 .try_into()
                 .map_err(|err: crate::proto::Error| err.into_status())?;
-            messages.push(message);
+            messages.push(m1.into());
         }
         for ack_sidechain in request.ack_sidechains {
-            let message = ack_sidechain
+            let m2: M2AckSidechain = ack_sidechain
                 .try_into()
                 .map_err(|err: crate::proto::Error| err.into_status())?;
-            messages.push(message);
+            messages.push(m2.into());
         }
         for propose_bundle in request.propose_bundles {
-            let message = propose_bundle
+            let m3: M3ProposeBundle = propose_bundle
                 .try_into()
                 .map_err(|err: crate::proto::Error| err.into_status())?;
-            messages.push(message);
+            messages.push(m3.into());
         }
         let ack_bundles = request
             .ack_bundles
@@ -362,7 +362,7 @@ impl ValidatorService for Validator {
         let sidechain_proposals = self.get_sidechains().map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
-            .map(|(description_sha256d_hash, sidechain)| {
+            .map(|(proposal_id, sidechain)| {
                 let description = ConsensusHex::encode(&sidechain.proposal.description.0);
                 let declaration =
                     crate::types::SidechainDeclaration::try_from(&sidechain.proposal.description)
@@ -372,7 +372,9 @@ impl ValidatorService for Validator {
                     sidechain_number: Some(sidechain.proposal.sidechain_number.0 as u32),
                     description: Some(description),
                     declaration,
-                    description_sha256d_hash: Some(ReverseHex::encode(&description_sha256d_hash)),
+                    description_sha256d_hash: Some(ReverseHex::encode(
+                        &proposal_id.description_hash,
+                    )),
                     vote_count: Some(sidechain.status.vote_count as u32),
                     proposal_height: Some(sidechain.status.proposal_height),
                     proposal_age: Some(mainchain_tip_height - sidechain.status.proposal_height),
@@ -547,17 +549,15 @@ fn stream_proposal_confirmations(
         block_info: crate::types::BlockInfo,
     ) -> CreateSidechainProposalResponse {
         let (confirms, outpoint) = {
-            if let Some(vout) =
-                block_info
-                    .sidechain_proposals
-                    .into_iter()
-                    .find_map(|(vout, proposal)| {
-                        if proposal == *sidechain_proposal {
-                            Some(vout)
-                        } else {
-                            None
-                        }
-                    })
+            if let Some(vout) = block_info
+                .sidechain_proposals()
+                .find_map(|(vout, proposal)| {
+                    if *proposal == *sidechain_proposal {
+                        Some(vout)
+                    } else {
+                        None
+                    }
+                })
             {
                 let outpoint = bitcoin::OutPoint {
                     txid: block_info.coinbase_txid,
@@ -582,7 +582,7 @@ fn stream_proposal_confirmations(
             block_hash: Some(ReverseHex::encode(&header_info.block_hash)),
             confirmations: Some(confirms),
             height: Some(header_info.height),
-            outpoint: Some((*outpoint).into()),
+            outpoint: Some((&*outpoint).into()),
             prev_block_hash: Some(ReverseHex::encode(&header_info.prev_block_hash)),
         };
         confirmations.insert(header_info.block_hash, (confirms, outpoint));
@@ -615,9 +615,11 @@ fn stream_proposal_confirmations(
 }
 
 #[tonic::async_trait]
-impl WalletService for Arc<crate::wallet::Wallet> {
+impl WalletService for crate::wallet::Wallet {
     type CreateSidechainProposalStream =
         BoxStream<'static, Result<CreateSidechainProposalResponse, tonic::Status>>;
+
+    type GenerateBlocksStream = BoxStream<'static, Result<GenerateBlocksResponse, tonic::Status>>;
 
     async fn create_sidechain_proposal(
         &self,
@@ -675,9 +677,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         &self,
         _request: tonic::Request<CreateNewAddressRequest>,
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
-        let wallet = self as &Arc<crate::wallet::Wallet>;
-
-        let address = wallet.get_new_address().map_err(|err| err.into_status())?;
+        let address = self.get_new_address().map_err(|err| err.into_status())?;
 
         let response = CreateNewAddressResponse {
             address: address.to_string(),
@@ -688,7 +688,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
     async fn generate_blocks(
         &self,
         request: tonic::Request<GenerateBlocksRequest>,
-    ) -> std::result::Result<tonic::Response<GenerateBlocksResponse>, tonic::Status> {
+    ) -> std::result::Result<tonic::Response<Self::GenerateBlocksStream>, tonic::Status> {
         // If we're not on regtest, this won't work!
         if self.validator().network() != bitcoin::Network::Regtest {
             return Err(tonic::Status::failed_precondition(
@@ -703,11 +703,18 @@ impl WalletService for Arc<crate::wallet::Wallet> {
         } = request.into_inner();
         let count = blocks.unwrap_or(1);
 
-        self.generate(count, ack_all_proposals)
-            .await
-            .map_err(|err| err.into_status())?;
-        let response = GenerateBlocksResponse {};
-        Ok(tonic::Response::new(response))
+        let stream = crate::wallet::Wallet::generate_blocks(self.clone(), count, ack_all_proposals)
+            .map(|stream_item| match stream_item {
+                Ok(block_hash) => Ok(GenerateBlocksResponse {
+                    block_hash: Some(ReverseHex::encode(&block_hash)),
+                }),
+                Err(err) => {
+                    tracing::error!("{err:#}");
+                    Err(err.into_status())
+                }
+            })
+            .boxed();
+        Ok(tonic::Response::new(stream))
     }
 
     async fn broadcast_withdrawal_bundle(
@@ -719,7 +726,7 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             sidechain_id,
             transaction,
         } = request.into_inner();
-        let _sidechain_id = {
+        let sidechain_id = {
             let raw_id = sidechain_id
                 .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("sidechain_id"))?;
             SidechainNumber::try_from(raw_id).map_err(|err| {
@@ -736,17 +743,28 @@ impl WalletService for Arc<crate::wallet::Wallet> {
             .map_err(|err| {
                 invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
                     "transaction",
-                    &hex::encode(transaction_bytes),
+                    &hex::encode(&transaction_bytes),
                     err,
                 )
             })?;
-        let (_m6id, _sidechain_number) = self
-            .put_withdrawal_bundle(transaction.clone())
+        let transaction: BlindedM6 =
+            Cow::<Transaction>::Owned(transaction)
+                .try_into()
+                .map_err(|err| {
+                    invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
+                        "transaction",
+                        &hex::encode(transaction_bytes),
+                        err,
+                    )
+                })?;
+        let _m6id = self
+            .put_withdrawal_bundle(sidechain_id, &transaction)
             .map_err(|err| err.into_status())?;
-
-        self.broadcast_transaction(transaction)
+        /*
+        self.broadcast_transaction(transaction.tx().into_owned())
             .await
             .map_err(|err| err.into_status())?;
+        */
         let response = BroadcastWithdrawalBundleResponse {};
         Ok(tonic::Response::new(response))
     }

@@ -1,9 +1,15 @@
-use std::num::TryFromIntError;
+use std::{borrow::Cow, num::TryFromIntError};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
+    amount::CheckedSum as _,
     hashes::{sha256d, Hash as _},
-    Amount, BlockHash, OutPoint, Txid, Work,
+    opcodes::{
+        all::{OP_NOP5, OP_RETURN},
+        OP_TRUE,
+    },
+    script::{Instruction, Instructions},
+    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Txid, Work,
 };
 use derive_more::derive::Display;
 use hashlink::LinkedHashMap;
@@ -12,6 +18,9 @@ use nom::Finish;
 use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
+pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
 
 pub type Hash256 = [u8; 32];
 
@@ -249,7 +258,22 @@ impl TryFrom<&SidechainDescription> for SidechainDeclaration {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SidechainProposalId {
+    pub sidechain_number: SidechainNumber,
+    pub description_hash: sha256d::Hash,
+}
+
+impl From<&SidechainProposal> for SidechainProposalId {
+    fn from(proposal: &SidechainProposal) -> Self {
+        Self {
+            sidechain_number: proposal.sidechain_number,
+            description_hash: proposal.description.sha256d_hash(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SidechainAck {
     pub sidechain_number: SidechainNumber,
     pub description_hash: sha256d::Hash,
@@ -257,9 +281,8 @@ pub struct SidechainAck {
 
 #[derive(derive_more::Debug, Deserialize, Serialize)]
 pub struct TreasuryUtxo {
+    pub sidechain_number: SidechainNumber,
     pub outpoint: OutPoint,
-    #[debug("{:?}", address.as_ref().map(hex::encode))]
-    pub address: Option<Vec<u8>>,
     pub total_value: Amount,
     pub previous_total_value: Amount,
 }
@@ -281,11 +304,14 @@ pub struct HeaderInfo {
     pub work: Work,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum WithdrawalBundleEventKind {
     Submitted,
     Failed,
-    Succeeded,
+    Succeeded {
+        sequence_number: u64,
+        transaction: bitcoin::Transaction,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -298,15 +324,56 @@ pub struct WithdrawalBundleEvent {
 /// BMM commitments for a single block
 pub type BmmCommitments = LinkedHashMap<SidechainNumber, Hash256>;
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum BlockEvent {
+    Deposit(Deposit),
+    SidechainProposal {
+        /// Coinbase vout
+        vout: u32,
+        proposal: SidechainProposal,
+    },
+    WithdrawalBundle(WithdrawalBundleEvent),
+}
+
+impl From<Deposit> for BlockEvent {
+    fn from(deposit: Deposit) -> Self {
+        Self::Deposit(deposit)
+    }
+}
+
+impl From<WithdrawalBundleEvent> for BlockEvent {
+    fn from(bundle_event: WithdrawalBundleEvent) -> Self {
+        Self::WithdrawalBundle(bundle_event)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockInfo {
     /// Sequential map of sidechain IDs to BMM commitments
     pub bmm_commitments: BmmCommitments,
     pub coinbase_txid: Txid,
-    pub deposits: Vec<Deposit>,
-    /// Sidechain proposals, sorted by coinbase vout
-    pub sidechain_proposals: Vec<(u32, SidechainProposal)>,
-    pub withdrawal_bundle_events: Vec<WithdrawalBundleEvent>,
+    pub events: Vec<BlockEvent>,
+}
+
+impl BlockInfo {
+    // Iterator over (vout, proposal)
+    pub fn sidechain_proposals(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (u32, &SidechainProposal)> {
+        self.events.iter().filter_map(|event| match event {
+            BlockEvent::SidechainProposal { vout, proposal } => Some((*vout, proposal)),
+            BlockEvent::Deposit(_) | BlockEvent::WithdrawalBundle(_) => None,
+        })
+    }
+
+    pub fn withdrawal_bundle_events(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &WithdrawalBundleEvent> {
+        self.events.iter().filter_map(|event| match event {
+            BlockEvent::WithdrawalBundle(bundle_event) => Some(bundle_event),
+            BlockEvent::Deposit(_) | BlockEvent::SidechainProposal { .. } => None,
+        })
+    }
 }
 
 /// Two-way peg data for a single block
@@ -351,6 +418,211 @@ impl From<Amount> for FeePolicy {
 impl From<bitcoin::FeeRate> for FeePolicy {
     fn from(fee_rate: bitcoin::FeeRate) -> Self {
         Self::Rate(fee_rate)
+    }
+}
+
+pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
+
+/// Create an OP_DRIVECHAIN script for the specified sidechain
+pub fn op_drivechain_script(sidechain_number: SidechainNumber) -> ScriptBuf {
+    let mut res = ScriptBuf::new();
+    res.push_opcode(OP_DRIVECHAIN);
+    res.push_slice([sidechain_number.0]);
+    res.push_opcode(OP_TRUE);
+    res
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Amount overflow")]
+pub struct AmountOverflowError;
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Amount underflow")]
+pub struct AmountUnderflowError;
+
+#[derive(Debug, Diagnostic, Error)]
+enum BlindedM6FeeOutputError {
+    #[error("Invalid spk: {spk}")]
+    InvalidSpk { spk: ScriptBuf },
+    #[error("Nonzero value")]
+    NonZeroValue,
+    #[error("Failed to parse script")]
+    Script(#[from] bitcoin::script::Error),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum BlindedM6ErrorInner {
+    #[error("Invalid fee output")]
+    InvalidFeeOutput(#[from] BlindedM6FeeOutputError),
+    #[error("Missing fee output")]
+    MissingFeeOutput,
+    #[error("Inputs must be empty")]
+    NonEmptyInputs,
+    #[error(transparent)]
+    OutputAmountOverflow(#[from] AmountOverflowError),
+    #[error("Payout cannot be zero")]
+    ZeroPayout,
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("Blinded M6 error")]
+pub struct BlindedM6Error(#[from] BlindedM6ErrorInner);
+
+impl From<AmountOverflowError> for BlindedM6Error {
+    fn from(err: AmountOverflowError) -> Self {
+        BlindedM6ErrorInner::from(err).into()
+    }
+}
+
+impl From<BlindedM6FeeOutputError> for BlindedM6Error {
+    fn from(err: BlindedM6FeeOutputError) -> Self {
+        BlindedM6ErrorInner::from(err).into()
+    }
+}
+
+#[derive(Debug)]
+pub struct BlindedM6<'a> {
+    fee: Amount,
+    /// MUST be non-zero
+    payout: Amount,
+    tx: Cow<'a, bitcoin::Transaction>,
+}
+
+#[allow(dead_code, reason = "will be used later for M4/M6")]
+impl<'a> BlindedM6<'a> {
+    pub fn fee(&self) -> &Amount {
+        &self.fee
+    }
+
+    pub fn payout(&self) -> &Amount {
+        &self.payout
+    }
+
+    pub fn tx(self) -> Cow<'a, bitcoin::Transaction> {
+        self.tx
+    }
+
+    pub fn into_owned(self) -> BlindedM6<'static> {
+        BlindedM6 {
+            fee: self.fee,
+            payout: self.payout,
+            tx: Cow::Owned(self.tx.into_owned()),
+        }
+    }
+
+    pub fn compute_m6id(&self) -> M6id {
+        M6id(self.tx.compute_txid())
+    }
+
+    // TODO: remove sidechain_number param
+    pub fn into_m6(
+        self,
+        sidechain_number: SidechainNumber,
+        treasury_outpoint: OutPoint,
+        treasury_value: Amount,
+    ) -> Result<bitcoin::Transaction, AmountUnderflowError> {
+        let Self { fee, payout, tx } = self;
+        let mut tx = tx.into_owned();
+        let first_output = tx
+            .output
+            .first_mut()
+            .expect("Blinded M6 should have a fee output at index 0");
+        // Push treasury output
+        let treasury_output = {
+            let value = treasury_value
+                .checked_sub(payout)
+                .ok_or(AmountUnderflowError)?
+                .checked_sub(fee)
+                .ok_or(AmountUnderflowError)?;
+            bitcoin::TxOut {
+                script_pubkey: op_drivechain_script(sidechain_number),
+                value,
+            }
+        };
+        *first_output = treasury_output;
+        // Push treasury input
+        assert!(tx.input.is_empty());
+        let treasury_input = bitcoin::TxIn {
+            previous_output: treasury_outpoint,
+            ..Default::default()
+        };
+        tx.input.push(treasury_input);
+        Ok(tx)
+    }
+}
+
+impl<'a> AsRef<bitcoin::Transaction> for BlindedM6<'a> {
+    fn as_ref(&self) -> &bitcoin::Transaction {
+        &self.tx
+    }
+}
+
+impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
+    type Error = BlindedM6Error;
+
+    fn try_from(tx: Cow<'a, bitcoin::Transaction>) -> Result<Self, Self::Error> {
+        if !tx.input.is_empty() {
+            return Err(BlindedM6ErrorInner::NonEmptyInputs.into());
+        }
+        let Some(fee_output) = tx.output.first() else {
+            return Err(BlindedM6ErrorInner::MissingFeeOutput.into());
+        };
+        if fee_output.value != Amount::ZERO {
+            return Err(BlindedM6FeeOutputError::NonZeroValue.into());
+        }
+        let payout = tx
+            .output
+            .iter()
+            .map(|output| output.value)
+            .checked_sum()
+            .ok_or(AmountOverflowError)?;
+        if payout == Amount::ZERO {
+            return Err(BlindedM6ErrorInner::ZeroPayout.into());
+        }
+        let mut instructions = fee_output.script_pubkey.instructions();
+        fn next_instruction<'a>(
+            instructions: &'a mut Instructions,
+        ) -> Result<Option<Instruction<'a>>, BlindedM6FeeOutputError> {
+            instructions
+                .next()
+                .transpose()
+                .map_err(BlindedM6FeeOutputError::from)
+        }
+        fn invalid_spk(tx: Cow<'_, bitcoin::Transaction>) -> BlindedM6FeeOutputError {
+            let spk = tx.output.first().unwrap().script_pubkey.clone();
+            BlindedM6FeeOutputError::InvalidSpk { spk }
+        }
+        let Some(Instruction::Op(OP_RETURN)) = next_instruction(&mut instructions)? else {
+            return Err(invalid_spk(tx).into());
+        };
+        let Some(Instruction::PushBytes(fee_be_bytes)) = next_instruction(&mut instructions)?
+        else {
+            return Err(invalid_spk(tx).into());
+        };
+        let Some(fee_be_bytes): Option<[u8; 8]> = fee_be_bytes.as_bytes().try_into().ok() else {
+            return Err(invalid_spk(tx).into());
+        };
+        let fee = Amount::from_sat(u64::from_be_bytes(fee_be_bytes));
+        if instructions.next().is_none() {
+            Ok(Self { fee, payout, tx })
+        } else {
+            Err(invalid_spk(tx).into())
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct PendingM6idInfo {
+    pub vote_count: u16,
+    pub proposal_height: u32,
+}
+
+impl PendingM6idInfo {
+    pub fn new(proposal_height: u32) -> Self {
+        Self {
+            vote_count: 0,
+            proposal_height,
+        }
     }
 }
 

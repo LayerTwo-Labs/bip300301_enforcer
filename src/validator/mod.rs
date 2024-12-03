@@ -2,7 +2,7 @@ use std::{future::Future, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver};
 use bip300301::{jsonrpsee, MainClient};
-use bitcoin::{self, hashes::sha256d, Amount, BlockHash, OutPoint};
+use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
 use futures::{stream::FusedStream, FutureExt as _, StreamExt, TryFutureExt as _};
 use miette::{Diagnostic, IntoDiagnostic};
@@ -10,13 +10,14 @@ use thiserror::Error;
 use tokio::task::{spawn, JoinHandle};
 
 use crate::types::{
-    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber, TwoWayPegData,
+    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
+    SidechainProposalId, TwoWayPegData,
 };
 
 mod dbs;
 mod task;
 
-use dbs::{CreateDbsError, Dbs};
+use dbs::{CreateDbsError, Dbs, PendingM6ids};
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -135,11 +136,11 @@ impl Validator {
     }
 
     /// Get (possibly unactivated) sidechains
-    pub fn get_sidechains(&self) -> Result<Vec<(sha256d::Hash, Sidechain)>, miette::Report> {
+    pub fn get_sidechains(&self) -> Result<Vec<(SidechainProposalId, Sidechain)>, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let res = self
             .dbs
-            .description_hash_to_sidechain
+            .proposal_id_to_sidechain
             .iter(&rotxn)
             .into_diagnostic()?
             .collect()
@@ -152,7 +153,7 @@ impl Validator {
         let res = self
             .dbs
             .active_sidechains
-            .sidechain
+            .sidechain()
             .iter(&rotxn)
             .into_diagnostic()?
             .map(|(_sidechain_number, sidechain)| {
@@ -197,6 +198,17 @@ impl Validator {
             .try_get(&txn, &sidechain_number)
             .into_diagnostic()?;
         Ok(ctip)
+    }
+
+    /// Returns the Ctip for the specified sidechain, or an error
+    /// if there is no Ctip.
+    pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
+        let txn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .active_sidechains
+            .ctip()
+            .get(&txn, &sidechain_number)
+            .into_diagnostic()
     }
 
     /// Returns the value and sidechain number for a Ctip outpoint,
@@ -260,6 +272,18 @@ impl Validator {
             .bmm_commitments()
             .try_get(&rotxn, block_hash)?;
         Ok(res)
+    }
+
+    pub fn get_pending_withdrawals(
+        &self,
+        sidechain_number: &SidechainNumber,
+    ) -> Result<PendingM6ids, miette::Report> {
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rotxn, sidechain_number)
+            .into_diagnostic()
     }
 
     /*

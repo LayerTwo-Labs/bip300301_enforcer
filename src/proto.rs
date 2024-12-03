@@ -219,7 +219,9 @@ pub mod crypto {
 
 pub mod mainchain {
     use crate::{
-        messages::{CoinbaseMessage, M4AckBundles},
+        messages::{
+            CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle, M4AckBundles,
+        },
         proto::common::{ConsensusHex, Hex, ReverseHex},
         types::SidechainNumber,
     };
@@ -232,8 +234,8 @@ pub mod mainchain {
         self as server, ValidatorService as Service, ValidatorServiceServer as Server,
     };
 
-    impl From<bitcoin::OutPoint> for OutPoint {
-        fn from(outpoint: bitcoin::OutPoint) -> Self {
+    impl From<&bitcoin::OutPoint> for OutPoint {
+        fn from(outpoint: &bitcoin::OutPoint) -> Self {
             Self {
                 txid: Some(ReverseHex::encode(&outpoint.txid)),
                 vout: Some(outpoint.vout),
@@ -345,7 +347,7 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ProposeSidechain> for CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::ProposeSidechain> for M1ProposeSidechain {
         type Error = super::Error;
 
         fn try_from(
@@ -368,17 +370,17 @@ pub mod mainchain {
                     )
                 })?
             };
-            let data: Vec<u8> = data
+            let description: Vec<u8> = data
                 .ok_or_else(|| Self::Error::missing_field::<ProposeSidechain>("data"))?
                 .decode::<ProposeSidechain, _>("data")?;
-            Ok(CoinbaseMessage::M1ProposeSidechain {
+            Ok(M1ProposeSidechain {
                 sidechain_number,
-                data,
+                description: description.into(),
             })
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::AckSidechain> for CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::AckSidechain> for M2AckSidechain {
         type Error = super::Error;
 
         fn try_from(
@@ -401,17 +403,17 @@ pub mod mainchain {
                     )
                 })?
             };
-            let data_hash: [u8; 32] = data_hash
+            let description_hash = data_hash
                 .ok_or_else(|| Self::Error::missing_field::<AckSidechain>("data_hash"))?
                 .decode::<AckSidechain, _>("data_hash")?;
-            Ok(CoinbaseMessage::M2AckSidechain {
+            Ok(M2AckSidechain {
                 sidechain_number,
-                data_hash,
+                description_hash,
             })
         }
     }
 
-    impl TryFrom<get_coinbase_psbt_request::ProposeBundle> for CoinbaseMessage {
+    impl TryFrom<get_coinbase_psbt_request::ProposeBundle> for M3ProposeBundle {
         type Error = super::Error;
 
         fn try_from(
@@ -437,7 +439,7 @@ pub mod mainchain {
             let bundle_txid: [u8; 32] = bundle_txid
                 .ok_or_else(|| Self::Error::missing_field::<ProposeBundle>("bundle_txid"))?
                 .decode::<ProposeBundle, _>("bundle_txid")?;
-            Ok(CoinbaseMessage::M3ProposeBundle {
+            Ok(M3ProposeBundle {
                 sidechain_number,
                 bundle_txid,
             })
@@ -538,8 +540,8 @@ pub mod mainchain {
         }
     }
 
-    impl From<crate::types::Deposit> for (SidechainNumber, Deposit) {
-        fn from(deposit: crate::types::Deposit) -> Self {
+    impl From<&crate::types::Deposit> for (SidechainNumber, Deposit) {
+        fn from(deposit: &crate::types::Deposit) -> Self {
             let crate::types::Deposit {
                 sidechain_id,
                 sequence_number,
@@ -552,65 +554,106 @@ pub mod mainchain {
                 value_sats: Some(value.to_sat()),
             };
             let deposit = Deposit {
-                sequence_number: Some(sequence_number),
+                sequence_number: Some(*sequence_number),
                 outpoint: Some(outpoint.into()),
                 output: Some(output),
             };
-            (sidechain_id, deposit)
+            (*sidechain_id, deposit)
         }
     }
 
-    impl From<crate::types::WithdrawalBundleEventKind> for WithdrawalBundleEventType {
-        fn from(kind: crate::types::WithdrawalBundleEventKind) -> Self {
-            match kind {
-                crate::types::WithdrawalBundleEventKind::Failed => {
-                    WithdrawalBundleEventType::Failed
+    impl From<withdrawal_bundle_event::event::Failed> for withdrawal_bundle_event::event::Event {
+        fn from(failed: withdrawal_bundle_event::event::Failed) -> Self {
+            Self::Failed(failed)
+        }
+    }
+
+    impl From<withdrawal_bundle_event::event::Submitted> for withdrawal_bundle_event::event::Event {
+        fn from(submitted: withdrawal_bundle_event::event::Submitted) -> Self {
+            Self::Submitted(submitted)
+        }
+    }
+
+    impl From<withdrawal_bundle_event::event::Succeeded> for withdrawal_bundle_event::event::Event {
+        fn from(succeeded: withdrawal_bundle_event::event::Succeeded) -> Self {
+            Self::Succeeded(succeeded)
+        }
+    }
+
+    impl From<&crate::types::WithdrawalBundleEventKind> for withdrawal_bundle_event::event::Event {
+        fn from(event_kind: &crate::types::WithdrawalBundleEventKind) -> Self {
+            use crate::types::WithdrawalBundleEventKind;
+            use withdrawal_bundle_event::event::{Failed, Submitted, Succeeded};
+            match event_kind {
+                WithdrawalBundleEventKind::Failed => Self::from(Failed {}),
+                WithdrawalBundleEventKind::Submitted => Self::from(Submitted {}),
+                WithdrawalBundleEventKind::Succeeded {
+                    sequence_number,
+                    transaction,
+                } => Self::from(Succeeded {
+                    sequence_number: Some(*sequence_number),
+                    transaction: Some(ConsensusHex::encode(transaction)),
+                }),
+            }
+        }
+    }
+
+    impl From<&crate::types::WithdrawalBundleEventKind> for withdrawal_bundle_event::Event {
+        fn from(event_kind: &crate::types::WithdrawalBundleEventKind) -> Self {
+            Self {
+                event: Some(event_kind.into()),
+            }
+        }
+    }
+
+    impl From<&crate::types::WithdrawalBundleEvent> for (SidechainNumber, WithdrawalBundleEvent) {
+        fn from(event: &crate::types::WithdrawalBundleEvent) -> Self {
+            let sidechain_number = event.sidechain_id;
+            let event = WithdrawalBundleEvent {
+                m6id: Some(ConsensusHex::encode(&event.m6id.0)),
+                event: Some((&event.kind).into()),
+            };
+            (sidechain_number, event)
+        }
+    }
+
+    impl From<&crate::types::BlockEvent> for Option<(SidechainNumber, block_info::event::Event)> {
+        fn from(
+            event: &crate::types::BlockEvent,
+        ) -> Option<(SidechainNumber, block_info::event::Event)> {
+            use crate::types::BlockEvent;
+            match event {
+                BlockEvent::Deposit(deposit) => {
+                    let (sidechain_number, deposit) = deposit.into();
+                    Some((sidechain_number, block_info::event::Event::Deposit(deposit)))
                 }
-                crate::types::WithdrawalBundleEventKind::Submitted => {
-                    WithdrawalBundleEventType::Submitted
-                }
-                crate::types::WithdrawalBundleEventKind::Succeeded => {
-                    WithdrawalBundleEventType::Succeded
+                BlockEvent::SidechainProposal { .. } => None,
+                BlockEvent::WithdrawalBundle(bundle_event) => {
+                    let (sidechain_number, bundle_event) = bundle_event.into();
+                    Some((
+                        sidechain_number,
+                        block_info::event::Event::WithdrawalBundle(bundle_event),
+                    ))
                 }
             }
         }
     }
 
-    impl From<crate::types::WithdrawalBundleEvent> for (SidechainNumber, WithdrawalBundleEvent) {
-        fn from(event: crate::types::WithdrawalBundleEvent) -> Self {
-            let crate::types::WithdrawalBundleEvent {
-                sidechain_id,
-                m6id,
-                kind,
-            } = event;
-            let withdrawal_bundle_event_type = WithdrawalBundleEventType::from(kind) as i32;
-            let event = WithdrawalBundleEvent {
-                m6id: Some(ConsensusHex::encode(&m6id.0)),
-                withdrawal_bundle_event_type,
-            };
-            (sidechain_id, event)
+    impl From<&crate::types::BlockEvent> for Option<(SidechainNumber, block_info::Event)> {
+        fn from(event: &crate::types::BlockEvent) -> Self {
+            let (sidechain_number, event) = Option::<_>::from(event)?;
+            Some((sidechain_number, block_info::Event { event: Some(event) }))
         }
     }
 
     impl crate::types::BlockInfo {
-        pub fn into_proto(self, sidechain_number: SidechainNumber) -> BlockInfo {
-            let deposits = self
-                .deposits
-                .into_iter()
-                .filter_map(|deposit| {
-                    let (deposit_sidechain_number, deposit) = deposit.into();
-                    if deposit_sidechain_number == sidechain_number {
-                        Some(deposit)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let withdrawal_bundle_events = self
-                .withdrawal_bundle_events
-                .into_iter()
+        pub fn as_proto(&self, sidechain_number: SidechainNumber) -> BlockInfo {
+            let bmm_commitment = self.bmm_commitments.get(&sidechain_number);
+            let events = self
+                .events
+                .iter()
                 .filter_map(|event| {
-                    let (event_sidechain_number, event) = event.into();
+                    let (event_sidechain_number, event) = Option::<_>::from(event)?;
                     if event_sidechain_number == sidechain_number {
                         Some(event)
                     } else {
@@ -618,11 +661,9 @@ pub mod mainchain {
                     }
                 })
                 .collect();
-            let bmm_commitment = self.bmm_commitments.get(&sidechain_number);
             BlockInfo {
-                deposits,
-                withdrawal_bundle_events,
                 bmm_commitment: bmm_commitment.map(ConsensusHex::encode),
+                events,
             }
         }
     }
@@ -636,7 +677,7 @@ pub mod mainchain {
                 header_info,
                 block_info,
             } = self;
-            let block_info = block_info.into_proto(sidechain_number);
+            let block_info = block_info.as_proto(sidechain_number);
             if block_info == BlockInfo::default() {
                 None
             } else {
@@ -660,7 +701,7 @@ pub mod mainchain {
                 } => {
                     let event = ConnectBlock {
                         header_info: Some(header_info.into()),
-                        block_info: Some(block_info.into_proto(sidechain_number)),
+                        block_info: Some(block_info.as_proto(sidechain_number)),
                     };
                     subscribe_events_response::event::Event::ConnectBlock(event)
                 }

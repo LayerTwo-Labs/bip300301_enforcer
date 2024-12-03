@@ -1,10 +1,10 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::net::SocketAddr;
 
 use bip300301::MainClient;
 use clap::Parser;
-use futures::{future::TryFutureExt, FutureExt, StreamExt};
+use futures::{future::Either, FutureExt as _, TryFutureExt as _};
 use miette::{miette, IntoDiagnostic, Result};
-use tokio::{spawn, task::JoinHandle, time::interval};
+use tokio::{signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
@@ -88,24 +88,7 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
         .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
 }
 
-// TODO: return `Result<!, _>` once `never_type` is stabilized
-async fn wallet_task(wallet: Arc<wallet::Wallet>) -> Result<(), miette::Report> {
-    const SYNC_INTERVAL: Duration = Duration::from_secs(15);
-    let mut interval_stream = tokio_stream::wrappers::IntervalStream::new(interval(SYNC_INTERVAL));
-    while let Some(_tick) = interval_stream.next().await {
-        match wallet.sync() {
-            Ok(_) => (),
-            Err(err) => tracing::error!("wallet sync error: {err:#}"),
-        }
-    }
-    Ok(())
-}
-
-async fn run_server(
-    validator: Validator,
-    wallet: Option<Arc<Wallet>>,
-    addr: SocketAddr,
-) -> Result<()> {
+async fn run_server(validator: Validator, wallet: Option<Wallet>, addr: SocketAddr) -> Result<()> {
     let tracer = ServiceBuilder::new()
         .layer(
             TraceLayer::new_for_grpc()
@@ -132,15 +115,10 @@ async fn run_server(
     if let Some(wallet) = wallet {
         tracing::info!("gRPC: enabling wallet service");
 
-        let wallet_service = WalletServiceServer::new(Arc::clone(&wallet));
+        let wallet_service = WalletServiceServer::new(wallet);
         builder = builder.add_service(wallet_service);
         reflection_service_builder =
             reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
-
-        let _sync_wallet: JoinHandle<()> = {
-            let wallet = Arc::clone(&wallet);
-            spawn(wallet_task(wallet).unwrap_or_else(|err| tracing::error!("{err:#}")))
-        };
     }
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
@@ -212,26 +190,36 @@ async fn main() -> Result<()> {
     .await
     .into_diagnostic()?;
 
-    let wallet: Option<Arc<wallet::Wallet>> = if cli.enable_wallet {
+    let wallet: Option<wallet::Wallet> = if cli.enable_wallet {
         let wallet = Wallet::new(
             &wallet_data_dir,
             &cli.wallet_opts,
             mainchain_client,
             validator.clone(),
-        )
-        .await?;
-        Some(Arc::new(wallet))
+        )?;
+        Some(wallet)
     } else {
         None
     };
 
-    let _handle_validator_errors: JoinHandle<()> = spawn({
-        err_rx.map(|err| {
-            if let Ok(err) = err {
-                tracing::error!("{err:#}");
-            }
-        })
-    });
+    let _server_task: JoinHandle<()> = spawn(
+        run_server(validator, wallet, cli.serve_rpc_addr)
+            .unwrap_or_else(|err| tracing::error!("{err:#}")),
+    );
 
-    run_server(validator, wallet, cli.serve_rpc_addr).await
+    match futures::future::select(err_rx, ctrl_c().boxed()).await {
+        Either::Left((Ok(err), _ctrl_c_handler)) => {
+            tracing::error!("{err:#}")
+        }
+        Either::Left((Err(futures::channel::oneshot::Canceled), _ctrl_c_handler)) => {
+            tracing::info!("Shutting down due to validator error")
+        }
+        Either::Right((Ok(()), _err_rx)) => {
+            tracing::info!("Shutting down")
+        }
+        Either::Right((Err(ctrl_c_err), _err_rx)) => {
+            tracing::error!("Shutting down due to error in ctrl-c handler: {ctrl_c_err:#}")
+        }
+    }
+    Ok(())
 }
