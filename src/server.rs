@@ -701,19 +701,15 @@ impl WalletService for crate::wallet::Wallet {
         &self,
         request: tonic::Request<GenerateBlocksRequest>,
     ) -> std::result::Result<tonic::Response<Self::GenerateBlocksStream>, tonic::Status> {
-        // If we're not on regtest, this won't work!
-        if self.validator().network() != bitcoin::Network::Regtest {
-            return Err(tonic::Status::failed_precondition(
-                "can only generate blocks on regtest",
-            ));
-        }
-
-        // FIXME: Remove `optional` from the `blocks` parameter in the proto file.
         let GenerateBlocksRequest {
             blocks,
             ack_all_proposals,
         } = request.into_inner();
         let count = blocks.unwrap_or(1);
+
+        self.verify_can_mine(count).await?;
+
+        tracing::info!("generate blocks: verified ability to mine");
 
         let stream = crate::wallet::Wallet::generate_blocks(self.clone(), count, ack_all_proposals)
             .map(|stream_item| match stream_item {

@@ -62,7 +62,7 @@ zeromq = "0.4.1"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "91a34cca7e811ef6eba32b8413abe59709381ae6"
+rev = "2315ddde381af907fcf8e029046bd5c43448a71f"
 
 [dependencies.educe]
 version = "0.6.0"
