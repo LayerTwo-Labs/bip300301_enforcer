@@ -1,7 +1,8 @@
 use std::{
     borrow::BorrowMut,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
+    process::Command,
     str::FromStr,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -21,8 +22,8 @@ use bdk_wallet::{
 };
 use bip300301::{
     client::{
-        BlockchainInfo, BoolWitness, GetRawMempoolClient, GetRawTransactionClient,
-        GetRawTransactionVerbose,
+        BlockTemplateRequest, BlockchainInfo, BoolWitness, GetRawMempoolClient,
+        GetRawTransactionClient, GetRawTransactionVerbose,
     },
     jsonrpsee::http_client::HttpClient,
     MainClient,
@@ -36,10 +37,11 @@ use bitcoin::{
     hashes::{sha256, sha256d, Hash as _, HashEngine},
     merkle_tree,
     opcodes::{all::OP_RETURN, OP_0},
+    params::Params,
     script::PushBytesBuf,
     transaction::Version as TxVersion,
-    Amount, Block, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
-    Txid, Witness,
+    Address, Amount, Block, BlockHash, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction,
+    TxIn, TxOut, Txid, Witness,
 };
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{
@@ -419,6 +421,102 @@ impl Wallet {
         })
     }
 
+    pub async fn verify_can_mine(&self, blocks: u32) -> Result<(), tonic::Status> {
+        if blocks == 0 {
+            return Err(tonic::Status::invalid_argument(
+                "must provide a positive number of blocks",
+            ));
+        }
+
+        match self.validator().network() {
+            // Mining on regtest always works.
+            bitcoin::Network::Regtest => return Ok(()),
+
+            // Verify that's we're able to mine on signet. This involves solving the
+            // signet challenge. This challenge can be complex - but the typical signet
+            // challenge is just a script pubkey that belongs to the signet creators
+            // wallet.
+            //
+            // We make a qualified guess here that the signet challenge is just a script pubkey,
+            // and verify that the corresponding address is in the mainchain wallet.
+            bitcoin::Network::Signet => (),
+            _ => {
+                return Err(tonic::Status::failed_precondition(format!(
+                    "cannot generate blocks on {}",
+                    self.validator().network(),
+                )))
+            }
+        }
+
+        if blocks > 1 {
+            return Err(tonic::Status::invalid_argument(
+                "cannot generate more than one block on signet",
+            ));
+        }
+
+        let template = self
+            .inner
+            .main_client
+            .get_block_template(BlockTemplateRequest {
+                rules: vec!["signet".to_string(), "segwit".to_string()],
+                capabilities: HashSet::new(),
+            })
+            .await
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+
+        let Some(signet_challenge) = template.signet_challenge else {
+            return Err(tonic::Status::internal("no signet challenge found"));
+        };
+
+        let script = Script::from_bytes(&signet_challenge);
+        let address = Address::from_script(script, Params::SIGNET).map_err(|err| {
+            tonic::Status::internal(format!("unable to parse signet challenge: {err}"))
+        })?;
+
+        let address_info = self
+            .inner
+            .main_client
+            .get_address_info(address.as_unchecked())
+            .await
+            .map_err(|err| tonic::Status::internal(format!("unable to get address info: {err}")))?;
+
+        if !address_info.is_mine {
+            return Err(tonic::Status::internal(format!(
+                "signet challenge address {} is not in mainchain wallet",
+                address,
+            )));
+        }
+
+        tracing::debug!("verified ability to solve signet challenge");
+
+        self.check_has_binary("python3")?;
+        tracing::debug!("verified existence of python3");
+
+        self.check_has_binary("bitcoin-util")?;
+        tracing::debug!("verified existence of bitcoin-util");
+
+        Ok(())
+    }
+
+    fn check_has_binary(&self, binary: &str) -> Result<(), tonic::Status> {
+        // Python is needed for executing the signet miner script.
+        let check = std::process::Command::new("which")
+            .arg(binary)
+            .output()
+            .map_err(|err| {
+                tonic::Status::internal(format!("{binary} is required for mining on signet: {err}"))
+            })?;
+
+        if !check.status.success() {
+            Err(tonic::Status::failed_precondition(format!(
+                "{} is required for mining on signet",
+                binary
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn validator(&self) -> &Validator {
         &self.inner.validator
     }
@@ -787,8 +885,102 @@ impl Wallet {
         Ok(block_hash)
     }
 
+    // Generate a single signet block, through shelling out to the signet miner script
+    // from Bitcoin Core. We assume that validation of this request has
+    // happened elsewhere (i.e. that we're on signet, and have signing
+    // capabilities).
+    async fn generate_signet_block(&self, address: &str) -> Result<BlockHash> {
+        // Store the signet miner in a temporary directory that's consistent across
+        // invocations. This means we'll only need to download it once for every time
+        // we start the process.
+        let dir = std::env::temp_dir().join(format!("signet-miner-{}", std::process::id()));
+
+        // Check if signet miner directory exists
+        if !std::path::Path::new(&dir).exists() {
+            tracing::info!("Signet miner not found, downloading into {}", dir.display());
+
+            Command::new("mkdir")
+                .args(["-p", &dir.to_string_lossy()])
+                .output()
+                .into_diagnostic()
+                .map_err(|e| miette!("Failed to create signet miner directory: {}", e))?;
+
+            // Execute the download script
+            let mut command = Command::new("bash");
+            command.current_dir(&dir)
+                .arg("-c")
+                .arg(r#"
+                    git clone -n --depth=1 --filter=tree:0 \
+                    https://github.com/LayerTwo-Labs/bitcoin-patched.git signet-miner && \
+                    cd signet-miner && \
+                    git sparse-checkout set --no-cone contrib/signet/miner test/functional/test_framework && \
+                    git checkout
+                "#);
+
+            let output = command
+                .output()
+                .into_diagnostic()
+                .map_err(|e| miette!("Failed to download signet miner: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(miette!("Failed to download signet miner: {}", stderr));
+            }
+
+            tracing::info!("Successfully downloaded signet miner");
+        } else {
+            tracing::info!("Signet miner already exists");
+        }
+
+        // TODO: it's possible to feed in extra coinbase outputs here, using
+        // the patched miner script from https://github.com/LayerTwo-Labs/bitcoin-patched/pull/6
+        //
+        let mut command = Command::new("python3");
+        command
+            .current_dir(&dir)
+            .arg("signet-miner/contrib/signet/miner")
+            .args(["--cli", "bitcoin-cli"])
+            .arg("generate")
+            .args(["--address", address])
+            .args(["--grind-cmd", "bitcoin-util grind"])
+            .args(["--block-interval", "60"])
+            .arg("--min-nbits");
+
+        tracing::info!("Running signet miner: {:?}", command);
+
+        let output = command
+            .output()
+            .into_diagnostic()
+            .map_err(|e| miette!("Failed to execute signet miner: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(miette!("Signet miner failed: {}", stderr));
+        }
+
+        tracing::info!("Generated signet block!");
+
+        // The output of the signet miner is unfortunately not very useful,
+        // so we have to fetch the most recent block in order to get the hash.
+        let block_hash = self
+            .inner
+            .main_client
+            .getbestblockhash()
+            .await
+            .map_err(|err| miette!("Failed to fetch most recent block hash: {err}"))?;
+
+        Ok(block_hash)
+    }
+
     /// Build and mine a single block
     async fn generate_block(&self, ack_all_proposals: bool) -> Result<BlockHash> {
+        if self.inner.validator.network() == Network::Signet {
+            let address = self.get_new_address()?;
+            return self
+                .generate_signet_block(address.to_string().as_str())
+                .await;
+        }
+
         // This is a list of pending sidechain proposals from /our/ wallet, fetched from
         // the DB.
         let sidechain_proposals = self.get_our_sidechain_proposals().into_diagnostic()?;
@@ -966,7 +1158,7 @@ impl Wallet {
     where
         Ref: std::borrow::Borrow<Self>,
     {
-        tracing::info!("Generate: creating {} blocks", count);
+        tracing::info!("Generate: creating {} block(s)", count);
         stream::try_unfold((this, count), move |(this, remaining)| async move {
             if remaining == 0 {
                 Ok(None)
