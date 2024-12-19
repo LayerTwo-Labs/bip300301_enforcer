@@ -1,23 +1,24 @@
-use std::{future::Future, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path};
 
-use async_broadcast::{broadcast, InactiveReceiver};
+use async_broadcast::{broadcast, InactiveReceiver, Sender};
 use bip300301::{jsonrpsee, MainClient};
 use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
-use futures::{stream::FusedStream, FutureExt as _, StreamExt, TryFutureExt as _};
+use futures::{stream::FusedStream, StreamExt, TryFutureExt as _};
 use miette::{Diagnostic, IntoDiagnostic};
 use thiserror::Error;
-use tokio::task::{spawn, JoinHandle};
 
 use crate::types::{
     BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
     SidechainProposalId, TwoWayPegData,
 };
 
+pub mod cusf_enforcer;
 mod dbs;
 mod task;
 
-use dbs::{CreateDbsError, Dbs, PendingM6ids};
+use dbs::{db_error, CreateDbsError, Dbs, PendingM6ids};
+pub use task::error::ValidateTransaction as ValidateTransactionError;
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -60,7 +61,7 @@ enum GetHeaderInfoErrorInner {
     GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
 #[repr(transparent)]
 pub struct GetHeaderInfoError(GetHeaderInfoErrorInner);
@@ -96,6 +97,22 @@ where
     }
 }
 
+#[derive(Debug, Diagnostic, Error)]
+pub enum TryGetMainchainTipError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    DbTryGet(#[from] dbs::db_error::TryGet),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum GetMainchainTipError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    DbGet(#[from] dbs::db_error::Get),
+}
+
 #[derive(Debug, Error)]
 pub enum TryGetBmmCommitmentsError {
     #[error(transparent)]
@@ -105,30 +122,41 @@ pub enum TryGetBmmCommitmentsError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum GetPendingWithdrawalsError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    DbGet(#[from] dbs::db_error::Get),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum EventsStreamError {
     #[error("Events stream closed due to overflow")]
     Overflow,
 }
 
+#[derive(Debug, Diagnostic, Error)]
+pub enum GetSidechainsError {
+    #[error(transparent)]
+    DbIter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
 #[derive(Clone)]
 pub struct Validator {
     dbs: Dbs,
-    network: bitcoin::Network,
     events_rx: InactiveReceiver<Event>,
-    task: Arc<JoinHandle<()>>,
+    events_tx: Sender<Event>,
+    mainchain_client: jsonrpsee::http_client::HttpClient,
+    network: bitcoin::Network,
 }
 
 impl Validator {
-    pub async fn new<F, Fut>(
+    pub async fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
-        zmq_addr_sequence: String,
         data_dir: &Path,
-        err_handler: F,
-    ) -> Result<Self, InitError>
-    where
-        F: FnOnce(anyhow::Error) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send,
-    {
+    ) -> Result<Self, InitError> {
         const EVENTS_CHANNEL_CAPACITY: usize = 256;
         let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
@@ -141,24 +169,12 @@ impl Validator {
             })
             .await?;
         let dbs = Dbs::new(data_dir, blockchain_info.chain)?;
-        let task = spawn({
-            let dbs = dbs.clone();
-            async move {
-                task::task(&mainchain_client, &zmq_addr_sequence, &dbs, &events_tx)
-                    .then(|res| async {
-                        if let Err(err) = res {
-                            let err = anyhow::Error::from(err);
-                            err_handler(err).await
-                        }
-                    })
-                    .await
-            }
-        });
         Ok(Self {
             dbs,
             events_rx: events_rx.deactivate(),
+            events_tx,
+            mainchain_client,
             network: blockchain_info.chain,
-            task: Arc::new(task),
         })
     }
 
@@ -178,32 +194,34 @@ impl Validator {
     }
 
     /// Get (possibly unactivated) sidechains
-    pub fn get_sidechains(&self) -> Result<Vec<(SidechainProposalId, Sidechain)>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    pub fn get_sidechains(
+        &self,
+    ) -> Result<Vec<(SidechainProposalId, Sidechain)>, GetSidechainsError> {
+        let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .proposal_id_to_sidechain
             .iter(&rotxn)
-            .into_diagnostic()?
+            .map_err(db_error::Iter::from)?
             .collect()
-            .into_diagnostic()?;
+            .map_err(db_error::Iter::from)?;
         Ok(res)
     }
 
-    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, GetSidechainsError> {
+        let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
             .sidechain()
             .iter(&rotxn)
-            .into_diagnostic()?
+            .map_err(db_error::Iter::from)?
             .map(|(_sidechain_number, sidechain)| {
                 assert!(sidechain.status.activation_height.is_some());
                 Ok(sidechain)
             })
             .collect()
-            .into_diagnostic()?;
+            .map_err(db_error::Iter::from)?;
         Ok(res)
     }
 
@@ -232,12 +250,12 @@ impl Validator {
         &self,
         sidechain_number: SidechainNumber,
     ) -> Result<Option<Ctip>, miette::Report> {
-        let txn = self.dbs.read_txn().into_diagnostic()?;
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
         let ctip = self
             .dbs
             .active_sidechains
             .ctip()
-            .try_get(&txn, &sidechain_number)
+            .try_get(&rotxn, &sidechain_number)
             .into_diagnostic()?;
         Ok(ctip)
     }
@@ -245,12 +263,26 @@ impl Validator {
     /// Returns the Ctip for the specified sidechain, or an error
     /// if there is no Ctip.
     pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
-        let txn = self.dbs.read_txn().into_diagnostic()?;
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs
             .active_sidechains
             .ctip()
-            .get(&txn, &sidechain_number)
+            .get(&rotxn, &sidechain_number)
             .into_diagnostic()
+    }
+
+    /// Returns Ctips for each active sidechain with a ctip
+    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, miette::Report> {
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+        let res = self
+            .dbs
+            .active_sidechains
+            .ctip()
+            .iter(&rotxn)
+            .into_diagnostic()?
+            .collect()
+            .into_diagnostic()?;
+        Ok(res)
     }
 
     /// Returns the value and sidechain number for a Ctip outpoint,
@@ -259,11 +291,11 @@ impl Validator {
         &self,
         outpoint: &OutPoint,
     ) -> Result<(SidechainNumber, Amount), miette::Report> {
-        let txn = self.dbs.read_txn().into_diagnostic()?;
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs
             .active_sidechains
             .ctip_outpoint_to_value()
-            .get(&txn, outpoint)
+            .get(&rotxn, outpoint)
             .into_diagnostic()
     }
 
@@ -283,21 +315,17 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns `None` if not synced
-    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, miette::Report> {
-        let txn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
-            .current_chain_tip
-            .try_get(&txn, &dbs::UnitKey)
-            .into_diagnostic()
+    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, TryGetMainchainTipError> {
+        let txn = self.dbs.read_txn()?;
+        let res = self.dbs.current_chain_tip.try_get(&txn, &dbs::UnitKey)?;
+        Ok(res)
     }
 
     /// Get the mainchain tip. Returns an error if not synced
-    pub fn get_mainchain_tip(&self) -> Result<BlockHash, miette::Report> {
-        let txn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
-            .current_chain_tip
-            .get(&txn, &dbs::UnitKey)
-            .into_diagnostic()
+    pub fn get_mainchain_tip(&self) -> Result<BlockHash, GetMainchainTipError> {
+        let txn = self.dbs.read_txn()?;
+        let res = self.dbs.current_chain_tip.get(&txn, &dbs::UnitKey)?;
+        Ok(res)
     }
 
     pub fn get_two_way_peg_data(
@@ -329,13 +357,14 @@ impl Validator {
     pub fn get_pending_withdrawals(
         &self,
         sidechain_number: &SidechainNumber,
-    ) -> Result<PendingM6ids, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
+    ) -> Result<PendingM6ids, GetPendingWithdrawalsError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
             .active_sidechains
             .pending_m6ids()
-            .get(&rotxn, sidechain_number)
-            .into_diagnostic()
+            .get(&rotxn, sidechain_number)?;
+        Ok(res)
     }
 
     /*
@@ -388,10 +417,4 @@ impl Validator {
         Ok(block_height_accepted_bmm_hashes)
     }
     */
-}
-
-impl Drop for Validator {
-    fn drop(&mut self) {
-        self.task.abort()
-    }
 }

@@ -29,7 +29,7 @@ pub mod error {
     }
 
     #[derive(Debug, Error)]
-    pub(crate) enum PutBlockInfo {
+    pub(in crate::validator::dbs::block_hashes) enum PutBlockInfoInner {
         #[error(transparent)]
         DbPut(#[from] db_error::Put),
         #[error(transparent)]
@@ -38,6 +38,19 @@ pub mod error {
         MissingHeader(#[from] MissingHeader),
         #[error(transparent)]
         MissingParent(#[from] MissingParent),
+    }
+
+    #[derive(Debug, Error)]
+    #[error("Error storing block info")]
+    pub(crate) struct PutBlockInfo(#[source] PutBlockInfoInner);
+
+    impl<Err> From<Err> for PutBlockInfo
+    where
+        PutBlockInfoInner: From<Err>,
+    {
+        fn from(err: Err) -> Self {
+            Self(err.into())
+        }
     }
 
     #[derive(Debug, Error)]
@@ -205,7 +218,7 @@ impl BlockHashDbs {
             let err = error::MissingHeader {
                 block_hash: *block_hash,
             };
-            return Err(error::PutBlockInfo::MissingHeader(err));
+            return Err(error::PutBlockInfoInner::MissingHeader(err).into());
         };
         let cumulative_work = if header.prev_blockhash == BlockHash::all_zeros() {
             header.work()
@@ -219,7 +232,7 @@ impl BlockHashDbs {
                 block_hash: *block_hash,
                 prev_block_hash: header.prev_blockhash,
             };
-            return Err(error::PutBlockInfo::MissingParent(err));
+            return Err(error::PutBlockInfoInner::MissingParent(err).into());
         };
         let () = self
             .bmm_commitments

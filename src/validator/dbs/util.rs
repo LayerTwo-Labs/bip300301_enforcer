@@ -49,6 +49,10 @@ pub struct RwTxn<'a> {
 }
 
 impl RwTxn<'_> {
+    pub fn abort(self) {
+        self.inner.abort()
+    }
+
     pub fn commit(self) -> Result<(), CommitWriteTxnError> {
         self.inner.commit().map_err(|err| CommitWriteTxnError {
             db_dir: self.db_dir.to_owned(),
@@ -272,7 +276,7 @@ impl<KC, DC> RoDatabase<KC, DC> {
         }
     }
 
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, dead_code)]
     pub fn first<'txn>(
         &self,
         rotxn: &'txn RoTxn<'_>,
@@ -472,6 +476,13 @@ pub struct ReadTxnError {
 }
 
 #[derive(Debug, Error)]
+#[error("Error creating nested write txn for database dir `{db_dir}`")]
+pub struct NestedWriteTxnError {
+    db_dir: PathBuf,
+    source: heed::Error,
+}
+
+#[derive(Debug, Error)]
 #[error("Error creating write txn for database dir `{db_dir}`")]
 pub struct WriteTxnError {
     db_dir: PathBuf,
@@ -527,6 +538,23 @@ impl Env {
         self.inner.read_txn().map_err(|err| ReadTxnError {
             db_dir: (*self.path).clone(),
             source: err,
+        })
+    }
+
+    pub fn nested_write_txn<'p>(
+        &'p self,
+        parent: &'p mut RwTxn<'_>,
+    ) -> Result<RwTxn<'p>, NestedWriteTxnError> {
+        let inner = self
+            .inner
+            .nested_write_txn(&mut parent.inner)
+            .map_err(|err| NestedWriteTxnError {
+                db_dir: (*self.path).clone(),
+                source: err,
+            })?;
+        Ok(RwTxn {
+            inner,
+            db_dir: &self.path,
         })
     }
 

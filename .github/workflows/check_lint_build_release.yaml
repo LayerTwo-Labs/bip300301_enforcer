@@ -58,6 +58,14 @@ jobs:
           ls '../bitcoin-28.0'
           ls '../bitcoin-28.0/bin'
 
+      - name: Checkout bitcoin-patched for signet miner script
+        run: |
+          pushd ..
+          git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
+          cd bitcoin-patched
+          git checkout ash/signet-miner
+          popd
+
       - name: Checkout electrs
         run: |
           pushd ..
@@ -94,16 +102,21 @@ jobs:
         run: cargo build
 
       - name: Run integration tests
+        id: runIntegrationTests
         run: |
           BIP300301_ENFORCER='target/debug/bip300301_enforcer'
           BITCOIND='../bitcoin-28.0/bin/bitcoind'
           BITCOIN_CLI='../bitcoin-28.0/bin/bitcoin-cli'
+          BITCOIN_UTIL='../bitcoin-28.0/bin/bitcoin-util'
           ELECTRS='../electrs/target/release/electrs'
+          SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
           cargo run --example integration_tests -- \
             --bip300301-enforcer "${BIP300301_ENFORCER}" \
             --bitcoind "${BITCOIND}" \
             --bitcoin-cli "${BITCOIN_CLI}" \
-            --electrs "${ELECTRS}"
+            --bitcoin-util "${BITCOIN_UTIL}" \
+            --electrs "${ELECTRS}" \
+            --signet-miner "${SIGNET_MINER}"
 
   test-build-release:
     strategy:
