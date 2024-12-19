@@ -66,7 +66,7 @@ impl From<[u8; 32]> for M6id {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Ctip {
     pub outpoint: OutPoint,
     pub value: Amount,

@@ -6,4 +6,3 @@ pub mod server;
 pub mod types;
 pub mod validator;
 pub mod wallet;
-mod zmq;

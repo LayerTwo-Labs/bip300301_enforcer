@@ -453,15 +453,6 @@ impl CoinbaseMessages {
     {
         iter.into_iter().try_for_each(|msg| self.push(msg))
     }
-
-    fn from_iter<I>(iter: I) -> Result<Self, CoinbaseMessagesError>
-    where
-        I: IntoIterator<Item = CoinbaseMessage>,
-    {
-        let mut res = Self::new();
-        res.extend(iter)?;
-        Ok(res)
-    }
 }
 
 impl<'a> IntoIterator for &'a CoinbaseMessages {

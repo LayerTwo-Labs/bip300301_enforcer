@@ -221,6 +221,7 @@ impl ValidatorService for Validator {
         let GetChainTipRequest {} = request.into_inner();
         let Some(tip_hash) = self
             .try_get_mainchain_tip()
+            .into_diagnostic()
             .map_err(|err| err.into_status())?
         else {
             return Err(tonic::Status::unavailable("Validator is not synced"));
@@ -359,6 +360,7 @@ impl ValidatorService for Validator {
         let GetSidechainProposalsRequest {} = request.into_inner();
         let Some(mainchain_tip) = self
             .try_get_mainchain_tip()
+            .into_diagnostic()
             .map_err(|err| err.into_status())?
         else {
             let response = GetSidechainProposalsResponse {
@@ -371,7 +373,10 @@ impl ValidatorService for Validator {
             .into_diagnostic()
             .map_err(|err| err.into_status())?
             .height;
-        let sidechain_proposals = self.get_sidechains().map_err(|err| err.into_status())?;
+        let sidechain_proposals = self
+            .get_sidechains()
+            .into_diagnostic()
+            .map_err(|err| err.into_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
             .map(|(proposal_id, sidechain)| {
@@ -406,6 +411,7 @@ impl ValidatorService for Validator {
         let GetSidechainsRequest {} = request.into_inner();
         let sidechains = self
             .get_active_sidechains()
+            .into_diagnostic()
             .map_err(|err| err.into_status())?;
         let sidechains = sidechains.into_iter().map(SidechainInfo::from).collect();
         let response = GetSidechainsResponse { sidechains };

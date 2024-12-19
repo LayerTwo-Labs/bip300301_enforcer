@@ -1,8 +1,9 @@
-use std::net::SocketAddr;
+use std::{future::Future, net::SocketAddr};
 
 use bip300301::MainClient;
 use clap::Parser;
-use futures::{future::Either, FutureExt as _, TryFutureExt as _};
+use either::Either;
+use futures::{FutureExt as _, TryFutureExt as _};
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::{signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
@@ -86,7 +87,7 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
         .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
 }
 
-async fn run_server(validator: Validator, wallet: Option<Wallet>, addr: SocketAddr) -> Result<()> {
+async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
     let tracer = ServiceBuilder::new()
         .layer(
             TraceLayer::new_for_grpc()
@@ -98,34 +99,211 @@ async fn run_server(validator: Validator, wallet: Option<Wallet>, addr: SocketAd
         .into_inner();
 
     let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
-    let validator_service = ValidatorServiceServer::new(validator);
-
-    let mut builder = Server::builder()
-        .layer(tracer)
-        .add_service(crypto_service)
-        .add_service(validator_service);
+    let mut builder = Server::builder().layer(tracer).add_service(crypto_service);
 
     let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
         .with_service_name(CryptoServiceServer::<server::CryptoServiceServer>::NAME)
         .with_service_name(ValidatorServiceServer::<Validator>::NAME)
         .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
 
-    if let Some(wallet) = wallet {
-        tracing::info!("gRPC: enabling wallet service");
-
-        let wallet_service = WalletServiceServer::new(wallet);
-        builder = builder.add_service(wallet_service);
-        reflection_service_builder =
-            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
-    }
+    match validator {
+        Either::Left(validator) => {
+            builder = builder.add_service(ValidatorServiceServer::new(validator));
+        }
+        Either::Right(wallet) => {
+            let validator = wallet.validator().clone();
+            builder = builder.add_service(ValidatorServiceServer::new(validator));
+            tracing::info!("gRPC: enabling wallet service");
+            let wallet_service = WalletServiceServer::new(wallet);
+            builder = builder.add_service(wallet_service);
+            reflection_service_builder =
+                reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
+        }
+    };
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
     builder
         .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
         .serve(addr)
-        .map_err(|err| miette!("error in validator server: {err:#}"))
+        .map_err(|err| miette!("error in grpc server: {err:#}"))
         .await
+}
+
+async fn spawn_gbt_server(
+    server: cusf_enforcer_mempool::server::Server<Wallet>,
+    serve_addr: SocketAddr,
+) -> anyhow::Result<jsonrpsee::server::ServerHandle> {
+    tracing::info!("serving RPC on {}", serve_addr);
+
+    use cusf_enforcer_mempool::server::RpcServer;
+    let handle = jsonrpsee::server::Server::builder()
+        .build(serve_addr)
+        .await?
+        .start(server.into_rpc());
+    Ok(handle)
+}
+
+async fn run_gbt_server(
+    mining_reward_address: bitcoin::Address,
+    network: bitcoin::Network,
+    network_info: bip300301::client::NetworkInfo,
+    sample_block_template: bip300301::client::BlockTemplate,
+    mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
+    serve_addr: SocketAddr,
+) -> anyhow::Result<()> {
+    let gbt_server = cusf_enforcer_mempool::server::Server::new(
+        mining_reward_address.script_pubkey(),
+        mempool,
+        network,
+        network_info,
+        sample_block_template,
+    )?;
+    let gbt_server_handle = spawn_gbt_server(gbt_server, serve_addr).await?;
+    let () = gbt_server_handle.stopped().await;
+    Ok(())
+}
+
+async fn mempool_task<Enforcer, RpcClient, F, Fut>(
+    mut enforcer: Enforcer,
+    rpc_client: RpcClient,
+    node_zmq_addr_sequence: &str,
+    err_tx: futures::channel::oneshot::Sender<anyhow::Error>,
+    f: F,
+) where
+    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
+    RpcClient: bip300301::client::MainClient + Send + Sync + 'static,
+    F: FnOnce(cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (sequence_stream, mempool, tx_cache) =
+        match cusf_enforcer_mempool::mempool::init_sync_mempool(
+            &mut enforcer,
+            &rpc_client,
+            node_zmq_addr_sequence,
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(err) => {
+                let err = anyhow::Error::from(err);
+                let _send_err: Result<(), _> = err_tx.send(err);
+                return;
+            }
+        };
+    tracing::info!("Initial mempool sync complete");
+    let mempool = cusf_enforcer_mempool::mempool::MempoolSync::new(
+        enforcer,
+        mempool,
+        tx_cache,
+        rpc_client,
+        sequence_stream,
+        |err| async {
+            let err = anyhow::Error::from(err);
+            let _send_err: Result<(), _> = err_tx.send(err);
+        },
+    );
+    f(mempool).await
+}
+
+fn task(
+    validator: Validator,
+    cli: cli::Config,
+    mainchain_client: bip300301::jsonrpsee::http_client::HttpClient,
+    network: bitcoin::Network,
+    wallet_data_dir: &std::path::Path,
+) -> Result<(
+    JoinHandle<()>,
+    futures::channel::oneshot::Receiver<anyhow::Error>,
+)> {
+    use either::Either;
+    let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
+        let wallet = Wallet::new(
+            wallet_data_dir,
+            &cli.wallet_opts,
+            mainchain_client.clone(),
+            validator,
+        )?;
+        Either::Right(wallet)
+    } else {
+        Either::Left(validator)
+    };
+    let (err_tx, err_rx) = futures::channel::oneshot::channel();
+    let _grpc_server_task: JoinHandle<()> = spawn(
+        run_grpc_server(enforcer.clone(), cli.serve_grpc_addr)
+            .unwrap_or_else(|err| tracing::error!("{err:#}")),
+    );
+    let res = match (cli.enable_mempool, enforcer) {
+        (false, enforcer) => cusf_enforcer_mempool::cusf_enforcer::spawn_task(
+            enforcer,
+            mainchain_client,
+            cli.node_zmq_addr_sequence,
+            |err| async {
+                let err = anyhow::Error::from(err);
+                let _send_err: Result<(), _> = err_tx.send(err);
+            },
+        ),
+        (true, Either::Left(validator)) => spawn(async move {
+            mempool_task(
+                validator,
+                mainchain_client,
+                &cli.node_zmq_addr_sequence,
+                err_tx,
+                |_mempool| futures::future::pending(),
+            )
+            .await
+        }),
+        (true, Either::Right(wallet)) => {
+            let mining_reward_address = wallet.get_new_address()?;
+            spawn(async move {
+                let network_info = match mainchain_client.get_network_info().await {
+                    Ok(network_info) => network_info,
+                    Err(err) => {
+                        let err = anyhow::Error::from(err);
+                        tracing::error!("{err:#}");
+                        return;
+                    }
+                };
+                let sample_block_template = {
+                    let mut request = bip300301::client::BlockTemplateRequest::default();
+                    if network == bitcoin::Network::Signet {
+                        request.rules.push("signet".to_owned())
+                    }
+                    match mainchain_client.get_block_template(request).await {
+                        Ok(block_template) => block_template,
+                        Err(err) => {
+                            let err = anyhow::Error::from(err);
+                            tracing::error!("failed to get sample block template: {err:#}");
+                            return;
+                        }
+                    }
+                };
+                mempool_task(
+                    wallet,
+                    mainchain_client,
+                    &cli.node_zmq_addr_sequence,
+                    err_tx,
+                    |mempool| async {
+                        match run_gbt_server(
+                            mining_reward_address,
+                            network,
+                            network_info,
+                            sample_block_template,
+                            mempool,
+                            cli.serve_rpc_addr,
+                        )
+                        .await
+                        {
+                            Ok(()) => (),
+                            Err(err) => tracing::error!("{err:#}"),
+                        }
+                    },
+                )
+                .await
+            })
+        }
+    };
+    Ok((res, err_rx))
 }
 
 #[tokio::main]
@@ -138,7 +316,8 @@ async fn main() -> Result<()> {
         cli.data_dir.display()
     );
 
-    let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
+    let mainchain_client =
+        rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
 
     tracing::info!(
         "Created mainchain client from options: {}:{}@{}",
@@ -176,46 +355,32 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let (err_tx, err_rx) = futures::channel::oneshot::channel();
-    let validator = Validator::new(
-        mainchain_client.clone(),
-        cli.node_zmq_addr_sequence,
-        &validator_data_dir,
-        |err| async {
-            let _send_err: Result<(), _> = err_tx.send(err);
-        },
-    )
-    .await
-    .into_diagnostic()?;
+    let validator = Validator::new(mainchain_client.clone(), &validator_data_dir)
+        .await
+        .into_diagnostic()?;
 
-    let wallet: Option<wallet::Wallet> = if cli.enable_wallet {
-        let wallet = Wallet::new(
-            &wallet_data_dir,
-            &cli.wallet_opts,
-            mainchain_client,
-            validator.clone(),
-        )?;
-        Some(wallet)
-    } else {
-        None
-    };
-
-    let _server_task: JoinHandle<()> = spawn(
-        run_server(validator, wallet, cli.serve_rpc_addr)
-            .unwrap_or_else(|err| tracing::error!("{err:#}")),
-    );
+    let (_task, err_rx) = task(
+        validator,
+        cli,
+        mainchain_client,
+        info.chain,
+        &wallet_data_dir,
+    )?;
 
     match futures::future::select(err_rx, ctrl_c().boxed()).await {
-        Either::Left((Ok(err), _ctrl_c_handler)) => {
+        futures::future::Either::Left((Ok(err), _ctrl_c_handler)) => {
             tracing::error!("{err:#}")
         }
-        Either::Left((Err(futures::channel::oneshot::Canceled), _ctrl_c_handler)) => {
+        futures::future::Either::Left((
+            Err(futures::channel::oneshot::Canceled),
+            _ctrl_c_handler,
+        )) => {
             tracing::info!("Shutting down due to validator error")
         }
-        Either::Right((Ok(()), _err_rx)) => {
+        futures::future::Either::Right((Ok(()), _err_rx)) => {
             tracing::info!("Shutting down")
         }
-        Either::Right((Err(ctrl_c_err), _err_rx)) => {
+        futures::future::Either::Right((Err(ctrl_c_err), _err_rx)) => {
             tracing::error!("Shutting down due to error in ctrl-c handler: {ctrl_c_err:#}")
         }
     }

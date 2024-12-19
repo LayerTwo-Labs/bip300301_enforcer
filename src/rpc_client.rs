@@ -3,7 +3,10 @@ use miette::{miette, IntoDiagnostic};
 
 use crate::cli::NodeRpcConfig;
 
-pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, miette::Report> {
+pub fn create_client(
+    conf: &NodeRpcConfig,
+    enable_mempool: bool,
+) -> Result<HttpClient, miette::Report> {
     if conf.user.is_none() != conf.pass.is_none() {
         return Err(miette!("RPC user and password must be set together"));
     }
@@ -35,5 +38,23 @@ pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, miette::Report>
             .to_string()
             .clone();
     }
-    bip300301::client(conf.addr, None, &conf_pass, &conf_user).into_diagnostic()
+
+    let client_builder = if enable_mempool {
+        // A mempool of default size might contain >300k txs.
+        // batch Requesting 300k txs requires ~30MiB,
+        // so 100MiB should be enough
+        const MAX_REQUEST_SIZE: u32 = 100 * (1 << 20);
+        // Default mempool size is 300MB, so 1GiB should be enough
+        const MAX_RESPONSE_SIZE: u32 = 1 << 30;
+        const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+        let client_builder = bip300301::jsonrpsee::http_client::HttpClientBuilder::default()
+            .max_request_size(MAX_REQUEST_SIZE)
+            .max_response_size(MAX_RESPONSE_SIZE)
+            .request_timeout(REQUEST_TIMEOUT);
+        Some(client_builder)
+    } else {
+        None
+    };
+
+    bip300301::client(conf.addr, client_builder, &conf_pass, &conf_user).into_diagnostic()
 }

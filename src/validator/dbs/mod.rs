@@ -17,8 +17,8 @@ mod util;
 
 pub use block_hashes::{error as block_hash_dbs_error, BlockHashDbs};
 pub use util::{
-    db_error, CommitWriteTxnError, Database, Env, ReadTxnError, RoDatabase, RwTxn, UnitKey,
-    WriteTxnError,
+    db_error, CommitWriteTxnError, Database, Env, NestedWriteTxnError, ReadTxnError, RoDatabase,
+    RwTxn, UnitKey, WriteTxnError,
 };
 
 #[derive(Debug, Diagnostic, Error)]
@@ -341,6 +341,13 @@ impl Dbs {
 
     pub fn read_txn(&self) -> Result<RoTxn<'_>, ReadTxnError> {
         self.env.read_txn()
+    }
+
+    pub fn nested_write_txn<'p>(
+        &'p self,
+        parent: &'p mut RwTxn<'_>,
+    ) -> Result<RwTxn<'p>, NestedWriteTxnError> {
+        self.env.nested_write_txn(parent)
     }
 
     pub fn write_txn(&self) -> Result<RwTxn<'_>, WriteTxnError> {

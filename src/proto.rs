@@ -742,7 +742,10 @@ pub mod mainchain {
             >,
         ) -> Self {
             match chain_position {
-                bdk_wallet::chain::ChainPosition::Confirmed(conf_block_time) => Self {
+                bdk_wallet::chain::ChainPosition::Confirmed {
+                    anchor: conf_block_time,
+                    transitively: _,
+                } => Self {
                     height: conf_block_time.block_id.height,
                     block_hash: Some(ReverseHex::encode(&conf_block_time.block_id.hash)),
                     timestamp: Some(prost_types::Timestamp {
@@ -750,14 +753,17 @@ pub mod mainchain {
                         nanos: 0,
                     }),
                 },
-                bdk_wallet::chain::ChainPosition::Unconfirmed(last_seen) => Self {
-                    height: 0,
-                    block_hash: None,
-                    timestamp: Some(prost_types::Timestamp {
-                        seconds: *last_seen as i64,
+                bdk_wallet::chain::ChainPosition::Unconfirmed { last_seen } => {
+                    let timestamp = last_seen.map(|last_seen| prost_types::Timestamp {
+                        seconds: last_seen as i64,
                         nanos: 0,
-                    }),
-                },
+                    });
+                    Self {
+                        height: 0,
+                        block_hash: None,
+                        timestamp,
+                    }
+                }
             }
         }
     }
