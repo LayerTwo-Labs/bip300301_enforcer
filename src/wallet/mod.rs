@@ -939,7 +939,13 @@ impl Wallet {
         command
             .current_dir(&dir)
             .arg("signet-miner/contrib/signet/miner")
+            .arg("--debug")
             .args(["--cli", "bitcoin-cli"])
+            // TODO: we can specify a custom command to invoke to specifically
+            // fetch the block template. The correct thing here would be to
+            // pass the address of the server we're exposing, so that the block
+            // template is fetched from the `cusf-enforcer-mempool` lib via ourselves.
+            // .args(["--gbt-cli", "bitcoin-cli --rpcaddr=custom --rpcport=custom"])
             .arg("generate")
             .args(["--address", address])
             .args(["--grind-cmd", "bitcoin-util grind"])
@@ -949,6 +955,13 @@ impl Wallet {
         tracing::info!("Running signet miner: {:?}", command);
 
         let output = command
+            // Send the stdout directly to our own stdout.
+            // It's a bit ugly, but it gets the job done. Could do a buffered
+            // read on newlines on the output -> print with the loggers,
+            // but this is good enough for now.
+            // We don't do this with stderr, because we want to include
+            // that in the potential error message.
+            .stdout(std::process::Stdio::inherit())
             .output()
             .into_diagnostic()
             .map_err(|e| miette!("Failed to execute signet miner: {}", e))?;
