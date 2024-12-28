@@ -56,9 +56,18 @@ impl Wallet {
         ack_all_proposals: bool,
         mainchain_tip: BlockHash,
     ) -> Result<Vec<TxOut>, error::GenerateCoinbaseTxouts> {
+        tracing::debug!(
+            message = "Generating coinbase txouts",
+            ack_all_proposals = ack_all_proposals,
+            mainchain_tip = hex::encode(mainchain_tip.as_byte_array()),
+        );
+
         // This is a list of pending sidechain proposals from /our/ wallet, fetched from
         // the DB.
-        let sidechain_proposals = self.get_our_sidechain_proposals()?;
+        let sidechain_proposals = self.get_our_sidechain_proposals().inspect_err(|err| {
+            tracing::error!("Failed to get sidechain proposals: {err:?}");
+        })?;
+
         let mut coinbase_builder = CoinbaseBuilder::new();
         for sidechain_proposal in sidechain_proposals {
             coinbase_builder.propose_sidechain(sidechain_proposal)?;

@@ -27,6 +27,10 @@ impl CusfEnforcer for Wallet {
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
+        tracing::info!(
+            "CUSF block producer: connecting block {}",
+            block.block_hash()
+        );
         let res = self.inner.validator.clone().connect_block(block)?;
         let block_info = self.inner.validator.get_block_info(&block.block_hash())?;
         let () = self.inner.handle_connect_block(block_info)?;
@@ -60,6 +64,14 @@ impl CusfEnforcer for Wallet {
 impl CusfBlockProducer for Wallet {
     type InitialBlockTemplateError = error::InitialBlockTemplate;
 
+    /// This function is called when the RPC server starts producing a block template.
+    /// The flow is something like this:
+    /// 1. RPC server (within the `cusf_enforcer_mempool` create) receives request
+    /// 2. Fetches the initial block template (this function!)
+    /// 3. Processes it further, and spits out to the client
+    ///
+    /// This function is our "hook" for adding Drivechain coinbase messages to
+    /// the about-to-be-generated block.
     fn initial_block_template<const COINBASE_TXN: bool>(
         &self,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
@@ -69,10 +81,17 @@ impl CusfBlockProducer for Wallet {
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
         if let BoolWit::True(wit) = coinbase_txn_wit {
+            tracing::debug!(
+                "CUSF block producer: extending initial block template with coinbase TX outputs"
+            );
+
             let mainchain_tip = self.validator().get_mainchain_tip()?;
             let wit = wit.map(CoinbaseTxouts);
             let coinbase_txouts: &mut Vec<_> = wit.in_mut().to_right(&mut template.coinbase_txouts);
-            coinbase_txouts.extend(self.generate_coinbase_txouts(true, mainchain_tip)?);
+
+            const ACK_ALL_PROPOSALS: bool = true;
+            coinbase_txouts
+                .extend(self.generate_coinbase_txouts(ACK_ALL_PROPOSALS, mainchain_tip)?);
         }
         // FIXME: set prefix txns and exclude mempool txs
         Ok(template)
