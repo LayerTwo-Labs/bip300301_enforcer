@@ -134,13 +134,23 @@ async fn spawn_gbt_server(
     server: cusf_enforcer_mempool::server::Server<Wallet>,
     serve_addr: SocketAddr,
 ) -> anyhow::Result<jsonrpsee::server::ServerHandle> {
-    tracing::info!("serving RPC on {}", serve_addr);
+    let rpc_server = server.into_rpc();
+
+    tracing::info!(
+        "Listening for JSON-RPC on {} with method(s): {}",
+        serve_addr,
+        rpc_server
+            .method_names()
+            .map(|m| format!("`{m}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     use cusf_enforcer_mempool::server::RpcServer;
     let handle = jsonrpsee::server::Server::builder()
         .build(serve_addr)
         .await?
-        .start(server.into_rpc());
+        .start(rpc_server);
     Ok(handle)
 }
 

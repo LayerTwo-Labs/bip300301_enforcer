@@ -747,7 +747,7 @@ pub(in crate::validator) fn connect_block(
     let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
     if Some(cumulative_work) > current_tip_cumulative_work {
         dbs.current_chain_tip.put(rwtxn, &UnitKey, &block_hash)?;
-        tracing::debug!("updated current chain tip");
+        tracing::debug!("updated current chain tip: {}", height);
     }
     let event = {
         let header_info = HeaderInfo {
