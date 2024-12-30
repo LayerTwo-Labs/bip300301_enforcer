@@ -196,8 +196,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         {
             Ok(res) => res,
             Err(err) => {
-                let err = anyhow::Error::from(err);
-                tracing::error!("mempool sync error: {err:#}");
+                let err = anyhow::anyhow!("mempool sync error: {err:#}");
                 let _send_err: Result<(), _> = err_tx.send(err);
                 return;
             }
