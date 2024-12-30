@@ -1,6 +1,7 @@
 use std::{
     borrow::BorrowMut,
     collections::HashMap,
+    net::SocketAddr,
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -48,7 +49,7 @@ use tokio::{
 use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
-    cli::WalletConfig,
+    cli::{Config, WalletConfig},
     convert,
     messages::{self, M8BmmRequest},
     types::{
@@ -631,6 +632,7 @@ impl Drop for Task {
 /// Cheap to clone, since it uses Arc internally
 #[derive(Clone)]
 pub struct Wallet {
+    serve_rpc_addr: SocketAddr,
     inner: Arc<WalletInner>,
     _task: Arc<Task>,
 }
@@ -638,13 +640,19 @@ pub struct Wallet {
 impl Wallet {
     pub fn new(
         data_dir: &Path,
-        config: &WalletConfig,
+        config: &Config,
         main_client: HttpClient,
         validator: Validator,
     ) -> Result<Self> {
-        let inner = Arc::new(WalletInner::new(data_dir, config, main_client, validator)?);
+        let inner = Arc::new(WalletInner::new(
+            data_dir,
+            &config.wallet_opts,
+            main_client,
+            validator,
+        )?);
         let task = Task::new(inner.clone());
         Ok(Self {
+            serve_rpc_addr: config.serve_rpc_addr,
             inner,
             _task: Arc::new(task),
         })
