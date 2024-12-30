@@ -31,6 +31,38 @@ impl From<ElectrumError> for tonic::Status {
     }
 }
 
+// Errors related to creating/unlocking wallets.
+#[derive(Debug, Diagnostic, Error)]
+pub enum WalletInitialization {
+    #[error("wallet not unlocked")]
+    #[diagnostic(code(wallet_not_unlocked))]
+    NotUnlocked,
+
+    #[error("wallet already unlocked")]
+    #[diagnostic(code(wallet_already_unlocked))]
+    AlreadyUnlocked,
+
+    #[error("wallet not found (can be created with CreateWallet RPC)")]
+    #[diagnostic(code(wallet_not_found))]
+    NotFound,
+
+    #[error("wallet already exists (but might not be initialized)")]
+    #[diagnostic(code(wallet_already_exists))]
+    AlreadyExists,
+
+    /// This means you've been fooling around with different mnemonics and data directories!
+    /// Wallet directory probably needs to be wiped.
+    #[error(
+        "wallet data mismatch, data directory content does not line up with wallet descriptor"
+    )]
+    #[diagnostic(code(wallet_data_mismatch))]
+    DataMismatch,
+
+    #[error("invalid password")]
+    #[diagnostic(code(wallet_invalid_password))]
+    InvalidPassword,
+}
+
 #[derive(Debug, Diagnostic, Error)]
 #[error("Bitcoin Core RPC error `{method}")]
 #[diagnostic(code(bitcoin_core_rpc_error))]

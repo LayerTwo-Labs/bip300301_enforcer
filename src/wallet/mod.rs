@@ -30,9 +30,12 @@ use bitcoin::{
     script::PushBytesBuf,
     Amount, Network, Transaction, Txid,
 };
+use either::Either;
+use error::WalletInitialization;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{StreamExt as _, TryFutureExt as _};
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{miette, IntoDiagnostic, Report, Result};
+use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::{Mutex, RwLock};
 use rusqlite::Connection;
 use tokio::{
@@ -56,13 +59,18 @@ use crate::{
 mod cusf_block_producer;
 pub mod error;
 mod mine;
+mod mnemonic;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
+
+type WrappedBdkWallet = Arc<Mutex<bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>>>;
 
 struct WalletInner {
     main_client: HttpClient,
     validator: Validator,
-    bitcoin_wallet: Mutex<bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>>,
+    // Unlocked, ready-to-go wallet: Some
+    // Locked wallet: None
+    bitcoin_wallet: RwLock<Option<WrappedBdkWallet>>,
     bitcoin_db: Mutex<file_store::Store<ChangeSet>>,
     db_connection: Mutex<rusqlite::Connection>,
     bitcoin_blockchain: BdkElectrumClient<bdk_electrum::electrum_client::Client>,
@@ -70,46 +78,20 @@ struct WalletInner {
 }
 
 impl WalletInner {
-    fn new(
-        data_dir: &Path,
-        config: &WalletConfig,
-        main_client: HttpClient,
-        validator: Validator,
-    ) -> Result<Self, miette::Report> {
-        let mnemonic = Mnemonic::parse_in_normalized(
-            Language::English,
-            "betray annual dog current tomorrow media ghost dynamic mule length sure salad",
-        )
-        .into_diagnostic()?;
-        // Generate the extended key
-        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
-        // Get xprv from the extended key
-        let network = {
-            let validator_network = validator.network();
-            bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())
-                .into_diagnostic()?
-        };
+    fn initialize_wallet_from_mnemonic(
+        mnemonic: &Mnemonic,
+        network: bdk_wallet::bitcoin::Network,
+        wallet_database: &mut file_store::Store<ChangeSet>,
+    ) -> Result<bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>, miette::Report> {
+        let extended_key: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
 
-        tracing::info!(
-            "Instantiating {} wallet with data dir: {}",
-            network,
-            data_dir.display()
-        );
-
-        let xprv = xkey
+        let xpriv = extended_key
             .into_xprv(network)
-            .ok_or(miette!("couldn't get xprv"))?;
-
-        let mut wallet_database = file_store::Store::open_or_create_new(
-            b"bip300301_enforcer",
-            data_dir.join("wallet.db"),
-        )
-        .into_diagnostic()?;
+            .ok_or(miette!("unable to derive xpriv from extended key"))?;
 
         // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
-
-        let external_desc = format!("wpkh({xprv}/84'/1'/0'/0/*)");
-        let internal_desc = format!("wpkh({xprv}/84'/1'/0'/1/*)");
+        let external_desc = format!("wpkh({xpriv}/84'/1'/0'/0/*)");
+        let internal_desc = format!("wpkh({xpriv}/84'/1'/0'/1/*)");
 
         tracing::debug!("Attempting load of existing BDK wallet");
         let bitcoin_wallet = bdk_wallet::Wallet::load()
@@ -117,8 +99,16 @@ impl WalletInner {
             .descriptor(KeychainKind::Internal, Some(internal_desc.clone()))
             .extract_keys()
             .check_network(network)
-            .load_wallet(&mut wallet_database)
-            .map_err(|err| miette!("failed to load wallet: {err:#}"))?;
+            .load_wallet(wallet_database)
+            .map_err(|err| match err {
+                e if e.to_string().contains("data mismatch") => {
+                    tracing::error!(
+                        "Wallet data mismatch! Wipe your data directory and try again."
+                    );
+                    WalletInitialization::DataMismatch.into()
+                }
+                err => miette!("failed to load wallet: {err:#}"),
+            })?;
 
         let bitcoin_wallet = match bitcoin_wallet {
             Some(wallet) => {
@@ -131,10 +121,37 @@ impl WalletInner {
 
                 bdk_wallet::Wallet::create(external_desc, internal_desc)
                     .network(network)
-                    .create_wallet(&mut wallet_database)
+                    .create_wallet(wallet_database)
                     .map_err(|err| miette!("failed to create wallet: {err:#}"))?
             }
         };
+
+        Ok(bitcoin_wallet)
+    }
+
+    fn new(
+        data_dir: &Path,
+        config: &WalletConfig,
+        main_client: HttpClient,
+        validator: Validator,
+    ) -> Result<Self, miette::Report> {
+        let network = {
+            let validator_network = validator.network();
+            bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())
+                .into_diagnostic()?
+        };
+
+        tracing::info!(
+            "Instantiating {} wallet with data dir: {}",
+            network,
+            data_dir.display()
+        );
+
+        let mut wallet_database = file_store::Store::open_or_create_new(
+            b"bip300301_enforcer",
+            data_dir.join("wallet.db"),
+        )
+        .into_diagnostic()?;
 
         let bitcoin_blockchain = {
             let (default_host, default_port) = match network {
@@ -215,6 +232,24 @@ impl WalletInner {
                      side_block_hash BLOB NOT NULL,
                      UNIQUE(sidechain_number, prev_block_hash));",
                 ),
+                M::up(
+                    "CREATE TABLE wallet_seeds
+                    (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     plaintext_mnemonic TEXT, 
+
+                     -- encryption values 
+                     initialization_vector BLOB, 
+                     ciphertext_mnemonic BLOB, 
+                     key_salt BLOB,
+
+                     -- boolean that indicates if the wallet uses a BIP39 passphrase
+                     needs_passphrase BOOLEAN NOT NULL DEFAULT FALSE, 
+
+                     -- timestamp of the creation of the seed
+                     creation_time DATETIME NOT NULL DEFAULT (DATETIME('now')) 
+                    );",
+                ),
             ]);
 
             let db_name = "db.sqlite";
@@ -229,15 +264,226 @@ impl WalletInner {
             db_connection
         };
 
+        // If we:
+        // 1. Already have an initialized wallet
+        // 2. It's plaintext
+        //
+        // We can just go ahead and unlock the wallet right away.
+        let bitcoin_wallet =
+            if let Some(Either::Left(mnemonic)) = WalletInner::read_db_mnemonic(&db_connection)? {
+                tracing::debug!("found plaintext mnemonic, going straight to initialization");
+                let initialized = WalletInner::initialize_wallet_from_mnemonic(
+                    &mnemonic,
+                    network,
+                    &mut wallet_database,
+                )?;
+
+                Some(initialized)
+            } else {
+                None
+            };
+
+        tracing::debug!(
+            message = "wallet inner: wired together components",
+            wallet_initialized = bitcoin_wallet.is_some()
+        );
+
         Ok(Self {
             main_client,
             validator,
-            bitcoin_wallet: Mutex::new(bitcoin_wallet),
+            bitcoin_wallet: RwLock::new(bitcoin_wallet.map(|wallet| Arc::new(Mutex::new(wallet)))),
             bitcoin_db: Mutex::new(wallet_database),
             db_connection: Mutex::new(db_connection),
             bitcoin_blockchain,
             last_sync: RwLock::new(None),
         })
+    }
+
+    fn get_wallet(&self) -> Result<WrappedBdkWallet, WalletInitialization> {
+        let read_guard = self.bitcoin_wallet.read();
+        read_guard
+            .as_ref()
+            .cloned()
+            .ok_or(WalletInitialization::NotUnlocked)
+    }
+
+    pub fn create_new_wallet(
+        &self,
+        mnemonic: Option<Mnemonic>,
+        password: Option<&str>,
+    ) -> Result<(), miette::Report> {
+        if WalletInner::read_db_mnemonic(&self.db_connection.lock())?.is_some() {
+            return Err(WalletInitialization::AlreadyExists.into());
+        }
+
+        let mnemonic = match mnemonic {
+            Some(mnemonic) => mnemonic,
+            None => {
+                tracing::info!("create new wallet: no mnemonic provided, generating fresh");
+                new_mnemonic()?
+            }
+        };
+
+        match password {
+            // Encrypt the mnemonic and insert
+            Some(password) => {
+                tracing::info!("create new wallet: persisting encrypted mnemonic");
+                let encrypted = EncryptedMnemonic::encrypt(&mnemonic, password)?;
+
+                // Satisfy clippy with a single function call per lock
+                let with_connection = |connection: &Connection| -> Result<_, miette::Report> {
+                    let mut statement = connection
+                        .prepare(
+                            "INSERT INTO wallet_seeds (initialization_vector, 
+                            ciphertext_mnemonic, key_salt) VALUES (?, ?, ?)",
+                        )
+                        .into_diagnostic()?;
+
+                    statement
+                        .execute((
+                            encrypted.initialization_vector,
+                            encrypted.ciphertext_mnemonic,
+                            encrypted.key_salt,
+                        ))
+                        .into_diagnostic()?;
+
+                    Ok(())
+                };
+
+                with_connection(&self.db_connection.lock())?
+            }
+            None => {
+                tracing::info!(
+                    "create new wallet: no password provided, persisting plaintext mnemonic"
+                );
+
+                // Satisfy clippy with a single function call per lock
+                let with_connection = |connection: &Connection| -> Result<_, miette::Report> {
+                    let mut statement = connection
+                        .prepare("INSERT INTO wallet_seeds (plaintext_mnemonic) VALUES (?)")
+                        .into_diagnostic()?;
+
+                    statement
+                        .execute([mnemonic.to_string()])
+                        .into_diagnostic()?;
+                    Ok(())
+                };
+
+                with_connection(&self.db_connection.lock())?
+            }
+        }
+
+        let mut database = self.bitcoin_db.lock();
+        let network = self.validator.network();
+        let wallet =
+            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database)?;
+        drop(database);
+
+        let mut write_guard = self.bitcoin_wallet.write();
+        *write_guard = Some(Arc::new(Mutex::new(wallet)));
+        drop(write_guard);
+
+        Ok(())
+    }
+
+    pub fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
+        if self.bitcoin_wallet.read().is_some() {
+            return Err(WalletInitialization::AlreadyUnlocked.into());
+        }
+
+        // Read the mnemonic from the database.
+        let read = WalletInner::read_db_mnemonic(&self.db_connection.lock())?;
+
+        tracing::debug!("unlock wallet: read from DB");
+
+        // Verify that it is encrypted!
+        let encrypted = match read {
+            None => {
+                return Err(WalletInitialization::NotFound.into());
+            }
+            // Plaintext!
+            Some(Either::Left(_)) => {
+                return Err(miette!("wallet is not encrypted"));
+            }
+            Some(Either::Right(encrypted)) => encrypted,
+        };
+
+        tracing::debug!("unlock wallet: decrypting mnemonic");
+
+        let mnemonic = encrypted.decrypt(password).map_err(|err| {
+            tracing::error!("failed to decrypt mnemonic: {err:#}");
+            WalletInitialization::InvalidPassword
+        })?;
+
+        let mut database = self.bitcoin_db.lock();
+        let network = self.validator.network();
+
+        tracing::debug!("unlock wallet: initializing BDK wallet struct");
+        let wallet =
+            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database)?;
+        drop(database);
+
+        let mut write_guard = self.bitcoin_wallet.write();
+        *write_guard = Some(Arc::new(Mutex::new(wallet)));
+        drop(write_guard);
+
+        tracing::info!("unlock wallet: initialized wallet");
+        Ok(())
+    }
+
+    fn read_db_mnemonic(
+        connection: &Connection,
+    ) -> Result<Option<Either<Mnemonic, EncryptedMnemonic>>, miette::Report> {
+        let mut statement = connection
+            .prepare(
+                "SELECT plaintext_mnemonic, initialization_vector, 
+                            ciphertext_mnemonic, key_salt FROM wallet_seeds",
+            )
+            .into_diagnostic()?;
+
+        let statement_result = statement.query_row([], |row| {
+            let plaintext_mnemonic: Option<String> = row.get("plaintext_mnemonic")?;
+            let iv: Option<Vec<u8>> = row.get("initialization_vector")?;
+            let ciphertext: Option<Vec<u8>> = row.get("ciphertext_mnemonic")?;
+            let key_salt: Option<Vec<u8>> = row.get("key_salt")?;
+            Ok((plaintext_mnemonic, iv, ciphertext, key_salt))
+        });
+        let res = match statement_result {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(err) => return Err(miette!("failed to read mnemonic from DB: {err:#}")),
+        };
+
+        match res {
+            (Some(plaintext_mnemonic), None, None, None) => {
+                let mnemonic =
+                    Mnemonic::parse_in_normalized(Language::English, plaintext_mnemonic.as_str())
+                        .into_diagnostic()?;
+
+                Ok(Some(Either::Left(mnemonic)))
+            }
+            (None, Some(iv), Some(ciphertext), Some(key_salt)) => {
+                Ok(Some(Either::Right(EncryptedMnemonic {
+                    initialization_vector: iv,
+                    ciphertext_mnemonic: ciphertext,
+                    key_salt,
+                })))
+            }
+
+            // This is a sanity check, and should never really happen.
+            // Don't print out the actual contents, just indicate which values are set/not set.
+            (plaintext_mnemonic, iv, ciphertext, key_salt) => {
+                let plaintext_mnemonic = if plaintext_mnemonic.is_some() {
+                    "Some"
+                } else {
+                    "None"
+                };
+                let iv = if iv.is_some() { "Some" } else { "None" };
+                let ciphertext = if ciphertext.is_some() { "Some" } else { "None" };
+                let key_salt = if key_salt.is_some() { "Some" } else { "None" };
+                Err(miette!("invalid mnemonic DB state: plaintext_mnemonic={plaintext_mnemonic} iv={iv} ciphertext={ciphertext} key_salt={key_salt}"))
+            }
+        }
     }
 
     // Gets wiped upon generating a new block.
@@ -304,7 +550,16 @@ impl WalletInner {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
 
-        let mut wallet_lock = self.bitcoin_wallet.lock();
+        // Don't error out here if the wallet is locked, just skip the sync.
+        let wallet = if let Ok(wallet) = self.get_wallet() {
+            wallet
+        } else {
+            tracing::trace!("wallet is locked, skipping sync");
+            return Ok(());
+        };
+
+        let mut wallet_lock = wallet.lock();
+
         let mut last_sync_write = self.last_sync.write();
         let request = wallet_lock.start_sync_with_revealed_spks();
 
@@ -341,6 +596,11 @@ impl Task {
     // TODO: return `Result<!, _>` once `never_type` is stabilized
     async fn sync_task(wallet: Arc<WalletInner>) -> Result<(), miette::Report> {
         const SYNC_INTERVAL: Duration = Duration::from_secs(15);
+        tracing::debug!(
+            "wallet sync task: starting with interval {:?}",
+            SYNC_INTERVAL
+        );
+
         let mut interval_stream = IntervalStream::new(interval(SYNC_INTERVAL));
         while let Some(_instant) = interval_stream.next().await {
             let () = block_in_place(|| wallet.sync())?;
@@ -385,6 +645,10 @@ impl Wallet {
             inner,
             _task: Arc::new(task),
         })
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.inner.bitcoin_wallet.read().is_some()
     }
 
     pub fn validator(&self) -> &Validator {
@@ -786,8 +1050,9 @@ impl Wallet {
         };
 
         let psbt = {
-            let mut wallet = self.inner.bitcoin_wallet.lock();
-            let mut builder = wallet.borrow_mut().build_tx();
+            let wallet = self.inner.get_wallet()?;
+            let mut locked_wallet = wallet.lock();
+            let mut builder = locked_wallet.borrow_mut().build_tx();
 
             builder
                 // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
@@ -894,7 +1159,7 @@ impl Wallet {
             return Err(miette!("get balance: wallet not synced"));
         }
 
-        let balance = self.inner.bitcoin_wallet.lock().balance();
+        let balance = self.inner.get_wallet()?.lock().balance();
 
         Ok(balance)
     }
@@ -906,7 +1171,8 @@ impl Wallet {
     pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
-            let mut guard = self.inner.bitcoin_wallet.lock();
+            let wallet = self.inner.get_wallet()?;
+            let mut guard = wallet.lock();
             let wallet = guard.borrow_mut();
             let transactions = wallet.transactions();
 
@@ -968,7 +1234,7 @@ impl Wallet {
                         .into_diagnostic()?;
 
                 let value = prev_output.output[input.previous_output.vout as usize].value;
-                if self.inner.bitcoin_wallet.lock().is_mine(
+                if self.inner.get_wallet()?.lock().is_mine(
                     prev_output.output[input.previous_output.vout as usize]
                         .script_pubkey
                         .clone(),
@@ -1009,8 +1275,9 @@ impl Wallet {
         op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         let psbt = {
-            let mut wallet = self.inner.bitcoin_wallet.lock();
-            let mut builder = wallet.borrow_mut().build_tx();
+            let wallet = self.inner.get_wallet()?;
+            let mut locked_wallet = wallet.lock();
+            let mut builder = locked_wallet.borrow_mut().build_tx();
 
             if let Some(op_return_output) = op_return_output {
                 builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
@@ -1082,8 +1349,9 @@ impl Wallet {
             return Err(miette!("get utxos: wallet not synced"));
         }
 
-        let wallet_lock = self.inner.bitcoin_wallet.lock();
-        let utxos = wallet_lock.list_unspent();
+        let wallet = self.inner.get_wallet()?;
+        let locked_wallet = wallet.lock();
+        let utxos = locked_wallet.list_unspent();
         for utxo in utxos {
             tracing::trace!(
                 "address: {}, value: {}",
@@ -1154,7 +1422,7 @@ impl Wallet {
     ) -> Result<bdk_wallet::bitcoin::Transaction> {
         if !self
             .inner
-            .bitcoin_wallet
+            .get_wallet()?
             .lock()
             .sign(&mut psbt, bdk_wallet::signer::SignOptions::default())
             .into_diagnostic()?
@@ -1204,8 +1472,9 @@ impl Wallet {
         )?;
 
         let psbt = {
-            let mut bitcoin_wallet = self.inner.bitcoin_wallet.lock();
-            let mut builder = bitcoin_wallet.build_tx();
+            let wallet = self.inner.get_wallet()?;
+            let mut locked_wallet = wallet.lock();
+            let mut builder = locked_wallet.borrow_mut().build_tx();
             builder
                 .nlocktime(locktime)
                 .add_recipient(message, bid_amount);
@@ -1316,14 +1585,19 @@ impl Wallet {
         // Using next_unused_address here means that we get a new address
         // when funds are received. Without this we'd need to take care not
         // to cross the wallet scan gap.
-        let mut wallet = self.inner.bitcoin_wallet.lock();
-        let info = wallet
+        let wallet = self
+            .inner
+            .get_wallet()
+            .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
+
+        let mut locked_wallet = wallet.lock();
+        let info = locked_wallet
             .borrow_mut()
             .next_unused_address(bdk_wallet::KeychainKind::External);
 
         let mut bitcoin_db = self.inner.bitcoin_db.lock();
         let bitcoin_db = bitcoin_db.borrow_mut();
-        wallet.persist(bitcoin_db).into_diagnostic()?;
+        locked_wallet.persist(bitcoin_db).into_diagnostic()?;
         Ok(info.address)
     }
 
@@ -1342,5 +1616,20 @@ impl Wallet {
             )
             .into_diagnostic()?;
         Ok(m6id)
+    }
+
+    pub fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
+        self.inner.unlock_existing_wallet(password)
+    }
+
+    // Creates a new wallet with a given mnemonic and encryption password.
+    // Note that the password is NOT a BIP39 passphrase, but is only used to
+    // encrypt the mnemonic in storage.
+    pub fn create_wallet(
+        &self,
+        mnemonic: Option<Mnemonic>,
+        password: Option<&str>,
+    ) -> Result<(), miette::Report> {
+        self.inner.create_new_wallet(mnemonic, password)
     }
 }

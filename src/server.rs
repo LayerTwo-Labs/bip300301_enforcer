@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 
+use bdk_wallet::bip39::Mnemonic;
 use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
@@ -33,21 +34,23 @@ use crate::{
             BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
             CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
             CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
-            CreateSidechainProposalRequest, CreateSidechainProposalResponse, GenerateBlocksRequest,
-            GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
-            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
-            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
-            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
-            ListTransactionsRequest, ListTransactionsResponse, Network, SendTransactionRequest,
-            SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
-            WalletTransaction,
+            CreateSidechainProposalRequest, CreateSidechainProposalResponse, CreateWalletRequest,
+            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
+            GetBalanceResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
+            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
+            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
+            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
+            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, ListTransactionsRequest,
+            ListTransactionsResponse, Network, SendTransactionRequest, SendTransactionResponse,
+            SubscribeEventsRequest, SubscribeEventsResponse, UnlockWalletRequest,
+            UnlockWalletResponse, WalletTransaction,
         },
     },
     types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
+    wallet::error::WalletInitialization,
 };
 
 fn invalid_field_value<Message, Error>(
@@ -92,6 +95,26 @@ impl IntoStatus for miette::Report {
     fn into_status(self) -> tonic::Status {
         if let Some(source) = self.downcast_ref::<crate::wallet::error::ElectrumError>() {
             return source.clone().into();
+        }
+
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::WalletInitialization>() {
+            let code = match source {
+                crate::wallet::error::WalletInitialization::InvalidPassword => {
+                    tonic::Code::InvalidArgument
+                }
+                crate::wallet::error::WalletInitialization::NotUnlocked => {
+                    tonic::Code::FailedPrecondition
+                }
+                crate::wallet::error::WalletInitialization::DataMismatch => tonic::Code::Internal,
+                crate::wallet::error::WalletInitialization::NotFound => tonic::Code::NotFound,
+                crate::wallet::error::WalletInitialization::AlreadyExists => {
+                    tonic::Code::AlreadyExists
+                }
+                crate::wallet::error::WalletInitialization::AlreadyUnlocked => {
+                    tonic::Code::AlreadyExists
+                }
+            };
+            return tonic::Status::new(code, format!("{self:#}"));
         }
 
         tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
@@ -1048,6 +1071,86 @@ impl WalletService for crate::wallet::Wallet {
         let txid = ReverseHex::encode(&txid);
         let response = SendTransactionResponse { txid: Some(txid) };
         Ok(tonic::Response::new(response))
+    }
+
+    async fn unlock_wallet(
+        &self,
+        request: tonic::Request<UnlockWalletRequest>,
+    ) -> Result<tonic::Response<UnlockWalletResponse>, tonic::Status> {
+        let UnlockWalletRequest { password } = request.into_inner();
+        self.unlock_existing_wallet(password.as_str())
+            .map_err(|err| err.into_status())?;
+
+        Ok(tonic::Response::new(UnlockWalletResponse {}))
+    }
+
+    async fn create_wallet(
+        &self,
+        request: tonic::Request<CreateWalletRequest>,
+    ) -> Result<tonic::Response<CreateWalletResponse>, tonic::Status> {
+        // TODO: needs a way of creating /multiple/ wallets. RPC for unloading/erasing a wallet?
+        if self.is_initialized() {
+            let err = WalletInitialization::AlreadyExists;
+            return Err(tonic::Status::new(
+                tonic::Code::AlreadyExists,
+                format!("{err:#}"),
+            ));
+        }
+
+        let CreateWalletRequest {
+            mut mnemonic_words,
+            mnemonic_path,
+            password,
+        } = request.into_inner();
+
+        if !mnemonic_words.is_empty() && !mnemonic_path.is_empty() {
+            return Err(tonic::Status::new(
+                tonic::Code::InvalidArgument,
+                "cannot provide both mnemonic and mnemonic path",
+            ));
+        }
+
+        if !mnemonic_path.is_empty() {
+            let read = std::fs::read_to_string(&mnemonic_path).map_err(|err| {
+                tonic::Status::new(
+                    tonic::Code::InvalidArgument,
+                    format!("failed to read mnemonic from {}: {}", mnemonic_path, err),
+                )
+            })?;
+
+            mnemonic_words = read.split_whitespace().map(|s| s.to_string()).collect();
+        }
+
+        if !mnemonic_words.is_empty() && mnemonic_words.len() != 12 {
+            return Err(tonic::Status::new(
+                tonic::Code::InvalidArgument,
+                "mnemonic must be 12 words",
+            ));
+        }
+
+        let parsed = if mnemonic_words.is_empty() {
+            None
+        } else {
+            Some(
+                Mnemonic::from_str(&mnemonic_words.join(" ")).map_err(|err| {
+                    tonic::Status::new(
+                        tonic::Code::InvalidArgument,
+                        format!("failed to parse mnemonic: {err:#}"),
+                    )
+                })?,
+            )
+        };
+
+        let password = if password.is_empty() {
+            None
+        } else {
+            Some(password.as_str())
+        };
+
+        self.create_wallet(parsed, password)
+            .map_err(|err| err.into_status())?;
+
+        Ok(tonic::Response::new(CreateWalletResponse {}))
     }
 }
 
