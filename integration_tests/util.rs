@@ -435,26 +435,19 @@ pub struct SignetMiner {
 }
 
 impl SignetMiner {
-    pub fn command<CmdArg, Subcommand, SubcommandArg, CmdArgs, SubcommandArgs>(
+    pub fn command(
         &self,
-        command_args: CmdArgs,
-        subcommand: Subcommand,
-        subcommand_args: SubcommandArgs,
-    ) -> tokio::process::Command
-    where
-        CmdArg: AsRef<OsStr>,
-        Subcommand: AsRef<OsStr>,
-        SubcommandArg: AsRef<OsStr>,
-        CmdArgs: IntoIterator<Item = CmdArg>,
-        SubcommandArgs: IntoIterator<Item = SubcommandArg>,
-    {
+        command_args: Vec<&str>,
+        subcommand: &str,
+        subcommand_args: Vec<&str>,
+    ) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.path);
         command.arg(format!(
             "--cli={}",
             self.bitcoin_cli.display_without_chain()
         ));
         command.args(command_args);
-        let generate = subcommand.as_ref() == "generate";
+        let generate = subcommand == "generate";
         command.arg(subcommand);
         command.arg(format!("--grind-cmd={} grind", self.bitcoin_util.display()));
         if generate {
