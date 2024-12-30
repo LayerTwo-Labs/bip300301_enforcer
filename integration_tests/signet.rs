@@ -229,7 +229,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
         coinbasetxn: false,
     };
     let calibrate_output = signet_miner
-        .command::<String, _, _, _, _>([], "calibrate", ["--seconds=1"])
+        .command(vec![], "calibrate", vec!["--seconds=1"])
         .run_utf8()
         .await?;
     let nbits_hex = {
@@ -252,10 +252,10 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     signet_miner.nbits = Some(hex::FromHex::from_hex(&nbits_hex)?);
     tracing::debug!(%mining_address, %nbits_hex, "Mining 1 block");
     let mine_output = signet_miner
-        .command::<_, _, _, _, _>(
-            ["--debug"],
+        .command(
+            vec![],
             "generate",
-            ["--address".to_owned(), mining_address.to_string()],
+            vec!["--address", &mining_address.to_string()],
         )
         .run_utf8()
         .await?;
@@ -374,14 +374,14 @@ async fn mine_single(
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
-        .command::<String, _, _, _, _>(
-            [],
+        .command(
+            vec![],
             "generate",
-            [
-                "--address".to_owned(),
-                mining_address.to_string(),
-                "--block-interval".to_owned(),
-                "1".to_owned(),
+            vec![
+                "--address",
+                &mining_address.to_string(),
+                "--block-interval",
+                "1",
             ],
         )
         .run_utf8()
