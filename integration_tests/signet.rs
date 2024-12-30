@@ -328,13 +328,12 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     {
         let gbt_script_file = out_dir.path().join("gbt-script.sh");
         tracing::info!("GBT script: {}", gbt_script_file.display());
-        let gbt_script = format!("\
-                #!/bin/sh\n\
-                REQUEST=\"{{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":0,\\\"method\\\":\\\"getblocktemplate\\\",\\\"params\\\": [$1]}}\"\n\
-                RESPONSE=$(curl 127.0.0.1:{} --no-progress-meter -H \"Content-Type: application/json\" --data-binary \"${{REQUEST}}\")\n\
-                RESULT=$(echo \"${{RESPONSE}}\" | jq '.result')\n\
-                echo \"${{RESULT}}\"\n\
-            ",
+        let gbt_script = format!(
+            r#"#!/bin/sh
+            REQUEST='{{"jsonrpc":"2.0","id":0,"method":"getblocktemplate","params":['$1']}}'
+            RESPONSE=$(curl 127.0.0.1:{} --no-progress-meter -H "Content-Type: application/json" --data-binary "${{REQUEST}}")
+            RESULT=$(echo "${{RESPONSE}}" | jq '.result')
+            echo "${{RESULT}}""#,
             enforcer.serve_rpc_port
         );
         std::fs::write(&gbt_script_file, gbt_script)?;
