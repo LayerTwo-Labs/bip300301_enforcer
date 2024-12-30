@@ -12,13 +12,12 @@ protox = "0.7.1"
 tonic-build = "0.12.3"
 
 [dependencies]
+aes-gcm = "0.10.3"
 anyhow = "1.0.89"
+argon2 = "0.5.3"
 async-broadcast = "0.7.1"
 bdk_electrum = "0.20.1"
-bdk_wallet = { version = "1.0.0", features = [
-    "file_store",
-    "keys-bip39",
-] }
+bdk_wallet = { version = "1.0.0", features = ["file_store", "keys-bip39"] }
 bincode = "1.3.3"
 bitcoin = "0.32.3"
 blake3 = "1.5.4"
@@ -41,8 +40,8 @@ nonempty = "0.11.0"
 ordermap = { version = "0.5.3", features = ["serde"] }
 parking_lot = { version = "0.12.3", features = ["send_guard"] }
 prost = "0.13.2"
-rand = "0.8.5"
 prost-types = "0.13.3"
+rand = "0.8.5"
 regex = "1.11.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 rusqlite_migration = "1.3.1"
@@ -59,8 +58,6 @@ tower-http = { version = "0.6.1", features = ["trace"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 zeromq = "0.4.1"
-argon2 = "0.5.3"
-aes-gcm = "0.10.3"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
