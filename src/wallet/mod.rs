@@ -36,7 +36,9 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{StreamExt as _, TryFutureExt as _};
 use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{
+    MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use rusqlite::Connection;
 use tokio::{
     spawn,
@@ -63,14 +65,14 @@ mod mnemonic;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
-type WrappedBdkWallet = Arc<Mutex<bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>>>;
+type BdkWallet = bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>;
 
 struct WalletInner {
     main_client: HttpClient,
     validator: Validator,
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
-    bitcoin_wallet: RwLock<Option<WrappedBdkWallet>>,
+    bitcoin_wallet: RwLock<Option<BdkWallet>>,
     bitcoin_db: Mutex<file_store::Store<ChangeSet>>,
     db_connection: Mutex<rusqlite::Connection>,
     bitcoin_blockchain: BdkElectrumClient<bdk_electrum::electrum_client::Client>,
@@ -291,7 +293,7 @@ impl WalletInner {
         Ok(Self {
             main_client,
             validator,
-            bitcoin_wallet: RwLock::new(bitcoin_wallet.map(|wallet| Arc::new(Mutex::new(wallet)))),
+            bitcoin_wallet: RwLock::new(bitcoin_wallet),
             bitcoin_db: Mutex::new(wallet_database),
             db_connection: Mutex::new(db_connection),
             bitcoin_blockchain,
@@ -299,12 +301,16 @@ impl WalletInner {
         })
     }
 
-    fn get_wallet(&self) -> Result<WrappedBdkWallet, WalletInitialization> {
+    fn read_wallet(&self) -> Result<MappedRwLockReadGuard<BdkWallet>, WalletInitialization> {
         let read_guard = self.bitcoin_wallet.read();
-        read_guard
-            .as_ref()
-            .cloned()
-            .ok_or(WalletInitialization::NotUnlocked)
+        RwLockReadGuard::try_map(read_guard, |wallet| wallet.as_ref())
+            .map_err(|_| WalletInitialization::NotUnlocked)
+    }
+
+    fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, WalletInitialization> {
+        let read_guard = self.bitcoin_wallet.write();
+        RwLockWriteGuard::try_map(read_guard, |wallet| wallet.as_mut())
+            .map_err(|_| WalletInitialization::NotUnlocked)
     }
 
     pub fn create_new_wallet(
@@ -380,9 +386,8 @@ impl WalletInner {
         drop(database);
 
         let mut write_guard = self.bitcoin_wallet.write();
-        *write_guard = Some(Arc::new(Mutex::new(wallet)));
+        *write_guard = Some(wallet);
         drop(write_guard);
-
         Ok(())
     }
 
@@ -424,7 +429,7 @@ impl WalletInner {
         drop(database);
 
         let mut write_guard = self.bitcoin_wallet.write();
-        *write_guard = Some(Arc::new(Mutex::new(wallet)));
+        *write_guard = Some(wallet);
         drop(write_guard);
 
         tracing::info!("unlock wallet: initialized wallet");
@@ -551,17 +556,15 @@ impl WalletInner {
         tracing::trace!("starting wallet sync");
 
         // Don't error out here if the wallet is locked, just skip the sync.
-        let wallet = if let Ok(wallet) = self.get_wallet() {
-            wallet
+        let mut wallet_write = if let Ok(wallet_write) = self.write_wallet() {
+            wallet_write
         } else {
             tracing::trace!("wallet is locked, skipping sync");
             return Ok(());
         };
 
-        let mut wallet_lock = wallet.lock();
-
         let mut last_sync_write = self.last_sync.write();
-        let request = wallet_lock.start_sync_with_revealed_spks();
+        let request = wallet_write.start_sync_with_revealed_spks();
 
         const BATCH_SIZE: usize = 5;
         const FETCH_PREV_TXOUTS: bool = false;
@@ -571,10 +574,10 @@ impl WalletInner {
             .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
             .into_diagnostic()?;
 
-        wallet_lock.apply_update(update).into_diagnostic()?;
+        wallet_write.apply_update(update).into_diagnostic()?;
 
         let mut database = self.bitcoin_db.lock();
-        wallet_lock.persist(&mut database).into_diagnostic()?;
+        wallet_write.persist(&mut database).into_diagnostic()?;
 
         tracing::debug!(
             "wallet sync complete in {:?}",
@@ -583,7 +586,7 @@ impl WalletInner {
 
         *last_sync_write = Some(SystemTime::now());
         drop(last_sync_write);
-        drop(wallet_lock);
+        drop(wallet_write);
         Ok(())
     }
 }
@@ -1050,9 +1053,8 @@ impl Wallet {
         };
 
         let psbt = {
-            let wallet = self.inner.get_wallet()?;
-            let mut locked_wallet = wallet.lock();
-            let mut builder = locked_wallet.borrow_mut().build_tx();
+            let mut wallet_write = self.inner.write_wallet()?;
+            let mut builder = wallet_write.build_tx();
 
             builder
                 // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
@@ -1159,7 +1161,7 @@ impl Wallet {
             return Err(miette!("get balance: wallet not synced"));
         }
 
-        let balance = self.inner.get_wallet()?.lock().balance();
+        let balance = self.inner.read_wallet()?.balance();
 
         Ok(balance)
     }
@@ -1171,10 +1173,8 @@ impl Wallet {
     pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
-            let wallet = self.inner.get_wallet()?;
-            let mut guard = wallet.lock();
-            let wallet = guard.borrow_mut();
-            let transactions = wallet.transactions();
+            let wallet_read = self.inner.read_wallet()?;
+            let transactions = wallet_read.transactions();
 
             transactions
                 .into_iter()
@@ -1186,7 +1186,12 @@ impl Wallet {
                     let output_ownership: Vec<_> = tx
                         .output
                         .iter()
-                        .map(|output| (output.value, wallet.is_mine(output.script_pubkey.clone())))
+                        .map(|output| {
+                            (
+                                output.value,
+                                wallet_read.is_mine(output.script_pubkey.clone()),
+                            )
+                        })
                         .collect();
 
                     // Just collect the inputs - we'll get their values using getrawtransaction later
@@ -1234,7 +1239,7 @@ impl Wallet {
                         .into_diagnostic()?;
 
                 let value = prev_output.output[input.previous_output.vout as usize].value;
-                if self.inner.get_wallet()?.lock().is_mine(
+                if self.inner.read_wallet()?.is_mine(
                     prev_output.output[input.previous_output.vout as usize]
                         .script_pubkey
                         .clone(),
@@ -1275,9 +1280,8 @@ impl Wallet {
         op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         let psbt = {
-            let wallet = self.inner.get_wallet()?;
-            let mut locked_wallet = wallet.lock();
-            let mut builder = locked_wallet.borrow_mut().build_tx();
+            let mut wallet_write = self.inner.write_wallet()?;
+            let mut builder = wallet_write.build_tx();
 
             if let Some(op_return_output) = op_return_output {
                 builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
@@ -1349,9 +1353,8 @@ impl Wallet {
             return Err(miette!("get utxos: wallet not synced"));
         }
 
-        let wallet = self.inner.get_wallet()?;
-        let locked_wallet = wallet.lock();
-        let utxos = locked_wallet.list_unspent();
+        let wallet_read = self.inner.read_wallet()?;
+        let utxos = wallet_read.list_unspent();
         for utxo in utxos {
             tracing::trace!(
                 "address: {}, value: {}",
@@ -1422,8 +1425,7 @@ impl Wallet {
     ) -> Result<bdk_wallet::bitcoin::Transaction> {
         if !self
             .inner
-            .get_wallet()?
-            .lock()
+            .read_wallet()?
             .sign(&mut psbt, bdk_wallet::signer::SignOptions::default())
             .into_diagnostic()?
         {
@@ -1472,9 +1474,8 @@ impl Wallet {
         )?;
 
         let psbt = {
-            let wallet = self.inner.get_wallet()?;
-            let mut locked_wallet = wallet.lock();
-            let mut builder = locked_wallet.borrow_mut().build_tx();
+            let mut wallet_write = self.inner.write_wallet()?;
+            let mut builder = wallet_write.build_tx();
             builder
                 .nlocktime(locktime)
                 .add_recipient(message, bid_amount);
@@ -1585,19 +1586,16 @@ impl Wallet {
         // Using next_unused_address here means that we get a new address
         // when funds are received. Without this we'd need to take care not
         // to cross the wallet scan gap.
-        let wallet = self
+        let mut wallet_write = self
             .inner
-            .get_wallet()
+            .write_wallet()
             .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
 
-        let mut locked_wallet = wallet.lock();
-        let info = locked_wallet
-            .borrow_mut()
-            .next_unused_address(bdk_wallet::KeychainKind::External);
+        let info = wallet_write.next_unused_address(bdk_wallet::KeychainKind::External);
 
         let mut bitcoin_db = self.inner.bitcoin_db.lock();
         let bitcoin_db = bitcoin_db.borrow_mut();
-        locked_wallet.persist(bitcoin_db).into_diagnostic()?;
+        wallet_write.persist(bitcoin_db).into_diagnostic()?;
         Ok(info.address)
     }
 
