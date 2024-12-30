@@ -446,6 +446,12 @@ impl SignetMiner {
             "--cli={}",
             self.bitcoin_cli.display_without_chain()
         ));
+
+        // Unless debug is explicitly set, we want to run in quiet mode. Otherwise
+        // we'll get lots of error logs about stderr not being empty.
+        if !command_args.contains(&"--debug") {
+            command.arg("--quiet");
+        }
         command.args(command_args);
         let generate = subcommand == "generate";
         command.arg(subcommand);
