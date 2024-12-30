@@ -483,15 +483,18 @@ impl Wallet {
 
             // Execute the download script
             let mut command = Command::new("bash");
+
+            // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/b0caf39789de5df3e1463887bd46e8cacbb0cc77
+            const BITCOIN_PATCHED_COMMIT: &str = "b0caf39789de5df3e1463887bd46e8cacbb0cc77";
             command.current_dir(&dir)
                 .arg("-c")
-                .arg(r#"
+                .arg(format!(r#"
                     git clone -n --depth=1 --filter=tree:0 \
                     https://github.com/LayerTwo-Labs/bitcoin-patched.git signet-miner && \
                     cd signet-miner && \
                     git sparse-checkout set --no-cone contrib/signet/miner test/functional/test_framework && \
-                    git checkout
-                "#);
+                    git checkout {BITCOIN_PATCHED_COMMIT}
+                "#));
 
             let output = command
                 .output()
@@ -508,9 +511,6 @@ impl Wallet {
             tracing::info!("Signet miner already exists");
         }
 
-        // TODO: it's possible to feed in extra coinbase outputs here, using
-        // the patched miner script from https://github.com/LayerTwo-Labs/bitcoin-patched/pull/6
-        //
         let mut command = Command::new("python3");
         command
             .current_dir(&dir)
@@ -520,6 +520,12 @@ impl Wallet {
             .args(["--address", address])
             .args(["--grind-cmd", "bitcoin-util grind"])
             .args(["--block-interval", "60"])
+            .arg("--coinbasetxn") // enable coinbasetxn capability for getblocktemplate
+            .arg(format!(
+                "--getblocktemplate-command=bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
+                self.serve_rpc_addr.ip(),
+                self.serve_rpc_addr.port()
+            ))
             .arg("--min-nbits");
 
         tracing::info!("Running signet miner: {:?}", command);

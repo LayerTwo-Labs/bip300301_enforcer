@@ -228,12 +228,7 @@ fn task(
 )> {
     use either::Either;
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
-        let wallet = Wallet::new(
-            wallet_data_dir,
-            &cli.wallet_opts,
-            mainchain_client.clone(),
-            validator,
-        )?;
+        let wallet = Wallet::new(wallet_data_dir, &cli, mainchain_client.clone(), validator)?;
 
         if !wallet.is_initialized() && cli.wallet_opts.auto_create {
             tracing::info!("auto-creating new wallet");

@@ -291,6 +291,10 @@ pub(crate) fn get_ctips_after(
 ) -> Result<Option<HashMap<SidechainNumber, Ctip>>, GetCtipsAfterError> {
     // dummy events channel so that no event is emitted to subscribers
     let (events_tx, _events_rx) = async_broadcast::broadcast(1);
+
+    // Make sure to not commit the TX here, as we're only using it to
+    // validate the block.
+    tracing::info!("Starting no-commit block connection attempt");
     let rwtxns = match connect_block_no_commit(validator, block, &events_tx)? {
         ConnectBlockRwTxnAction::Accept {
             rwtxns,
@@ -315,6 +319,6 @@ pub(crate) fn get_ctips_after(
             .map_err(db_error::Iter::Item)
     })?;
     let rwtxn = rwtxns.abort_child();
-    rwtxn.abort();
+    rwtxn.abort(); // We don't want the effects of the block to be applied!
     Ok(Some(res))
 }
