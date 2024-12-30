@@ -94,10 +94,10 @@ pub struct WalletConfig {
     #[arg(long = "wallet-electrum-port")]
     pub electrum_port: Option<u16>,
 
-    /// If no existing wallet is found, automatically initialize a new one.
-    /// Creates an unencrypted, plaintext wallet.
-    #[arg(long = "wallet-auto-init", default_value_t = false)]
-    pub auto_initialize: bool,
+    /// If no existing wallet is found, automatically create and load
+    /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
+    #[arg(long = "wallet-auto-create", default_value_t = false)]
+    pub auto_create: bool,
 }
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
