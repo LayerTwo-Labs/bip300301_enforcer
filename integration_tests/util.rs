@@ -113,7 +113,7 @@ where
     let stderr_fp = dir.join("stderr.txt");
     let stdout_fp = dir.join("stdout.txt");
     async move {
-        let stderr_file = match std::fs::File::create_new(stderr_fp) {
+        let stderr_file = match std::fs::File::create_new(stderr_fp.clone()) {
             Ok(stderr_file) => stderr_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -123,7 +123,7 @@ where
             }
         };
         cmd.stderr(std::process::Stdio::from(stderr_file));
-        let stdout_file = match std::fs::File::create_new(stdout_fp) {
+        let stdout_file = match std::fs::File::create_new(stdout_fp.clone()) {
             Ok(stdout_file) => stdout_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -147,8 +147,26 @@ where
                 return anyhow::anyhow!("Command {command} failed: `{err:#}`",);
             }
         };
-        tracing::error!("Command `{command}` exited with status `{exit_status}`");
-        anyhow::anyhow!("Command `{command}` failed")
+        tracing::error!(
+            message = format!(
+                "Command `{command}` exited with status `{}`!",
+                exit_status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ),
+            stdout_file = stdout_fp.to_string_lossy().to_string(),
+            stderr_file = stderr_fp.to_string_lossy().to_string(),
+        );
+
+        let mut msg = format!("Command `{command}` finished: `{}`", exit_status,);
+
+        if let Ok(stderr) = std::fs::read_to_string(stderr_fp).map(|s| s.trim().to_owned()) {
+            if !stderr.is_empty() {
+                msg.push_str(&format!("\nStderr:\n{}", stderr));
+            }
+        }
+        anyhow::anyhow!(msg)
     }
 }
 
@@ -411,6 +429,7 @@ impl Enforcer {
             "127.0.0.1".to_owned(),
             "--wallet-electrum-port".to_owned(),
             self.wallet_electrum_port.to_string(),
+            "--wallet-auto-create".to_owned(),
         ];
         if self.enable_mempool {
             default_args.push("--enable-mempool".to_owned());
