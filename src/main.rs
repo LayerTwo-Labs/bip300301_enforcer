@@ -197,6 +197,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
             Ok(res) => res,
             Err(err) => {
                 let err = anyhow::Error::from(err);
+                tracing::error!("mempool sync error: {err:#}");
                 let _send_err: Result<(), _> = err_tx.send(err);
                 return;
             }
@@ -234,6 +235,14 @@ fn task(
             mainchain_client.clone(),
             validator,
         )?;
+
+        if !wallet.is_initialized() && cli.wallet_opts.auto_initialize {
+            tracing::info!("auto-initiating new wallet");
+            let mnemonic = None;
+            let password = None;
+            wallet.create_wallet(mnemonic, password)?;
+        }
+
         Either::Right(wallet)
     } else {
         Either::Left(validator)
@@ -241,7 +250,7 @@ fn task(
     let (err_tx, err_rx) = futures::channel::oneshot::channel();
     let _grpc_server_task: JoinHandle<()> = spawn(
         run_grpc_server(enforcer.clone(), cli.serve_grpc_addr)
-            .unwrap_or_else(|err| tracing::error!("{err:#}")),
+            .unwrap_or_else(|err| tracing::error!("grpc server error: {err:#}")),
     );
     let res = match (cli.enable_mempool, enforcer) {
         (false, enforcer) => cusf_enforcer_mempool::cusf_enforcer::spawn_task(
@@ -254,6 +263,7 @@ fn task(
             },
         ),
         (true, Either::Left(validator)) => spawn(async move {
+            tracing::info!("mempool sync task w/validator: starting");
             mempool_task(
                 validator,
                 mainchain_client,
@@ -264,13 +274,22 @@ fn task(
             .await
         }),
         (true, Either::Right(wallet)) => {
+            tracing::info!("mempool sync task w/wallet: starting");
+
+            // A pre-requisite for the mempool sync task is that the wallet is
+            // initialized and unlocked. Give a nice error message if this is not
+            // the case!
+            if !wallet.is_initialized() {
+                return Err(miette!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."));
+            }
+
             let mining_reward_address = wallet.get_new_address()?;
             spawn(async move {
                 let network_info = match mainchain_client.get_network_info().await {
                     Ok(network_info) => network_info,
                     Err(err) => {
                         let err = anyhow::Error::from(err);
-                        tracing::error!("{err:#}");
+                        tracing::error!("failed to get network info: {err:#}");
                         return;
                     }
                 };
