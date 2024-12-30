@@ -236,8 +236,8 @@ fn task(
             validator,
         )?;
 
-        if !wallet.is_initialized() && cli.wallet_opts.auto_initialize {
-            tracing::info!("auto-initiating new wallet");
+        if !wallet.is_initialized() && cli.wallet_opts.auto_create {
+            tracing::info!("auto-creating new wallet");
             let mnemonic = None;
             let password = None;
             wallet.create_wallet(mnemonic, password)?;
