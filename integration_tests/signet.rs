@@ -13,6 +13,7 @@ use bip300301_enforcer_lib::{
         },
     },
     types::{BlindedM6, M6id},
+    wallet,
 };
 use bitcoin::{
     hashes::{Hash as _, HashEngine},
@@ -60,7 +61,7 @@ struct PostSetup {
     out_dir: TempDir,
     bitcoin_cli: util::BitcoinCli,
     processes: FuturesUnordered<BoxFuture<'static, anyhow::Error>>,
-    signet_miner: util::SignetMiner,
+    signet_miner: wallet::signet_miner::SignetMiner,
     validator_service_client: ValidatorServiceClient<Transport>,
     wallet_service_client: WalletServiceClient<Transport>,
     mining_address: Address,
@@ -220,9 +221,9 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
         return Err(err);
     }
     tracing::debug!("Calibrating signet");
-    let mut signet_miner = util::SignetMiner {
+    let mut signet_miner = wallet::signet_miner::SignetMiner {
         path: bin_paths.signet_miner.clone(),
-        bitcoin_cli: bitcoin_cli.clone(),
+        bitcoin_cli: Some(bitcoin_cli.display_without_chain()),
         bitcoin_util: bin_paths.bitcoin_util.clone(),
         nbits: None,
         getblocktemplate_command: None,
@@ -369,7 +370,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
 }
 
 async fn mine_single(
-    signet_miner: &util::SignetMiner,
+    signet_miner: &wallet::signet_miner::SignetMiner,
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
