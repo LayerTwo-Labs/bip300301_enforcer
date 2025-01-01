@@ -63,6 +63,7 @@ mod cusf_block_producer;
 pub mod error;
 mod mine;
 mod mnemonic;
+pub mod signet_miner;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 

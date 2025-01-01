@@ -25,6 +25,7 @@ use bip300301_enforcer_lib::{
         },
     },
     types::{BlindedM6, M6id},
+    wallet,
 };
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument;
@@ -145,7 +146,10 @@ impl SignetSetup {
         Ok(())
     }
 
-    async fn calibrate_signet(&self, signet_miner: &mut util::SignetMiner) -> anyhow::Result<()> {
+    async fn calibrate_signet(
+        &self,
+        signet_miner: &mut wallet::signet_miner::SignetMiner,
+    ) -> anyhow::Result<()> {
         let calibrate_output = signet_miner
             .command(vec![], "calibrate", vec!["--seconds=1"])
             .run_utf8()
@@ -173,7 +177,7 @@ impl SignetSetup {
 
     /// Configure signet miner to use enforcer's GBT server
     fn configure_miner(
-        signet_miner: &mut util::SignetMiner,
+        signet_miner: &mut wallet::signet_miner::SignetMiner,
         out_dir: &TempDir,
         enforcer: &util::Enforcer,
     ) -> anyhow::Result<()> {
@@ -274,7 +278,7 @@ struct PostSetup {
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
     tasks: Tasks,
-    signet_miner: util::SignetMiner,
+    signet_miner: wallet::signet_miner::SignetMiner,
     gbt_client: jsonrpsee::http_client::HttpClient,
     validator_service_client: ValidatorServiceClient<Transport>,
     wallet_service_client: WalletServiceClient<Transport>,
@@ -383,9 +387,9 @@ async fn setup(
             .parse::<Address<_>>()?
             .require_network(bitcoind.network)?
     };
-    let mut signet_miner = util::SignetMiner {
+    let mut signet_miner = wallet::signet_miner::SignetMiner {
         path: bin_paths.signet_miner.clone(),
-        bitcoin_cli: bitcoin_cli.clone(),
+        bitcoin_cli: Some(bitcoin_cli.clone().display_without_chain()),
         bitcoin_util: bin_paths.bitcoin_util.clone(),
         nbits: None,
         getblocktemplate_command: None,
@@ -511,7 +515,7 @@ async fn setup(
 
 /// Mine a single signet block
 async fn mine_single_signet(
-    signet_miner: &util::SignetMiner,
+    signet_miner: &wallet::signet_miner::SignetMiner,
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
