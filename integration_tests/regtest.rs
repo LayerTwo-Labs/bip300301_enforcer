@@ -27,7 +27,7 @@ use bip300301_enforcer_lib::{
 };
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::util::{self, AsyncTrial, BinPaths, CommandExt as _};
+use crate::util::{self, drop_temp_dir, AsyncTrial, BinPaths, CommandExt as _};
 
 #[derive(Clone, Copy, Debug)]
 enum MiningMode {
@@ -921,7 +921,7 @@ async fn test(bin_paths: &BinPaths, mode: Mode) -> anyhow::Result<()> {
     let () = withdraw_succeed(&mut post_setup, mode.mining_mode()).await?;
     tracing::info!("Withdrawal succeeded");
     tracing::info!("Removing {}", post_setup.out_dir.path().display());
-    post_setup.out_dir.cleanup()?;
+    drop_temp_dir(&post_setup.out_dir)?;
     drop(post_setup);
     Ok(())
 }

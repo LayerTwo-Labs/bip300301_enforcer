@@ -7,6 +7,8 @@ use std::{
 use clap::Args;
 use futures::TryFutureExt as _;
 
+use temp_dir::TempDir;
+
 #[derive(Args, Clone, Debug)]
 pub struct BinPaths {
     #[arg(long)]
@@ -439,5 +441,24 @@ impl Enforcer {
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
         await_command_with_args(&self.data_dir, self.path.clone(), envs, args)
+    }
+}
+
+/// Cleans up a temporary directory, but without fatally exiting on errors that
+/// aren't that bad.
+pub fn drop_temp_dir(dir: &TempDir) -> Result<(), std::io::Error> {
+    match dir.cleanup() {
+        Ok(_) => Ok(()),
+        // Seeing intermittent errors on CI related to deleting non-empty
+        // directories. Temporary directories get properly wiped at some
+        // point anyways.
+        Err(err)
+            if err.kind() == std::io::ErrorKind::DirectoryNotEmpty
+                || err.raw_os_error() == Some(39) =>
+        {
+            tracing::error!("unable to delete temp dir: {err} (chugging along!)");
+            Ok(())
+        }
+        err => err,
     }
 }

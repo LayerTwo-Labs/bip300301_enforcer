@@ -28,7 +28,7 @@ use temp_dir::TempDir;
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::util::{self, AsyncTrial, BinPaths, CommandExt as _};
+use crate::util::{self, drop_temp_dir, AsyncTrial, BinPaths, CommandExt as _};
 
 #[derive(Debug)]
 struct ReservedPorts {
@@ -805,7 +805,7 @@ async fn test(bin_paths: &BinPaths) -> anyhow::Result<()> {
     let () = withdraw_succeed(&mut post_setup).await?;
     tracing::info!("Withdrawal succeeded");
     tracing::info!("Removing {}", post_setup.out_dir.path().display());
-    post_setup.out_dir.cleanup()?;
+    drop_temp_dir(&post_setup.out_dir)?;
     drop(post_setup);
     Ok(())
 }
