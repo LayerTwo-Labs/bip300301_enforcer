@@ -79,6 +79,22 @@ pub struct NodeRpcConfig {
 }
 
 #[derive(Clone, Args)]
+pub struct MiningConfig {
+    /// Path to the Python mining script from Bitcoin Core. If not set,
+    /// the mining script is downloaded from GitHub.
+    #[arg(long = "signet-miner-script-path")]
+    pub signet_script_path: Option<PathBuf>,
+
+    /// Path to the Bitcoin Core `bitcoin-util` binary. Defaults to `bitcoin-util`.
+    #[arg(long = "signet-miner-bitcoin-util-path")]
+    pub signet_bitcoin_util_path: Option<PathBuf>,
+
+    /// Path to the Bitcoin Core `bitcoin-cli` binary. Defaults to `bitcoin-cli`.
+    #[arg(long = "signet-miner-bitcoin-cli-path")]
+    pub signet_bitcoin_cli_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Args)]
 pub struct WalletConfig {
     /// If no host is provided, a default value is used based on the network
     /// we're on.
@@ -136,4 +152,7 @@ pub struct Config {
     pub serve_grpc_addr: SocketAddr,
     #[command(flatten)]
     pub wallet_opts: WalletConfig,
+
+    #[command(flatten)]
+    pub mining_opts: MiningConfig,
 }

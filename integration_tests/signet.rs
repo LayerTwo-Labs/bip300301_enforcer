@@ -224,13 +224,15 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     let mut signet_miner = wallet::signet_miner::SignetMiner {
         path: bin_paths.signet_miner.clone(),
         bitcoin_cli: Some(bitcoin_cli.display_without_chain()),
-        bitcoin_util: bin_paths.bitcoin_util.clone(),
+        bitcoin_util: Some(bin_paths.bitcoin_util.clone()),
         nbits: None,
         getblocktemplate_command: None,
         coinbasetxn: false,
+        block_interval: None,
+        debug: false,
     };
     let calibrate_output = signet_miner
-        .command(vec![], "calibrate", vec!["--seconds=1"])
+        .command("calibrate", vec!["--seconds=1"])
         .run_utf8()
         .await?;
     let nbits_hex = {
@@ -253,11 +255,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     signet_miner.nbits = Some(hex::FromHex::from_hex(&nbits_hex)?);
     tracing::debug!(%mining_address, %nbits_hex, "Mining 1 block");
     let mine_output = signet_miner
-        .command(
-            vec![],
-            "generate",
-            vec!["--address", &mining_address.to_string()],
-        )
+        .command("generate", vec!["--address", &mining_address.to_string()])
         .run_utf8()
         .await?;
     tracing::debug!("Checking that block was mined successfully");
@@ -375,7 +373,6 @@ async fn mine_single(
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
         .command(
-            vec![],
             "generate",
             vec![
                 "--address",

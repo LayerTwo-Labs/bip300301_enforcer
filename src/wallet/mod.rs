@@ -633,7 +633,7 @@ impl Drop for Task {
 /// Cheap to clone, since it uses Arc internally
 #[derive(Clone)]
 pub struct Wallet {
-    serve_rpc_addr: SocketAddr,
+    config: Config,
     inner: Arc<WalletInner>,
     _task: Arc<Task>,
 }
@@ -653,7 +653,7 @@ impl Wallet {
         )?);
         let task = Task::new(inner.clone());
         Ok(Self {
-            serve_rpc_addr: config.serve_rpc_addr,
+            config: config.clone(),
             inner,
             _task: Arc::new(task),
         })
