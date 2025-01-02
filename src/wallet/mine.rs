@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -483,18 +484,10 @@ impl Wallet {
         Ok(())
     }
 
-    // Generate a single signet block, through shelling out to the signet miner script
-    // from Bitcoin Core. We assume that validation of this request has
-    // happened elsewhere (i.e. that we're on signet, and have signing
-    // capabilities).
-    async fn generate_signet_block(&self) -> miette::Result<BlockHash> {
-        use std::process::Command;
-
-        let mining_script_path = if let Some(path) =
-            self.config.mining_opts.signet_script_path.clone()
-        {
+    fn get_signet_miner_path(&self) -> Result<PathBuf, miette::Error> {
+        if let Some(path) = self.config.mining_opts.signet_script_path.clone() {
             tracing::debug!("Using custom signet miner script path: {}", path.display());
-            path
+            Ok(path)
         } else {
             tracing::debug!("Using default signet miner script path");
 
@@ -505,6 +498,8 @@ impl Wallet {
 
             // Check if signet miner directory exists
             if !std::path::Path::new(&dir).exists() {
+                use std::process::Command;
+
                 tracing::info!("Signet miner not found, downloading into {}", dir.display());
 
                 Command::new("mkdir")
@@ -543,8 +538,16 @@ impl Wallet {
                 tracing::info!("Signet miner already exists");
             }
 
-            dir.clone().join("signet-miner/contrib/signet/miner")
-        };
+            Ok(dir.clone().join("signet-miner/contrib/signet/miner"))
+        }
+    }
+
+    // Generate a single signet block, through shelling out to the signet miner script
+    // from Bitcoin Core. We assume that validation of this request has
+    // happened elsewhere (i.e. that we're on signet, and have signing
+    // capabilities).
+    async fn generate_signet_block(&self) -> miette::Result<BlockHash> {
+        let mining_script_path = self.get_signet_miner_path()?;
 
         // TODO: it's possible to feed in extra coinbase outputs here, using
         // the patched miner script from https://github.com/LayerTwo-Labs/bitcoin-patched/pull/6
