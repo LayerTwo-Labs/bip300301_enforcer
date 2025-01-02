@@ -618,15 +618,27 @@ pub(in crate::validator) fn connect_block(
     block: &Block,
 ) -> Result<(), error::ConnectBlock> {
     let parent = block.header.prev_blockhash;
+
     // Check that current chain tip is block parent
     match dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? {
         Some(tip) if parent == tip => (),
-        Some(tip) => return Err(error::ConnectBlock::BlockParent { parent, tip }),
+        Some(tip) => {
+            return Err(error::ConnectBlock::BlockParent {
+                parent,
+                tip,
+                tip_height: dbs
+                    .block_hashes
+                    .height()
+                    .get(rwtxn, &tip)
+                    .unwrap_or_default(),
+            })
+        }
         None if block.header.prev_blockhash == BlockHash::all_zeros() => (),
         None => {
             return Err(error::ConnectBlock::BlockParent {
                 parent,
                 tip: BlockHash::all_zeros(),
+                tip_height: 0,
             })
         }
     }
