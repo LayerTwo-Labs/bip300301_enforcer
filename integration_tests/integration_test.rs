@@ -12,6 +12,7 @@ use temp_dir::TempDir;
 use tokio::time::sleep;
 
 use bip300301_enforcer_lib::{
+    bins,
     proto::{
         self,
         common::{ConsensusHex, Hex, ReverseHex},
@@ -25,7 +26,6 @@ use bip300301_enforcer_lib::{
         },
     },
     types::{BlindedM6, M6id},
-    wallet,
 };
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument;
@@ -91,7 +91,7 @@ impl SignetSetup {
     }
 
     /// Initialize bitcoind wallet
-    async fn init_bitcoind_wallet(&self, bitcoin_cli: &util::BitcoinCli) -> anyhow::Result<()> {
+    async fn init_bitcoind_wallet(&self, bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
         tracing::debug!("Importing secret key");
         let mining_descriptor = {
             use miniscript;
@@ -146,10 +146,7 @@ impl SignetSetup {
         Ok(())
     }
 
-    async fn calibrate_signet(
-        &self,
-        signet_miner: &mut wallet::signet_miner::SignetMiner,
-    ) -> anyhow::Result<()> {
+    async fn calibrate_signet(&self, signet_miner: &mut bins::SignetMiner) -> anyhow::Result<()> {
         let calibrate_output = signet_miner
             .command("calibrate", vec!["--seconds=1"])
             .run_utf8()
@@ -177,7 +174,7 @@ impl SignetSetup {
 
     /// Configure signet miner to use enforcer's GBT server
     fn configure_miner(
-        signet_miner: &mut wallet::signet_miner::SignetMiner,
+        signet_miner: &mut bins::SignetMiner,
         out_dir: &TempDir,
         enforcer: &util::Enforcer,
     ) -> anyhow::Result<()> {
@@ -263,22 +260,22 @@ impl ReservedPorts {
 
 struct Tasks {
     // MUST be dropped before electrs and bitcoind
-    _enforcer: util::AbortOnDrop<()>,
+    _enforcer: bins::AbortOnDrop<()>,
     // MUST be dropped before bitcoind
-    _electrs: util::AbortOnDrop<()>,
-    _bitcoind: util::AbortOnDrop<()>,
+    _electrs: bins::AbortOnDrop<()>,
+    _bitcoind: bins::AbortOnDrop<()>,
 }
 
 type Transport = tonic::transport::Channel;
 
 struct PostSetup {
     network: Network,
-    bitcoin_cli: util::BitcoinCli,
-    bitcoin_util: util::BitcoinUtil,
+    bitcoin_cli: bins::BitcoinCli,
+    bitcoin_util: bins::BitcoinUtil,
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
     tasks: Tasks,
-    signet_miner: wallet::signet_miner::SignetMiner,
+    signet_miner: bins::SignetMiner,
     gbt_client: jsonrpsee::http_client::HttpClient,
     validator_service_client: ValidatorServiceClient<Transport>,
     wallet_service_client: WalletServiceClient<Transport>,
@@ -321,7 +318,7 @@ async fn setup(
     std::fs::create_dir(&enforcer_dir)?;
     tracing::info!("Enforcer dir: {}", enforcer_dir.display());
     tracing::debug!("Starting bitcoin node");
-    let bitcoind = util::Bitcoind {
+    let bitcoind = bins::Bitcoind {
         path: bin_paths.bitcoind.clone(),
         data_dir: bitcoin_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
@@ -345,7 +342,7 @@ async fn setup(
     // wait for startup
     sleep(std::time::Duration::from_secs(1)).await;
     // Create a wallet and initialize it
-    let mut bitcoin_cli = util::BitcoinCli {
+    let mut bitcoin_cli = bins::BitcoinCli {
         path: bin_paths.bitcoin_cli.clone(),
         network: bitcoind.network,
         rpc_user: bitcoind.rpc_user.clone(),
@@ -387,7 +384,7 @@ async fn setup(
             .parse::<Address<_>>()?
             .require_network(bitcoind.network)?
     };
-    let mut signet_miner = wallet::signet_miner::SignetMiner {
+    let mut signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner.clone(),
         bitcoin_cli: Some(bitcoin_cli.clone().display_without_chain()),
         bitcoin_util: Some(bin_paths.bitcoin_util.clone()),
@@ -495,7 +492,7 @@ async fn setup(
     Ok(PostSetup {
         network,
         bitcoin_cli,
-        bitcoin_util: util::BitcoinUtil {
+        bitcoin_util: bins::BitcoinUtil {
             path: bin_paths.bitcoin_util.clone(),
             network: bitcoind.network,
         },
@@ -513,7 +510,7 @@ async fn setup(
 
 /// Mine a single signet block
 async fn mine_single_signet(
-    signet_miner: &wallet::signet_miner::SignetMiner,
+    signet_miner: &bins::SignetMiner,
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
@@ -1212,7 +1209,7 @@ async fn test_task(
 
 async fn test(bin_paths: BinPaths, network: Network, mode: Mode) -> anyhow::Result<()> {
     let (res_tx, mut res_rx) = mpsc::unbounded();
-    let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
+    let _test_task: bins::AbortOnDrop<()> = tokio::task::spawn({
         let res_tx = res_tx.clone();
         async move {
             let res = test_task(&bin_paths, network, mode, res_tx.clone()).await;
