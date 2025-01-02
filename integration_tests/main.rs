@@ -1,8 +1,7 @@
 use clap::Parser;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
-mod regtest;
-mod signet;
+mod integration_test;
 mod util;
 
 #[derive(Parser)]
@@ -81,16 +80,10 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     // Create a list of tests
     let mut tests = Vec::<libtest_mimic::Trial>::new();
     tests.extend(
-        regtest::tests(&args.bin_paths)
+        integration_test::tests(&args.bin_paths)
             .into_iter()
             .map(|trial| trial.run_blocking(rt_handle.clone())),
     );
-    tests.extend(
-        signet::tests(&args.bin_paths)
-            .into_iter()
-            .map(|trial| trial.run_blocking(rt_handle.clone())),
-    );
-
     // Run all tests and exit the application appropriatly.
     let exit_code = libtest_mimic::run(&args.test_args, tests).exit_code();
     Ok(exit_code)
