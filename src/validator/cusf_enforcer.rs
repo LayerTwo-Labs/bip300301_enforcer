@@ -10,6 +10,7 @@ use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer};
 use fallible_iterator::FallibleIterator;
 use fatality::Nested as _;
 use futures::TryFutureExt as _;
+use heed::RoTxn;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
 use thiserror::Error;
@@ -145,22 +146,22 @@ enum ConnectBlockRwTxnAction<'a> {
 /// If connecting the block results in a header write, the header write is
 /// always committed. The block connect is not committed.
 fn connect_block_no_commit<'validator>(
-    valdator: &'validator Validator,
+    validator: &'validator Validator,
     block: &Block,
     events_tx: &async_broadcast::Sender<crate::types::Event>,
 ) -> Result<ConnectBlockRwTxnAction<'validator>, ConnectBlockError> {
     let block_hash = block.block_hash();
     let parent = block.header.prev_blockhash;
     // Always commit, to store header if necessary
-    let mut parent_rwtxn = valdator.dbs.write_txn()?;
-    if !valdator
+    let mut parent_rwtxn = validator.dbs.write_txn()?;
+    if !validator
         .dbs
         .block_hashes
         .contains_header(&parent_rwtxn, &block_hash)?
     {
         let height = if parent == BlockHash::all_zeros() {
             0
-        } else if let Some(parent_height) = valdator
+        } else if let Some(parent_height) = validator
             .dbs
             .block_hashes
             .height()
@@ -175,7 +176,7 @@ fn connect_block_no_commit<'validator>(
             });
         };
         tracing::debug!(%block_hash, "Storing header");
-        valdator
+        validator
             .dbs
             .block_hashes
             .put_header(&mut parent_rwtxn, &block.header, height)?;
@@ -183,13 +184,13 @@ fn connect_block_no_commit<'validator>(
     // Commit on block accept, abort on block reject
     let mut parent_child_rwtxn = ParentChildRwTxnTryBuilder {
         parent: parent_rwtxn,
-        child_builder: |parent: &mut RwTxn| valdator.dbs.nested_write_txn(parent),
+        child_builder: |parent: &mut RwTxn| validator.dbs.nested_write_txn(parent),
     }
     .try_build()?;
     tracing::debug!(%block_hash, "Connecting block");
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| {
-            task::connect_block(child_rwtxn, &valdator.dbs, events_tx, block)
+            task::connect_block(child_rwtxn, &validator.dbs, events_tx, block)
         })
         .into_nested()?
     {
@@ -211,23 +212,31 @@ fn connect_block_no_commit<'validator>(
     }
 }
 
-impl CusfEnforcer for Validator {
-    type SyncError = SyncError;
-
-    async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
-        task::sync_to_tip(&self.dbs, &self.events_tx, &self.mainchain_client, tip)
-            .map_err(SyncError)
-            .await
-    }
-
-    type ConnectBlockError = ConnectBlockError;
+/// Used to specify commit/dry-run modes
+trait ConnectBlockMode<'validator> {
+    type Output;
 
     fn connect_block(
-        &mut self,
+        self,
+        validator: &'validator Validator,
         block: &Block,
-    ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
+    ) -> Result<Self::Output, ConnectBlockError>;
+}
+
+/// Used to implement `ConnectBlockMode`.
+/// Connects and commits a block.
+struct ConnectBlockCommit;
+
+impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
+    type Output = ConnectBlockAction;
+
+    fn connect_block(
+        self,
+        validator: &'validator Validator,
+        block: &Block,
+    ) -> Result<Self::Output, ConnectBlockError> {
         let block_hash = block.block_hash();
-        match connect_block_no_commit(self, block, &self.events_tx)? {
+        match connect_block_no_commit(validator, block, &validator.events_tx)? {
             ConnectBlockRwTxnAction::Accept {
                 remove_mempool_txs,
                 rwtxns,
@@ -246,6 +255,66 @@ impl CusfEnforcer for Validator {
                 Ok(ConnectBlockAction::Reject)
             }
         }
+    }
+}
+
+/// Used to implement `ConnectBlockMode`.
+/// Connects a block, but aborts the rwtxn.
+/// If the block is accepted, the function is executed on the rwtxn state
+/// before aborting, and the result of the function is returned.
+#[repr(transparent)]
+struct ConnectBlockDryRun<F>(F);
+
+impl<'validator, F, Output> ConnectBlockMode<'validator> for ConnectBlockDryRun<F>
+where
+    F: FnOnce(&RoTxn<'_>) -> Output,
+{
+    type Output = Option<Output>;
+
+    #[tracing::instrument(name = "connect_block(dry run)", skip_all)]
+    fn connect_block(
+        self,
+        validator: &'validator Validator,
+        block: &Block,
+    ) -> Result<Self::Output, ConnectBlockError> {
+        // Dummy events channel so that no event is emitted to subscribers
+        let (events_tx, _events_rx) = async_broadcast::broadcast(1);
+        let rwtxns = match connect_block_no_commit(validator, block, &events_tx)? {
+            ConnectBlockRwTxnAction::Accept {
+                rwtxns,
+                remove_mempool_txs: _,
+            } => rwtxns,
+            ConnectBlockRwTxnAction::Reject {
+                header_rwtxn,
+                reason: _,
+            } => {
+                header_rwtxn.abort();
+                return Ok(None);
+            }
+        };
+        let res: Output = rwtxns.with_child(|child_rwtxn| self.0(child_rwtxn));
+        let rwtxn = rwtxns.abort_child();
+        rwtxn.abort(); // We don't want the effects of the block to be applied!
+        Ok(Some(res))
+    }
+}
+
+impl CusfEnforcer for Validator {
+    type SyncError = SyncError;
+
+    async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
+        task::sync_to_tip(&self.dbs, &self.events_tx, &self.mainchain_client, tip)
+            .map_err(SyncError)
+            .await
+    }
+
+    type ConnectBlockError = ConnectBlockError;
+
+    fn connect_block(
+        &mut self,
+        block: &Block,
+    ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
+        ConnectBlockCommit.connect_block(self, block)
     }
 
     type DisconnectBlockError = DisconnectBlockError;
@@ -289,36 +358,17 @@ pub(crate) fn get_ctips_after(
     validator: &Validator,
     block: &Block,
 ) -> Result<Option<HashMap<SidechainNumber, Ctip>>, GetCtipsAfterError> {
-    // dummy events channel so that no event is emitted to subscribers
-    let (events_tx, _events_rx) = async_broadcast::broadcast(1);
-
-    // Make sure to not commit the TX here, as we're only using it to
-    // validate the block.
-    tracing::info!("Starting no-commit block connection attempt");
-    let rwtxns = match connect_block_no_commit(validator, block, &events_tx)? {
-        ConnectBlockRwTxnAction::Accept {
-            rwtxns,
-            remove_mempool_txs: _,
-        } => rwtxns,
-        ConnectBlockRwTxnAction::Reject {
-            header_rwtxn,
-            reason: _,
-        } => {
-            header_rwtxn.abort();
-            return Ok(None);
-        }
-    };
-    let res = rwtxns.with_child(|child_rwtxn| {
+    let res = ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, _> {
         validator
             .dbs
             .active_sidechains
             .ctip()
-            .iter(child_rwtxn)
+            .iter(rotxn)
             .map_err(db_error::Iter::Init)?
             .collect()
             .map_err(db_error::Iter::Item)
-    })?;
-    let rwtxn = rwtxns.abort_child();
-    rwtxn.abort(); // We don't want the effects of the block to be applied!
-    Ok(Some(res))
+    })
+    .connect_block(validator, block)?
+    .transpose()?;
+    Ok(res)
 }
