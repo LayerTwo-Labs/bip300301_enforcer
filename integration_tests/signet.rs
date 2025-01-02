@@ -1,6 +1,7 @@
 use std::{future::Future, task::Poll, time::Duration};
 
 use bip300301_enforcer_lib::{
+    bins,
     proto::{
         self,
         common::{ConsensusHex, Hex, ReverseHex},
@@ -27,7 +28,7 @@ use temp_dir::TempDir;
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::util::{self, AsyncTrial, BinPaths, CommandExt as _};
+use crate::util::{self, drop_temp_dir, AsyncTrial, BinPaths, CommandExt as _};
 
 #[derive(Debug)]
 struct ReservedPorts {
@@ -58,9 +59,9 @@ type Transport = tonic::transport::Channel;
 
 struct PostSetup {
     out_dir: TempDir,
-    bitcoin_cli: util::BitcoinCli,
+    bitcoin_cli: bins::BitcoinCli,
     processes: FuturesUnordered<BoxFuture<'static, anyhow::Error>>,
-    signet_miner: util::SignetMiner,
+    signet_miner: bins::SignetMiner,
     validator_service_client: ValidatorServiceClient<Transport>,
     wallet_service_client: WalletServiceClient<Transport>,
     mining_address: Address,
@@ -118,7 +119,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     std::fs::create_dir(&enforcer_dir)?;
     tracing::info!("Enforcer dir: {}", enforcer_dir.display());
     tracing::debug!("Starting bitcoin node");
-    let bitcoind = util::Bitcoind {
+    let bitcoind = bins::Bitcoind {
         path: bin_paths.bitcoind.clone(),
         data_dir: bitcoin_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
@@ -143,7 +144,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
         return Err(err);
     }
     // Create a wallet and get a receiving address
-    let mut bitcoin_cli = util::BitcoinCli {
+    let mut bitcoin_cli = bins::BitcoinCli {
         path: bin_paths.bitcoin_cli.clone(),
         network: bitcoind.network,
         rpc_user: bitcoind.rpc_user.clone(),
@@ -220,16 +221,18 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
         return Err(err);
     }
     tracing::debug!("Calibrating signet");
-    let mut signet_miner = util::SignetMiner {
+    let mut signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner.clone(),
-        bitcoin_cli: bitcoin_cli.clone(),
-        bitcoin_util: bin_paths.bitcoin_util.clone(),
+        bitcoin_cli: Some(bitcoin_cli.display_without_chain()),
+        bitcoin_util: Some(bin_paths.bitcoin_util.clone()),
         nbits: None,
         getblocktemplate_command: None,
         coinbasetxn: false,
+        block_interval: None,
+        debug: false,
     };
     let calibrate_output = signet_miner
-        .command(vec![], "calibrate", vec!["--seconds=1"])
+        .command("calibrate", vec!["--seconds=1"])
         .run_utf8()
         .await?;
     let nbits_hex = {
@@ -252,11 +255,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     signet_miner.nbits = Some(hex::FromHex::from_hex(&nbits_hex)?);
     tracing::debug!(%mining_address, %nbits_hex, "Mining 1 block");
     let mine_output = signet_miner
-        .command(
-            vec![],
-            "generate",
-            vec!["--address", &mining_address.to_string()],
-        )
+        .command("generate", vec!["--address", &mining_address.to_string()])
         .run_utf8()
         .await?;
     tracing::debug!("Checking that block was mined successfully");
@@ -369,12 +368,11 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
 }
 
 async fn mine_single(
-    signet_miner: &util::SignetMiner,
+    signet_miner: &bins::SignetMiner,
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
         .command(
-            vec![],
             "generate",
             vec![
                 "--address",
@@ -804,7 +802,7 @@ async fn test(bin_paths: &BinPaths) -> anyhow::Result<()> {
     let () = withdraw_succeed(&mut post_setup).await?;
     tracing::info!("Withdrawal succeeded");
     tracing::info!("Removing {}", post_setup.out_dir.path().display());
-    post_setup.out_dir.cleanup()?;
+    drop_temp_dir(&post_setup.out_dir)?;
     drop(post_setup);
     Ok(())
 }

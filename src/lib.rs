@@ -1,3 +1,4 @@
+pub mod bins;
 pub mod cli;
 mod convert;
 pub mod messages;
