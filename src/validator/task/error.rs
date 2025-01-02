@@ -169,10 +169,11 @@ where
 
 #[fatality(splitable)]
 pub(in crate::validator) enum ConnectBlock {
-    #[error("Block parent `{parent}` does not match tip `{tip}`")]
+    #[error("Block parent `{parent}` does not match tip `{tip}` at height {tip_height}")]
     BlockParent {
         parent: bitcoin::BlockHash,
         tip: bitcoin::BlockHash,
+        tip_height: u32,
     },
     #[error(transparent)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
@@ -230,7 +231,7 @@ pub(in crate::validator) enum Sync {
     #[error(transparent)]
     #[fatal]
     CommitWriteTxn(#[from] dbs::CommitWriteTxnError),
-    #[error("Failed to connect block")]
+    #[error(transparent)]
     #[fatal(forward)]
     ConnectBlock(#[from] ConnectBlock),
     #[error(transparent)]
