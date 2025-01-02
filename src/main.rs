@@ -154,6 +154,7 @@ async fn spawn_gbt_server(
     Ok(handle)
 }
 
+/// Runs the `getblocktemplate` RPC server.
 async fn run_gbt_server(
     mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
