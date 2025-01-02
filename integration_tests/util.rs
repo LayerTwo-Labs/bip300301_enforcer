@@ -6,6 +6,7 @@ use std::{
 
 use clap::Args;
 use futures::TryFutureExt as _;
+use tokio::task::JoinHandle;
 
 #[derive(Args, Clone, Debug)]
 pub struct BinPaths {
@@ -91,7 +92,23 @@ impl CommandExt for tokio::process::Command {
     }
 }
 
-/// Run command with args, dumping stderr/stdout to `dir`` on exit
+/// Wrapper around `JoinHandle` that aborts the task on drop
+#[repr(transparent)]
+pub struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort()
+    }
+}
+
+impl<T> From<JoinHandle<T>> for AbortOnDrop<T> {
+    fn from(task: JoinHandle<T>) -> Self {
+        Self(task)
+    }
+}
+
+/// Run command with args, dumping stderr/stdout to `dir` on exit
 pub fn await_command_with_args<Cmd, Env, Arg, Envs, Args>(
     dir: &std::path::Path,
     command: Cmd,
@@ -168,6 +185,34 @@ where
         }
         anyhow::anyhow!(msg)
     }
+}
+
+/// Spawn a task that awaits command with args,
+/// dumping stderr/stdout to `dir` on exit, and handling errors via the
+/// provided function.
+pub fn spawn_command_with_args<Cmd, Env, Arg, Envs, Args, F>(
+    dir: &std::path::Path,
+    command: Cmd,
+    envs: Envs,
+    args: Args,
+    err_handler: F,
+) -> AbortOnDrop<()>
+where
+    Cmd: AsRef<OsStr>,
+    Arg: AsRef<OsStr>,
+    Env: AsRef<OsStr>,
+    Envs: IntoIterator<Item = (Env, Env)>,
+    Args: IntoIterator<Item = Arg>,
+    F: FnOnce(anyhow::Error) + Send + 'static,
+{
+    let fut = await_command_with_args(dir, command, envs, args);
+    tokio::task::spawn(async {
+        use tracing::Instrument as _;
+        let err = fut.in_current_span().await;
+        tracing::error!("Command failed with error: {err:#}");
+        err_handler(err)
+    })
+    .into()
 }
 
 #[derive(Clone, Debug)]
@@ -275,16 +320,18 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
-    pub fn await_command_with_args<Env, Arg, Envs, Args>(
+    pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
         args: Args,
-    ) -> impl Future<Output = anyhow::Error> + 'static
+        err_handler: F,
+    ) -> AbortOnDrop<()>
     where
         Arg: AsRef<OsStr>,
         Env: AsRef<OsStr>,
         Envs: IntoIterator<Item = (Env, Env)>,
         Args: IntoIterator<Item = Arg>,
+        F: FnOnce(anyhow::Error) + Send + 'static,
     {
         let mut default_args = vec![
             "-acceptnonstdtxn".to_owned(),
@@ -319,7 +366,7 @@ impl Bitcoind {
             .into_iter()
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-        await_command_with_args(&self.data_dir, self.path.clone(), envs, args)
+        spawn_command_with_args(&self.data_dir, self.path.clone(), envs, args, err_handler)
     }
 }
 
@@ -338,16 +385,18 @@ pub struct Electrs {
 }
 
 impl Electrs {
-    pub fn await_command_with_args<Env, Arg, Envs, Args>(
+    pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
         args: Args,
-    ) -> impl Future<Output = anyhow::Error> + 'static
+        err_handler: F,
+    ) -> AbortOnDrop<()>
     where
         Arg: AsRef<OsStr>,
         Env: AsRef<OsStr>,
         Envs: IntoIterator<Item = (Env, Env)>,
         Args: IntoIterator<Item = Arg>,
+        F: FnOnce(anyhow::Error) + Send + 'static,
     {
         let mut default_args = vec![
             "--db-dir".to_owned(),
@@ -377,7 +426,7 @@ impl Electrs {
             .into_iter()
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-        await_command_with_args(&self.db_dir, self.path.clone(), envs, args)
+        spawn_command_with_args(&self.db_dir, self.path.clone(), envs, args, err_handler)
     }
 }
 
@@ -396,16 +445,18 @@ pub struct Enforcer {
 }
 
 impl Enforcer {
-    pub fn await_command_with_args<Env, Arg, Envs, Args>(
+    pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
         args: Args,
-    ) -> impl Future<Output = anyhow::Error> + 'static
+        err_handler: F,
+    ) -> AbortOnDrop<()>
     where
         Arg: AsRef<OsStr>,
         Env: AsRef<OsStr>,
         Envs: IntoIterator<Item = (Env, Env)>,
         Args: IntoIterator<Item = Arg>,
+        F: FnOnce(anyhow::Error) + Send + 'static,
     {
         let mut default_args = vec![
             "--data-dir".to_owned(),
@@ -438,7 +489,7 @@ impl Enforcer {
             .into_iter()
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-        await_command_with_args(&self.data_dir, self.path.clone(), envs, args)
+        spawn_command_with_args(&self.data_dir, self.path.clone(), envs, args, err_handler)
     }
 }
 
