@@ -1,6 +1,7 @@
 use std::{future::Future, task::Poll, time::Duration};
 
 use bip300301_enforcer_lib::{
+    bins,
     proto::{
         self,
         common::{ConsensusHex, Hex, ReverseHex},
@@ -13,7 +14,6 @@ use bip300301_enforcer_lib::{
         },
     },
     types::{BlindedM6, M6id},
-    wallet,
 };
 use bitcoin::{
     hashes::{Hash as _, HashEngine},
@@ -59,9 +59,9 @@ type Transport = tonic::transport::Channel;
 
 struct PostSetup {
     out_dir: TempDir,
-    bitcoin_cli: util::BitcoinCli,
+    bitcoin_cli: bins::BitcoinCli,
     processes: FuturesUnordered<BoxFuture<'static, anyhow::Error>>,
-    signet_miner: wallet::signet_miner::SignetMiner,
+    signet_miner: bins::SignetMiner,
     validator_service_client: ValidatorServiceClient<Transport>,
     wallet_service_client: WalletServiceClient<Transport>,
     mining_address: Address,
@@ -119,7 +119,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     std::fs::create_dir(&enforcer_dir)?;
     tracing::info!("Enforcer dir: {}", enforcer_dir.display());
     tracing::debug!("Starting bitcoin node");
-    let bitcoind = util::Bitcoind {
+    let bitcoind = bins::Bitcoind {
         path: bin_paths.bitcoind.clone(),
         data_dir: bitcoin_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
@@ -144,7 +144,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
         return Err(err);
     }
     // Create a wallet and get a receiving address
-    let mut bitcoin_cli = util::BitcoinCli {
+    let mut bitcoin_cli = bins::BitcoinCli {
         path: bin_paths.bitcoin_cli.clone(),
         network: bitcoind.network,
         rpc_user: bitcoind.rpc_user.clone(),
@@ -221,7 +221,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
         return Err(err);
     }
     tracing::debug!("Calibrating signet");
-    let mut signet_miner = wallet::signet_miner::SignetMiner {
+    let mut signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner.clone(),
         bitcoin_cli: Some(bitcoin_cli.display_without_chain()),
         bitcoin_util: Some(bin_paths.bitcoin_util.clone()),
@@ -368,7 +368,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
 }
 
 async fn mine_single(
-    signet_miner: &wallet::signet_miner::SignetMiner,
+    signet_miner: &bins::SignetMiner,
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner

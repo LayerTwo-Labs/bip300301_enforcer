@@ -29,13 +29,10 @@ use futures::{
 use miette::{miette, IntoDiagnostic as _};
 
 use crate::{
+    bins,
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{Ctip, SidechainAck, SidechainNumber, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
-    wallet::{
-        error,
-        signet_miner::{self},
-        Wallet,
-    },
+    wallet::{error, Wallet},
 };
 
 fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
@@ -552,7 +549,7 @@ impl Wallet {
         // TODO: it's possible to feed in extra coinbase outputs here, using
         // the patched miner script from https://github.com/LayerTwo-Labs/bitcoin-patched/pull/6
         //
-        let miner = signet_miner::SignetMiner {
+        let miner = bins::SignetMiner {
             path: mining_script_path,
             bitcoin_cli: self
                 .config

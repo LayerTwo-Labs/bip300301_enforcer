@@ -11,6 +11,7 @@ use temp_dir::TempDir;
 use tokio::time::sleep;
 
 use bip300301_enforcer_lib::{
+    bins,
     proto::{
         self,
         common::{ConsensusHex, Hex, ReverseHex},
@@ -87,8 +88,8 @@ type Transport = tonic::transport::Channel;
 
 struct PostSetup {
     out_dir: TempDir,
-    bitcoin_cli: util::BitcoinCli,
-    bitcoin_util: util::BitcoinUtil,
+    bitcoin_cli: bins::BitcoinCli,
+    bitcoin_util: bins::BitcoinUtil,
     processes: FuturesUnordered<BoxFuture<'static, anyhow::Error>>,
     gbt_client: jsonrpsee::http_client::HttpClient,
     validator_service_client: ValidatorServiceClient<Transport>,
@@ -117,7 +118,7 @@ async fn setup(bin_paths: &BinPaths, enable_mempool: bool) -> anyhow::Result<Pos
     std::fs::create_dir(&enforcer_dir)?;
     tracing::info!("Enforcer dir: {}", enforcer_dir.display());
     tracing::debug!("Starting bitcoin node");
-    let bitcoind = util::Bitcoind {
+    let bitcoind = bins::Bitcoind {
         path: bin_paths.bitcoind.clone(),
         data_dir: bitcoin_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
@@ -142,7 +143,7 @@ async fn setup(bin_paths: &BinPaths, enable_mempool: bool) -> anyhow::Result<Pos
         return Err(err);
     }
     // Create a wallet and get an address
-    let mut bitcoin_cli = util::BitcoinCli {
+    let mut bitcoin_cli = bins::BitcoinCli {
         path: bin_paths.bitcoin_cli.clone(),
         network: bitcoind.network,
         rpc_user: bitcoind.rpc_user.clone(),
@@ -251,7 +252,7 @@ async fn setup(bin_paths: &BinPaths, enable_mempool: bool) -> anyhow::Result<Pos
     Ok(PostSetup {
         out_dir,
         bitcoin_cli,
-        bitcoin_util: util::BitcoinUtil {
+        bitcoin_util: bins::BitcoinUtil {
             path: bin_paths.bitcoin_util.clone(),
             network: bitcoind.network,
         },
