@@ -1,7 +1,7 @@
 use std::{future::Future, task::Poll, time::Duration};
 
 use bip300301_enforcer_lib::{
-    bins,
+    bins::{self, CommandExt as _},
     proto::{
         self,
         common::{ConsensusHex, Hex, ReverseHex},
@@ -28,7 +28,7 @@ use temp_dir::TempDir;
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::util::{self, drop_temp_dir, AsyncTrial, BinPaths, CommandExt as _};
+use crate::util::{self, AsyncTrial, BinPaths};
 
 #[derive(Debug)]
 struct ReservedPorts {
@@ -119,7 +119,7 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     std::fs::create_dir(&enforcer_dir)?;
     tracing::info!("Enforcer dir: {}", enforcer_dir.display());
     tracing::debug!("Starting bitcoin node");
-    let bitcoind = bins::Bitcoind {
+    let bitcoind = util::Bitcoind {
         path: bin_paths.bitcoind.clone(),
         data_dir: bitcoin_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
@@ -223,8 +223,8 @@ async fn setup(bin_paths: &BinPaths) -> anyhow::Result<PostSetup> {
     tracing::debug!("Calibrating signet");
     let mut signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner.clone(),
-        bitcoin_cli: Some(bitcoin_cli.display_without_chain()),
-        bitcoin_util: Some(bin_paths.bitcoin_util.clone()),
+        bitcoin_cli: bitcoin_cli.clone(),
+        bitcoin_util: bin_paths.bitcoin_util.clone(),
         nbits: None,
         getblocktemplate_command: None,
         coinbasetxn: false,
@@ -802,7 +802,7 @@ async fn test(bin_paths: &BinPaths) -> anyhow::Result<()> {
     let () = withdraw_succeed(&mut post_setup).await?;
     tracing::info!("Withdrawal succeeded");
     tracing::info!("Removing {}", post_setup.out_dir.path().display());
-    drop_temp_dir(&post_setup.out_dir)?;
+    post_setup.out_dir.cleanup()?;
     drop(post_setup);
     Ok(())
 }

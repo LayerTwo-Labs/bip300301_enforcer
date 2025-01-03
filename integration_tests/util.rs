@@ -4,7 +4,6 @@ use std::{
     path::PathBuf,
 };
 
-use bip300301_enforcer_lib::bins;
 use clap::Args;
 use futures::TryFutureExt as _;
 use temp_dir::TempDir;
@@ -56,40 +55,148 @@ impl<Fut> AsyncTrial<Fut> {
     }
 }
 
-pub trait CommandExt {
-    async fn run(&mut self) -> anyhow::Result<Vec<u8>>;
+#[derive(Clone, Debug)]
+pub struct Bitcoind {
+    pub path: PathBuf,
+    pub data_dir: PathBuf,
+    pub listen_port: u16,
+    pub network: bitcoin::Network,
+    // Ports to listen on tor network, and control tor.
+    // If set to None, listening on tor is disabled
+    pub onion_ports: Option<(u16, u16)>,
+    pub rpc_user: String,
+    pub rpc_pass: String,
+    pub rpc_port: u16,
+    pub signet_challenge: Option<bitcoin::ScriptBuf>,
+    pub txindex: bool,
+    pub zmq_sequence_port: u16,
+}
 
-    // capture as utf8
-    async fn run_utf8(&mut self) -> anyhow::Result<String> {
-        let bytes = self.run().await?;
-        let mut res = String::from_utf8(bytes)?;
-        res = res.trim().to_owned();
-        Ok(res)
+impl Bitcoind {
+    pub fn await_command_with_args<Env, Arg, Envs, Args>(
+        &self,
+        envs: Envs,
+        args: Args,
+    ) -> impl Future<Output = anyhow::Error> + 'static
+    where
+        Arg: AsRef<OsStr>,
+        Env: AsRef<OsStr>,
+        Envs: IntoIterator<Item = (Env, Env)>,
+        Args: IntoIterator<Item = Arg>,
+    {
+        let mut default_args = vec![
+            "-acceptnonstdtxn".to_owned(),
+            format!("-chain={}", self.network.to_core_arg()),
+            format!("-datadir={}", self.data_dir.display()),
+            format!("-bind=127.0.0.1:{}", self.listen_port),
+            format!("-rpcuser={}", self.rpc_user),
+            format!("-rpcpassword={}", self.rpc_pass),
+            format!("-rpcport={}", self.rpc_port),
+            "-server".to_owned(),
+            format!("-zmqpubsequence=tcp://127.0.0.1:{}", self.zmq_sequence_port),
+        ];
+        match self.onion_ports {
+            Some((listen_port, control_port)) => {
+                default_args.push(format!("-bind=127.0.0.1:{listen_port}=onion"));
+                default_args.push(format!("-torcontrol=127.0.0.1:{control_port}"));
+            }
+            None => {
+                default_args.push("-listenonion=0".to_owned());
+            }
+        }
+        if self.txindex {
+            default_args.push("-txindex".to_owned());
+        }
+        if let (bitcoin::Network::Signet, Some(signet_challenge)) =
+            (self.network, &self.signet_challenge)
+        {
+            let signet_challenge = hex::encode(signet_challenge.as_bytes());
+            default_args.push(format!("-signetchallenge={signet_challenge}"))
+        }
+        let args = default_args
+            .into_iter()
+            .map(OsString::from)
+            .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
+        await_command_with_args(&self.data_dir, self.path.clone(), envs, args)
     }
 }
 
-impl CommandExt for tokio::process::Command {
-    async fn run(&mut self) -> anyhow::Result<Vec<u8>> {
-        let output = self.output().await?;
-        if output.status.success() {
-            if !output.stderr.is_empty() {
-                let stderr = match String::from_utf8(output.stderr) {
-                    Ok(err_msgs) => err_msgs,
-                    Err(err) => hex::encode(err.into_bytes()),
-                };
-                tracing::warn!("Command ran successfully, but stderr was not empty: `{stderr}`")
-            }
-            return Ok(output.stdout);
-        }
-        match String::from_utf8(output.stderr) {
-            Ok(err_msg) => Err(anyhow::anyhow!("Command failed with error: `{err_msg}`")),
+/// Run command with args, dumping stderr/stdout to `dir`` on exit
+pub fn await_command_with_args<Cmd, Env, Arg, Envs, Args>(
+    dir: &std::path::Path,
+    command: Cmd,
+    envs: Envs,
+    args: Args,
+) -> impl Future<Output = anyhow::Error> + 'static
+where
+    Cmd: AsRef<OsStr>,
+    Arg: AsRef<OsStr>,
+    Env: AsRef<OsStr>,
+    Envs: IntoIterator<Item = (Env, Env)>,
+    Args: IntoIterator<Item = Arg>,
+{
+    let mut cmd = tokio::process::Command::new(command.as_ref());
+    cmd.envs(envs);
+    cmd.args(args);
+    cmd.kill_on_drop(true);
+    let command: String = command.as_ref().to_string_lossy().to_string();
+    let stderr_fp = dir.join("stderr.txt");
+    let stdout_fp = dir.join("stdout.txt");
+    async move {
+        let stderr_file = match std::fs::File::create_new(stderr_fp.clone()) {
+            Ok(stderr_file) => stderr_file,
             Err(err) => {
-                let stderr_hex = hex::encode(err.into_bytes());
-                Err(anyhow::anyhow!(
-                    "Command failed with stderr hex: `{stderr_hex}`"
-                ))
+                let err = anyhow::Error::from(err);
+                return anyhow::anyhow!(
+                    "error creating stderr file for command `{command}`: `{err:#}`"
+                );
+            }
+        };
+        cmd.stderr(std::process::Stdio::from(stderr_file));
+        let stdout_file = match std::fs::File::create_new(stdout_fp.clone()) {
+            Ok(stdout_file) => stdout_file,
+            Err(err) => {
+                let err = anyhow::Error::from(err);
+                return anyhow::anyhow!(
+                    "error creating stdout file for command `{command}`: `{err:#}`"
+                );
+            }
+        };
+        cmd.stdout(std::process::Stdio::from(stdout_file));
+        let mut cmd = match cmd.spawn() {
+            Ok(cmd) => cmd,
+            Err(err) => {
+                let err = anyhow::Error::from(err);
+                return anyhow::anyhow!("Spawning command {command} failed: `{err:#}`");
+            }
+        };
+        let exit_status = match cmd.wait().await {
+            Ok(exit_status) => exit_status,
+            Err(err) => {
+                let err = anyhow::Error::from(err);
+                return anyhow::anyhow!("Command {command} failed: `{err:#}`",);
+            }
+        };
+        tracing::error!(
+            message = format!(
+                "Command `{command}` exited with status `{}`!",
+                exit_status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or("unknown".to_owned())
+            ),
+            stdout_file = stdout_fp.to_string_lossy().to_string(),
+            stderr_file = stderr_fp.to_string_lossy().to_string(),
+        );
+
+        let mut msg = format!("Command `{command}` finished: `{}`", exit_status,);
+
+        if let Ok(stderr) = std::fs::read_to_string(stderr_fp).map(|s| s.trim().to_owned()) {
+            if !stderr.is_empty() {
+                msg.push_str(&format!("\nStderr:\n{}", stderr));
             }
         }
+        anyhow::anyhow!(msg)
     }
 }
 
@@ -147,7 +254,7 @@ impl Electrs {
             .into_iter()
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-        bins::await_command_with_args(&self.db_dir, self.path.clone(), envs, args)
+        await_command_with_args(&self.db_dir, self.path.clone(), envs, args)
     }
 }
 
@@ -208,25 +315,6 @@ impl Enforcer {
             .into_iter()
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-        bins::await_command_with_args(&self.data_dir, self.path.clone(), envs, args)
-    }
-}
-
-/// Cleans up a temporary directory, but without fatally exiting on errors that
-/// aren't that bad.
-pub fn drop_temp_dir(dir: &TempDir) -> Result<(), std::io::Error> {
-    match dir.cleanup() {
-        Ok(_) => Ok(()),
-        // Seeing intermittent errors on CI related to deleting non-empty
-        // directories. Temporary directories get properly wiped at some
-        // point anyways.
-        Err(err)
-            if err.kind() == std::io::ErrorKind::DirectoryNotEmpty
-                || err.raw_os_error() == Some(39) =>
-        {
-            tracing::error!("unable to delete temp dir: {err} (chugging along!)");
-            Ok(())
-        }
-        err => err,
+        await_command_with_args(&self.data_dir, self.path.clone(), envs, args)
     }
 }
