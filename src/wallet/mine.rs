@@ -484,8 +484,8 @@ impl Wallet {
             // Execute the download script
             let mut command = Command::new("bash");
 
-            // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/b0caf39789de5df3e1463887bd46e8cacbb0cc77
-            const BITCOIN_PATCHED_COMMIT: &str = "b0caf39789de5df3e1463887bd46e8cacbb0cc77";
+            // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/01010b132a616f151c461a4318ab86c274395912
+            const BITCOIN_PATCHED_COMMIT: &str = "01010b132a616f151c461a4318ab86c274395912";
             command.current_dir(&dir)
                 .arg("-c")
                 .arg(format!(r#"
