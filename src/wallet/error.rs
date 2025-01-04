@@ -64,7 +64,7 @@ pub enum WalletInitialization {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-#[error("Bitcoin Core RPC error `{method}")]
+#[error("Bitcoin Core RPC error `{method}`: {error}")]
 #[diagnostic(code(bitcoin_core_rpc_error))]
 pub struct BitcoinCoreRPC {
     pub method: String,
