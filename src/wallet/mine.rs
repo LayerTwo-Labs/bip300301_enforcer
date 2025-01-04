@@ -25,12 +25,15 @@ use futures::{
     stream::{self, FusedStream},
     StreamExt as _,
 };
-use miette::{miette, IntoDiagnostic as _};
+use miette::{miette, IntoDiagnostic as _, Result};
 
 use crate::{
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{Ctip, SidechainAck, SidechainNumber, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
-    wallet::{error, Wallet},
+    wallet::{
+        error::{self, BitcoinCoreRPC, TonicStatusExt},
+        Wallet,
+    },
 };
 
 fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
@@ -382,11 +385,10 @@ impl Wallet {
         }
     }
 
-    pub async fn verify_can_mine(&self, blocks: u32) -> Result<(), tonic::Status> {
+    pub async fn verify_can_mine(&self, blocks: u32) -> Result<()> {
         if blocks == 0 {
-            return Err(tonic::Status::invalid_argument(
-                "must provide a positive number of blocks",
-            ));
+            return tonic::Status::invalid_argument("must provide a positive number of blocks")
+                .into_diagnostic();
         }
 
         match self.validator().network() {
@@ -402,17 +404,19 @@ impl Wallet {
             // and verify that the corresponding address is in the mainchain wallet.
             bitcoin::Network::Signet => (),
             _ => {
-                return Err(tonic::Status::failed_precondition(format!(
+                return tonic::Status::failed_precondition(format!(
                     "cannot generate blocks on {}",
                     self.validator().network(),
-                )))
+                ))
+                .into_diagnostic();
             }
         }
 
         if blocks > 1 {
-            return Err(tonic::Status::invalid_argument(
+            return tonic::Status::invalid_argument(
                 "cannot generate more than one block on signet",
-            ));
+            )
+            .into_diagnostic();
         }
 
         let template = self
@@ -423,38 +427,47 @@ impl Wallet {
                 capabilities: HashSet::new(),
             })
             .await
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(|err| BitcoinCoreRPC {
+                method: "getblocktemplate".to_string(),
+                error: err,
+            })?;
 
         let Some(signet_challenge) = template.signet_challenge else {
-            return Err(tonic::Status::internal("no signet challenge found"));
+            return Err(miette!("no signet challenge found"));
         };
 
         let address =
             bitcoin::Address::from_script(&signet_challenge, bitcoin::params::Params::SIGNET)
-                .map_err(|err| {
-                    tonic::Status::internal(format!("unable to parse signet challenge: {err}"))
-                })?;
+                .map_err(|err| miette!("unable to parse signet challenge: {err}"))?;
 
         let address_info = self
             .inner
             .main_client
             .get_address_info(address.as_unchecked())
             .await
-            .map_err(|err| tonic::Status::internal(format!("unable to get address info: {err}")))?;
+            .map_err(|err| error::BitcoinCoreRPC {
+                method: "getaddressinfo".to_string(),
+                error: err,
+            })?;
 
         if !address_info.is_mine {
-            return Err(tonic::Status::internal(format!(
+            return tonic::Status::failed_precondition(format!(
                 "signet challenge address {} is not in mainchain wallet",
                 address,
-            )));
+            ))
+            .into_diagnostic();
         }
 
         tracing::debug!("verified ability to solve signet challenge");
 
-        self.check_has_binary("python3")?;
+        if let Err(status) = self.check_has_binary("python3") {
+            return status.into_diagnostic();
+        }
         tracing::debug!("verified existence of python3");
 
-        self.check_has_binary("bitcoin-util")?;
+        if let Err(status) = self.check_has_binary("bitcoin-util") {
+            return status.into_diagnostic();
+        }
         tracing::debug!("verified existence of bitcoin-util");
 
         Ok(())
@@ -540,7 +553,10 @@ impl Wallet {
             return Err(miette!("Signet miner failed: {}", stderr));
         }
 
-        tracing::info!("Generated signet block!");
+        tracing::debug!(
+            "Signet miner output: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
@@ -550,6 +566,8 @@ impl Wallet {
             .getbestblockhash()
             .await
             .map_err(|err| miette!("Failed to fetch most recent block hash: {err}"))?;
+
+        tracing::info!("Generated signet block: {}", block_hash);
 
         Ok(block_hash)
     }
