@@ -11,6 +11,7 @@ use futures::{
     stream::{BoxStream, FusedStream},
     StreamExt as _,
 };
+use jsonrpsee::core as jsonrpsee;
 use miette::IntoDiagnostic as _;
 use thiserror::Error;
 use tonic::{Request, Response, Status};
@@ -115,6 +116,23 @@ impl IntoStatus for miette::Report {
                 }
             };
             return tonic::Status::new(code, format!("{self:#}"));
+        }
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::BitcoinCoreRPC>() {
+            // https://github.com/bitcoin/bitcoin/blob/4036ee3f2bf587775e6f388a9bfd2bcdb8fecf1d/src/rpc/protocol.h#L80
+            const BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND: i32 = -18;
+            match &source.error {
+                jsonrpsee::client::error::Error::Call(err)
+                    if err.code() == BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND
+                        && err.message().contains("No wallet is loaded") =>
+                {
+                    // Try being super precise here. Easy to confuse the /enforcer/ wallet not being
+                    // loaded with the /bitcoin core/ wallet not being loaded.
+                    return tonic::Status::failed_precondition(
+                        "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet <wallet-name>`)",
+                    );
+                }
+                _ => (),
+            }
         }
 
         tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
