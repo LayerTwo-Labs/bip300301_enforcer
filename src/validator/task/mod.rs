@@ -700,7 +700,7 @@ pub(in crate::validator) fn connect_block(
         }
         .into()
     }));
-    tracing::debug!("Handled coinbase tx, handling other txs...");
+    tracing::trace!("Handled coinbase tx, handling other txs...");
     let block_hash = block.header.block_hash();
     let prev_mainchain_block_hash = block.header.prev_blockhash;
 
@@ -721,18 +721,18 @@ pub(in crate::validator) fn connect_block(
             None => (),
         }
     }
-    tracing::debug!("Handled block txs");
+    tracing::trace!("Handled block txs");
     let block_info = BlockInfo {
         bmm_commitments: accepted_bmm_requests.into_iter().collect(),
         coinbase_txid: coinbase.compute_txid(),
         events,
     };
-    tracing::debug!("Storing block info");
+    tracing::trace!("Storing block info");
     let () = dbs
         .block_hashes
         .put_block_info(rwtxn, &block_hash, &block_info)
         .map_err(error::ConnectBlock::PutBlockInfo)?;
-    tracing::debug!("Stored block info");
+    tracing::trace!("Stored block info");
     // TODO: invalidate block
     let current_tip_cumulative_work: Option<Work> = 'work: {
         let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? else {
