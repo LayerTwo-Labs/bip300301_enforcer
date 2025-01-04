@@ -20,6 +20,28 @@ pub struct ElectrumError {
     message: String,
 }
 
+// Add new TonicStatusError type
+#[derive(Debug, Diagnostic, Error, Clone)]
+#[error("tonic error: {0}")]
+pub struct TonicStatusError(#[from] tonic::Status);
+
+impl TonicStatusError {
+    pub fn into_status(&self) -> tonic::Status {
+        self.0.clone()
+    }
+}
+
+// Add extension trait for tonic::Status
+pub trait TonicStatusExt {
+    fn into_diagnostic(self) -> miette::Result<()>;
+}
+
+impl TonicStatusExt for tonic::Status {
+    fn into_diagnostic(self) -> miette::Result<()> {
+        Err(TonicStatusError(self).into())
+    }
+}
+
 impl From<ElectrumError> for tonic::Status {
     fn from(error: ElectrumError) -> Self {
         let code = match error.code {

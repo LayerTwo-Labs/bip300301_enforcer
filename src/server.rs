@@ -117,6 +117,11 @@ impl IntoStatus for miette::Report {
             };
             return tonic::Status::new(code, format!("{self:#}"));
         }
+
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::TonicStatusError>() {
+            return source.into_status();
+        }
+
         if let Some(source) = self.downcast_ref::<crate::wallet::error::BitcoinCoreRPC>() {
             // https://github.com/bitcoin/bitcoin/blob/4036ee3f2bf587775e6f388a9bfd2bcdb8fecf1d/src/rpc/protocol.h#L80
             const BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND: i32 = -18;
@@ -754,7 +759,9 @@ impl WalletService for crate::wallet::Wallet {
         } = request.into_inner();
         let count = blocks.unwrap_or(1);
 
-        self.verify_can_mine(count).await?;
+        self.verify_can_mine(count)
+            .await
+            .map_err(|err| err.into_status())?;
 
         tracing::info!("generate blocks: verified ability to mine");
 
