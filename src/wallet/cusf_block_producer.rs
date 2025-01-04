@@ -85,13 +85,28 @@ impl CusfBlockProducer for Wallet {
                 "CUSF block producer: extending initial block template with coinbase TX outputs"
             );
 
+            tracing::debug!(
+                "Initial coinbase txouts pre-extension: {:?}",
+                template.coinbase_txouts
+            );
+
             let mainchain_tip = self.validator().get_mainchain_tip()?;
             let wit = wit.map(CoinbaseTxouts);
             let coinbase_txouts: &mut Vec<_> = wit.in_mut().to_right(&mut template.coinbase_txouts);
 
+            tracing::debug!(
+                "Initial coinbase txouts post-type magic: {:?}",
+                coinbase_txouts
+            );
+
             const ACK_ALL_PROPOSALS: bool = true;
             coinbase_txouts
                 .extend(self.generate_coinbase_txouts(ACK_ALL_PROPOSALS, mainchain_tip)?);
+
+            tracing::debug!(
+                "Initial coinbase txouts post-extension: {:?}",
+                coinbase_txouts
+            );
         }
         // FIXME: set prefix txns and exclude mempool txs
         Ok(template)
