@@ -475,7 +475,7 @@ dependencies = [
 [[package]]
 name = "bip300301"
 version = "0.1.1"
-source = "git+https://github.com/Ash-L2L/bip300301.git?rev=269eea374a5f8ca829b7aa775d4711483759a391#269eea374a5f8ca829b7aa775d4711483759a391"
+source = "git+https://github.com/Ash-L2L/bip300301.git?rev=d2c92e06d9640c793288d2995bdc8d81fee4221f#d2c92e06d9640c793288d2995bdc8d81fee4221f"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -988,8 +988,8 @@ dependencies = [
 
 [[package]]
 name = "cusf-enforcer-mempool"
-version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=645453d65ec27d762cfea8bb67f5c13d76058a8b#645453d65ec27d762cfea8bb67f5c13d76058a8b"
+version = "0.1.1"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=fde6735d2edbd4be409e1acecc347a7b739b197a#fde6735d2edbd4be409e1acecc347a7b739b197a"
 dependencies = [
  "anyhow",
  "async-trait",

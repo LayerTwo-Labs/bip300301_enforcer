@@ -1,6 +1,6 @@
 [package]
 name = "bip300301_enforcer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -61,11 +61,11 @@ zeromq = "0.4.1"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "269eea374a5f8ca829b7aa775d4711483759a391"
+rev = "d2c92e06d9640c793288d2995bdc8d81fee4221f"
 
 [dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "645453d65ec27d762cfea8bb67f5c13d76058a8b"
+rev = "fde6735d2edbd4be409e1acecc347a7b739b197a"
 
 [dependencies.educe]
 version = "0.6.0"
