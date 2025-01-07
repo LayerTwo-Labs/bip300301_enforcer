@@ -68,6 +68,8 @@ type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
 type BdkWallet = bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>;
 
+type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
+
 struct WalletInner {
     main_client: HttpClient,
     validator: Validator,
@@ -76,11 +78,111 @@ struct WalletInner {
     bitcoin_wallet: RwLock<Option<BdkWallet>>,
     bitcoin_db: Mutex<file_store::Store<ChangeSet>>,
     db_connection: Mutex<rusqlite::Connection>,
-    bitcoin_blockchain: BdkElectrumClient<bdk_electrum::electrum_client::Client>,
+    electrum_client: ElectrumClient,
     last_sync: RwLock<Option<SystemTime>>,
 }
 
 impl WalletInner {
+    /// Initialize electrum client
+    fn init_electrum_client(config: &WalletConfig, network: Network) -> Result<ElectrumClient> {
+        let (default_host, default_port) = match network {
+            Network::Signet => ("drivechain.live", 50001),
+            Network::Regtest => ("127.0.0.1", 60401), // Default for romanz/electrs
+            default => return Err(miette!("unsupported network: {default}")),
+        };
+        let electrum_host = config
+            .electrum_host
+            .clone()
+            .unwrap_or(default_host.to_string());
+        let electrum_port = config.electrum_port.unwrap_or(default_port);
+        let electrum_url = format!("{}:{}", electrum_host, electrum_port);
+        tracing::debug!(%electrum_url, "creating electrum client");
+        // Apply a reasonably short timeout to prevent the wallet from hanging
+        let timeout = 5;
+        let config = electrum_client::ConfigBuilder::new()
+            .timeout(Some(timeout))
+            .build();
+        let electrum_client = electrum_client::Client::from_config(&electrum_url, config)
+            .map_err(|err| miette!("failed to create electrum client: {err:#}"))?;
+        // let features = electrum_client.server_features().into_diagnostic()?;
+        let header = electrum_client.block_header(0).into_diagnostic()?;
+        // Verify the Electrum server is on the same chain as we are.
+        if header.block_hash().as_byte_array() != network.chain_hash().as_bytes() {
+            return Err(miette!(
+                "Electrum server ({}) is not on the same chain as the wallet ({})",
+                header.block_hash(),
+                network.chain_hash(),
+            ));
+        }
+        Ok(BdkElectrumClient::new(electrum_client))
+    }
+
+    fn init_db_connection(data_dir: &Path) -> Result<rusqlite::Connection> {
+        use rusqlite_migration::{Migrations, M};
+        // 1️⃣ Define migrations
+        let migrations = Migrations::new(vec![
+            M::up(
+                "CREATE TABLE sidechain_proposals
+               (sidechain_number INTEGER NOT NULL,
+                data_hash BLOB NOT NULL,
+                data BLOB NOT NULL,
+                UNIQUE(sidechain_number, data_hash));",
+            ),
+            M::up(
+                "CREATE TABLE sidechain_acks
+               (number INTEGER NOT NULl,
+                data_hash BLOB NOT NULL,
+                UNIQUE(number, data_hash));",
+            ),
+            M::up(
+                "CREATE TABLE bundle_proposals
+               (sidechain_number INTEGER NOT NULL,
+                bundle_hash BLOB NOT NULL,
+                bundle_tx BLOB NOT NULL,
+                UNIQUE(sidechain_number, bundle_hash));",
+            ),
+            M::up(
+                "CREATE TABLE bundle_acks
+               (sidechain_number INTEGER NOT NULL,
+                bundle_hash BLOB NOT NULL,
+                UNIQUE(sidechain_number, bundle_hash));",
+            ),
+            M::up(
+                "CREATE TABLE bmm_requests
+                (sidechain_number INTEGER NOT NULL,
+                 prev_block_hash BLOB NOT NULL,
+                 side_block_hash BLOB NOT NULL,
+                 UNIQUE(sidechain_number, prev_block_hash));",
+            ),
+            M::up(
+                "CREATE TABLE wallet_seeds
+                (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 plaintext_mnemonic TEXT, 
+
+                 -- encryption values 
+                 initialization_vector BLOB, 
+                 ciphertext_mnemonic BLOB, 
+                 key_salt BLOB,
+
+                 -- boolean that indicates if the wallet uses a BIP39 passphrase
+                 needs_passphrase BOOLEAN NOT NULL DEFAULT FALSE, 
+
+                 -- timestamp of the creation of the seed
+                 creation_time DATETIME NOT NULL DEFAULT (DATETIME('now')) 
+                );",
+            ),
+        ]);
+
+        let db_name = "db.sqlite";
+        let path = data_dir.join(db_name);
+        let mut db_connection = Connection::open(path.clone()).into_diagnostic()?;
+        tracing::info!("Created database connection to {}", path.display());
+        migrations.to_latest(&mut db_connection).into_diagnostic()?;
+        tracing::debug!("Ran migrations on {}", path.display());
+        Ok(db_connection)
+    }
+
     fn initialize_wallet_from_mnemonic(
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
@@ -156,116 +258,9 @@ impl WalletInner {
         )
         .into_diagnostic()?;
 
-        let bitcoin_blockchain = {
-            let (default_host, default_port) = match network {
-                Network::Signet => ("drivechain.live", 50001),
-                Network::Regtest => ("127.0.0.1", 60401), // Default for romanz/electrs
-                default => return Err(miette!("unsupported network: {default}")),
-            };
+        let electrum_client = Self::init_electrum_client(config, network)?;
 
-            let electrum_host = config
-                .electrum_host
-                .clone()
-                .unwrap_or(default_host.to_string());
-            let electrum_port = config.electrum_port.unwrap_or(default_port);
-
-            let electrum_url = format!("{}:{}", electrum_host, electrum_port);
-
-            tracing::debug!("creating electrum client: {electrum_url}");
-
-            // Apply a reasonably short timeout to prevent the wallet from hanging
-            let timeout = 5;
-            let config = electrum_client::ConfigBuilder::new()
-                .timeout(Some(timeout))
-                .build();
-
-            let electrum_client = electrum_client::Client::from_config(&electrum_url, config)
-                .map_err(|err| miette!("failed to create electrum client: {err:#}"))?;
-
-            // let features = electrum_client.server_features().into_diagnostic()?;
-            let header = electrum_client.block_header(0).into_diagnostic()?;
-
-            // Verify the Electrum server is on the same chain as we are.
-            if header.block_hash().as_byte_array() != network.chain_hash().as_bytes() {
-                return Err(miette!(
-                    "Electrum server ({}) is not on the same chain as the wallet ({})",
-                    header.block_hash(),
-                    network.chain_hash(),
-                ));
-            }
-
-            BdkElectrumClient::new(electrum_client)
-        };
-
-        use rusqlite_migration::{Migrations, M};
-
-        let db_connection = {
-            // 1️⃣ Define migrations
-            let migrations = Migrations::new(vec![
-                M::up(
-                    "CREATE TABLE sidechain_proposals
-                   (sidechain_number INTEGER NOT NULL,
-                    data_hash BLOB NOT NULL,
-                    data BLOB NOT NULL,
-                    UNIQUE(sidechain_number, data_hash));",
-                ),
-                M::up(
-                    "CREATE TABLE sidechain_acks
-                   (number INTEGER NOT NULl,
-                    data_hash BLOB NOT NULL,
-                    UNIQUE(number, data_hash));",
-                ),
-                M::up(
-                    "CREATE TABLE bundle_proposals
-                   (sidechain_number INTEGER NOT NULL,
-                    bundle_hash BLOB NOT NULL,
-                    bundle_tx BLOB NOT NULL,
-                    UNIQUE(sidechain_number, bundle_hash));",
-                ),
-                M::up(
-                    "CREATE TABLE bundle_acks
-                   (sidechain_number INTEGER NOT NULL,
-                    bundle_hash BLOB NOT NULL,
-                    UNIQUE(sidechain_number, bundle_hash));",
-                ),
-                M::up(
-                    "CREATE TABLE bmm_requests
-                    (sidechain_number INTEGER NOT NULL,
-                     prev_block_hash BLOB NOT NULL,
-                     side_block_hash BLOB NOT NULL,
-                     UNIQUE(sidechain_number, prev_block_hash));",
-                ),
-                M::up(
-                    "CREATE TABLE wallet_seeds
-                    (
-                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                     plaintext_mnemonic TEXT, 
-
-                     -- encryption values 
-                     initialization_vector BLOB, 
-                     ciphertext_mnemonic BLOB, 
-                     key_salt BLOB,
-
-                     -- boolean that indicates if the wallet uses a BIP39 passphrase
-                     needs_passphrase BOOLEAN NOT NULL DEFAULT FALSE, 
-
-                     -- timestamp of the creation of the seed
-                     creation_time DATETIME NOT NULL DEFAULT (DATETIME('now')) 
-                    );",
-                ),
-            ]);
-
-            let db_name = "db.sqlite";
-            let path = data_dir.join(db_name);
-            let mut db_connection = Connection::open(path.clone()).into_diagnostic()?;
-
-            tracing::info!("Created database connection to {}", path.display());
-
-            migrations.to_latest(&mut db_connection).into_diagnostic()?;
-
-            tracing::debug!("Ran migrations on {}", path.display());
-            db_connection
-        };
+        let db_connection = Self::init_db_connection(data_dir)?;
 
         // If we:
         // 1. Already have an initialized wallet
@@ -297,7 +292,7 @@ impl WalletInner {
             bitcoin_wallet: RwLock::new(bitcoin_wallet),
             bitcoin_db: Mutex::new(wallet_database),
             db_connection: Mutex::new(db_connection),
-            bitcoin_blockchain,
+            electrum_client,
             last_sync: RwLock::new(None),
         })
     }
@@ -545,10 +540,10 @@ impl WalletInner {
                     WithdrawalBundleEventKind::Submitted => None,
                 });
         let () = self.delete_bundle_proposals(finalized_withdrawal_bundles)?;
-        let sidechain_proposals = block_info
+        let sidechain_proposal_ids = block_info
             .sidechain_proposals()
-            .map(|(_vout, proposal)| proposal.into());
-        let () = self.delete_pending_sidechain_proposals(sidechain_proposals)?;
+            .map(|(_vout, proposal)| proposal.compute_id());
+        let () = self.delete_pending_sidechain_proposals(sidechain_proposal_ids)?;
         Ok(())
     }
 
@@ -571,7 +566,7 @@ impl WalletInner {
         const FETCH_PREV_TXOUTS: bool = false;
 
         let update = self
-            .bitcoin_blockchain
+            .electrum_client
             .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
             .into_diagnostic()?;
 

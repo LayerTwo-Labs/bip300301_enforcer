@@ -46,7 +46,7 @@ fn handle_m1_propose_sidechain(
     proposal: SidechainProposal,
     proposal_height: u32,
 ) -> Result<Option<Sidechain>, error::HandleM1ProposeSidechain> {
-    let proposal_id: SidechainProposalId = (&proposal).into();
+    let proposal_id = proposal.compute_id();
     // FIXME: check that the proposal was made in an ancestor block
     if dbs
         .proposal_id_to_sidechain

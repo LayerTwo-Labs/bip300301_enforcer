@@ -105,6 +105,12 @@ pub enum DeserializeSidechainProposalError {
     MissingSidechainNumber,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SidechainProposalId {
+    pub sidechain_number: SidechainNumber,
+    pub description_hash: sha256d::Hash,
+}
+
 #[derive(Clone, Debug, Deserialize, Display, Eq, PartialEq, Serialize)]
 #[display(
     "{{ sidechain_number: {}, description: {description} }}",
@@ -113,6 +119,15 @@ pub enum DeserializeSidechainProposalError {
 pub struct SidechainProposal {
     pub sidechain_number: SidechainNumber,
     pub description: SidechainDescription,
+}
+
+impl SidechainProposal {
+    pub fn compute_id(&self) -> SidechainProposalId {
+        SidechainProposalId {
+            sidechain_number: self.sidechain_number,
+            description_hash: self.description.sha256d_hash(),
+        }
+    }
 }
 
 impl From<NonEmpty<u8>> for SidechainProposal {
@@ -255,21 +270,6 @@ impl TryFrom<&SidechainDescription> for SidechainDeclaration {
         // the entire input.
         assert!(input.is_empty(), "somehow ended up with trailing bytes");
         Ok(sidechain_declaration)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct SidechainProposalId {
-    pub sidechain_number: SidechainNumber,
-    pub description_hash: sha256d::Hash,
-}
-
-impl From<&SidechainProposal> for SidechainProposalId {
-    fn from(proposal: &SidechainProposal) -> Self {
-        Self {
-            sidechain_number: proposal.sidechain_number,
-            description_hash: proposal.description.sha256d_hash(),
-        }
     }
 }
 
