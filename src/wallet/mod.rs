@@ -104,7 +104,6 @@ impl WalletInner {
             .build();
         let electrum_client = electrum_client::Client::from_config(&electrum_url, config)
             .map_err(|err| miette!("failed to create electrum client: {err:#}"))?;
-        // let features = electrum_client.server_features().into_diagnostic()?;
         let header = electrum_client.block_header(0).into_diagnostic()?;
         // Verify the Electrum server is on the same chain as we are.
         if header.block_hash().as_byte_array() != network.chain_hash().as_bytes() {
