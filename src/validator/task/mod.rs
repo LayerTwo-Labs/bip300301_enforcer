@@ -12,7 +12,6 @@ use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
 use futures::TryFutureExt as _;
 use hashlink::LinkedHashSet;
-use heed::RoTxn;
 
 use crate::{
     messages::{
@@ -779,15 +778,6 @@ pub(in crate::validator) fn disconnect_block(
     let event = Event::DisconnectBlock { block_hash };
     let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     Ok(())
-}
-
-fn _is_transaction_valid(
-    _rotxn: &mut RoTxn,
-    _dbs: &Dbs,
-    _transaction: &Transaction,
-) -> Result<(), error::TxValidation> {
-    // FIXME: implement
-    todo!();
 }
 
 async fn sync_headers<MainClient>(

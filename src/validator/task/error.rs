@@ -225,9 +225,6 @@ pub(in crate::validator) enum ConnectBlock {
 #[derive(Debug, Error)]
 pub(in crate::validator) enum DisconnectBlock {}
 
-#[derive(Debug, Error)]
-pub(in crate::validator::task) enum TxValidation {}
-
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
     #[error(transparent)]
