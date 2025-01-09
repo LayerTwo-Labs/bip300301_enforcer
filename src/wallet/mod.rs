@@ -1333,9 +1333,9 @@ impl Wallet {
 
         tracing::info!("Signed send transaction: `{txid}`",);
 
-        tracing::debug!("Serialized send transaction: {}", {
+        tracing::debug!("Serialized send transaction: {} bytes", {
             let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
-            hex::encode(tx_bytes)
+            tx_bytes.len()
         });
 
         self.broadcast_transaction(tx).await?;
