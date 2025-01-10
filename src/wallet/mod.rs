@@ -1277,7 +1277,7 @@ impl Wallet {
     )]
     async fn create_send_psbt(
         &self,
-        destinations: HashMap<bitcoin::Address, u64>,
+        destinations: HashMap<bitcoin::Address, Amount>,
         fee_policy: Option<crate::types::FeePolicy>,
         op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
@@ -1291,7 +1291,7 @@ impl Wallet {
 
             // Add outputs for each destination address
             for (address, value) in destinations {
-                builder.add_recipient(address.script_pubkey(), Amount::from_sat(value));
+                builder.add_recipient(address.script_pubkey(), value);
             }
 
             match fee_policy {
@@ -1313,7 +1313,7 @@ impl Wallet {
     /// Creates a transaction, sends it, and returns the TXID.
     pub async fn send_wallet_transaction(
         &self,
-        destinations: HashMap<bdk_wallet::bitcoin::Address, u64>,
+        destinations: HashMap<bdk_wallet::bitcoin::Address, Amount>,
         fee_policy: Option<crate::types::FeePolicy>,
         op_return_message: Option<Vec<u8>>,
     ) -> Result<bitcoin::Txid> {

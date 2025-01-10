@@ -1066,16 +1066,34 @@ impl WalletService for crate::wallet::Wallet {
         let destinations_validated = destinations
             .iter()
             .map(|(address, amount)| {
-                bdk_wallet::bitcoin::Address::from_str(address)
+                use bdk_wallet::IsDust;
+
+                let address = bdk_wallet::bitcoin::Address::from_str(address)
                     .map_err(|e| {
                         tonic::Status::invalid_argument(format!(
                             "could not parse bitcoin address: {}",
                             e
                         ))
                     })
-                    .map(|addr| (addr.assume_checked(), *amount))
+                    .map(|addr| addr.assume_checked())?;
+
+                let amount = Amount::from_sat(*amount);
+                if amount.is_dust(&address.script_pubkey()) {
+                    return Err(tonic::Status::invalid_argument(format!(
+                        "amount is below dust limit: {} to {}",
+                        amount, address
+                    )));
+                }
+
+                Ok((address, amount))
             })
-            .collect::<Result<HashMap<bdk_wallet::bitcoin::Address, u64>, tonic::Status>>()?;
+            .collect::<Result<HashMap<bdk_wallet::bitcoin::Address, Amount>, tonic::Status>>()?;
+
+        if destinations_validated.is_empty() && op_return_message.is_none() {
+            return Err(tonic::Status::invalid_argument(
+                "no destinations or op_return_message provided",
+            ));
+        }
 
         let fee_policy = fee_rate
             .map(|fee_rate| fee_rate.try_into())
