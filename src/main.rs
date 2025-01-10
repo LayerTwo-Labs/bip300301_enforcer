@@ -75,10 +75,12 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
             .parse(directives_str)
             .into_diagnostic()?
     };
-    let stdout_layer = tracing_subscriber::fmt::layer()
+    let mut stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_file(true)
         .with_line_number(true);
+    let is_terminal = std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
+    stdout_layer.set_ansi(is_terminal);
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
         .with(stdout_layer);
