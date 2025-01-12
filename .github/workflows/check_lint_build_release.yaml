@@ -176,10 +176,11 @@ jobs:
         run: |
           APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
-          APP_FILENAME="bip300301_enforcer-${APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          APP_DIRNAME="bip300301_enforcer-${APP_VERSION}-${{ matrix.name }}"
+          APP_FILENAME="${APP_DIRNAME}}${{ matrix.binary-suffix }}"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
-
+          echo "APP_DIRNAME=$APP_DIRNAME" >> "$GITHUB_ENV"
       - run: |
           mkdir release
           cp target/${{ matrix.name }}/release/bip300301_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
@@ -187,7 +188,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_FILENAME }}
+          name: ${{ env.APP_DIRNAME }}
           if-no-files-found: error
           path: |
             release/${{ env.APP_FILENAME }}
