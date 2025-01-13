@@ -79,6 +79,29 @@ pub struct NodeRpcConfig {
 }
 
 #[derive(Clone, Args)]
+pub struct MiningConfig {
+    /// Path to the Python mining script from Bitcoin Core. If not set,
+    /// the mining script is downloaded from GitHub.
+    #[arg(long = "signet-miner-script-path")]
+    pub signet_mining_script_path: Option<PathBuf>,
+
+    /// If true, the signet mining script is run with `--debug` flag.
+    #[arg(long = "signet-miner-script-debug", default_value_t = false)]
+    pub signet_mining_script_debug: bool,
+
+    /// Path to the Bitcoin Core `bitcoin-util` binary. Defaults to `bitcoin-util`.
+    #[arg(
+        long = "signet-miner-bitcoin-util-path",
+        default_value = "bitcoin-util"
+    )]
+    pub bitcoin_util_path: PathBuf,
+
+    /// Path to the Bitcoin Core `bitcoin-cli` binary. Defaults to `bitcoin-cli`.
+    #[arg(long = "signet-miner-bitcoin-cli-path", default_value = "bitcoin-cli")]
+    pub bitcoin_cli_path: PathBuf,
+}
+
+#[derive(Clone, Args)]
 pub struct WalletConfig {
     /// If no host is provided, a default value is used based on the network
     /// we're on.
@@ -136,4 +159,20 @@ pub struct Config {
     pub serve_grpc_addr: SocketAddr,
     #[command(flatten)]
     pub wallet_opts: WalletConfig,
+
+    #[command(flatten)]
+    pub mining_opts: MiningConfig,
+}
+
+impl Config {
+    pub fn bitcoin_cli(&self, network: bitcoin::Network) -> crate::bins::BitcoinCli {
+        crate::bins::BitcoinCli {
+            path: self.mining_opts.bitcoin_cli_path.clone(),
+            network,
+            rpc_user: self.node_rpc_opts.user.clone().unwrap_or_default(),
+            rpc_pass: self.node_rpc_opts.pass.clone().unwrap_or_default(),
+            rpc_port: self.node_rpc_opts.addr.port(),
+            rpc_wallet: None,
+        }
+    }
 }

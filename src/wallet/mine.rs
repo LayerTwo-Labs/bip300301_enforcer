@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -28,6 +29,8 @@ use futures::{
 use miette::{miette, IntoDiagnostic as _, Result};
 
 use crate::{
+    bins,
+    bins::CommandExt as _,
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{Ctip, SidechainAck, SidechainNumber, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
     wallet::{
@@ -371,7 +374,9 @@ impl Wallet {
         Ok(block_hash)
     }
 
-    fn check_has_binary(&self, binary: &str) -> Result<(), tonic::Status> {
+    fn check_has_binary(&self, binary: &Path) -> Result<(), tonic::Status> {
+        let binary = &binary.to_string_lossy().to_string();
+
         // Python is needed for executing the signet miner script.
         let check = std::process::Command::new("which")
             .arg(binary)
@@ -465,46 +470,57 @@ impl Wallet {
 
         tracing::debug!("verified ability to solve signet challenge");
 
-        if let Err(status) = self.check_has_binary("python3") {
-            return status.into_diagnostic();
-        }
-        tracing::debug!("verified existence of python3");
+        self.check_has_binary(&PathBuf::from("python3"))
+            .into_diagnostic()?;
+        tracing::debug!("verified existence of `python3`");
 
-        if let Err(status) = self.check_has_binary("bitcoin-util") {
-            return status.into_diagnostic();
-        }
-        tracing::debug!("verified existence of bitcoin-util");
+        self.check_has_binary(&self.config.mining_opts.bitcoin_cli_path)
+            .into_diagnostic()?;
+        tracing::debug!("verified existence of `bitcoin-cli`");
+
+        self.check_has_binary(&self.config.mining_opts.bitcoin_util_path)
+            .into_diagnostic()?;
+        tracing::debug!("verified existence of `bitcoin-util`");
 
         Ok(())
     }
 
-    // Generate a single signet block, through shelling out to the signet miner script
-    // from Bitcoin Core. We assume that validation of this request has
-    // happened elsewhere (i.e. that we're on signet, and have signing
-    // capabilities).
-    async fn generate_signet_block(&self, address: &str) -> miette::Result<BlockHash> {
-        use std::process::Command;
-        // Store the signet miner in a temporary directory that's consistent across
-        // invocations. This means we'll only need to download it once for every time
-        // we start the process.
-        let dir = std::env::temp_dir().join(format!("signet-miner-{}", std::process::id()));
+    async fn get_signet_miner_path(&self) -> Result<PathBuf, miette::Error> {
+        if let Some(signet_mining_script_path) =
+            self.config.mining_opts.signet_mining_script_path.clone()
+        {
+            tracing::debug!(
+                "Using custom signet miner script path: {}",
+                signet_mining_script_path.display()
+            );
+            Ok(signet_mining_script_path)
+        } else {
+            tracing::debug!("Using default signet miner script path");
 
-        // Check if signet miner directory exists
-        if !std::path::Path::new(&dir).exists() {
-            tracing::info!("Signet miner not found, downloading into {}", dir.display());
+            // Store the signet miner in a temporary directory that's consistent across
+            // invocations. This means we'll only need to download it once for every time
+            // we start the process.
+            let dir = std::env::temp_dir().join(format!("signet-miner-{}", std::process::id()));
 
-            Command::new("mkdir")
-                .args(["-p", &dir.to_string_lossy()])
-                .output()
-                .into_diagnostic()
-                .map_err(|e| miette!("Failed to create signet miner directory: {}", e))?;
+            // Check if signet miner directory exists
+            if !std::path::Path::new(&dir).exists() {
+                use tokio::process::Command;
+                tracing::info!("Signet miner not found, downloading into {}", dir.display());
 
-            // Execute the download script
-            let mut command = Command::new("bash");
+                let mut command = Command::new("mkdir");
+                command.args(["-p", &dir.to_string_lossy()]);
+                command
+                    .run_utf8()
+                    .await
+                    .map_err(|err| miette!("Failed to create signet miner directory: {err:#}"))?;
 
-            // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/01010b132a616f151c461a4318ab86c274395912
-            const BITCOIN_PATCHED_COMMIT: &str = "01010b132a616f151c461a4318ab86c274395912";
-            command.current_dir(&dir)
+                // Execute the download script
+                let mut command = Command::new("bash");
+
+                // branch: ash/signet-miner
+                // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/01010b132a616f151c461a4318ab86c274395912
+                const BITCOIN_PATCHED_COMMIT: &str = "01010b132a616f151c461a4318ab86c274395912";
+                command.current_dir(&dir)
                 .arg("-c")
                 .arg(format!(r#"
                     git clone -n --depth=1 --filter=tree:0 \
@@ -514,54 +530,46 @@ impl Wallet {
                     git checkout {BITCOIN_PATCHED_COMMIT}
                 "#));
 
-            let output = command
-                .output()
-                .into_diagnostic()
-                .map_err(|e| miette!("Failed to download signet miner: {}", e))?;
+                let _output = command
+                    .run_utf8()
+                    .await
+                    .into_diagnostic()
+                    .map_err(|err| miette!("Failed to download signet miner: {err:#}"))?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(miette!("Failed to download signet miner: {}", stderr));
+                tracing::info!("Successfully downloaded signet miner");
+            } else {
+                tracing::info!("Signet miner already exists");
             }
 
-            tracing::info!("Successfully downloaded signet miner");
-        } else {
-            tracing::info!("Signet miner already exists");
+            Ok(dir.join("signet-miner/contrib/signet/miner"))
         }
+    }
 
-        let mut command = Command::new("python3");
-        command
-            .current_dir(&dir)
-            .arg("signet-miner/contrib/signet/miner")
-            .args(["--cli", "bitcoin-cli"])
-            .arg("generate")
-            .args(["--address", address])
-            .args(["--grind-cmd", "bitcoin-util grind"])
-            .args(["--block-interval", "60"])
-            .arg("--coinbasetxn") // enable coinbasetxn capability for getblocktemplate
-            .arg(format!(
-                "--getblocktemplate-command=bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
-                self.serve_rpc_addr.ip(),
-                self.serve_rpc_addr.port()
-            ))
-            .arg("--min-nbits");
+    // Generate a single signet block, through shelling out to the signet miner script
+    // from Bitcoin Core. We assume that validation of this request has
+    // happened elsewhere (i.e. that we're on signet, and have signing
+    // capabilities).
+    async fn generate_signet_block(&self) -> miette::Result<BlockHash> {
+        let mining_script_path = self.get_signet_miner_path().await?;
+        let miner = bins::SignetMiner {
+            path: mining_script_path,
+            bitcoin_cli: self.config.bitcoin_cli(bitcoin::Network::Signet),
+            bitcoin_util: self.config.mining_opts.bitcoin_util_path.clone(),
+            block_interval: Some(Duration::from_secs(60)),
+            nbits: None,
+            getblocktemplate_command: Some(format!(
+                "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
+                self.config.serve_rpc_addr.ip(),
+                self.config.serve_rpc_addr.port()
+            )),
+            coinbasetxn: true,
+            debug: self.config.mining_opts.signet_mining_script_debug,
+        };
 
-        tracing::info!("Running signet miner: {:?}", command);
+        let mut command = miner.command("generate", vec![]);
+        tracing::debug!("Running signet miner: {:?}", command);
 
-        let output = command
-            .output()
-            .into_diagnostic()
-            .map_err(|e| miette!("Failed to execute signet miner: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(miette!("Signet miner failed: {}", stderr));
-        }
-
-        tracing::debug!(
-            "Signet miner output: {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
+        command.run_utf8().await.into_diagnostic()?;
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
@@ -583,10 +591,7 @@ impl Wallet {
             return Err(miette!("Validator is not synced"));
         };
         if self.inner.validator.network() == Network::Signet {
-            let address = self.get_new_address()?;
-            return self
-                .generate_signet_block(address.to_string().as_str())
-                .await;
+            return self.generate_signet_block().await;
         }
         let coinbase_outputs = self.generate_coinbase_txouts(ack_all_proposals, mainchain_tip)?;
         let transactions = self.select_block_txs().await?;

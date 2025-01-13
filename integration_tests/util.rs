@@ -55,43 +55,6 @@ impl<Fut> AsyncTrial<Fut> {
     }
 }
 
-pub trait CommandExt {
-    async fn run(&mut self) -> anyhow::Result<Vec<u8>>;
-
-    // capture as utf8
-    async fn run_utf8(&mut self) -> anyhow::Result<String> {
-        let bytes = self.run().await?;
-        let mut res = String::from_utf8(bytes)?;
-        res = res.trim().to_owned();
-        Ok(res)
-    }
-}
-
-impl CommandExt for tokio::process::Command {
-    async fn run(&mut self) -> anyhow::Result<Vec<u8>> {
-        let output = self.output().await?;
-        if output.status.success() {
-            if !output.stderr.is_empty() {
-                let stderr = match String::from_utf8(output.stderr) {
-                    Ok(err_msgs) => err_msgs,
-                    Err(err) => hex::encode(err.into_bytes()),
-                };
-                tracing::warn!("Command ran successfully, but stderr was not empty: `{stderr}`")
-            }
-            return Ok(output.stdout);
-        }
-        match String::from_utf8(output.stderr) {
-            Ok(err_msg) => Err(anyhow::anyhow!("Command failed with error: `{err_msg}`")),
-            Err(err) => {
-                let stderr_hex = hex::encode(err.into_bytes());
-                Err(anyhow::anyhow!(
-                    "Command failed with stderr hex: `{stderr_hex}`"
-                ))
-            }
-        }
-    }
-}
-
 /// Wrapper around `JoinHandle` that aborts the task on drop
 #[repr(transparent)]
 pub struct AbortOnDrop<T>(JoinHandle<T>);
@@ -213,93 +176,6 @@ where
         err_handler(err)
     })
     .into()
-}
-
-#[derive(Clone, Debug)]
-pub struct BitcoinCli {
-    pub path: PathBuf,
-    pub network: bitcoin::Network,
-    pub rpc_user: String,
-    pub rpc_pass: String,
-    pub rpc_port: u16,
-    pub rpc_wallet: Option<String>,
-}
-
-impl BitcoinCli {
-    fn default_args(&self) -> Vec<String> {
-        let mut res = vec![
-            format!("-chain={}", self.network.to_core_arg()),
-            format!("-rpcuser={}", self.rpc_user),
-            format!("-rpcpassword={}", self.rpc_pass),
-            format!("-rpcport={}", self.rpc_port),
-        ];
-        if let Some(rpc_wallet) = &self.rpc_wallet {
-            res.push(format!("-rpcwallet={rpc_wallet}"))
-        }
-        res
-    }
-
-    pub fn command<CmdArg, Subcommand, SubcommandArg, CmdArgs, SubcommandArgs>(
-        &self,
-        command_args: CmdArgs,
-        subcommand: Subcommand,
-        subcommand_args: SubcommandArgs,
-    ) -> tokio::process::Command
-    where
-        CmdArg: AsRef<OsStr>,
-        Subcommand: AsRef<OsStr>,
-        SubcommandArg: AsRef<OsStr>,
-        CmdArgs: IntoIterator<Item = CmdArg>,
-        SubcommandArgs: IntoIterator<Item = SubcommandArg>,
-    {
-        let mut command = tokio::process::Command::new(&self.path);
-        command.args(self.default_args());
-        command.args(command_args);
-        command.arg(subcommand);
-        command.args(subcommand_args);
-        command
-    }
-
-    /// Display without chain argument.
-    /// Required by signet miner
-    fn display_without_chain(&self) -> String {
-        let mut command_fragments = vec![format!("{}", self.path.display())];
-        command_fragments.extend(
-            self.default_args()
-                .into_iter()
-                .filter(|arg| !arg.starts_with("-chain=")),
-        );
-        command_fragments.join(" ")
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct BitcoinUtil {
-    pub path: PathBuf,
-    pub network: bitcoin::Network,
-}
-
-impl BitcoinUtil {
-    pub fn command<CmdArg, Subcommand, SubcommandArg, CmdArgs, SubcommandArgs>(
-        &self,
-        command_args: CmdArgs,
-        subcommand: Subcommand,
-        subcommand_args: SubcommandArgs,
-    ) -> tokio::process::Command
-    where
-        CmdArg: AsRef<OsStr>,
-        Subcommand: AsRef<OsStr>,
-        SubcommandArg: AsRef<OsStr>,
-        CmdArgs: IntoIterator<Item = CmdArg>,
-        SubcommandArgs: IntoIterator<Item = SubcommandArg>,
-    {
-        let mut command = tokio::process::Command::new(&self.path);
-        command.arg(format!("-chain={}", self.network.to_core_arg()));
-        command.args(command_args);
-        command.arg(subcommand);
-        command.args(subcommand_args);
-        command
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -490,56 +366,5 @@ impl Enforcer {
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
         spawn_command_with_args(&self.data_dir, self.path.clone(), envs, args, err_handler)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SignetMiner {
-    pub path: PathBuf,
-    pub bitcoin_cli: BitcoinCli,
-    pub bitcoin_util: PathBuf,
-    pub nbits: Option<[u8; 4]>,
-    pub getblocktemplate_command: Option<String>,
-    /// Only used with custom getblocktemplate command
-    pub coinbasetxn: bool,
-}
-
-impl SignetMiner {
-    pub fn command(
-        &self,
-        command_args: Vec<&str>,
-        subcommand: &str,
-        subcommand_args: Vec<&str>,
-    ) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(&self.path);
-        command.arg(format!(
-            "--cli={}",
-            self.bitcoin_cli.display_without_chain()
-        ));
-
-        // Unless debug is explicitly set, we want to run in quiet mode. Otherwise
-        // we'll get lots of error logs about stderr not being empty.
-        if !command_args.contains(&"--debug") {
-            command.arg("--quiet");
-        }
-        command.args(command_args);
-        let generate = subcommand == "generate";
-        command.arg(subcommand);
-        command.arg(format!("--grind-cmd={} grind", self.bitcoin_util.display()));
-        if generate {
-            if let Some(nbits) = self.nbits {
-                command.arg(format!("--nbits={}", hex::encode(nbits)));
-            }
-            if let Some(getblocktemplate_command) = &self.getblocktemplate_command {
-                command.arg(format!(
-                    "--getblocktemplate-command={getblocktemplate_command}"
-                ));
-                if self.coinbasetxn {
-                    command.arg("--coinbasetxn");
-                }
-            }
-        }
-        command.args(subcommand_args);
-        command
     }
 }
