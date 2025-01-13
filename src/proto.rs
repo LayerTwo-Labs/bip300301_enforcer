@@ -723,12 +723,16 @@ pub mod mainchain {
 
     impl From<crate::types::Sidechain> for get_sidechains_response::SidechainInfo {
         fn from(sidechain: crate::types::Sidechain) -> Self {
+            use crate::types::SidechainDeclaration;
+            let decl = SidechainDeclaration::try_from(&sidechain.proposal.description).ok();
+
             Self {
                 sidechain_number: Some(sidechain.proposal.sidechain_number.0 as u32),
                 description: Some(ConsensusHex::encode(&sidechain.proposal.description.0)),
                 vote_count: Some(sidechain.status.vote_count as u32),
                 proposal_height: Some(sidechain.status.proposal_height),
                 activation_height: sidechain.status.activation_height,
+                declaration: decl.map(|decl| decl.into()),
             }
         }
     }
