@@ -518,8 +518,8 @@ impl Wallet {
                 let mut command = Command::new("bash");
 
                 // branch: ash/signet-miner
-                // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/01010b132a616f151c461a4318ab86c274395912
-                const BITCOIN_PATCHED_COMMIT: &str = "01010b132a616f151c461a4318ab86c274395912";
+                // https://github.com/LayerTwo-Labs/bitcoin-patched/commit/7f5883c36adf44f3917890ff82c38aed37103e4f
+                const BITCOIN_PATCHED_COMMIT: &str = "7f5883c36adf44f3917890ff82c38aed37103e4f";
                 command.current_dir(&dir)
                 .arg("-c")
                 .arg(format!(r#"
