@@ -133,7 +133,7 @@ impl IntoStatus for miette::Report {
                     // Try being super precise here. Easy to confuse the /enforcer/ wallet not being
                     // loaded with the /bitcoin core/ wallet not being loaded.
                     return tonic::Status::failed_precondition(
-                        "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet <wallet-name>`)",
+                        "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet WALLET_NAME`)",
                     );
                 }
                 _ => (),

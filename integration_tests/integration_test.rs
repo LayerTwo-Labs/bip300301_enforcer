@@ -12,6 +12,8 @@ use temp_dir::TempDir;
 use tokio::time::sleep;
 
 use bip300301_enforcer_lib::{
+    bins,
+    bins::CommandExt as _,
     proto::{
         self,
         common::{ConsensusHex, Hex, ReverseHex},
@@ -29,7 +31,7 @@ use bip300301_enforcer_lib::{
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument;
 
-use crate::util::{self, AsyncTrial, BinPaths, CommandExt as _};
+use crate::util::{self, AsyncTrial, BinPaths};
 
 #[derive(strum::Display, Clone, Copy, Debug)]
 enum Network {
@@ -90,7 +92,7 @@ impl SignetSetup {
     }
 
     /// Initialize bitcoind wallet
-    async fn init_bitcoind_wallet(&self, bitcoin_cli: &util::BitcoinCli) -> anyhow::Result<()> {
+    async fn init_bitcoind_wallet(&self, bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
         tracing::debug!("Importing secret key");
         let mining_descriptor = {
             use miniscript;
@@ -145,9 +147,9 @@ impl SignetSetup {
         Ok(())
     }
 
-    async fn calibrate_signet(&self, signet_miner: &mut util::SignetMiner) -> anyhow::Result<()> {
+    async fn calibrate_signet(&self, signet_miner: &mut bins::SignetMiner) -> anyhow::Result<()> {
         let calibrate_output = signet_miner
-            .command(vec![], "calibrate", vec!["--seconds=1"])
+            .command("calibrate", vec!["--seconds=1"])
             .run_utf8()
             .await?;
         let nbits_hex = {
@@ -173,7 +175,7 @@ impl SignetSetup {
 
     /// Configure signet miner to use enforcer's GBT server
     fn configure_miner(
-        signet_miner: &mut util::SignetMiner,
+        signet_miner: &mut bins::SignetMiner,
         out_dir: &TempDir,
         enforcer: &util::Enforcer,
     ) -> anyhow::Result<()> {
@@ -269,12 +271,12 @@ type Transport = tonic::transport::Channel;
 
 struct PostSetup {
     network: Network,
-    bitcoin_cli: util::BitcoinCli,
-    bitcoin_util: util::BitcoinUtil,
+    bitcoin_cli: bins::BitcoinCli,
+    bitcoin_util: bins::BitcoinUtil,
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
     tasks: Tasks,
-    signet_miner: util::SignetMiner,
+    signet_miner: bins::SignetMiner,
     gbt_client: jsonrpsee::http_client::HttpClient,
     validator_service_client: ValidatorServiceClient<Transport>,
     wallet_service_client: WalletServiceClient<Transport>,
@@ -341,7 +343,7 @@ async fn setup(
     // wait for startup
     sleep(std::time::Duration::from_secs(1)).await;
     // Create a wallet and initialize it
-    let mut bitcoin_cli = util::BitcoinCli {
+    let mut bitcoin_cli = bins::BitcoinCli {
         path: bin_paths.bitcoin_cli.clone(),
         network: bitcoind.network,
         rpc_user: bitcoind.rpc_user.clone(),
@@ -383,10 +385,12 @@ async fn setup(
             .parse::<Address<_>>()?
             .require_network(bitcoind.network)?
     };
-    let mut signet_miner = util::SignetMiner {
+    let mut signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner.clone(),
         bitcoin_cli: bitcoin_cli.clone(),
         bitcoin_util: bin_paths.bitcoin_util.clone(),
+        block_interval: None,
+        debug: false,
         nbits: None,
         getblocktemplate_command: None,
         coinbasetxn: false,
@@ -409,11 +413,7 @@ async fn setup(
         }
         Network::Signet => {
             let mine_output = signet_miner
-                .command(
-                    vec![],
-                    "generate",
-                    vec!["--address", &mining_address.to_string()],
-                )
+                .command("generate", vec!["--address", &mining_address.to_string()])
                 .run_utf8()
                 .await?;
             tracing::debug!("Checking that block was mined successfully");
@@ -493,7 +493,7 @@ async fn setup(
     Ok(PostSetup {
         network,
         bitcoin_cli,
-        bitcoin_util: util::BitcoinUtil {
+        bitcoin_util: bins::BitcoinUtil {
             path: bin_paths.bitcoin_util.clone(),
             network: bitcoind.network,
         },
@@ -511,12 +511,11 @@ async fn setup(
 
 /// Mine a single signet block
 async fn mine_single_signet(
-    signet_miner: &util::SignetMiner,
+    signet_miner: &bins::SignetMiner,
     mining_address: &Address,
 ) -> anyhow::Result<()> {
     let _mine_output = signet_miner
         .command(
-            vec![],
             "generate",
             vec![
                 "--address",
