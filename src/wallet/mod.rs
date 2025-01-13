@@ -79,6 +79,7 @@ struct WalletInner {
     db_connection: Mutex<rusqlite::Connection>,
     electrum_client: ElectrumClient,
     last_sync: RwLock<Option<SystemTime>>,
+    config: Config,
 }
 
 impl WalletInner {
@@ -234,7 +235,7 @@ impl WalletInner {
 
     fn new(
         data_dir: &Path,
-        config: &WalletConfig,
+        config: &Config,
         main_client: HttpClient,
         validator: Validator,
     ) -> Result<Self, miette::Report> {
@@ -256,7 +257,7 @@ impl WalletInner {
         )
         .into_diagnostic()?;
 
-        let electrum_client = Self::init_electrum_client(config, network)?;
+        let electrum_client = Self::init_electrum_client(&config.wallet_opts, network)?;
 
         let db_connection = Self::init_db_connection(data_dir)?;
 
@@ -285,6 +286,7 @@ impl WalletInner {
         );
 
         Ok(Self {
+            config: config.clone(),
             main_client,
             validator,
             bitcoin_wallet: RwLock::new(bitcoin_wallet),
@@ -625,7 +627,6 @@ impl Drop for Task {
 /// Cheap to clone, since it uses Arc internally
 #[derive(Clone)]
 pub struct Wallet {
-    config: Config,
     inner: Arc<WalletInner>,
     _task: Arc<Task>,
 }
@@ -637,15 +638,9 @@ impl Wallet {
         main_client: HttpClient,
         validator: Validator,
     ) -> Result<Self> {
-        let inner = Arc::new(WalletInner::new(
-            data_dir,
-            &config.wallet_opts,
-            main_client,
-            validator,
-        )?);
+        let inner = Arc::new(WalletInner::new(data_dir, config, main_client, validator)?);
         let task = Task::new(inner.clone());
         Ok(Self {
-            config: config.clone(),
             inner,
             _task: Arc::new(task),
         })
