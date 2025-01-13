@@ -474,11 +474,11 @@ impl Wallet {
             .into_diagnostic()?;
         tracing::debug!("verified existence of `python3`");
 
-        self.check_has_binary(&self.config.mining_opts.bitcoin_cli_path)
+        self.check_has_binary(&self.inner.config.mining_opts.bitcoin_cli_path)
             .into_diagnostic()?;
         tracing::debug!("verified existence of `bitcoin-cli`");
 
-        self.check_has_binary(&self.config.mining_opts.bitcoin_util_path)
+        self.check_has_binary(&self.inner.config.mining_opts.bitcoin_util_path)
             .into_diagnostic()?;
         tracing::debug!("verified existence of `bitcoin-util`");
 
@@ -486,8 +486,12 @@ impl Wallet {
     }
 
     async fn get_signet_miner_path(&self) -> Result<PathBuf, miette::Error> {
-        if let Some(signet_mining_script_path) =
-            self.config.mining_opts.signet_mining_script_path.clone()
+        if let Some(signet_mining_script_path) = self
+            .inner
+            .config
+            .mining_opts
+            .signet_mining_script_path
+            .clone()
         {
             tracing::debug!(
                 "Using custom signet miner script path: {}",
@@ -553,17 +557,17 @@ impl Wallet {
         let mining_script_path = self.get_signet_miner_path().await?;
         let miner = bins::SignetMiner {
             path: mining_script_path,
-            bitcoin_cli: self.config.bitcoin_cli(bitcoin::Network::Signet),
-            bitcoin_util: self.config.mining_opts.bitcoin_util_path.clone(),
+            bitcoin_cli: self.inner.config.bitcoin_cli(bitcoin::Network::Signet),
+            bitcoin_util: self.inner.config.mining_opts.bitcoin_util_path.clone(),
             block_interval: Some(Duration::from_secs(60)),
             nbits: None,
             getblocktemplate_command: Some(format!(
                 "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
-                self.config.serve_rpc_addr.ip(),
-                self.config.serve_rpc_addr.port()
+                self.inner.config.serve_rpc_addr.ip(),
+                self.inner.config.serve_rpc_addr.port()
             )),
             coinbasetxn: true,
-            debug: self.config.mining_opts.signet_mining_script_debug,
+            debug: self.inner.config.mining_opts.signet_mining_script_debug,
         };
 
         let mut command = miner.command("generate", vec![]);
