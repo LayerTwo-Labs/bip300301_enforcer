@@ -1,9 +1,9 @@
-use std::{future::Future, net::SocketAddr};
+use std::{future::Future, net::SocketAddr, sync::Arc};
 
 use bip300301::MainClient;
 use clap::Parser;
 use either::Either;
-use futures::{FutureExt as _, TryFutureExt as _};
+use futures::TryFutureExt as _;
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::{signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
@@ -129,14 +129,14 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
     builder
         .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
         .serve(addr)
-        .map_err(|err| miette!("error in grpc server: {err:#}"))
+        .map_err(|err| miette!("serve gRPC at `{addr}`: {err:#}"))
         .await
 }
 
 async fn spawn_gbt_server(
     server: cusf_enforcer_mempool::server::Server<Wallet>,
     serve_addr: SocketAddr,
-) -> anyhow::Result<jsonrpsee::server::ServerHandle> {
+) -> miette::Result<jsonrpsee::server::ServerHandle> {
     let rpc_server = server.into_rpc();
 
     tracing::info!(
@@ -152,7 +152,8 @@ async fn spawn_gbt_server(
     use cusf_enforcer_mempool::server::RpcServer;
     let handle = jsonrpsee::server::Server::builder()
         .build(serve_addr)
-        .await?
+        .await
+        .map_err(|err| miette!("initialize JSON-RPC server at `{serve_addr}`: {err:#}"))?
         .start(rpc_server);
     Ok(handle)
 }
@@ -164,14 +165,15 @@ async fn run_gbt_server(
     sample_block_template: bip300301::client::BlockTemplate,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
     serve_addr: SocketAddr,
-) -> anyhow::Result<()> {
+) -> miette::Result<()> {
     let gbt_server = cusf_enforcer_mempool::server::Server::new(
         mining_reward_address.script_pubkey(),
         mempool,
         network,
         network_info,
         sample_block_template,
-    )?;
+    )
+    .into_diagnostic()?;
     let gbt_server_handle = spawn_gbt_server(gbt_server, serve_addr).await?;
     let () = gbt_server_handle.stopped().await;
     Ok(())
@@ -181,7 +183,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     node_zmq_addr_sequence: &str,
-    err_tx: futures::channel::oneshot::Sender<anyhow::Error>,
+    err_tx: tokio::sync::broadcast::Sender<Arc<miette::Report>>,
     f: F,
 ) where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
@@ -199,8 +201,8 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         {
             Ok(res) => res,
             Err(err) => {
-                let err = anyhow::anyhow!("mempool sync error: {err:#}");
-                let _send_err: Result<(), _> = err_tx.send(err);
+                let err = miette::miette!("mempool: initial sync error: {err:#}");
+                let _unused = err_tx.send(Arc::new(err));
                 return;
             }
         };
@@ -211,9 +213,9 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         tx_cache,
         rpc_client,
         sequence_stream,
-        |err| async {
-            let err = anyhow::Error::from(err);
-            let _send_err: Result<(), _> = err_tx.send(err);
+        |err| async move {
+            let err = miette::miette!("mempool: task sync error: {err:#}");
+            let _unused = err_tx.send(Arc::new(err));
         },
     );
     f(mempool).await
@@ -226,23 +228,30 @@ fn task(
     network: bitcoin::Network,
 ) -> Result<(
     JoinHandle<()>,
-    futures::channel::oneshot::Receiver<anyhow::Error>,
+    tokio::sync::broadcast::Receiver<Arc<miette::Report>>,
 )> {
-    let (err_tx, err_rx) = futures::channel::oneshot::channel();
-    let _grpc_server_task: JoinHandle<()> = spawn(
-        run_grpc_server(enforcer.clone(), cli.serve_grpc_addr)
-            .unwrap_or_else(|err| tracing::error!("grpc server error: {err:#}")),
-    );
+    let (err_tx, err_rx) = tokio::sync::broadcast::channel::<Arc<miette::Report>>(1);
+
+    let _grpc_server_task: JoinHandle<()> = spawn({
+        let err_tx = err_tx.clone();
+        run_grpc_server(enforcer.clone(), cli.serve_grpc_addr).unwrap_or_else(move |err| {
+            let _unused = err_tx.send(Arc::new(err));
+        })
+    });
+
     let res = match (cli.enable_mempool, enforcer) {
-        (false, enforcer) => cusf_enforcer_mempool::cusf_enforcer::spawn_task(
-            enforcer,
-            mainchain_client,
-            cli.node_zmq_addr_sequence,
-            |err| async {
-                let err = anyhow::Error::from(err);
-                let _send_err: Result<(), _> = err_tx.send(err);
-            },
-        ),
+        (false, enforcer) => {
+            let err_tx = err_tx.clone();
+            cusf_enforcer_mempool::cusf_enforcer::spawn_task(
+                enforcer,
+                mainchain_client,
+                cli.node_zmq_addr_sequence,
+                |err| async move {
+                    let err = miette::miette!("CUSF enforcer task w/o mempool: {err:#}");
+                    let _unused = err_tx.send(Arc::new(err));
+                },
+            )
+        }
         (true, Either::Left(validator)) => spawn(async move {
             tracing::info!("mempool sync task w/validator: starting");
             mempool_task(
@@ -305,7 +314,7 @@ fn task(
                         .await
                         {
                             Ok(()) => (),
-                            Err(err) => tracing::error!("{err:#}"),
+                            Err(err) => tracing::error!("run JSON-RPC server: {err:#}"),
                         }
                     },
                 )
@@ -384,30 +393,39 @@ async fn main() -> Result<()> {
         Either::Left(validator)
     };
 
-    let (_task, err_rx) = task(enforcer.clone(), cli, mainchain_client, info.chain)?;
+    let (_task, mut err_rx) = task(enforcer.clone(), cli, mainchain_client, info.chain)?;
 
-    match futures::future::select(err_rx, ctrl_c().boxed()).await {
-        futures::future::Either::Left((Ok(err), _ctrl_c_handler)) => {
-            tracing::error!("{err:#}")
+    let result: Result<(), miette::Report> = tokio::select! {
+        receiver = err_rx.recv() => {
+            match receiver {
+                Ok(err) => {
+                    tracing::error!("Received error:{err:#}");
+                    Err(miette!(err))
+                }
+                Err(err) => {
+                    tracing::error!("Unable to receive error from: {err:#}");
+                    Err(miette!("Unable to receive error: {err:#}"))
+                }
+            }
         }
-        futures::future::Either::Left((
-            Err(futures::channel::oneshot::Canceled),
-            _ctrl_c_handler,
-        )) => {
-            tracing::info!("Shutting down due to validator error")
+        signal = ctrl_c() => {
+            match signal {
+                Ok(()) => {
+                    tracing::info!("Shutting down due to process interruption");
+                    Err(miette!("received interruption signal"))
+                }
+                Err(err) => {
+                    tracing::error!("Unable to receive interruption signal: {err:#}");
+                    Err(miette!("Unable to receive interruption signal: {err:#}"))
+                }
+            }
         }
-        futures::future::Either::Right((Ok(()), _err_rx)) => {
-            tracing::info!("Shutting down")
-        }
-        futures::future::Either::Right((Err(ctrl_c_err), _err_rx)) => {
-            tracing::error!("Shutting down due to error in ctrl-c handler: {ctrl_c_err:#}")
-        }
-    }
+    };
 
     if let Either::Right(wallet) = enforcer {
         tracing::debug!("shutdown: stopping wallet");
         wallet.shutdown().await;
     }
 
-    Ok(())
+    result
 }
