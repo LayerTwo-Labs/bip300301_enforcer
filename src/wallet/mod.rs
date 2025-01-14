@@ -33,7 +33,7 @@ use bitcoin::{
 use either::Either;
 use error::WalletInitialization;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{StreamExt as _, TryFutureExt as _};
+use futures::TryFutureExt as _;
 use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::{
@@ -45,7 +45,6 @@ use tokio::{
     task::{block_in_place, JoinHandle},
     time::interval,
 };
-use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     cli::{Config, WalletConfig},
@@ -80,6 +79,7 @@ struct WalletInner {
     electrum_client: ElectrumClient,
     last_sync: RwLock<Option<SystemTime>>,
     config: Config,
+    shutdown: tokio::sync::broadcast::Sender<()>,
 }
 
 impl WalletInner {
@@ -285,6 +285,8 @@ impl WalletInner {
             wallet_initialized = bitcoin_wallet.is_some()
         );
 
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+
         Ok(Self {
             config: config.clone(),
             main_client,
@@ -294,6 +296,7 @@ impl WalletInner {
             db_connection: Mutex::new(db_connection),
             electrum_client,
             last_sync: RwLock::new(None),
+            shutdown: shutdown_tx,
         })
     }
 
@@ -600,11 +603,23 @@ impl Task {
             SYNC_INTERVAL
         );
 
-        let mut interval_stream = IntervalStream::new(interval(SYNC_INTERVAL));
-        while let Some(_instant) = interval_stream.next().await {
-            let () = block_in_place(|| wallet.sync())?;
+        let mut shutdown = wallet.shutdown.subscribe();
+        let mut interval = interval(SYNC_INTERVAL);
+        loop {
+            tokio::select! {
+                biased;  // Prioritize shutdown
+
+                _ = shutdown.recv() => {
+                    tracing::info!("wallet sync task: shutting down");
+                    return Ok(());
+                }
+                _ = interval.tick() => {
+                    if let Err(err) = block_in_place(|| wallet.sync()) {
+                        tracing::error!("wallet sync error: {err:#}");
+                    }
+                }
+            }
         }
-        Ok(())
     }
 
     fn new(wallet: Arc<WalletInner>) -> Self {
@@ -1625,5 +1640,9 @@ impl Wallet {
         password: Option<&str>,
     ) -> Result<(), miette::Report> {
         self.inner.create_new_wallet(mnemonic, password)
+    }
+
+    pub async fn shutdown(&self) {
+        let _ = self.inner.shutdown.send(());
     }
 }

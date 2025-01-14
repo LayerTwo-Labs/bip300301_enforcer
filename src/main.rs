@@ -220,30 +220,14 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
 }
 
 fn task(
-    validator: Validator,
+    enforcer: Either<Validator, Wallet>,
     cli: cli::Config,
     mainchain_client: bip300301::jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
-    wallet_data_dir: &std::path::Path,
 ) -> Result<(
     JoinHandle<()>,
     futures::channel::oneshot::Receiver<anyhow::Error>,
 )> {
-    use either::Either;
-    let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
-        let wallet = Wallet::new(wallet_data_dir, &cli, mainchain_client.clone(), validator)?;
-
-        if !wallet.is_initialized() && cli.wallet_opts.auto_create {
-            tracing::info!("auto-creating new wallet");
-            let mnemonic = None;
-            let password = None;
-            wallet.create_wallet(mnemonic, password)?;
-        }
-
-        Either::Right(wallet)
-    } else {
-        Either::Left(validator)
-    };
     let (err_tx, err_rx) = futures::channel::oneshot::channel();
     let _grpc_server_task: JoinHandle<()> = spawn(
         run_grpc_server(enforcer.clone(), cli.serve_grpc_addr)
@@ -385,13 +369,22 @@ async fn main() -> Result<()> {
         .await
         .into_diagnostic()?;
 
-    let (_task, err_rx) = task(
-        validator,
-        cli,
-        mainchain_client,
-        info.chain,
-        &wallet_data_dir,
-    )?;
+    let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
+        let wallet = Wallet::new(&wallet_data_dir, &cli, mainchain_client.clone(), validator)?;
+
+        if !wallet.is_initialized() && cli.wallet_opts.auto_create {
+            tracing::info!("auto-creating new wallet");
+            let mnemonic = None;
+            let password = None;
+            wallet.create_wallet(mnemonic, password)?;
+        }
+
+        Either::Right(wallet)
+    } else {
+        Either::Left(validator)
+    };
+
+    let (_task, err_rx) = task(enforcer.clone(), cli, mainchain_client, info.chain)?;
 
     match futures::future::select(err_rx, ctrl_c().boxed()).await {
         futures::future::Either::Left((Ok(err), _ctrl_c_handler)) => {
@@ -410,5 +403,11 @@ async fn main() -> Result<()> {
             tracing::error!("Shutting down due to error in ctrl-c handler: {ctrl_c_err:#}")
         }
     }
+
+    if let Either::Right(wallet) = enforcer {
+        tracing::debug!("shutdown: stopping wallet");
+        wallet.shutdown().await;
+    }
+
     Ok(())
 }
