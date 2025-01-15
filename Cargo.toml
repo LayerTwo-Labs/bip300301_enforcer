@@ -1,6 +1,6 @@
 [package]
 name = "bip300301_enforcer"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -65,7 +65,7 @@ rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
 
 [dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "52ea0c294fbd8cdc1ecfb4b009016e772248c7bd"
+rev = "83097d008f2832979ee8793b031bdd33f0c6c88d"
 
 [dependencies.educe]
 version = "0.6.0"
