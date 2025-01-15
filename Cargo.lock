@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -986,8 +986,8 @@ dependencies = [
 
 [[package]]
 name = "cusf-enforcer-mempool"
-version = "0.1.2"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=52ea0c294fbd8cdc1ecfb4b009016e772248c7bd#52ea0c294fbd8cdc1ecfb4b009016e772248c7bd"
+version = "0.1.3"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=83097d008f2832979ee8793b031bdd33f0c6c88d#83097d008f2832979ee8793b031bdd33f0c6c88d"
 dependencies = [
  "anyhow",
  "async-trait",
