@@ -16,7 +16,7 @@
    txindex=1
    ```
 
-1. Rustc & Cargo, version 1.77.0 or higher. Installing via Rustup is
+1. Rustc & Cargo, version 1.78.0 or higher. Installing via Rustup is
    recommended.
 
 # Getting started
