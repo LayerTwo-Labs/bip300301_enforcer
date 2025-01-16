@@ -124,10 +124,27 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
         }
     };
 
+    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+
+    // Set all services to have the "serving" status.
+    // TODO: somehow expose the health reporter to the running services, and
+    // dynamically update if we're running into issues.
+    for service in [
+        ValidatorServiceServer::<Validator>::NAME,
+        WalletServiceServer::<Wallet>::NAME,
+        CryptoServiceServer::<server::CryptoServiceServer>::NAME,
+    ] {
+        tracing::debug!("Setting health status for service: {service}");
+        health_reporter
+            .set_service_status(service, tonic_health::ServingStatus::Serving)
+            .await;
+    }
+
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
     builder
         .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
+        .add_service(health_service)
         .serve(addr)
         .map_err(|err| miette!("serve gRPC at `{addr}`: {err:#}"))
         .await
