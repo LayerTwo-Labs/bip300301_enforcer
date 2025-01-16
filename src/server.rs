@@ -140,6 +140,10 @@ impl IntoStatus for miette::Report {
             }
         }
 
+        if let Some(source) = self.downcast_ref::<tonic::Status>() {
+            return source.clone();
+        }
+
         tracing::warn!(
             "Unable to convert miette::Report of type {} to a meaningful tonic::Status: {self:?}",
             std::any::type_name_of_val(&*self)
