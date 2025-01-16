@@ -21,6 +21,11 @@ RUN cd /tmp \
     && cp bitcoin-28.0/bin/bitcoin-util /bin/ \
     && rm -rf bitcoin-28.0 
 
+# Install grpc_health_probe, for usage in health checks
+RUN GRPC_HEALTH_PROBE_VERSION=v0.4.37 && \
+    curl -fsSL https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-amd64 -o /bin/grpc_health_probe && \
+    chmod +x /bin/grpc_health_probe
+
 COPY --from=builder /workspace/target/release/bip300301_enforcer /bin/
 
 # Verify we placed the binary in the right place, 
