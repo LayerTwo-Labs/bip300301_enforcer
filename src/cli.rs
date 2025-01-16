@@ -172,6 +172,7 @@ impl Config {
             rpc_user: self.node_rpc_opts.user.clone().unwrap_or_default(),
             rpc_pass: self.node_rpc_opts.pass.clone().unwrap_or_default(),
             rpc_port: self.node_rpc_opts.addr.port(),
+            rpc_host: self.node_rpc_opts.addr.ip().to_string(),
             rpc_wallet: None,
         }
     }
