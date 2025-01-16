@@ -328,6 +328,7 @@ async fn setup(
         rpc_user: "drivechain".to_owned(),
         rpc_pass: "integrationtesting".to_owned(),
         rpc_port: reserved_ports.bitcoind_rpc.port(),
+        rpc_host: "127.0.0.1".to_owned(),
         signet_challenge: signet_setup
             .as_ref()
             .map(|setup| setup.signet_challenge.clone()),
@@ -349,6 +350,7 @@ async fn setup(
         rpc_user: bitcoind.rpc_user.clone(),
         rpc_pass: bitcoind.rpc_pass.clone(),
         rpc_port: bitcoind.rpc_port,
+        rpc_host: bitcoind.rpc_host,
         rpc_wallet: None,
     };
     tracing::debug!("Creating wallet");

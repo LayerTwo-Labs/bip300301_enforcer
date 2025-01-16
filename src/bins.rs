@@ -58,6 +58,7 @@ pub struct BitcoinCli {
     pub rpc_user: String,
     pub rpc_pass: String,
     pub rpc_port: u16,
+    pub rpc_host: String,
     pub rpc_wallet: Option<String>,
 }
 
@@ -68,6 +69,7 @@ impl BitcoinCli {
             format!("-rpcuser={}", self.rpc_user),
             format!("-rpcpassword={}", self.rpc_pass),
             format!("-rpcport={}", self.rpc_port),
+            format!("-rpcconnect={}", self.rpc_host),
         ];
         if let Some(rpc_wallet) = &self.rpc_wallet {
             res.push(format!("-rpcwallet={rpc_wallet}"))

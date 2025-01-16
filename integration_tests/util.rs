@@ -190,6 +190,7 @@ pub struct Bitcoind {
     pub rpc_user: String,
     pub rpc_pass: String,
     pub rpc_port: u16,
+    pub rpc_host: String,
     pub signet_challenge: Option<bitcoin::ScriptBuf>,
     pub txindex: bool,
     pub zmq_sequence_port: u16,
