@@ -63,21 +63,3 @@ jobs:
           # prettier-ignore
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/bip300301_enforcer:latest
           cache-to: type=inline
-
-      - name: Find existing comment about built images
-        id: fc
-        uses: peter-evans/find-comment@v3
-        if: github.event_name == 'pull_request'
-        with:
-          body-includes: "Built Docker"
-          issue-number: ${{ github.event.pull_request.number }}
-
-      - name: Comment on pull request about built images
-        if: github.event_name == 'pull_request'
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          comment-id: ${{ steps.fc.outputs.comment-id }}
-          issue-number: ${{ github.event.pull_request.number }}
-          edit-mode: replace
-          body: |
-            Built Docker image(s): ${{ steps.meta.outputs.tags }}
