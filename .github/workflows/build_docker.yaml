@@ -14,7 +14,7 @@ jobs:
   #
   # Official GitHub docs on this: https://docs.github.com/en/actions/use-cases-and-examples/publishing-packages/publishing-docker-images
   build-push-docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large
     # needed to push to GHCR
     permissions:
       contents: read
