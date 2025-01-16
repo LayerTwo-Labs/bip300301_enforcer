@@ -140,7 +140,10 @@ impl IntoStatus for miette::Report {
             }
         }
 
-        tracing::warn!("Unable to convert miette::Report to a meaningful tonic::Status: {self:?}");
+        tracing::warn!(
+            "Unable to convert miette::Report of type {} to a meaningful tonic::Status: {self:?}",
+            std::any::type_name_of_val(&*self)
+        );
         tonic::Status::new(tonic::Code::Unknown, format!("{self:#}"))
     }
 }
