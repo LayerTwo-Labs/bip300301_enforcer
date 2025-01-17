@@ -146,6 +146,13 @@ pub struct Config {
     /// dependencies are only emitted if their level is `INFO` or lower.
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     pub log_level: tracing::Level,
+
+    /// File path to write logs to, in addition to stdout.
+    /// If none is provided, logs are written to `bip300301_enforcer.log`
+    /// in the data directory.
+    #[arg(long)]
+    pub log_file: Option<PathBuf>,
+
     #[command(flatten)]
     pub node_rpc_opts: NodeRpcConfig,
     /// Bitcoin node ZMQ endpoint for `sequence`
