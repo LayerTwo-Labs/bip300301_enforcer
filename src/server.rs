@@ -5,8 +5,9 @@ use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
     key::Secp256k1,
-    Amount, BlockHash, Transaction, TxOut,
+    Amount, BlockHash, OutPoint, Transaction, TxOut,
 };
+use fallible_iterator::{FallibleIterator as _, IteratorExt};
 use futures::{
     stream::{BoxStream, FusedStream},
     StreamExt as _,
@@ -18,7 +19,9 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     convert,
-    messages::{CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle},
+    messages::{
+        parse_op_drivechain, CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
+    },
     proto::{
         common::{ConsensusHex, Hex, ReverseHex},
         crypto::{
@@ -30,23 +33,25 @@ use crate::{
         mainchain::{
             create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
             get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo, server::ValidatorService,
-            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
-            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
-            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
-            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
-            CreateSidechainProposalRequest, CreateSidechainProposalResponse, CreateWalletRequest,
-            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
-            GetBalanceResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
-            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
-            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
-            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
-            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
-            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
-            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, ListTransactionsRequest,
-            ListTransactionsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, UnlockWalletRequest,
-            UnlockWalletResponse, WalletTransaction,
+            get_sidechains_response::SidechainInfo,
+            list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
+            server::ValidatorService, wallet_service_server::WalletService,
+            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
+            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
+            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
+            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
+            CreateSidechainProposalResponse, CreateWalletRequest, CreateWalletResponse,
+            GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
+            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
+            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
+            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
+            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
+            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
+            ListTransactionsRequest, ListTransactionsResponse, Network, SendTransactionRequest,
+            SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
+            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
         },
     },
     types::{BlindedM6, Event, SidechainNumber},
@@ -1065,10 +1070,82 @@ impl WalletService for crate::wallet::Wallet {
         Ok(tonic::Response::new(response))
     }
 
+    async fn list_sidechain_deposit_transactions(
+        &self,
+        request: tonic::Request<ListSidechainDepositTransactionsRequest>,
+    ) -> Result<tonic::Response<ListSidechainDepositTransactionsResponse>, tonic::Status> {
+        let ListSidechainDepositTransactionsRequest {} = request.into_inner();
+        let transactions = self
+            .list_wallet_transactions()
+            .await
+            .map_err(|err| err.into_status())?
+            .into_iter()
+            .map(Ok::<_, miette::Error>)
+            .transpose_into_fallible()
+            .filter_map(|bdk_wallet_tx| {
+                let Some(treasury_output) = bdk_wallet_tx.tx.output.first() else {
+                    return Ok(None);
+                };
+                let Ok((_, sidechain_number)) =
+                    parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
+                else {
+                    return Ok(None);
+                };
+                let treasury_outpoint = OutPoint {
+                    txid: bdk_wallet_tx.txid,
+                    vout: 0,
+                };
+                let spent_ctip = match self
+                    .validator()
+                    .try_get_ctip_value_seq(&treasury_outpoint)?
+                {
+                    Some((_, _, seq)) => {
+                        let spent_treasury_utxo = self
+                            .validator()
+                            .get_treasury_utxo(sidechain_number, seq - 1)?;
+                        Some(crate::types::Ctip {
+                            outpoint: spent_treasury_utxo.outpoint,
+                            value: spent_treasury_utxo.total_value,
+                        })
+                    }
+                    None => {
+                        // May be unconfirmed
+                        // check if current ctip in inputs
+                        match self.validator().try_get_ctip(sidechain_number)? {
+                            Some(ctip) => {
+                                if bdk_wallet_tx.tx.input.iter().any(|txin: &bitcoin::TxIn| {
+                                    txin.previous_output == ctip.outpoint
+                                }) {
+                                    Some(ctip)
+                                } else {
+                                    return Ok(None);
+                                }
+                            }
+                            None => None,
+                        }
+                    }
+                };
+                if let Some(spent_ctip) = spent_ctip {
+                    if spent_ctip.value > treasury_output.value {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(SidechainDepositTransaction {
+                    sidechain_number: Some(sidechain_number.0.into()),
+                    tx: Some(WalletTransaction::from(&bdk_wallet_tx)),
+                }))
+            })
+            .collect()
+            .map_err(|err| err.into_status())?;
+        let response = ListSidechainDepositTransactionsResponse { transactions };
+        Ok(tonic::Response::new(response))
+    }
+
     async fn list_transactions(
         &self,
-        _: tonic::Request<ListTransactionsRequest>,
+        request: tonic::Request<ListTransactionsRequest>,
     ) -> Result<tonic::Response<ListTransactionsResponse>, tonic::Status> {
+        let ListTransactionsRequest {} = request.into_inner();
         let transactions = self
             .list_wallet_transactions()
             .await

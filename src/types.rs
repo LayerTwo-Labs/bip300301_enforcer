@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::TryFromIntError};
+use std::{borrow::Cow, num::TryFromIntError, sync::Arc};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
@@ -9,7 +9,7 @@ use bitcoin::{
         OP_TRUE,
     },
     script::{Instruction, Instructions},
-    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Txid, Work,
+    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Transaction, Txid, Work,
 };
 use derive_more::derive::Display;
 use hashlink::LinkedHashMap;
@@ -397,6 +397,7 @@ pub enum Event {
 #[derive(Debug)]
 pub struct BDKWalletTransaction {
     pub txid: bitcoin::Txid,
+    pub tx: Arc<Transaction>,
     pub chain_position: ChainPosition<ConfirmationBlockTime>,
     pub fee: Amount,
     pub received: Amount,
