@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, time::Duration};
+use std::{future::Future, net::SocketAddr, path::Path, sync::Mutex, time::Duration};
 
 use bip300301::MainClient;
 use clap::Parser;
@@ -58,7 +58,7 @@ where
 }
 
 // Configure logger.
-fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
+fn set_tracing_subscriber(log_file: &Path, log_level: tracing::Level) -> miette::Result<()> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),
@@ -76,15 +76,32 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> miette::Result<()> {
             .parse(directives_str)
             .into_diagnostic()?
     };
+
+    // If no writer is provided (as here!), logs end up at stdout.
     let mut stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_file(true)
         .with_line_number(true);
     let is_terminal = std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
     stdout_layer.set_ansi(is_terminal);
+
+    let log_file_dir = log_file.parent().ok_or(miette!("log file has no parent"))?;
+    let log_file_name = log_file
+        .file_name()
+        .ok_or(miette!("log file has no name"))?;
+
+    let file_appender = tracing_appender::rolling::never(log_file_dir, log_file_name);
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(Mutex::new(file_appender))
+        .with_ansi(false)
+        .with_line_number(true);
+
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
-        .with(stdout_layer);
+        .with(stdout_layer)
+        .with(file_layer);
+
     tracing::subscriber::set_global_default(tracing_subscriber)
         .into_diagnostic()
         .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
@@ -377,11 +394,20 @@ fn task(
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = cli::Config::parse();
-    set_tracing_subscriber(cli.log_level)?;
+
+    // Sub-par location for the log file.
+    // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
+    let log_file = cli
+        .clone()
+        .log_file
+        .unwrap_or(cli.data_dir.join("bip300301_enforcer.log"));
+
+    set_tracing_subscriber(&log_file, cli.log_level)?;
 
     tracing::info!(
-        "starting up bip300301_enforcer with data directory {}",
-        cli.data_dir.display()
+        data_dir = %cli.data_dir.display(),
+        log_file = %log_file.display(),
+        "starting up bip300301_enforcer",
     );
 
     let mainchain_client =
