@@ -981,13 +981,12 @@ impl WalletService for crate::wallet::Wallet {
                     err,
                 )
             })?;
-        let address: Vec<u8> = address
-            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("address"))?
-            .decode_tonic::<CreateDepositTransactionRequest, _>("address")?;
+        let address: String =
+            address.ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("address"))?;
         if address.is_empty() {
             return Err(invalid_field_value::<CreateDepositTransactionRequest, _>(
                 "address",
-                &hex::encode(address),
+                &address,
                 Error::AddressMustBeNonEmpty,
             ));
         }

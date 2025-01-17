@@ -1111,7 +1111,7 @@ impl Wallet {
     pub async fn create_deposit(
         &self,
         sidechain_number: SidechainNumber,
-        sidechain_address: Vec<u8>,
+        sidechain_address: String,
         value: Amount,
         fee: Option<Amount>,
     ) -> Result<bitcoin::Txid> {
@@ -1135,10 +1135,11 @@ impl Wallet {
             op_drivechain_output.script_pubkey.to_asm_string(),
         );
 
-        let sidechain_address_data = bdk_wallet::bitcoin::script::PushBytesBuf::try_from(
-            sidechain_address,
-        )
-        .map_err(|err| miette!("failed to convert sidechain address to PushBytesBuf: {err:#}"))?;
+        let sidechain_address_data =
+            bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address.into_bytes())
+                .map_err(|err| {
+                    miette!("failed to convert sidechain address to PushBytesBuf: {err:#}")
+                })?;
 
         let psbt = self
             .create_deposit_psbt(

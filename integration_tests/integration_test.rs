@@ -906,7 +906,7 @@ async fn deposit(post_setup: &mut PostSetup, mining_mode: MiningMode) -> anyhow:
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
             sidechain_id: Some(0),
-            address: Some(Hex::encode(&[69; 32])),
+            address: Some("sidechain address".to_owned()),
             value_sats: Some(DEPOSIT_AMOUNT_SATS),
             fee_sats: Some(DEPOSIT_FEE_SATS),
         })
