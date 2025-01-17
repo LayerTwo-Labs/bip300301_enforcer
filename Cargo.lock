@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
