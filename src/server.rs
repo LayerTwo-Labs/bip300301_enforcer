@@ -1042,12 +1042,17 @@ impl WalletService for crate::wallet::Wallet {
         &self,
         request: tonic::Request<GetBalanceRequest>,
     ) -> Result<tonic::Response<GetBalanceResponse>, tonic::Status> {
+        tracing::trace!("get_balance: starting");
         let GetBalanceRequest {} = request.into_inner();
+
+        tracing::trace!("get_balance: fetching from BDK wallet");
 
         let balance = self
             .get_wallet_balance()
             .await
             .map_err(|err| err.into_status())?;
+
+        tracing::trace!("get_balance: fetched balance: {:?}", balance);
 
         let response = GetBalanceResponse {
             confirmed_sats: balance.confirmed.to_sat(),
