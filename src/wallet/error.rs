@@ -84,14 +84,22 @@ pub enum WalletInitialization {
     #[diagnostic(code(wallet_invalid_password))]
     InvalidPassword,
 
-    // Strictly speaking not related to wallet initialization...
+    // These errors are strictly speaking not related to wallet initialization...
+
+    // The wallet could not be obtained for writing, because of a timeout
     #[error("acquiring write lock timed out")]
     #[diagnostic(code(wallet_write_lock_timed_out))]
     WriteLockTimedOut,
 
+    // The wallet could not be obtained for reading, because of a timeout
     #[error("acquiring read lock timed out")]
     #[diagnostic(code(wallet_read_lock_timed_out))]
     ReadLockTimedOut,
+
+    // The wallet is not synced to the blockchain
+    #[error("wallet not synced")]
+    #[diagnostic(code(wallet_not_synced))]
+    NotSynced,
 }
 
 #[derive(Debug, Diagnostic, Error)]
