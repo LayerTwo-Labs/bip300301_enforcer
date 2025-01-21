@@ -845,6 +845,7 @@ impl WalletService for crate::wallet::Wallet {
         request: tonic::Request<CreateBmmCriticalDataTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateBmmCriticalDataTransactionResponse>, tonic::Status>
     {
+        tracing::trace!("create_bmm_critical_data_transaction: starting");
         let CreateBmmCriticalDataTransactionRequest {
             sidechain_id,
             value_sats,
@@ -908,10 +909,17 @@ impl WalletService for crate::wallet::Wallet {
             .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("prev_bytes")
             .map(bdk_wallet::bitcoin::BlockHash::from_byte_array)?;
 
+        tracing::trace!("create_bmm_critical_data_transaction: validated request");
+
         let mainchain_tip = self
             .validator()
             .get_mainchain_tip()
             .map_err(|err| tonic::Status::from_error(err.into()))?;
+
+        tracing::debug!(
+            "create_bmm_critical_data_transaction: fetched mainchain tip: {:?}",
+            mainchain_tip
+        );
 
         // If the mainchain tip has progressed beyond this, the request is already
         // expired.
@@ -946,11 +954,11 @@ impl WalletService for crate::wallet::Wallet {
             })?;
 
         let txid = tx.compute_txid();
-        /*
-        self.broadcast_transaction(tx)
-            .await
-            .map_err(|err| err.into_status())?;
-        */
+
+        tracing::info!(
+            "create_bmm_critical_data_transaction: created transaction: {:?}",
+            txid
+        );
 
         let txid = convert::bdk_txid_to_bitcoin_txid(txid);
 

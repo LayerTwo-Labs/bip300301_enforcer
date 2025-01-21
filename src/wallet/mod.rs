@@ -1479,6 +1479,7 @@ impl Wallet {
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+        tracing::trace!("build_bmm_tx: constructing request message");
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
         let message = Self::bmm_request_message(
             sidechain_number,
@@ -1487,12 +1488,24 @@ impl Wallet {
         )?;
 
         let psbt = {
+            tracing::trace!("build_bmm_tx: acquiring wallet write lock");
             let mut wallet_write = self.inner.write_wallet()?;
+
+            tracing::trace!("build_bmm_tx: creating transaction builder");
             let mut builder = wallet_write.build_tx();
-            builder
-                .nlocktime(locktime)
-                .add_recipient(message, bid_amount);
-            builder.finish().into_diagnostic()?
+
+            tracing::trace!("build_bmm_tx: adding locktime {locktime}");
+            builder.nlocktime(locktime);
+
+            tracing::trace!("build_bmm_tx: adding recipient");
+            builder.add_recipient(message, bid_amount);
+
+            tracing::trace!("build_bmm_tx: finishing transaction builder");
+            let res = builder.finish().into_diagnostic()?;
+
+            tracing::trace!("build_bmm_tx: built transaction");
+
+            res
         };
 
         Ok(psbt)
@@ -1541,6 +1554,8 @@ impl Wallet {
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<Option<bdk_wallet::bitcoin::Transaction>> {
+        tracing::debug!("create_bmm_request: building transaction");
+
         let psbt = self.build_bmm_tx(
             sidechain_number,
             prev_mainchain_block_hash,
@@ -1549,16 +1564,16 @@ impl Wallet {
             locktime,
         )?;
         let tx = self.sign_transaction(psbt)?;
-        tracing::info!("BMM request psbt signed successfully");
+        tracing::info!("BMM request: PSBT signed successfully");
         if self.insert_new_bmm_request(
             sidechain_number,
             prev_mainchain_block_hash,
             sidechain_block_hash,
         )? {
-            tracing::info!("inserted new bmm request into db");
+            tracing::info!("BMM request: inserted new bmm request into db");
             Ok(Some(tx))
         } else {
-            tracing::warn!("Ignored BMM request; request exists with same sidechain slot and previous block hash");
+            tracing::warn!("BMM request: Ignored, request exists with same sidechain slot and previous block hash");
             Ok(None)
         }
     }
