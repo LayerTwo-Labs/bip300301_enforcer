@@ -303,9 +303,20 @@ impl WalletInner {
     }
 
     fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, WalletInitialization> {
+        let start = SystemTime::now();
+        tracing::trace!("wallet: acquiring write lock");
         let read_guard = self.bitcoin_wallet.write();
         RwLockWriteGuard::try_map(read_guard, |wallet| wallet.as_mut())
-            .map_err(|_| WalletInitialization::NotUnlocked)
+            .map_err(|err| {
+                tracing::trace!("wallet: failed to acquire write lock: {err:?}");
+                WalletInitialization::NotUnlocked
+            })
+            .inspect(|_| {
+                tracing::trace!(
+                    "wallet: acquired write lock successfully in {:?}",
+                    start.elapsed().unwrap_or_default()
+                )
+            })
     }
 
     pub fn create_new_wallet(
