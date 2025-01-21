@@ -83,6 +83,15 @@ pub enum WalletInitialization {
     #[error("invalid password")]
     #[diagnostic(code(wallet_invalid_password))]
     InvalidPassword,
+
+    // Strictly speaking not related to wallet initialization...
+    #[error("acquiring write lock timed out")]
+    #[diagnostic(code(wallet_write_lock_timed_out))]
+    WriteLockTimedOut,
+
+    #[error("acquiring read lock timed out")]
+    #[diagnostic(code(wallet_read_lock_timed_out))]
+    ReadLockTimedOut,
 }
 
 #[derive(Debug, Diagnostic, Error)]

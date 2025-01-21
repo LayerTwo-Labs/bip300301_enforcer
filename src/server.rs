@@ -100,6 +100,12 @@ impl IntoStatus for miette::Report {
 
         if let Some(source) = self.downcast_ref::<crate::wallet::error::WalletInitialization>() {
             let code = match source {
+                crate::wallet::error::WalletInitialization::WriteLockTimedOut => {
+                    tonic::Code::DeadlineExceeded
+                }
+                crate::wallet::error::WalletInitialization::ReadLockTimedOut => {
+                    tonic::Code::DeadlineExceeded
+                }
                 crate::wallet::error::WalletInitialization::InvalidPassword => {
                     tonic::Code::InvalidArgument
                 }

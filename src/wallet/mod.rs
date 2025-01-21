@@ -296,17 +296,32 @@ impl WalletInner {
         })
     }
 
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
     fn read_wallet(&self) -> Result<MappedRwLockReadGuard<BdkWallet>, WalletInitialization> {
-        let read_guard = self.bitcoin_wallet.read();
+        tracing::trace!(
+            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
+            "wallet: acquiring read lock"
+        );
+        let read_guard = self.bitcoin_wallet.try_read_for(Self::LOCK_TIMEOUT);
+        let Some(read_guard) = read_guard else {
+            return Err(WalletInitialization::ReadLockTimedOut);
+        };
         RwLockReadGuard::try_map(read_guard, |wallet| wallet.as_ref())
             .map_err(|_| WalletInitialization::NotUnlocked)
     }
 
     fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, WalletInitialization> {
         let start = SystemTime::now();
-        tracing::trace!("wallet: acquiring write lock");
-        let read_guard = self.bitcoin_wallet.write();
-        RwLockWriteGuard::try_map(read_guard, |wallet| wallet.as_mut())
+
+        tracing::trace!(
+            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
+            "wallet: acquiring write lock"
+        );
+        let write_guard = self.bitcoin_wallet.try_write_for(Self::LOCK_TIMEOUT);
+        let Some(write_guard) = write_guard else {
+            return Err(WalletInitialization::WriteLockTimedOut);
+        };
+        RwLockWriteGuard::try_map(write_guard, |wallet| wallet.as_mut())
             .map_err(|err| {
                 tracing::trace!("wallet: failed to acquire write lock: {err:?}");
                 WalletInitialization::NotUnlocked
