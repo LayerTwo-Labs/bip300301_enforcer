@@ -1,11 +1,11 @@
-use std::{future::Future, net::SocketAddr};
+use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bip300301::MainClient;
 use clap::Parser;
 use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
 use miette::{miette, IntoDiagnostic, Result};
-use tokio::{signal::ctrl_c, spawn, task::JoinHandle};
+use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
@@ -196,10 +196,20 @@ async fn run_gbt_server(
     Ok(())
 }
 
+async fn is_address_port_open(addr: &str) -> Result<bool> {
+    let addr = addr.strip_prefix("tcp://").unwrap_or_default();
+    match tokio::time::timeout(Duration::from_millis(250), TcpStream::connect(&addr)).await {
+        Ok(Ok(_)) => Ok(true),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Ok(false),
+        Ok(Err(e)) => Err(miette!("failed to connect to {addr}: {e:#}")),
+        Err(_) => Ok(false),
+    }
+}
+
 async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
-    node_zmq_addr_sequence: &str,
+    zmq_addr_sequence: &str,
     err_tx: oneshot::Sender<miette::Report>,
     f: F,
 ) where
@@ -208,11 +218,30 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     F: FnOnce(cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>) -> Fut,
     Fut: Future<Output = ()>,
 {
+    tracing::debug!(%zmq_addr_sequence, "Ensuring ZMQ address for mempool sync is reachable");
+
+    match is_address_port_open(zmq_addr_sequence).await {
+        Ok(true) => (),
+        Ok(false) => {
+            let err = miette::miette!(
+                "ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}"
+            );
+            let _send_err: Result<(), _> = err_tx.send(err);
+            return;
+        }
+        Err(err) => {
+            let err = miette::miette!("failed to check if ZMQ address is reachable: {err:#}");
+            let _send_err: Result<(), _> = err_tx.send(err);
+            return;
+        }
+    }
+
+    tracing::info!(%zmq_addr_sequence, "Starting initial mempool sync from ZMQ");
     let (sequence_stream, mempool, tx_cache) =
         match cusf_enforcer_mempool::mempool::init_sync_mempool(
             &mut enforcer,
             &rpc_client,
-            node_zmq_addr_sequence,
+            zmq_addr_sequence,
         )
         .await
         {
@@ -223,7 +252,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
                 return;
             }
         };
-    tracing::info!("Initial mempool sync complete");
+    tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete");
     let mempool = cusf_enforcer_mempool::mempool::MempoolSync::new(
         enforcer,
         mempool,
