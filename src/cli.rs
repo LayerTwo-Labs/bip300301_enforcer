@@ -103,6 +103,11 @@ pub struct MiningConfig {
 
 #[derive(Clone, Args)]
 pub struct WalletConfig {
+    /// If no existing wallet is found, automatically create and load
+    /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
+    #[arg(long = "wallet-auto-create", default_value_t = false)]
+    pub auto_create: bool,
+
     /// If no host is provided, a default value is used based on the network
     /// we're on.
     ///
@@ -116,11 +121,6 @@ pub struct WalletConfig {
     /// Signet: 50001, regtest: 60401
     #[arg(long = "wallet-electrum-port")]
     pub electrum_port: Option<u16>,
-
-    /// If no existing wallet is found, automatically create and load
-    /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
-    #[arg(long = "wallet-auto-create", default_value_t = false)]
-    pub auto_create: bool,
 }
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =

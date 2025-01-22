@@ -1,10 +1,10 @@
 use std::{collections::HashMap, path::Path};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender};
-use bip300301::{jsonrpsee, MainClient};
+use bip300301::jsonrpsee;
 use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
-use futures::{stream::FusedStream, StreamExt, TryFutureExt as _};
+use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
 use thiserror::Error;
 
@@ -113,6 +113,16 @@ pub enum GetMainchainTipError {
     DbGet(#[from] dbs::db_error::Get),
 }
 
+#[derive(Debug, Diagnostic, Error)]
+pub enum TryGetMainchainTipHeightError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    DbGet(#[from] dbs::db_error::Get),
+    #[error(transparent)]
+    DbTryGet(#[from] dbs::db_error::TryGet),
+}
+
 #[derive(Debug, Error)]
 pub enum TryGetBmmCommitmentsError {
     #[error(transparent)]
@@ -153,28 +163,22 @@ pub struct Validator {
 }
 
 impl Validator {
-    pub async fn new(
+    pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
         data_dir: &Path,
+        network: bitcoin::Network,
     ) -> Result<Self, InitError> {
         const EVENTS_CHANNEL_CAPACITY: usize = 256;
         let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
-        let blockchain_info = mainchain_client
-            .get_blockchain_info()
-            .map_err(|err| InitError::JsonRpc {
-                method: "getblockchaininfo".to_owned(),
-                source: err,
-            })
-            .await?;
-        let dbs = Dbs::new(data_dir, blockchain_info.chain)?;
+        let dbs = Dbs::new(data_dir, network)?;
         Ok(Self {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
             mainchain_client,
-            network: blockchain_info.chain,
+            network,
         })
     }
 
@@ -316,16 +320,26 @@ impl Validator {
 
     /// Get the mainchain tip. Returns `None` if not synced
     pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, TryGetMainchainTipError> {
-        let txn = self.dbs.read_txn()?;
-        let res = self.dbs.current_chain_tip.try_get(&txn, &dbs::UnitKey)?;
+        let rotxn = self.dbs.read_txn()?;
+        let res = self.dbs.current_chain_tip.try_get(&rotxn, &dbs::UnitKey)?;
         Ok(res)
     }
 
     /// Get the mainchain tip. Returns an error if not synced
     pub fn get_mainchain_tip(&self) -> Result<BlockHash, GetMainchainTipError> {
-        let txn = self.dbs.read_txn()?;
-        let res = self.dbs.current_chain_tip.get(&txn, &dbs::UnitKey)?;
+        let rotxn = self.dbs.read_txn()?;
+        let res = self.dbs.current_chain_tip.get(&rotxn, &dbs::UnitKey)?;
         Ok(res)
+    }
+
+    /// Get the mainchain tip height. Returns `None` if not synced
+    pub fn try_get_block_height(&self) -> Result<Option<u32>, TryGetMainchainTipHeightError> {
+        let rotxn = self.dbs.read_txn()?;
+        let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &dbs::UnitKey)? else {
+            return Ok(None);
+        };
+        let height = self.dbs.block_hashes.height().get(&rotxn, &tip)?;
+        Ok(Some(height))
     }
 
     pub fn get_two_way_peg_data(
@@ -368,16 +382,6 @@ impl Validator {
     }
 
     /*
-    pub fn get_main_block_height(&self) -> Result<u32> {
-        let txn = self.env.read_txn().into_diagnostic()?;
-        let height = self
-            .current_block_height
-            .get(&txn, &UnitKey)
-            .into_diagnostic()?
-            .unwrap_or(0);
-        Ok(height)
-    }
-
     pub fn get_deposits(&self, sidechain_number: u8) -> Result<Vec<Deposit>> {
         let txn = self.env.read_txn().into_diagnostic()?;
         let treasury_utxos_range = self

@@ -65,6 +65,10 @@ zeromq = "0.4.1"
 git = "https://github.com/Ash-L2L/bip300301.git"
 rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
 
+[dependencies.bitcoin-send-tx-p2p]
+git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p"
+rev = "4e03ed7c6807771b4709864b0357e2bd8843c83f"
+
 [dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
 rev = "fce4283eba07df788ed3830cf3b51e35a7c590a9"
