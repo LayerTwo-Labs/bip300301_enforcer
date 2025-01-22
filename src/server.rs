@@ -100,6 +100,15 @@ impl IntoStatus for miette::Report {
 
         if let Some(source) = self.downcast_ref::<crate::wallet::error::WalletInitialization>() {
             let code = match source {
+                crate::wallet::error::WalletInitialization::NotSynced => {
+                    tonic::Code::FailedPrecondition
+                }
+                crate::wallet::error::WalletInitialization::WriteLockTimedOut => {
+                    tonic::Code::DeadlineExceeded
+                }
+                crate::wallet::error::WalletInitialization::ReadLockTimedOut => {
+                    tonic::Code::DeadlineExceeded
+                }
                 crate::wallet::error::WalletInitialization::InvalidPassword => {
                     tonic::Code::InvalidArgument
                 }
@@ -845,6 +854,7 @@ impl WalletService for crate::wallet::Wallet {
         request: tonic::Request<CreateBmmCriticalDataTransactionRequest>,
     ) -> std::result::Result<tonic::Response<CreateBmmCriticalDataTransactionResponse>, tonic::Status>
     {
+        tracing::trace!("create_bmm_critical_data_transaction: starting");
         let CreateBmmCriticalDataTransactionRequest {
             sidechain_id,
             value_sats,
@@ -908,10 +918,17 @@ impl WalletService for crate::wallet::Wallet {
             .decode_tonic::<CreateBmmCriticalDataTransactionRequest, _>("prev_bytes")
             .map(bdk_wallet::bitcoin::BlockHash::from_byte_array)?;
 
+        tracing::trace!("create_bmm_critical_data_transaction: validated request");
+
         let mainchain_tip = self
             .validator()
             .get_mainchain_tip()
             .map_err(|err| tonic::Status::from_error(err.into()))?;
+
+        tracing::debug!(
+            "create_bmm_critical_data_transaction: fetched mainchain tip: {:?}",
+            mainchain_tip
+        );
 
         // If the mainchain tip has progressed beyond this, the request is already
         // expired.
@@ -946,11 +963,11 @@ impl WalletService for crate::wallet::Wallet {
             })?;
 
         let txid = tx.compute_txid();
-        /*
-        self.broadcast_transaction(tx)
-            .await
-            .map_err(|err| err.into_status())?;
-        */
+
+        tracing::info!(
+            "create_bmm_critical_data_transaction: created transaction: {:?}",
+            txid
+        );
 
         let txid = convert::bdk_txid_to_bitcoin_txid(txid);
 
@@ -1028,12 +1045,17 @@ impl WalletService for crate::wallet::Wallet {
         &self,
         request: tonic::Request<GetBalanceRequest>,
     ) -> Result<tonic::Response<GetBalanceResponse>, tonic::Status> {
+        tracing::trace!("get_balance: starting");
         let GetBalanceRequest {} = request.into_inner();
+
+        tracing::trace!("get_balance: fetching from BDK wallet");
 
         let balance = self
             .get_wallet_balance()
             .await
             .map_err(|err| err.into_status())?;
+
+        tracing::trace!("get_balance: fetched balance: {:?}", balance);
 
         let response = GetBalanceResponse {
             confirmed_sats: balance.confirmed.to_sat(),

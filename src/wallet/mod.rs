@@ -296,16 +296,42 @@ impl WalletInner {
         })
     }
 
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
     fn read_wallet(&self) -> Result<MappedRwLockReadGuard<BdkWallet>, WalletInitialization> {
-        let read_guard = self.bitcoin_wallet.read();
+        tracing::trace!(
+            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
+            "wallet: acquiring read lock"
+        );
+        let read_guard = self.bitcoin_wallet.try_read_for(Self::LOCK_TIMEOUT);
+        let Some(read_guard) = read_guard else {
+            return Err(WalletInitialization::ReadLockTimedOut);
+        };
         RwLockReadGuard::try_map(read_guard, |wallet| wallet.as_ref())
             .map_err(|_| WalletInitialization::NotUnlocked)
     }
 
     fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, WalletInitialization> {
-        let read_guard = self.bitcoin_wallet.write();
-        RwLockWriteGuard::try_map(read_guard, |wallet| wallet.as_mut())
-            .map_err(|_| WalletInitialization::NotUnlocked)
+        let start = SystemTime::now();
+
+        tracing::trace!(
+            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
+            "wallet: acquiring write lock"
+        );
+        let write_guard = self.bitcoin_wallet.try_write_for(Self::LOCK_TIMEOUT);
+        let Some(write_guard) = write_guard else {
+            return Err(WalletInitialization::WriteLockTimedOut);
+        };
+        RwLockWriteGuard::try_map(write_guard, |wallet| wallet.as_mut())
+            .map_err(|err| {
+                tracing::trace!("wallet: failed to acquire write lock: {err:?}");
+                WalletInitialization::NotUnlocked
+            })
+            .inspect(|_| {
+                tracing::trace!(
+                    "wallet: acquired write lock successfully in {:?}",
+                    start.elapsed().unwrap_or_default()
+                )
+            })
     }
 
     pub fn create_new_wallet(
@@ -551,15 +577,22 @@ impl WalletInner {
         tracing::trace!("starting wallet sync");
 
         // Don't error out here if the wallet is locked, just skip the sync.
-        let mut wallet_write = if let Ok(wallet_write) = self.write_wallet() {
-            wallet_write
-        } else {
-            tracing::trace!("wallet is locked, skipping sync");
-            return Ok(());
+        let wallet_read = match self.read_wallet() {
+            Ok(wallet_read) => wallet_read,
+
+            // "Accepted" errors, that aren't really errors in this case.
+            Err(WalletInitialization::NotUnlocked | WalletInitialization::NotFound) => {
+                tracing::trace!("sync: skipping sync due to wallet error");
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(miette!("sync: failed to acquire write lock: {err:#}"));
+            }
         };
 
         let mut last_sync_write = self.last_sync.write();
-        let request = wallet_write.start_sync_with_revealed_spks();
+        let request = wallet_read.start_sync_with_revealed_spks();
+        drop(wallet_read);
 
         const BATCH_SIZE: usize = 5;
         const FETCH_PREV_TXOUTS: bool = false;
@@ -569,6 +602,10 @@ impl WalletInner {
             .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
             .into_diagnostic()?;
 
+        // Be a bit smart about the wallet locks, and only acquire the write lock
+        // after the sync itself has completed and we're ready the apply
+        // it to the wallet.
+        let mut wallet_write = self.write_wallet()?;
         wallet_write.apply_update(update).into_diagnostic()?;
 
         let mut database = self.bitcoin_db.lock();
@@ -1479,6 +1516,7 @@ impl Wallet {
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+        tracing::trace!("build_bmm_tx: constructing request message");
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
         let message = Self::bmm_request_message(
             sidechain_number,
@@ -1487,12 +1525,24 @@ impl Wallet {
         )?;
 
         let psbt = {
+            tracing::trace!("build_bmm_tx: acquiring wallet write lock");
             let mut wallet_write = self.inner.write_wallet()?;
+
+            tracing::trace!("build_bmm_tx: creating transaction builder");
             let mut builder = wallet_write.build_tx();
-            builder
-                .nlocktime(locktime)
-                .add_recipient(message, bid_amount);
-            builder.finish().into_diagnostic()?
+
+            tracing::trace!("build_bmm_tx: adding locktime {locktime}");
+            builder.nlocktime(locktime);
+
+            tracing::trace!("build_bmm_tx: adding recipient");
+            builder.add_recipient(message, bid_amount);
+
+            tracing::trace!("build_bmm_tx: finishing transaction builder");
+            let res = builder.finish().into_diagnostic()?;
+
+            tracing::trace!("build_bmm_tx: built transaction");
+
+            res
         };
 
         Ok(psbt)
@@ -1541,6 +1591,8 @@ impl Wallet {
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<Option<bdk_wallet::bitcoin::Transaction>> {
+        tracing::debug!("create_bmm_request: building transaction");
+
         let psbt = self.build_bmm_tx(
             sidechain_number,
             prev_mainchain_block_hash,
@@ -1549,16 +1601,16 @@ impl Wallet {
             locktime,
         )?;
         let tx = self.sign_transaction(psbt)?;
-        tracing::info!("BMM request psbt signed successfully");
+        tracing::info!("BMM request: PSBT signed successfully");
         if self.insert_new_bmm_request(
             sidechain_number,
             prev_mainchain_block_hash,
             sidechain_block_hash,
         )? {
-            tracing::info!("inserted new bmm request into db");
+            tracing::info!("BMM request: inserted new bmm request into db");
             Ok(Some(tx))
         } else {
-            tracing::warn!("Ignored BMM request; request exists with same sidechain slot and previous block hash");
+            tracing::warn!("BMM request: Ignored, request exists with same sidechain slot and previous block hash");
             Ok(None)
         }
     }
