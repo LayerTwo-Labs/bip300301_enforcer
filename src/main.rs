@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, path::Path, sync::Mutex, time::Duration};
+use std::{future::Future, net::SocketAddr, path::Path, time::Duration};
 
 use bip300301::MainClient;
 use clap::Parser;
@@ -57,8 +57,12 @@ where
         .join(",")
 }
 
-// Configure logger.
-fn set_tracing_subscriber(log_file: &Path, log_level: tracing::Level) -> miette::Result<()> {
+// Configure logger. The returned guard should be dropped when the program
+// exits.
+fn set_tracing_subscriber(
+    log_file: &Path,
+    log_level: tracing::Level,
+) -> miette::Result<tracing_appender::non_blocking::WorkerGuard> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),
@@ -92,8 +96,11 @@ fn set_tracing_subscriber(log_file: &Path, log_level: tracing::Level) -> miette:
 
     let file_appender = tracing_appender::rolling::never(log_file_dir, log_file_name);
 
+    // Ensure the appender is non-blocking!
+    let (file_appender, guard) = tracing_appender::non_blocking(file_appender);
+
     let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(Mutex::new(file_appender))
+        .with_writer(file_appender)
         .with_ansi(false)
         .with_line_number(true);
 
@@ -104,7 +111,9 @@ fn set_tracing_subscriber(log_file: &Path, log_level: tracing::Level) -> miette:
 
     tracing::subscriber::set_global_default(tracing_subscriber)
         .into_diagnostic()
-        .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))
+        .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))?;
+
+    Ok(guard)
 }
 
 async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
@@ -402,7 +411,8 @@ async fn main() -> Result<()> {
         .log_file
         .unwrap_or(cli.data_dir.join("bip300301_enforcer.log"));
 
-    set_tracing_subscriber(&log_file, cli.log_level)?;
+    // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
+    let _tracing_guard = set_tracing_subscriber(&log_file, cli.log_level)?;
 
     tracing::info!(
         data_dir = %cli.data_dir.display(),
@@ -470,7 +480,7 @@ async fn main() -> Result<()> {
 
     let (_task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain)?;
 
-    tokio::select! {
+    let res = tokio::select! {
         enforcer_task_err = err_rxs.enforcer_task => {
             match enforcer_task_err {
                 Ok(err) => {
@@ -509,5 +519,8 @@ async fn main() -> Result<()> {
                 }
             }
         }
-    }
+    };
+
+    // Clean up the tracing guard when the program exits.
+    res
 }
