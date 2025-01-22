@@ -577,8 +577,8 @@ impl WalletInner {
         tracing::trace!("starting wallet sync");
 
         // Don't error out here if the wallet is locked, just skip the sync.
-        let mut wallet_write = match self.write_wallet() {
-            Ok(wallet_write) => wallet_write,
+        let wallet_read = match self.read_wallet() {
+            Ok(wallet_read) => wallet_read,
 
             // "Accepted" errors, that aren't really errors in this case.
             Err(WalletInitialization::NotUnlocked | WalletInitialization::NotFound) => {
@@ -591,7 +591,8 @@ impl WalletInner {
         };
 
         let mut last_sync_write = self.last_sync.write();
-        let request = wallet_write.start_sync_with_revealed_spks();
+        let request = wallet_read.start_sync_with_revealed_spks();
+        drop(wallet_read);
 
         const BATCH_SIZE: usize = 5;
         const FETCH_PREV_TXOUTS: bool = false;
@@ -601,6 +602,10 @@ impl WalletInner {
             .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
             .into_diagnostic()?;
 
+        // Be a bit smart about the wallet locks, and only acquire the write lock
+        // after the sync itself has completed and we're ready the apply
+        // it to the wallet.
+        let mut wallet_write = self.write_wallet()?;
         wallet_write.apply_update(update).into_diagnostic()?;
 
         let mut database = self.bitcoin_db.lock();
