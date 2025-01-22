@@ -56,48 +56,48 @@ impl From<ElectrumError> for tonic::Status {
 // Errors related to creating/unlocking wallets.
 #[derive(Debug, Diagnostic, Error)]
 pub enum WalletInitialization {
-    #[error("wallet not unlocked")]
+    #[error("enforcer wallet not unlocked")]
     #[diagnostic(code(wallet_not_unlocked))]
     NotUnlocked,
 
-    #[error("wallet already unlocked")]
+    #[error("enforcer wallet already unlocked")]
     #[diagnostic(code(wallet_already_unlocked))]
     AlreadyUnlocked,
 
-    #[error("wallet not found (can be created with CreateWallet RPC)")]
+    #[error("enforcer wallet not found (can be created with CreateWallet RPC)")]
     #[diagnostic(code(wallet_not_found))]
     NotFound,
 
-    #[error("wallet already exists (but might not be initialized)")]
+    #[error("enforcer wallet already exists (but might not be initialized)")]
     #[diagnostic(code(wallet_already_exists))]
     AlreadyExists,
 
     /// This means you've been fooling around with different mnemonics and data directories!
     /// Wallet directory probably needs to be wiped.
     #[error(
-        "wallet data mismatch, data directory content does not line up with wallet descriptor"
+        "enforcer wallet data mismatch, data directory content does not line up with wallet descriptor"
     )]
     #[diagnostic(code(wallet_data_mismatch))]
     DataMismatch,
 
-    #[error("invalid password")]
+    #[error("invalid password for enforcer wallet")]
     #[diagnostic(code(wallet_invalid_password))]
     InvalidPassword,
 
     // These errors are strictly speaking not related to wallet initialization...
 
     // The wallet could not be obtained for writing, because of a timeout
-    #[error("acquiring write lock timed out")]
+    #[error("acquiring write lock for enforcer wallet timed out")]
     #[diagnostic(code(wallet_write_lock_timed_out))]
     WriteLockTimedOut,
 
     // The wallet could not be obtained for reading, because of a timeout
-    #[error("acquiring read lock timed out")]
+    #[error("acquiring read lock for enforcer wallet timed out")]
     #[diagnostic(code(wallet_read_lock_timed_out))]
     ReadLockTimedOut,
 
     // The wallet is not synced to the blockchain
-    #[error("wallet not synced")]
+    #[error("enforcer wallet not synced")]
     #[diagnostic(code(wallet_not_synced))]
     NotSynced,
 }
