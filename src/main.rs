@@ -13,17 +13,16 @@ use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 use bip300301_enforcer_lib::{
     cli,
+    p2p::compute_signet_magic,
     proto::{
         self,
         crypto::crypto_service_server::CryptoServiceServer,
         mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
     },
-    server,
+    rpc_client, server,
     validator::Validator,
     wallet,
 };
-
-mod rpc_client;
 
 use wallet::Wallet;
 
@@ -114,6 +113,26 @@ fn set_tracing_subscriber(
         .map_err(|err| miette::miette!("setting default subscriber failed: {err:#}"))?;
 
     Ok(guard)
+}
+
+async fn get_block_template<RpcClient>(
+    rpc_client: &RpcClient,
+    network: bitcoin::Network,
+) -> Result<bip300301::client::BlockTemplate, wallet::error::BitcoinCoreRPC>
+where
+    RpcClient: MainClient + Sync,
+{
+    let mut request = bip300301::client::BlockTemplateRequest::default();
+    if network == bitcoin::Network::Signet {
+        request.rules.push("signet".to_owned())
+    }
+    rpc_client
+        .get_block_template(request)
+        .await
+        .map_err(|err| wallet::error::BitcoinCoreRPC {
+            method: "getblocktemplate".to_string(),
+            error: err,
+        })
 }
 
 async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
@@ -354,20 +373,14 @@ fn task(
                         return;
                     }
                 };
-                let sample_block_template = {
-                    let mut request = bip300301::client::BlockTemplateRequest::default();
-                    if network == bitcoin::Network::Signet {
-                        request.rules.push("signet".to_owned())
-                    }
-                    match mainchain_client.get_block_template(request).await {
+                let sample_block_template =
+                    match get_block_template(&mainchain_client, network).await {
                         Ok(block_template) => block_template,
                         Err(err) => {
-                            let err = anyhow::Error::from(err);
                             tracing::error!("failed to get sample block template: {err:#}");
                             return;
                         }
-                    }
-                };
+                    };
                 mempool_task(
                     wallet,
                     mainchain_client,
@@ -441,7 +454,6 @@ async fn main() -> Result<()> {
             method: "getblockchaininfo".to_string(),
             error: err,
         })?;
-
     tracing::info!(
         network = %info.chain,
         blocks = %info.blocks,
@@ -459,12 +471,22 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let validator = Validator::new(mainchain_client.clone(), &validator_data_dir)
-        .await
+    let validator = Validator::new(mainchain_client.clone(), &validator_data_dir, info.chain)
         .into_diagnostic()?;
 
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
-        let wallet = Wallet::new(&wallet_data_dir, &cli, mainchain_client.clone(), validator)?;
+        let block_template = get_block_template(&mainchain_client, info.chain).await?;
+        let magic = block_template
+            .signet_challenge
+            .map(|signet_challenge| compute_signet_magic(&signet_challenge))
+            .unwrap_or_else(|| info.chain.magic());
+        let wallet = Wallet::new(
+            &wallet_data_dir,
+            &cli,
+            mainchain_client.clone(),
+            validator,
+            magic,
+        )?;
 
         if !wallet.is_initialized() && cli.wallet_opts.auto_create {
             tracing::info!("auto-creating new wallet");

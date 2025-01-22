@@ -22,10 +22,8 @@ use bdk_wallet::{
 use bip300301::{
     client::{GetRawTransactionClient, GetRawTransactionVerbose},
     jsonrpsee::http_client::HttpClient,
-    MainClient,
 };
 use bitcoin::{
-    consensus::Encodable as _,
     hashes::{sha256, sha256d, Hash as _, HashEngine},
     script::PushBytesBuf,
     Amount, Network, Transaction, Txid,
@@ -71,6 +69,7 @@ type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 struct WalletInner {
     main_client: HttpClient,
     validator: Validator,
+    magic: bitcoin::p2p::Magic,
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
     bitcoin_wallet: RwLock<Option<BdkWallet>>,
@@ -237,6 +236,7 @@ impl WalletInner {
         config: &Config,
         main_client: HttpClient,
         validator: Validator,
+        magic: bitcoin::p2p::Magic,
     ) -> Result<Self, miette::Report> {
         let network = {
             let validator_network = validator.network();
@@ -288,6 +288,7 @@ impl WalletInner {
             config: config.clone(),
             main_client,
             validator,
+            magic,
             bitcoin_wallet: RwLock::new(bitcoin_wallet),
             bitcoin_db: Mutex::new(wallet_database),
             db_connection: Mutex::new(db_connection),
@@ -690,8 +691,15 @@ impl Wallet {
         config: &Config,
         main_client: HttpClient,
         validator: Validator,
+        magic: bitcoin::p2p::Magic,
     ) -> Result<Self> {
-        let inner = Arc::new(WalletInner::new(data_dir, config, main_client, validator)?);
+        let inner = Arc::new(WalletInner::new(
+            data_dir,
+            config,
+            main_client,
+            validator,
+            magic,
+        )?);
         let task = Task::new(inner.clone());
         Ok(Self {
             inner,
@@ -1093,6 +1101,7 @@ impl Wallet {
 
                 let psbt_input = bdk_wallet::bitcoin::psbt::Input {
                     non_witness_utxo: Some(ctip_transaction),
+                    final_script_sig: Some(bitcoin::ScriptBuf::new()),
                     ..bdk_wallet::bitcoin::psbt::Input::default()
                 };
 
@@ -1152,32 +1161,32 @@ impl Wallet {
         value: Amount,
         fee: Option<Amount>,
     ) -> Result<bitcoin::Txid> {
+        let block_height = self
+            .inner
+            .validator
+            .try_get_block_height()?
+            .unwrap_or_default();
         // If this is None, there's been no deposit to this sidechain yet. We're the first one!
         let sidechain_ctip = self.inner.validator.try_get_ctip(sidechain_number)?;
         let sidechain_ctip = sidechain_ctip.as_ref();
-
         let sidechain_ctip_amount = sidechain_ctip
             .map(|ctip| ctip.value)
             .unwrap_or(Amount::ZERO);
-
         let op_drivechain_output = Self::create_deposit_op_drivechain_output(
             sidechain_number,
             sidechain_ctip_amount,
             value,
         );
-
         tracing::debug!(
-            "Created OP_DRIVECHAIN output with value `{}`, spk `{}` ",
-            op_drivechain_output.value,
-            op_drivechain_output.script_pubkey.to_asm_string(),
+            value = %op_drivechain_output.value,
+            spk = %op_drivechain_output.script_pubkey.to_asm_string(),
+            "Created OP_DRIVECHAIN output",
         );
-
         let sidechain_address_data =
             bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address.into_bytes())
                 .map_err(|err| {
                     miette!("failed to convert sidechain address to PushBytesBuf: {err:#}")
                 })?;
-
         let psbt = self
             .create_deposit_psbt(
                 op_drivechain_output,
@@ -1186,24 +1195,40 @@ impl Wallet {
                 fee,
             )
             .await?;
-
-        tracing::debug!("Created deposit PSBT: {psbt}",);
-
+        tracing::debug!("Created deposit PSBT: {psbt}");
         let tx = self.sign_transaction(psbt)?;
         let txid = tx.compute_txid();
-
-        tracing::info!("Signed deposit transaction: `{txid}`",);
-
+        tracing::info!(%txid, "Signed deposit transaction");
         tracing::debug!("Serialized deposit transaction: {}", {
             let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
             hex::encode(tx_bytes)
         });
-
-        self.broadcast_transaction(tx).await?;
-
-        tracing::info!("Broadcasted deposit transaction: `{txid}`",);
-
-        Ok(convert::bdk_txid_to_bitcoin_txid(txid))
+        tracing::debug!(%txid, "Broadcasting deposit transaction...");
+        let mut broadcast_successfully: bool =
+            crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
+                .await
+                .into_diagnostic()?
+                .is_some();
+        if self.inner.validator.network() == Network::Signet
+            && self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES
+        {
+            broadcast_successfully |= crate::p2p::broadcast_nonstandard_tx(
+                crate::p2p::SIGNET_MINER_P2P_ADDR.into(),
+                block_height as i32,
+                self.inner.magic,
+                tx,
+            )
+            .await
+            .into_diagnostic()?;
+        }
+        if broadcast_successfully {
+            tracing::info!(%txid, "Broadcast deposit transaction successfully");
+            Ok(convert::bdk_txid_to_bitcoin_txid(txid))
+        } else {
+            Err(miette::miette!(
+                "Broadcast deposit transaction failed: {txid}"
+            ))
+        }
     }
 
     pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance> {
@@ -1374,23 +1399,31 @@ impl Wallet {
             .create_send_psbt(destinations, fee_policy, op_return_output)
             .await?;
 
-        tracing::debug!("Created send PSBT: {psbt}",);
+        tracing::debug!(%psbt, "Created send PSBT");
 
         let tx = self.sign_transaction(psbt)?;
         let txid = tx.compute_txid();
 
-        tracing::info!("Signed send transaction: `{txid}`",);
+        tracing::info!(%txid, "Signed send transaction",);
 
         tracing::debug!("Serialized send transaction: {} bytes", {
             let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
             tx_bytes.len()
         });
 
-        self.broadcast_transaction(tx).await?;
-
-        tracing::info!("Broadcasted send transaction: `{txid}`",);
-
-        Ok(convert::bdk_txid_to_bitcoin_txid(txid))
+        if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
+            .await
+            .into_diagnostic()?
+            .is_some()
+        {
+            tracing::info!(%txid, "Broadcast send transaction",);
+            Ok(convert::bdk_txid_to_bitcoin_txid(txid))
+        } else {
+            const ERR_MSG: &str =
+                "Failed to broadcast send transaction (OP_DRIVECHAIN not supported by node)";
+            tracing::error!(%txid, ERR_MSG);
+            Err(miette!(ERR_MSG))
+        }
     }
 
     #[allow(
@@ -1613,37 +1646,6 @@ impl Wallet {
             tracing::warn!("BMM request: Ignored, request exists with same sidechain slot and previous block hash");
             Ok(None)
         }
-    }
-
-    // Broadcasts a transaction to the Bitcoin network.
-    pub async fn broadcast_transaction(&self, tx: bdk_wallet::bitcoin::Transaction) -> Result<()> {
-        // Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
-        // because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
-        // perspective). To get around this we have to pass a `maxburnamount` parameter, and
-        // that's not possible if going through the ElectrumBlockchain interface.
-        //
-        // For the interested reader, the flow of ElectrumBlockchain::broadcast is this:
-        // 1. Send the raw TX from our Electrum client
-        // 2. Electrum server implements this by sending it into Bitcoin Core
-        // 3. Bitcoin Core responds with an error, because we're burning money.
-
-        let mut tx_bytes = vec![];
-        tx.consensus_encode(&mut tx_bytes).into_diagnostic()?;
-
-        let encoded_tx = hex::encode(tx_bytes);
-
-        const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
-        let broadcast_result = self
-            .inner
-            .main_client
-            .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
-            .await
-            .inspect_err(|e| tracing::error!("failed to broadcast tx: {e:#}"))
-            .into_diagnostic()?;
-
-        tracing::debug!("broadcasted TXID: {:?}", broadcast_result);
-
-        Ok(())
     }
 
     #[allow(clippy::significant_drop_tightening)]

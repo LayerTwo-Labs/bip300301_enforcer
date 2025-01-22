@@ -1,4 +1,7 @@
-use bip300301::jsonrpsee::http_client::HttpClient;
+use bip300301::{
+    jsonrpsee::{core::ClientError, http_client::HttpClient},
+    MainClient,
+};
 use miette::{miette, IntoDiagnostic};
 
 use crate::cli::NodeRpcConfig;
@@ -57,4 +60,47 @@ pub fn create_client(
     };
 
     bip300301::client(conf.addr, client_builder, &conf_pass, &conf_user).into_diagnostic()
+}
+
+/// Broadcasts a transaction to the Bitcoin network.
+/// Returns `Some(txid)`` if broadcast successfully, `None` if the tx failed to
+/// broadcast due to the node not supporting OP_DRIVECHAIN
+pub async fn broadcast_transaction<RpcClient>(
+    rpc_client: &RpcClient,
+    tx: &bdk_wallet::bitcoin::Transaction,
+) -> Result<Option<bitcoin::Txid>, ClientError>
+where
+    RpcClient: MainClient + Sync,
+{
+    // Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
+    // because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
+    // perspective). To get around this we have to pass a `maxburnamount` parameter, and
+    // that's not possible if going through the ElectrumBlockchain interface.
+    //
+    // For the interested reader, the flow of ElectrumBlockchain::broadcast is this:
+    // 1. Send the raw TX from our Electrum client
+    // 2. Electrum server implements this by sending it into Bitcoin Core
+    // 3. Bitcoin Core responds with an error, because we're burning money.
+    const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
+    let encoded_tx = bitcoin::consensus::encode::serialize_hex(tx);
+    match rpc_client
+        .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
+        .await
+    {
+        Ok(txid) => {
+            tracing::debug!(%txid, "broadcast tx successfully");
+            Ok(Some(txid))
+        }
+        Err(err) => {
+            const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
+                "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
+            tracing::error!("failed to broadcast tx: {err:#}");
+            match err {
+                ClientError::Call(err) if err.message() == OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG => {
+                    Ok(None)
+                }
+                err => Err(err),
+            }
+        }
+    }
 }

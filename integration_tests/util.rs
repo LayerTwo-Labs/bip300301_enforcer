@@ -258,7 +258,7 @@ pub struct Electrs {
     pub electrum_rpc_port: u16,
     pub monitoring_port: u16,
     pub network: bitcoin::Network,
-    pub signet_magic: Option<[u8; 4]>,
+    pub signet_magic: Option<bitcoin::p2p::Magic>,
 }
 
 impl Electrs {

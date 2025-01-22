@@ -46,24 +46,22 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check-lint]
     steps:
-      - name: Install latest Bitcoin Core
+      - name: Download latest bitcoin-patched
         run: |
           pushd ..
-          BITCOIN_CORE_URL='https://bitcoincore.org/bin/bitcoin-core-28.0/bitcoin-28.0-x86_64-linux-gnu.tar.gz'
-          curl "${BITCOIN_CORE_URL}" | tar xz
+          wget https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          unzip L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-patched-bins
+          chmod +x bitcoin-patched-bins/bitcoind
+          chmod +x bitcoin-patched-bins/bitcoin-cli
+          chmod +x bitcoin-patched-bins/bitcoin-util
           popd
-
-      - name: Check that Bitcoin Core is installed
-        run: |
-          ls '../bitcoin-28.0'
-          ls '../bitcoin-28.0/bin'
 
       - name: Checkout bitcoin-patched for signet miner script
         run: |
           pushd ..
           git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
-          cd bitcoin-patched
-          git checkout ash/signet-miner
           popd
 
       - name: Checkout electrs
@@ -107,9 +105,9 @@ jobs:
         id: runIntegrationTests
         run: |
           BIP300301_ENFORCER='target/debug/bip300301_enforcer'
-          BITCOIND='../bitcoin-28.0/bin/bitcoind'
-          BITCOIN_CLI='../bitcoin-28.0/bin/bitcoin-cli'
-          BITCOIN_UTIL='../bitcoin-28.0/bin/bitcoin-util'
+          BITCOIND='../bitcoin-patched-bins/bitcoind'
+          BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
+          BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
           ELECTRS='../electrs/target/release/electrs'
           SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
           cargo run --example integration_tests -- \

@@ -2,10 +2,7 @@
 
 use std::{future::Future, time::Duration};
 
-use bitcoin::{
-    hashes::{Hash as _, HashEngine as _},
-    Address, Transaction, TxOut,
-};
+use bitcoin::{Address, Transaction, TxOut};
 use futures::{channel::mpsc, StreamExt as _, TryStreamExt};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
@@ -53,7 +50,7 @@ struct SignetSetup {
     secret_key: bitcoin::PrivateKey,
     signet_challenge: bitcoin::ScriptBuf,
     signet_challenge_addr: bitcoin::Address,
-    signet_magic: [u8; 4],
+    signet_magic: bitcoin::p2p::Magic,
 }
 
 impl SignetSetup {
@@ -71,16 +68,10 @@ impl SignetSetup {
             .into_script();
         let signet_challenge_addr =
             bitcoin::Address::from_script(&cpk.p2wpkh_script_code(), &bitcoin::params::SIGNET)?;
-        let signet_magic: [u8; 4] = {
-            let mut hasher = bitcoin::hashes::sha256d::Hash::engine();
-            hasher.input(&[0x25]);
-            hasher.input(signet_challenge.as_bytes());
-            let hash = bitcoin::hashes::sha256d::Hash::from_engine(hasher);
-            hash[..=3].try_into()?
-        };
+        let signet_magic = bip300301_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
         tracing::info!(
             signet_challenge = %hex::encode(signet_challenge.as_bytes()),
-            signet_magic = %hex::encode(signet_magic),
+            %signet_magic,
             mining_address = %signet_challenge_addr,
         );
         Ok(Self {
@@ -332,7 +323,7 @@ async fn setup(
         signet_challenge: signet_setup
             .as_ref()
             .map(|setup| setup.signet_challenge.clone()),
-        txindex: enable_mempool,
+        txindex: true,
         zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
     };
     let bitcoind_task = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], {
@@ -799,6 +790,27 @@ async fn activate_sidechain(
     Ok(())
 }
 
+async fn wait_for_wallet_sync() -> anyhow::Result<()> {
+    // Wait 15s for a re-sync
+    const WAIT: Duration = Duration::from_secs(15);
+    let progress_bar = indicatif::ProgressBar::new(WAIT.as_secs()).with_style(
+        indicatif::ProgressStyle::with_template(&format!(
+            "[{{bar:15}}] {{elapsed}}/{}",
+            indicatif::HumanDuration(WAIT)
+        ))?
+        .progress_chars("%%-"),
+    );
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.tick().await;
+    let () = progress_bar
+        .wrap_stream(IntervalStream::new(interval))
+        .map(|_| ())
+        .take(WAIT.as_secs() as usize)
+        .collect()
+        .await;
+    Ok(())
+}
+
 async fn fund_enforcer(post_setup: &mut PostSetup, mining_mode: MiningMode) -> anyhow::Result<()> {
     const BLOCKS: u32 = 100;
     let progress_bar = indicatif::ProgressBar::new(BLOCKS as u64).with_style(
@@ -832,23 +844,7 @@ async fn fund_enforcer(post_setup: &mut PostSetup, mining_mode: MiningMode) -> a
         }
     };
     tracing::debug!("Waiting for wallet sync...");
-    // Wait 15s for a re-sync
-    const WAIT: Duration = Duration::from_secs(15);
-    let progress_bar = indicatif::ProgressBar::new(WAIT.as_secs()).with_style(
-        indicatif::ProgressStyle::with_template(&format!(
-            "[{{bar:15}}] {{elapsed}}/{}",
-            indicatif::HumanDuration(WAIT)
-        ))?
-        .progress_chars("%%-"),
-    );
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-    interval.tick().await;
-    let () = progress_bar
-        .wrap_stream(IntervalStream::new(interval))
-        .map(|_| ())
-        .take(WAIT.as_secs() as usize)
-        .collect()
-        .await;
+    let () = wait_for_wallet_sync().await?;
     Ok(())
 }
 
@@ -918,6 +914,8 @@ async fn deposit(post_setup: &mut PostSetup, mining_mode: MiningMode) -> anyhow:
         anyhow::bail!("Expected a deposit txid")
     };
     tracing::debug!("Deposit TXID: {deposit_txid}");
+    // Wait for deposit tx to enter mempool
+    sleep(std::time::Duration::from_secs(1)).await;
     tracing::debug!("Mining 1 sidechain block");
     let () =
         mine_check_block_events(
@@ -1191,6 +1189,12 @@ async fn test_task(
     tracing::info!("Activated sidechain successfully");
     let () = fund_enforcer(&mut post_setup, mode.mining_mode()).await?;
     tracing::info!("Funded enforcer successfully");
+    let () = deposit(&mut post_setup, mode.mining_mode()).await?;
+    tracing::info!("Deposited to sidechain successfully");
+    // Wait for mempool to catch up before attempting second deposit
+    tracing::debug!("Waiting for wallet sync...");
+    let () = wait_for_wallet_sync().await?;
+    tracing::info!("Attempting second deposit");
     let () = deposit(&mut post_setup, mode.mining_mode()).await?;
     tracing::info!("Deposited to sidechain successfully");
     match mode.mining_mode() {
