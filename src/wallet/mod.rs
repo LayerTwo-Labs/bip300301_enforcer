@@ -577,11 +577,17 @@ impl WalletInner {
         tracing::trace!("starting wallet sync");
 
         // Don't error out here if the wallet is locked, just skip the sync.
-        let mut wallet_write = if let Ok(wallet_write) = self.write_wallet() {
-            wallet_write
-        } else {
-            tracing::trace!("wallet is locked, skipping sync");
-            return Ok(());
+        let mut wallet_write = match self.write_wallet() {
+            Ok(wallet_write) => wallet_write,
+
+            // "Accepted" errors, that aren't really errors in this case.
+            Err(WalletInitialization::NotUnlocked | WalletInitialization::NotFound) => {
+                tracing::trace!("sync: skipping sync due to wallet error");
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(miette!("sync: failed to acquire write lock: {err:#}"));
+            }
         };
 
         let mut last_sync_write = self.last_sync.write();
