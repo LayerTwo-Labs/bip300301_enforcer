@@ -4,24 +4,53 @@ use std::{
     path::PathBuf,
 };
 
-use clap::Args;
 use futures::TryFutureExt as _;
+use thiserror::Error;
 use tokio::task::JoinHandle;
 
-#[derive(Args, Clone, Debug)]
+#[derive(Debug, Error)]
+#[error("Error resolving environment variable (`{key}`): {err:#}")]
+pub struct VarError {
+    key: String,
+    err: std::env::VarError,
+}
+
+impl VarError {
+    fn new(key: impl std::fmt::Display, err: std::env::VarError) -> Self {
+        Self {
+            key: key.to_string(),
+            err,
+        }
+    }
+}
+
+/// Fetches the environment variable key from the current process
+pub fn get_env_var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
+    std::env::var(&key).map_err(|err| VarError::new(key.as_ref().to_string_lossy(), err))
+}
+
+#[derive(Clone, Debug)]
 pub struct BinPaths {
-    #[arg(long)]
     pub bitcoind: PathBuf,
-    #[arg(long)]
     pub bitcoin_cli: PathBuf,
-    #[arg(long)]
     pub bitcoin_util: PathBuf,
-    #[arg(long)]
     pub bip300301_enforcer: PathBuf,
-    #[arg(long)]
     pub electrs: PathBuf,
-    #[arg(long)]
     pub signet_miner: PathBuf,
+}
+
+impl BinPaths {
+    /// Read from environment variables
+    pub fn from_env() -> Result<Self, VarError> {
+        Ok(Self {
+            bitcoind: get_env_var("BITCOIND")?.into(),
+            bitcoin_cli: get_env_var("BITCOIN_CLI")?.into(),
+            bitcoin_util: get_env_var("BITCOIN_UTIL")?.into(),
+            bip300301_enforcer: get_env_var("BIP300301_ENFORCER")?.into(),
+            electrs: get_env_var("ELECTRS")?.into(),
+            signet_miner: get_env_var("SIGNET_MINER")?.into(),
+        })
+    }
 }
 
 pub struct AsyncTrial<Fut> {

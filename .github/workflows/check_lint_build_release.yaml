@@ -104,19 +104,13 @@ jobs:
       - name: Run integration tests
         id: runIntegrationTests
         run: |
-          BIP300301_ENFORCER='target/debug/bip300301_enforcer'
-          BITCOIND='../bitcoin-patched-bins/bitcoind'
-          BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
-          BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
-          ELECTRS='../electrs/target/release/electrs'
-          SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
-          cargo run --example integration_tests -- \
-            --bip300301-enforcer "${BIP300301_ENFORCER}" \
-            --bitcoind "${BITCOIND}" \
-            --bitcoin-cli "${BITCOIN_CLI}" \
-            --bitcoin-util "${BITCOIN_UTIL}" \
-            --electrs "${ELECTRS}" \
-            --signet-miner "${SIGNET_MINER}"
+          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          export BITCOIND='../bitcoin-patched-bins/bitcoind'
+          export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
+          export BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
+          export ELECTRS='../electrs/target/release/electrs'
+          export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
+          cargo run --example integration_tests
 
   test-build-release:
     strategy:
