@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::types::{
     BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
-    SidechainProposalId, TwoWayPegData,
+    SidechainProposalId, TreasuryUtxo, TwoWayPegData,
 };
 
 pub mod cusf_enforcer;
@@ -289,17 +289,31 @@ impl Validator {
         Ok(res)
     }
 
-    /// Returns the value and sidechain number for a Ctip outpoint,
-    /// if it exists. Returns an error otherwise
-    pub fn get_ctip_value(
+    /// Returns the sidechain number, value, and sequence for a Ctip outpoint,
+    /// if it exists
+    pub fn try_get_ctip_value_seq(
         &self,
         outpoint: &OutPoint,
-    ) -> Result<(SidechainNumber, Amount), miette::Report> {
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs
             .active_sidechains
-            .ctip_outpoint_to_value()
-            .get(&rotxn, outpoint)
+            .ctip_outpoint_to_value_seq()
+            .try_get(&rotxn, outpoint)
+            .into_diagnostic()
+    }
+
+    /// Get treasury UTXO by sequence number
+    pub fn get_treasury_utxo(
+        &self,
+        sidechain_number: SidechainNumber,
+        sequence: u64,
+    ) -> Result<TreasuryUtxo, miette::Report> {
+        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+        self.dbs
+            .active_sidechains
+            .slot_sequence_to_treasury_utxo()
+            .get(&rotxn, &(sidechain_number, sequence))
             .into_diagnostic()
     }
 

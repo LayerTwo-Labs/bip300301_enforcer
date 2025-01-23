@@ -108,9 +108,6 @@ pub(in crate::validator) enum HandleFailedM6Ids {
 pub(in crate::validator) enum HandleM5M6 {
     #[error(transparent)]
     #[fatal]
-    DbPut(#[from] db_error::Put),
-    #[error(transparent)]
-    #[fatal]
     DbTryGet(#[from] db_error::TryGet),
     #[error("Invalid M6")]
     InvalidM6,
@@ -118,6 +115,9 @@ pub(in crate::validator) enum HandleM5M6 {
     M6id(#[from] crate::messages::M6idError),
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
     OldCtipUnspent { sidechain_number: SidechainNumber },
+    #[error(transparent)]
+    #[fatal]
+    PutCtip(#[from] dbs::PutCtipError),
     #[error(transparent)]
     #[fatal]
     TryWithPendingWithdrawals(#[from] dbs::TryWithPendingWithdrawalsError),

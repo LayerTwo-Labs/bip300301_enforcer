@@ -21,8 +21,8 @@ use crate::{
     types::{
         BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
         SidechainNumber, SidechainProposal, SidechainProposalId, SidechainProposalStatus,
-        TreasuryUtxo, WithdrawalBundleEvent, WithdrawalBundleEventKind,
-        WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
+        WithdrawalBundleEvent, WithdrawalBundleEventKind, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD,
+        WITHDRAWAL_BUNDLE_MAX_AGE,
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
 };
@@ -324,7 +324,7 @@ fn handle_m5_m6(
 ) -> Result<Option<DepositOrSuccessfulWithdrawal>, error::HandleM5M6> {
     let txid = transaction.compute_txid();
     // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
-    let (sidechain_number, new_ctip, new_treasury_value) = {
+    let (sidechain_number, new_ctip) = {
         let Some(treasury_output) = transaction.output.first() else {
             return Ok(None);
         };
@@ -334,8 +334,11 @@ fn handle_m5_m6(
         if let Ok((_input, sidechain_number)) =
             parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
         {
-            let new_ctip = OutPoint { txid, vout: 0 };
-            (sidechain_number, new_ctip, treasury_output.value)
+            let new_ctip = Ctip {
+                outpoint: OutPoint { txid, vout: 0 },
+                value: treasury_output.value,
+            };
+            (sidechain_number, new_ctip)
         } else {
             return Ok(None);
         }
@@ -358,22 +361,7 @@ fn handle_m5_m6(
             Amount::ZERO
         }
     };
-    let treasury_utxo = TreasuryUtxo {
-        sidechain_number,
-        outpoint: new_ctip,
-        total_value: new_treasury_value,
-        previous_total_value: old_treasury_value,
-    };
-
-    let treasury_utxo_count = dbs
-        .active_sidechains
-        .treasury_utxo_count
-        .try_get(rwtxn, &sidechain_number)?
-        .unwrap_or(0);
-    // Sequence numbers begin at 0, so the total number of treasury utxos in the database
-    // gives us the *next* sequence number.
-    let sequence_number = treasury_utxo_count;
-    let res = match new_treasury_value.cmp(&old_treasury_value) {
+    match new_ctip.value.cmp(&old_treasury_value) {
         // M6
         Ordering::Less => {
             if transaction.input.len() != 1 {
@@ -382,7 +370,11 @@ fn handle_m5_m6(
             let (m6id, sidechain_number_) =
                 handle_m6(rwtxn, dbs, transaction.into_owned(), old_treasury_value)?;
             assert_eq!(sidechain_number, sidechain_number_);
-            Either::Right((sidechain_number, m6id, sequence_number))
+            let sequence_number =
+                dbs.active_sidechains
+                    .put_ctip(rwtxn, sidechain_number, &new_ctip)?;
+            let res = Either::Right((sidechain_number, m6id, sequence_number));
+            Ok(Some(res))
         }
         // M5
         Ordering::Greater => {
@@ -394,38 +386,23 @@ fn handle_m5_m6(
             else {
                 return Ok(None);
             };
+            let sequence_number =
+                dbs.active_sidechains
+                    .put_ctip(rwtxn, sidechain_number, &new_ctip)?;
             let deposit = Deposit {
                 sequence_number,
                 sidechain_id: sidechain_number,
-                outpoint: new_ctip,
+                outpoint: new_ctip.outpoint,
                 address,
-                value: new_treasury_value - old_treasury_value,
+                value: new_ctip.value - old_treasury_value,
             };
-            Either::Left(deposit)
+            Ok(Some(Either::Left(deposit)))
         }
         Ordering::Equal => {
             // FIXME: is it ok to treat this as a regular TX?
-            return Ok(None);
+            Ok(None)
         }
-    };
-    dbs.active_sidechains.slot_sequence_to_treasury_utxo.put(
-        rwtxn,
-        &(sidechain_number, sequence_number),
-        &treasury_utxo,
-    )?;
-    let new_treasury_utxo_count = treasury_utxo_count + 1;
-    dbs.active_sidechains.treasury_utxo_count.put(
-        rwtxn,
-        &sidechain_number,
-        &new_treasury_utxo_count,
-    )?;
-    let new_ctip = Ctip {
-        outpoint: new_ctip,
-        value: new_treasury_value,
-    };
-    dbs.active_sidechains
-        .put_ctip(rwtxn, sidechain_number, &new_ctip)?;
-    Ok(Some(res))
+    }
 }
 
 /// Handles a (potential) M8 BMM request.

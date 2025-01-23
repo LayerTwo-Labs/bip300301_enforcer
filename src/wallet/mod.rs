@@ -1272,14 +1272,14 @@ impl Wallet {
                     // Just collect the inputs - we'll get their values using getrawtransaction later
                     let inputs = tx.input.clone();
 
-                    (txid, chain_position, output_ownership, inputs)
+                    (txid, tx, chain_position, output_ownership, inputs)
                 })
                 .collect::<Vec<_>>()
         };
 
         // Calculate fees, received, and sent amounts
         let mut txs = Vec::new();
-        for (txid, chain_position, output_ownership, inputs) in wallet_data {
+        for (txid, tx, chain_position, output_ownership, inputs) in wallet_data {
             let mut input_value = Amount::ZERO;
             let mut output_value = Amount::ZERO;
             let mut received = Amount::ZERO;
@@ -1335,6 +1335,7 @@ impl Wallet {
 
             txs.push(BDKWalletTransaction {
                 txid,
+                tx,
                 chain_position,
                 fee,
                 received: final_received,
