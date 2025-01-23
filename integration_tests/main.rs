@@ -1,8 +1,6 @@
+use bip300301_enforcer_integration_tests::util::BinPaths;
 use clap::Parser;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
-
-mod integration_test;
-mod util;
 
 #[derive(Parser)]
 struct Cli {
@@ -84,7 +82,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     // Create a list of tests
     let mut tests = Vec::<libtest_mimic::Trial>::new();
     tests.extend(
-        integration_test::tests(&util::BinPaths::from_env()?)
+        integration_test::tests(&BinPaths::from_env()?)
             .into_iter()
             .map(|trial| trial.run_blocking(rt_handle.clone())),
     );

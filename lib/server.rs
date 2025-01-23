@@ -86,7 +86,7 @@ trait IntoStatus {
 
 impl IntoStatus for crate::proto::Error {
     fn into_status(self) -> tonic::Status {
-        let err = anyhow::Error::from(self);
+        let err = miette::Report::from(self);
         tonic::Status::invalid_argument(format!("{err:#}"))
     }
 }

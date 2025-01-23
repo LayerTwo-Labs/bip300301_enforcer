@@ -1,0 +1,69 @@
+[package]
+name = "bip300301_enforcer_lib"
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[build-dependencies]
+prost = "0.13.2"
+prost-build = "0.13.3"
+protox = "0.7.1"
+tonic-build = "0.12.3"
+
+[dependencies]
+aes-gcm = "0.10.3"
+argon2 = "0.5.3"
+async-broadcast = "0.7.1"
+bdk_electrum = "0.20.1"
+bdk_wallet = { workspace = true, features = ["file_store", "keys-bip39"] }
+bincode = "1.3.3"
+bip300301 = { workspace = true }
+bitcoin = { workspace = true }
+bitcoin-send-tx-p2p = { workspace = true }
+blake3 = "1.5.4"
+byteorder = "1.5.0"
+clap = { workspace = true, features = ["derive"] }
+cusf-enforcer-mempool = { workspace = true }
+derive_more = { version = "1.0.0", features = ["debug", "display"] }
+ed25519-dalek-bip32 = "0.3.0"
+either = { workspace = true }
+fallible-iterator = "0.3.0"
+fatality = "0.1.1"
+futures = { workspace = true }
+hashlink = { version = "0.10.0", features = ["serde_impl"] }
+heed = "0.21.0"
+hex = { workspace = true }
+jsonrpsee = { workspace = true }
+miette = { workspace = true, features = ["derive"] }
+nom = "7.1.3"
+nonempty = "0.11.0"
+ordermap = { version = "0.5.3", features = ["serde"] }
+ouroboros = { workspace = true }
+parking_lot = { version = "0.12.3", features = ["send_guard"] }
+prost = "0.13.2"
+prost-types = "0.13.3"
+rand = "0.8.5"
+regex = "1.11.0"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite_migration = "1.3.1"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_path_to_error = "0.1.16"
+thiserror = { workspace = true }
+tokio = { workspace = true , features = ["macros"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+zeromq = "0.4.1"
+
+[dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "bip300301_enforcer_lib"
+path = "lib.rs"
