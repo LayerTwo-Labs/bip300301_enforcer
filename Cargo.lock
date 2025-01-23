@@ -494,10 +494,65 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer"
-version = "0.2.0"
+version = "0.3.0"
+dependencies = [
+ "bip300301",
+ "bip300301_enforcer_lib",
+ "bitcoin",
+ "clap",
+ "cusf-enforcer-mempool",
+ "either",
+ "futures",
+ "jsonrpsee",
+ "miette",
+ "tokio",
+ "tonic",
+ "tonic-health",
+ "tonic-reflection",
+ "tower 0.5.2",
+ "tower-http",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "bip300301_enforcer_integration_tests"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bdk_wallet",
+ "bip300301",
+ "bip300301_enforcer_lib",
+ "bitcoin",
+ "cfg-if",
+ "clap",
+ "cusf-enforcer-mempool",
+ "dotenvy",
+ "futures",
+ "hex",
+ "indicatif",
+ "jsonrpsee",
+ "libtest-mimic",
+ "miniscript",
+ "reserve-port",
+ "serde_json",
+ "strum",
+ "temp-dir",
+ "thiserror 2.0.11",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-indicatif",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "bip300301_enforcer_lib"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
- "anyhow",
  "argon2",
  "async-broadcast",
  "bdk_electrum",
@@ -508,12 +563,9 @@ dependencies = [
  "bitcoin-send-tx-p2p",
  "blake3",
  "byteorder",
- "cfg-if",
  "clap",
  "cusf-enforcer-mempool",
- "cusf_sidechain_types",
  "derive_more",
- "dotenvy",
  "ed25519-dalek-bip32",
  "educe",
  "either",
@@ -523,11 +575,8 @@ dependencies = [
  "hashlink 0.10.0",
  "heed",
  "hex",
- "indicatif",
  "jsonrpsee",
- "libtest-mimic",
  "miette",
- "miniscript",
  "nom",
  "nonempty",
  "ordermap",
@@ -539,27 +588,16 @@ dependencies = [
  "protox",
  "rand",
  "regex",
- "reserve-port",
  "rusqlite",
  "rusqlite_migration",
  "serde",
- "serde_json",
  "serde_path_to_error",
- "strum",
- "temp-dir",
  "thiserror 2.0.11",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-build",
- "tonic-health",
- "tonic-reflection",
- "tower 0.5.2",
- "tower-http",
  "tracing",
- "tracing-appender",
- "tracing-indicatif",
- "tracing-subscriber",
  "zeromq",
 ]
 
@@ -710,16 +748,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2506947f73ad44e344215ccd6403ac2ae18cd8e046e581a441bf8d199f257f03"
 dependencies = [
  "cfg_aliases",
-]
-
-[[package]]
-name = "bs58"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
-dependencies = [
- "sha2",
- "tinyvec",
 ]
 
 [[package]]
@@ -1038,18 +1066,6 @@ dependencies = [
  "tracing",
  "typewit",
  "zeromq",
-]
-
-[[package]]
-name = "cusf_sidechain_types"
-version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf_sidechain_types#b608d2e0d7459ed6be2c4ed605df3770e7e4f70f"
-dependencies = [
- "bincode",
- "bitcoin",
- "blake3",
- "bs58",
- "serde",
 ]
 
 [[package]]
@@ -4298,9 +4314,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-indicatif"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74ba258e9de86447f75edf6455fded8e5242704c6fccffe7bf8d7fb6daef1180"
+checksum = "8201ca430e0cd893ef978226fd3516c06d9c494181c8bf4e5b32e30ed4b40aa1"
 dependencies = [
  "indicatif",
  "tracing",

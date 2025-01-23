@@ -1,0 +1,33 @@
+[package]
+name = "bip300301_enforcer"
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+bip300301 = { workspace = true }
+bip300301_enforcer_lib = { path = "../lib" }
+bitcoin = { workspace = true }
+clap = { workspace = true }
+cusf-enforcer-mempool = { workspace = true }
+either = { workspace = true }
+futures = { workspace = true }
+jsonrpsee = { workspace = true, features = ["server"] }
+miette = { workspace = true, features = ["fancy"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tonic = { workspace = true }
+tonic-health = "0.12.3"
+tonic-reflection = "0.12.3"
+tower = "0.5.1"
+tower-http = { version = "0.6.1", features = ["trace"] }
+tracing = { workspace = true }
+tracing-appender = "0.2.3"
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "bip300301_enforcer"
+path = "main.rs"

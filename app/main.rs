@@ -368,7 +368,7 @@ fn task(
                 let network_info = match mainchain_client.get_network_info().await {
                     Ok(network_info) => network_info,
                     Err(err) => {
-                        let err = anyhow::Error::from(err);
+                        let err = miette::Report::from_err(err);
                         tracing::error!("failed to get network info: {err:#}");
                         return;
                     }

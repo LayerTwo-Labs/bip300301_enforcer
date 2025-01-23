@@ -25,13 +25,13 @@ where
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    const COMMON_PROTO: &str = "cusf_sidechain_proto/proto/cusf/common/v1/common.proto";
-    const CRYPTO_PROTO: &str = "cusf_sidechain_proto/proto/cusf/crypto/v1/crypto.proto";
+    const COMMON_PROTO: &str = "../cusf_sidechain_proto/proto/cusf/common/v1/common.proto";
+    const CRYPTO_PROTO: &str = "../cusf_sidechain_proto/proto/cusf/crypto/v1/crypto.proto";
     const MAINCHAIN_COMMON_PROTO: &str =
-        "cusf_sidechain_proto/proto/cusf/mainchain/v1/common.proto";
-    const SIDECHAIN_PROTO: &str = "cusf_sidechain_proto/proto/cusf/sidechain/v1/sidechain.proto";
-    const VALIDATOR_PROTO: &str = "cusf_sidechain_proto/proto/cusf/mainchain/v1/validator.proto";
-    const WALLET_PROTO: &str = "cusf_sidechain_proto/proto/cusf/mainchain/v1/wallet.proto";
+        "../cusf_sidechain_proto/proto/cusf/mainchain/v1/common.proto";
+    const SIDECHAIN_PROTO: &str = "../cusf_sidechain_proto/proto/cusf/sidechain/v1/sidechain.proto";
+    const VALIDATOR_PROTO: &str = "../cusf_sidechain_proto/proto/cusf/mainchain/v1/validator.proto";
+    const WALLET_PROTO: &str = "../cusf_sidechain_proto/proto/cusf/mainchain/v1/wallet.proto";
     const ALL_PROTOS: &[&str] = &[
         COMMON_PROTO,
         CRYPTO_PROTO,
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         VALIDATOR_PROTO,
         WALLET_PROTO,
     ];
-    const INCLUDES: &[&str] = &["cusf_sidechain_proto/proto"];
+    const INCLUDES: &[&str] = &["../cusf_sidechain_proto/proto"];
     let file_descriptors = protox::compile(ALL_PROTOS, INCLUDES)?;
     let file_descriptor_path =
         PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set"))

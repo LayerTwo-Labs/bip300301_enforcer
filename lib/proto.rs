@@ -4,7 +4,7 @@ use thiserror::Error;
 pub static ENCODED_FILE_DESCRIPTOR_SET: &[u8] =
     tonic::include_file_descriptor_set!("file_descriptor_set");
 
-#[derive(Debug, Error)]
+#[derive(miette::Diagnostic, Debug, Error)]
 pub enum Error {
     #[error("Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`")]
     InvalidEnumVariant {
