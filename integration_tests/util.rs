@@ -12,11 +12,11 @@ use tokio::task::JoinHandle;
 #[error("Error resolving environment variable (`{key}`): {err:#}")]
 pub struct VarError {
     key: String,
-    err: std::env::VarError,
+    err: dotenvy::Error,
 }
 
 impl VarError {
-    fn new(key: impl std::fmt::Display, err: std::env::VarError) -> Self {
+    pub fn new(key: impl std::fmt::Display, err: dotenvy::Error) -> Self {
         Self {
             key: key.to_string(),
             err,
@@ -26,7 +26,7 @@ impl VarError {
 
 /// Fetches the environment variable key from the current process
 pub fn get_env_var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
-    std::env::var(&key).map_err(|err| VarError::new(key.as_ref().to_string_lossy(), err))
+    dotenvy::var(&key).map_err(|err| VarError::new(key.as_ref().to_string_lossy(), err))
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +85,7 @@ impl<Fut> AsyncTrial<Fut> {
 }
 
 /// Wrapper around `JoinHandle` that aborts the task on drop
+#[derive(Debug)]
 #[repr(transparent)]
 pub struct AbortOnDrop<T>(JoinHandle<T>);
 

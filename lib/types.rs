@@ -481,7 +481,7 @@ impl From<BlindedM6FeeOutputError> for BlindedM6Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BlindedM6<'a> {
     fee: Amount,
     /// MUST be non-zero
