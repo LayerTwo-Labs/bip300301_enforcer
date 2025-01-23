@@ -529,6 +529,7 @@ dependencies = [
  "clap",
  "cusf-enforcer-mempool",
  "dotenvy",
+ "either",
  "futures",
  "hex",
  "indicatif",

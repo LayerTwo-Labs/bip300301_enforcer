@@ -4,6 +4,10 @@ use thiserror::Error;
 pub static ENCODED_FILE_DESCRIPTOR_SET: &[u8] =
     tonic::include_file_descriptor_set!("file_descriptor_set");
 
+pub trait IntoStatus {
+    fn into_status(self) -> tonic::Status;
+}
+
 #[derive(miette::Diagnostic, Debug, Error)]
 pub enum Error {
     #[error("Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`")]
@@ -84,6 +88,19 @@ impl Error {
             field_name: field_name.to_owned(),
             message_name: Message::full_name(),
         }
+    }
+}
+
+impl From<Error> for tonic::Status {
+    fn from(err: Error) -> Self {
+        let err = miette::Report::from(err);
+        tonic::Status::invalid_argument(format!("{err:#}"))
+    }
+}
+
+impl IntoStatus for Error {
+    fn into_status(self) -> tonic::Status {
+        self.into()
     }
 }
 

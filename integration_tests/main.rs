@@ -1,4 +1,4 @@
-use bip300301_enforcer_integration_tests::util::BinPaths;
+use bip300301_enforcer_integration_tests::{integration_test, util::BinPaths};
 use clap::Parser;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 

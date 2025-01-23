@@ -13,6 +13,8 @@ bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 cfg-if = "1.0.0"
 cusf-enforcer-mempool = { workspace = true }
+dotenvy = "0.15.7"
+either = "1.13.0"
 futures = { workspace = true }
 hex = { workspace = true }
 indicatif = { version = "0.17.9", features = ["futures"] }
@@ -32,7 +34,6 @@ tokio-stream = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }
-dotenvy = "0.15.7"
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

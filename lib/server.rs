@@ -53,6 +53,7 @@ use crate::{
             SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
             UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
         },
+        IntoStatus,
     },
     types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
@@ -68,27 +69,14 @@ where
     Message: prost::Name,
     Error: std::error::Error + Send + Sync + 'static,
 {
-    let err = crate::proto::Error::invalid_field_value::<Message, _>(field_name, value, source);
-    tonic::Status::invalid_argument(err.to_string())
+    crate::proto::Error::invalid_field_value::<Message, _>(field_name, value, source).into()
 }
 
 fn missing_field<Message>(field_name: &str) -> tonic::Status
 where
     Message: prost::Name,
 {
-    let err = crate::proto::Error::missing_field::<Message>(field_name);
-    tonic::Status::invalid_argument(err.to_string())
-}
-
-trait IntoStatus {
-    fn into_status(self) -> tonic::Status;
-}
-
-impl IntoStatus for crate::proto::Error {
-    fn into_status(self) -> tonic::Status {
-        let err = miette::Report::from(self);
-        tonic::Status::invalid_argument(format!("{err:#}"))
-    }
+    crate::proto::Error::missing_field::<Message>(field_name).into()
 }
 
 // The idea here is to centralize conversion of lower layer errors into something meaningful
@@ -140,7 +128,7 @@ impl IntoStatus for miette::Report {
             // https://github.com/bitcoin/bitcoin/blob/4036ee3f2bf587775e6f388a9bfd2bcdb8fecf1d/src/rpc/protocol.h#L80
             const BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND: i32 = -18;
             match &source.error {
-                jsonrpsee::client::error::Error::Call(err)
+                jsonrpsee::client::Error::Call(err)
                     if err.code() == BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND
                         && err.message().contains("No wallet is loaded") =>
                 {
