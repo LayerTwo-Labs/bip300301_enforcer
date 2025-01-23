@@ -84,6 +84,7 @@ rev = "ea82b33947f60c511dac6eb3815b6af3f6c3f555"
 
 [dev-dependencies]
 cfg-if = "1.0.0"
+dotenvy = "0.15.7"
 indicatif = { version = "0.17.9", features = ["futures"] }
 libtest-mimic = "0.8.1"
 miniscript = "12.3.0"

@@ -6,9 +6,6 @@ mod util;
 
 #[derive(Parser)]
 struct Cli {
-    /// Path to the enforcer binary
-    #[command(flatten)]
-    bin_paths: util::BinPaths,
     #[command(flatten)]
     test_args: libtest_mimic::Arguments,
 }
@@ -77,10 +74,17 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     let args = Cli::parse();
     let () = set_tracing_subscriber(tracing::Level::DEBUG)?;
     let rt_handle = tokio::runtime::Handle::current();
+    // Read env vars
+    if let Some(env_filepath) = std::env::var_os("BIP300301_ENFORCER_INTEGRATION_TEST_ENV") {
+        let env_filepath: &std::path::Path = env_filepath.as_ref();
+        tracing::info!("Adding env vars from `{}`", env_filepath.display());
+        dotenvy::from_filename_override(env_filepath)?;
+    }
+
     // Create a list of tests
     let mut tests = Vec::<libtest_mimic::Trial>::new();
     tests.extend(
-        integration_test::tests(&args.bin_paths)
+        integration_test::tests(&util::BinPaths::from_env()?)
             .into_iter()
             .map(|trial| trial.run_blocking(rt_handle.clone())),
     );
