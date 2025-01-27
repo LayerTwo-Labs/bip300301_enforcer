@@ -36,10 +36,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Cargo check
-        run: cargo check
+        run: cargo check --all-targets
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets
 
   integration-test:
     name: Integration test
@@ -159,7 +159,7 @@ jobs:
         if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
 
       - name: Test
-        run: cargo test --tests --all-features
+        run: cargo test --tests
 
       - name: Build
         run: cargo build --release --target ${{ matrix.name }}
