@@ -7,7 +7,7 @@ version.workspace = true
 
 [dependencies]
 bip300301 = { workspace = true }
-bip300301_enforcer_lib = { path = "../lib" }
+bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 clap = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
@@ -24,6 +24,11 @@ tower-http = { version = "0.6.1", features = ["trace"] }
 tracing = { workspace = true }
 tracing-appender = "0.2.3"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[features]
+default = ["rustls"]
+openssl = ["bip300301_enforcer_lib/openssl"]
+rustls = ["bip300301_enforcer_lib/rustls"]
 
 [lints]
 workspace = true

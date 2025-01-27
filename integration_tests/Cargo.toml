@@ -9,7 +9,7 @@ version.workspace = true
 anyhow = "1.0.89"
 bdk_wallet = { workspace = true }
 bip300301 = { workspace = true }
-bip300301_enforcer_lib = { path = "../lib" }
+bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 cfg-if = "1.0.0"
 cusf-enforcer-mempool = { workspace = true }
@@ -35,6 +35,11 @@ clap = { workspace = true }
 dotenvy = "0.15.7"
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[features]
+default = ["rustls"]
+openssl = ["bip300301_enforcer_lib/openssl"]
+rustls = ["bip300301_enforcer_lib/rustls"]
 
 [lints]
 workspace = true
