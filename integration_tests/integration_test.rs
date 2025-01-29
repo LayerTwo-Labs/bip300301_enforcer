@@ -311,7 +311,7 @@ where
 }
 
 // Upvote the next withdrawal bundle so that it succeeds
-async fn withdraw_succeed<S>(
+pub async fn withdraw_succeed<S>(
     post_setup: &mut PostSetup,
     sidechain: &mut S,
     pending_withdrawal_value: Amount,
