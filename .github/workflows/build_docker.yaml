@@ -53,7 +53,9 @@ jobs:
       - name: Build (and maybe push) Docker image
         uses: docker/build-push-action@v6
         with:
-          push: true
+          # Only push if this is not a PR from a fork
+          # prettier-ignore
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           tags: ${{ steps.meta.outputs.tags }}
           # Caching Docker builds on CI is an eternally
           # difficult task. From the official docs:
