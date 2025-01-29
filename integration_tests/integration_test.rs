@@ -166,28 +166,31 @@ where
     Ok(())
 }
 
-async fn deposit<S>(
+const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
+const DEPOSIT_FEE: bitcoin::Amount = bitcoin::Amount::from_sat(1_000_000);
+
+pub async fn deposit<S>(
     post_setup: &mut PostSetup,
     sidechain: &mut S,
     sidechain_address: &str,
+    deposit_amount: bitcoin::Amount,
+    deposit_fee: bitcoin::Amount,
 ) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
-    const DEPOSIT_AMOUNT_SATS: u64 = 21_000_000;
-    const DEPOSIT_FEE_SATS: u64 = 1_000_000;
     tracing::info!(
-        "Creating deposit for `{}` sats, with `{}` sats fee",
-        DEPOSIT_AMOUNT_SATS,
-        DEPOSIT_FEE_SATS
+        deposit_amount = %deposit_amount.display_dynamic(),
+        deposit_fee = %deposit_fee.display_dynamic(),
+        "Creating deposit",
     );
     let deposit_txid: bitcoin::Txid = post_setup
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
             sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
             address: Some(sidechain_address.to_owned()),
-            value_sats: Some(DEPOSIT_AMOUNT_SATS),
-            fee_sats: Some(DEPOSIT_FEE_SATS),
+            value_sats: Some(deposit_amount.to_sat()),
+            fee_sats: Some(deposit_fee.to_sat()),
         })
         .await?
         .into_inner()
@@ -209,12 +212,7 @@ where
     })
     .await?;
     let () = sidechain
-        .confirm_deposit(
-            post_setup,
-            sidechain_address,
-            bitcoin::Amount::from_sat(DEPOSIT_AMOUNT_SATS),
-            deposit_txid,
-        )
+        .confirm_deposit(post_setup, sidechain_address, deposit_amount, deposit_txid)
         .await?;
     Ok(())
 }
@@ -246,13 +244,18 @@ const WITHDRAW_AMOUNT_1: Amount = Amount::from_sat(18_000_000);
 const WITHDRAW_FEE_1: Amount = Amount::from_sat(1_000_000);
 
 // Create a withdrawal, and let it expire
-async fn withdraw_expire<S>(post_setup: &mut PostSetup, sidechain: &mut S) -> anyhow::Result<()>
+async fn withdraw_expire<S>(
+    post_setup: &mut PostSetup,
+    sidechain: &mut S,
+    withdraw_amount: Amount,
+    withdraw_fee: Amount,
+) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
     tracing::info!(
-        value = %WITHDRAW_AMOUNT_0.display_dynamic(),
-        fee = %WITHDRAW_FEE_0.display_dynamic(),
+        value = %withdraw_amount.display_dynamic(),
+        fee = %withdraw_fee.display_dynamic(),
         "Creating expiring withdrawal"
     );
     let receive_address = post_setup.receive_address.clone();
@@ -314,24 +317,21 @@ where
 pub async fn withdraw_succeed<S>(
     post_setup: &mut PostSetup,
     sidechain: &mut S,
+    withdraw_amount: Amount,
+    withdraw_fee: Amount,
     pending_withdrawal_value: Amount,
 ) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
     tracing::info!(
-        value = %WITHDRAW_AMOUNT_1.display_dynamic(),
-        fee = %WITHDRAW_FEE_1.display_dynamic(),
+        value = %withdraw_amount.display_dynamic(),
+        fee = %withdraw_fee.display_dynamic(),
         "Creating withdrawal"
     );
     let receive_address = post_setup.receive_address.clone();
     let m6id = sidechain
-        .create_withdrawal(
-            post_setup,
-            &receive_address,
-            WITHDRAW_AMOUNT_1,
-            WITHDRAW_FEE_1,
-        )
+        .create_withdrawal(post_setup, &receive_address, withdraw_amount, withdraw_fee)
         .await?;
     tracing::debug!("Mining 1 block to include M3 for withdrawal bundle");
     let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
@@ -392,7 +392,7 @@ where
         }
     })
     .await?;
-    let expected_withdrawal_value = pending_withdrawal_value + WITHDRAW_AMOUNT_1;
+    let expected_withdrawal_value = pending_withdrawal_value + withdraw_amount;
     tracing::debug!(
         expected = %expected_withdrawal_value.display_dynamic(),
         "Checking receive address balance"
@@ -433,23 +433,50 @@ where
     let () = fund_enforcer::<S>(&mut post_setup).await?;
     tracing::info!("Funded enforcer successfully");
     let deposit_address = sidechain.get_deposit_address().await?;
-    let () = deposit(&mut post_setup, &mut sidechain, &deposit_address).await?;
+    let () = deposit(
+        &mut post_setup,
+        &mut sidechain,
+        &deposit_address,
+        DEPOSIT_AMOUNT,
+        DEPOSIT_FEE,
+    )
+    .await?;
     tracing::info!("Deposited to sidechain successfully");
     // Wait for mempool to catch up before attempting second deposit
     tracing::debug!("Waiting for wallet sync...");
     let () = wait_for_wallet_sync().await?;
     tracing::info!("Attempting second deposit");
-    let () = deposit(&mut post_setup, &mut sidechain, &deposit_address).await?;
+    let () = deposit(
+        &mut post_setup,
+        &mut sidechain,
+        &deposit_address,
+        DEPOSIT_AMOUNT,
+        DEPOSIT_FEE,
+    )
+    .await?;
     tracing::info!("Deposited to sidechain successfully");
     let pending_withdrawal_value = match mode.mining_mode() {
         MiningMode::GenerateBlocks => {
-            let () = withdraw_expire(&mut post_setup, &mut sidechain).await?;
+            let () = withdraw_expire(
+                &mut post_setup,
+                &mut sidechain,
+                WITHDRAW_AMOUNT_0,
+                WITHDRAW_FEE_0,
+            )
+            .await?;
             tracing::info!("Withdrawal expired successfully");
             WITHDRAW_AMOUNT_0
         }
         MiningMode::GetBlockTemplate => Amount::ZERO,
     };
-    let () = withdraw_succeed(&mut post_setup, &mut sidechain, pending_withdrawal_value).await?;
+    let () = withdraw_succeed(
+        &mut post_setup,
+        &mut sidechain,
+        WITHDRAW_AMOUNT_1,
+        WITHDRAW_FEE_1,
+        pending_withdrawal_value,
+    )
+    .await?;
     tracing::info!("Withdrawal succeeded");
     drop(sidechain);
     tracing::info!("Removing {}", post_setup.out_dir.path().display());
