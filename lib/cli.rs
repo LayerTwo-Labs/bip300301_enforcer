@@ -1,11 +1,13 @@
 use std::{
+    borrow::Cow,
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     path::{Path, PathBuf},
 };
 
-use clap::{Args, Parser};
+use clap::{Args, Parser, ValueEnum};
 use thiserror::Error;
+use tracing_subscriber::fmt::format as tracing_format;
 
 const DEFAULT_NODE_RPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 18443));
@@ -57,6 +59,139 @@ fn get_data_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+// Sub-par location for the log file.
+// https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
+const DEFAULT_LOG_FILENAME: &str = "bip300301_enforcer.log";
+
+/// Possible formats for log output.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum LogFormat {
+    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/fmt/format/struct.Compact.html
+    #[default]
+    Compact,
+    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/fmt/format/struct.Full.html
+    Full,
+    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/fmt/format/struct.Json.html
+    Json,
+    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/fmt/format/struct.Pretty.html
+    Pretty,
+}
+
+/// Log formatter, equivalent to [`tracing_subscriber::fmt::format::Format`]
+#[derive(Clone, Copy, Debug)]
+pub struct LogFormatter {
+    format: LogFormat,
+    display_filename: Option<bool>,
+    display_line_number: Option<bool>,
+}
+
+impl LogFormatter {
+    pub fn with_file(mut self, display_filename: bool) -> Self {
+        self.display_filename = Some(display_filename);
+        self
+    }
+
+    pub fn with_line_number(mut self, display_line_number: bool) -> Self {
+        self.display_line_number = Some(display_line_number);
+        self
+    }
+
+    fn set_format_opts<F, T>(
+        &self,
+        mut format: tracing_format::Format<F, T>,
+    ) -> tracing_format::Format<F, T> {
+        if let Some(display_filename) = self.display_filename {
+            format = format.with_file(display_filename);
+        }
+        if let Some(display_line_number) = self.display_line_number {
+            format = format.with_line_number(display_line_number);
+        }
+        format
+    }
+}
+
+impl From<LogFormat> for LogFormatter {
+    fn from(format: LogFormat) -> Self {
+        Self {
+            format,
+            display_filename: None,
+            display_line_number: None,
+        }
+    }
+}
+
+impl<C, N> tracing_subscriber::fmt::FormatEvent<C, N> for LogFormatter
+where
+    C: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, C, N>,
+        writer: tracing_format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        use tracing_subscriber::fmt::format::{Format, Full};
+        let format: Format<Full> = Format::default();
+        match self.format {
+            LogFormat::Compact => self
+                .set_format_opts(format.compact())
+                .format_event(ctx, writer, event),
+            LogFormat::Full => self
+                .set_format_opts(format)
+                .format_event(ctx, writer, event),
+            LogFormat::Json => self
+                .set_format_opts(format.json())
+                .format_event(ctx, writer, event),
+            LogFormat::Pretty => self
+                .set_format_opts(format.pretty())
+                .format_event(ctx, writer, event),
+        }
+    }
+}
+
+#[derive(Clone, Args)]
+pub struct LoggerConfig {
+    /// File path to write logs to, in addition to stdout.
+    /// If none is provided, logs are written to `bip300301_enforcer.log`
+    /// in the data directory.
+    #[arg(long = "log-file")]
+    file: Option<PathBuf>,
+    /// Format for log output.
+    #[arg(default_value_t, long = "log-format", value_enum)]
+    format: LogFormat,
+    /// Log level.
+    /// Logs from most dependencies are filtered one level below the specified
+    /// log level, if a lower level exists.
+    /// For example, at the default log level `DEBUG`, logs from most
+    /// dependencies are only emitted if their level is `INFO` or lower.
+    /// Logger output is further configurable via the `RUST_LOG` environment
+    /// variable, using a directive of the form specified in
+    /// https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+    #[arg(default_value_t = tracing::Level::DEBUG, long = "log-level")]
+    pub level: tracing::Level,
+}
+
+#[derive(Clone, Args)]
+pub struct MiningConfig {
+    /// Path to the Python mining script from Bitcoin Core. If not set,
+    /// the mining script is downloaded from GitHub.
+    #[arg(long = "signet-miner-script-path")]
+    pub signet_mining_script_path: Option<PathBuf>,
+    /// If true, the signet mining script is run with `--debug` flag.
+    #[arg(long = "signet-miner-script-debug", default_value_t = false)]
+    pub signet_mining_script_debug: bool,
+    /// Path to the Bitcoin Core `bitcoin-util` binary. Defaults to `bitcoin-util`.
+    #[arg(
+        long = "signet-miner-bitcoin-util-path",
+        default_value = "bitcoin-util"
+    )]
+    pub bitcoin_util_path: PathBuf,
+    /// Path to the Bitcoin Core `bitcoin-cli` binary. Defaults to `bitcoin-cli`.
+    #[arg(long = "signet-miner-bitcoin-cli-path", default_value = "bitcoin-cli")]
+    pub bitcoin_cli_path: PathBuf,
+}
+
 #[derive(Args, Clone)]
 pub struct NodeRpcConfig {
     #[arg(
@@ -79,42 +214,17 @@ pub struct NodeRpcConfig {
 }
 
 #[derive(Clone, Args)]
-pub struct MiningConfig {
-    /// Path to the Python mining script from Bitcoin Core. If not set,
-    /// the mining script is downloaded from GitHub.
-    #[arg(long = "signet-miner-script-path")]
-    pub signet_mining_script_path: Option<PathBuf>,
-
-    /// If true, the signet mining script is run with `--debug` flag.
-    #[arg(long = "signet-miner-script-debug", default_value_t = false)]
-    pub signet_mining_script_debug: bool,
-
-    /// Path to the Bitcoin Core `bitcoin-util` binary. Defaults to `bitcoin-util`.
-    #[arg(
-        long = "signet-miner-bitcoin-util-path",
-        default_value = "bitcoin-util"
-    )]
-    pub bitcoin_util_path: PathBuf,
-
-    /// Path to the Bitcoin Core `bitcoin-cli` binary. Defaults to `bitcoin-cli`.
-    #[arg(long = "signet-miner-bitcoin-cli-path", default_value = "bitcoin-cli")]
-    pub bitcoin_cli_path: PathBuf,
-}
-
-#[derive(Clone, Args)]
 pub struct WalletConfig {
     /// If no existing wallet is found, automatically create and load
     /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
     #[arg(long = "wallet-auto-create", default_value_t = false)]
     pub auto_create: bool,
-
     /// If no host is provided, a default value is used based on the network
     /// we're on.
     ///
     /// Signet: drivechain.live, regtest: 127.0.0.1  
     #[arg(long = "wallet-electrum-host")]
     pub electrum_host: Option<String>,
-
     /// If no port is provided, a default value is used based on the network
     /// we're on.
     ///
@@ -139,20 +249,10 @@ pub struct Config {
     /// getblocktemplate.
     #[arg(long, default_value_t = false)]
     pub enable_mempool: bool,
-    /// Log level.
-    /// Logs from most dependencies are filtered one level below the specified
-    /// log level, if a lower level exists.
-    /// For example, at the default log level `DEBUG`, logs from most
-    /// dependencies are only emitted if their level is `INFO` or lower.
-    #[arg(default_value_t = tracing::Level::DEBUG, long)]
-    pub log_level: tracing::Level,
-
-    /// File path to write logs to, in addition to stdout.
-    /// If none is provided, logs are written to `bip300301_enforcer.log`
-    /// in the data directory.
-    #[arg(long)]
-    pub log_file: Option<PathBuf>,
-
+    #[command(flatten)]
+    pub logger_opts: LoggerConfig,
+    #[command(flatten)]
+    pub mining_opts: MiningConfig,
     #[command(flatten)]
     pub node_rpc_opts: NodeRpcConfig,
     /// Bitcoin node ZMQ endpoint for `sequence`
@@ -166,9 +266,6 @@ pub struct Config {
     pub serve_grpc_addr: SocketAddr,
     #[command(flatten)]
     pub wallet_opts: WalletConfig,
-
-    #[command(flatten)]
-    pub mining_opts: MiningConfig,
 }
 
 impl Config {
@@ -182,5 +279,16 @@ impl Config {
             rpc_host: self.node_rpc_opts.addr.ip().to_string(),
             rpc_wallet: None,
         }
+    }
+
+    pub fn log_file(&self) -> Cow<'_, Path> {
+        match &self.logger_opts.file {
+            Some(log_file) => Cow::Borrowed(log_file),
+            None => Cow::Owned(self.data_dir.join(DEFAULT_LOG_FILENAME)),
+        }
+    }
+
+    pub fn log_formatter(&self) -> LogFormatter {
+        self.logger_opts.format.into()
     }
 }
