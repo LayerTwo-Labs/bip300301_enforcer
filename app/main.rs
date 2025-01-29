@@ -12,7 +12,7 @@ use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 use bip300301_enforcer_lib::{
-    cli,
+    cli::{self, LogFormatter},
     p2p::compute_signet_magic,
     proto::{
         self,
@@ -60,6 +60,7 @@ where
 // exits.
 fn set_tracing_subscriber(
     log_file: &Path,
+    log_formatter: LogFormatter,
     log_level: tracing::Level,
 ) -> miette::Result<tracing_appender::non_blocking::WorkerGuard> {
     let targets_filter = {
@@ -79,12 +80,9 @@ fn set_tracing_subscriber(
             .parse(directives_str)
             .into_diagnostic()?
     };
-
     // If no writer is provided (as here!), logs end up at stdout.
     let mut stdout_layer = tracing_subscriber::fmt::layer()
-        .compact()
-        .with_file(true)
-        .with_line_number(true);
+        .event_format(log_formatter.with_file(true).with_line_number(true));
     let is_terminal = std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
     stdout_layer.set_ansi(is_terminal);
 
@@ -416,21 +414,14 @@ fn task(
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = cli::Config::parse();
-
-    // Sub-par location for the log file.
-    // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
-    let log_file = cli
-        .clone()
-        .log_file
-        .unwrap_or(cli.data_dir.join("bip300301_enforcer.log"));
-
+    let log_file = cli.log_file();
     // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
-    let _tracing_guard = set_tracing_subscriber(&log_file, cli.log_level)?;
-
+    let _tracing_guard =
+        set_tracing_subscriber(&log_file, cli.log_formatter(), cli.logger_opts.level)?;
     tracing::info!(
         data_dir = %cli.data_dir.display(),
         log_file = %log_file.display(),
-        "starting up bip300301_enforcer",
+        "Starting up bip300301_enforcer",
     );
 
     let mainchain_client =
