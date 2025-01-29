@@ -43,7 +43,7 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),
-            ("integration_tests", log_level),
+            ("bip300301_enforcer_integration_tests", log_level),
         ]);
         let directives_str = match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
             Ok(env_directives) => format!("{default_directives_str},{env_directives}"),

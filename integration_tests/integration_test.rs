@@ -90,7 +90,8 @@ where
     };
     let blocks_to_mine = 6;
     tracing::debug!("Mining {blocks_to_mine} blocks");
-    let _ = mine::<S>(post_setup, blocks_to_mine, Some(true)).await?;
+    let _ = mine_check_block_events::<_, S>(post_setup, blocks_to_mine, Some(true), |_, _| Ok(()))
+        .await?;
     tracing::debug!("Checking that exactly 1 sidechain is active");
     let sidechains_resp = post_setup
         .validator_service_client
@@ -508,7 +509,7 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<AsyncTrial<impl Future<Output = anyhow
     .map(|(network, mode)| {
         let bin_paths = bin_paths.clone();
         AsyncTrial::new(
-            format!("deposit_withdraw_roundtrip (mode = {mode}, network = {network})"),
+            format!("deposit_withdraw_roundtrip (mode: {mode}, network: {network})"),
             async move {
                 deposit_withdraw_roundtrip::<DummySidechain>(bin_paths, *network, *mode, ()).await
             },
