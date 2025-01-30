@@ -210,18 +210,9 @@ jobs:
       - name: Create zip files for releases.drivechain.info
         run: |
           shopt -s extglob
-          # Darwin
-          if [ -f bip300301-enforcer-latest-x86_64-apple-darwin ]; then
-            zip -r bip300301-enforcer-latest-x86_64-apple-darwin.zip bip300301-enforcer-latest-x86_64-apple-darwin
-          fi
-          # Windows
-          if [ -f bip300301-enforcer-latest-x86_64-pc-windows-gnu.exe ]; then
-            zip -r bip300301-enforcer-latest-x86_64-pc-windows-gnu.zip bip300301-enforcer-latest-x86_64-pc-windows-gnu.exe
-          fi
-          # Linux
-          if [ -f bip300301-enforcer-latest-x86_64-unknown-linux-gnu ]; then
-            zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu
-          fi
+          zip -r bip300301-enforcer-latest-x86_64-apple-darwin.zip bip300301-enforcer-latest-x86_64-apple-darwin
+          zip -r bip300301-enforcer-latest-x86_64-pc-windows-gnu.zip bip300301-enforcer-latest-x86_64-pc-windows-gnu.exe
+          zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
         uses: cross-the-world/ssh-scp-ssh-pipelines@latest
