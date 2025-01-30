@@ -21,7 +21,7 @@ impl CusfEnforcer for Wallet {
         self.inner.validator.clone().sync_to_tip(tip).await
     }
 
-    type ConnectBlockError = error::ConnectBlockError;
+    type ConnectBlockError = error::ConnectBlock;
 
     fn connect_block(
         &mut self,
@@ -33,7 +33,7 @@ impl CusfEnforcer for Wallet {
         );
         let res = self.inner.validator.clone().connect_block(block)?;
         let block_info = self.inner.validator.get_block_info(&block.block_hash())?;
-        let () = self.inner.handle_connect_block(block_info)?;
+        let () = self.inner.handle_connect_block(block, block_info)?;
         Ok(res)
     }
 

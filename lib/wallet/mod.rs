@@ -552,8 +552,12 @@ impl WalletInner {
 
     fn handle_connect_block(
         &self,
+        block: &bitcoin::Block,
         block_info: crate::types::BlockInfo,
-    ) -> Result<(), rusqlite::Error> {
+    ) -> Result<(), error::ConnectBlock> {
+        // Acquire a wallet lock immediately, so that it does not update
+        // while other dbs are being written to
+        let mut wallet_write = self.write_wallet()?;
         let finalized_withdrawal_bundles =
             block_info
                 .withdrawal_bundle_events()
@@ -570,6 +574,10 @@ impl WalletInner {
             .sidechain_proposals()
             .map(|(_vout, proposal)| proposal.compute_id());
         let () = self.delete_pending_sidechain_proposals(sidechain_proposal_ids)?;
+        wallet_write.apply_block(block, block.bip34_block_height()? as u32)?;
+        let mut database = self.bitcoin_db.lock();
+        wallet_write.persist(&mut database)?;
+        drop(wallet_write);
         Ok(())
     }
 

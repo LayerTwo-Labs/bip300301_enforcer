@@ -87,7 +87,7 @@ where
 // place to add logs for unexpected errors.
 impl IntoStatus for miette::Report {
     fn into_status(self) -> tonic::Status {
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::ElectrumError>() {
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::Electrum>() {
             return source.clone().into();
         }
 
@@ -120,7 +120,7 @@ impl IntoStatus for miette::Report {
             return tonic::Status::new(code, format!("{self:#}"));
         }
 
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::TonicStatusError>() {
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::TonicStatus>() {
             return source.into_status();
         }
 
