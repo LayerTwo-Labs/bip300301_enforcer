@@ -168,13 +168,16 @@ jobs:
 
       - name: "Set environment variables: version number and output filenames"
         run: |
+          # We still capture the version, but won't use it in the final binary name
           APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
-          APP_DIRNAME="bip300301_enforcer-${APP_VERSION}-${{ matrix.name }}"
+          # Use 'latest' in the filename instead of the version
+          APP_DIRNAME="bip300301-enforcer-latest-${{ matrix.name }}"
           APP_FILENAME="${APP_DIRNAME}${{ matrix.binary-suffix }}"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
           echo "APP_DIRNAME=$APP_DIRNAME" >> "$GITHUB_ENV"
+
       - run: |
           mkdir release
           cp target/${{ matrix.name }}/release/bip300301_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
@@ -207,15 +210,9 @@ jobs:
       - name: Create zip files for releases.drivechain.info
         run: |
           shopt -s extglob
-          mv bip300301_enforcer-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin bip300301-enforcer-latest-x86_64-apple-darwin
-          zip -r bip300301-enforcer-latest-x86_64-apple-darwin.zip \
-            bip300301-enforcer-latest-x86_64-apple-darwin
-          mv bip300301_enforcer-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu bip300301-enforcer-latest-x86_64-pc-windows-gnu
-          zip -r bip300301-enforcer-latest-x86_64-pc-windows-gnu.zip \
-            bip300301-enforcer-latest-x86_64-pc-windows-gnu
-          mv bip300301_enforcer-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu bip300301-enforcer-latest-x86_64-unknown-linux-gnu
-          zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip \
-            bip300301-enforcer-latest-x86_64-unknown-linux-gnu \
+          zip -r bip300301-enforcer-latest-x86_64-apple-darwin.zip bip300301-enforcer-latest-x86_64-apple-darwin
+          zip -r bip300301-enforcer-latest-x86_64-pc-windows-gnu.zip bip300301-enforcer-latest-x86_64-pc-windows-gnu
+          zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
         uses: cross-the-world/ssh-scp-ssh-pipelines@latest
