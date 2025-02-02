@@ -183,11 +183,11 @@ pub enum ConnectBlock {
     #[error(transparent)]
     BdkFileStore(#[from] bdk_wallet::FileStoreError),
     #[error(transparent)]
-    Bip34(#[from] bitcoin::block::Bip34Error),
-    #[error(transparent)]
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
     GetBlockInfo(#[from] validator::GetBlockInfoError),
+    #[error(transparent)]
+    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
     #[error(transparent)]
     Rustqlite(#[from] rusqlite::Error),
     #[error(transparent)]

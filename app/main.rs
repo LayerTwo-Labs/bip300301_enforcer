@@ -303,6 +303,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         rpc_client,
         sequence_stream,
         |err| async move {
+            let err = miette::Report::from_err(err);
             let err = miette::miette!("mempool: task sync error: {err:#}");
             let _send_err: Result<(), _> = err_tx.send(err);
         },
