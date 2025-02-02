@@ -50,7 +50,7 @@ use crate::{
     messages::{self, M8BmmRequest},
     types::{
         BDKWalletTransaction, BlindedM6, Ctip, M6id, PendingM6idInfo, SidechainAck,
-        SidechainNumber, SidechainProposal, SidechainProposalId, WithdrawalBundleEventKind,
+        SidechainNumber, SidechainProposal, SidechainProposalId,
     },
     validator::Validator,
 };
@@ -59,6 +59,7 @@ mod cusf_block_producer;
 pub mod error;
 mod mine;
 mod mnemonic;
+mod sync;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
@@ -298,20 +299,21 @@ impl WalletInner {
     }
 
     const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
-    fn read_wallet(&self) -> Result<MappedRwLockReadGuard<BdkWallet>, WalletInitialization> {
+
+    fn read_wallet(&self) -> Result<MappedRwLockReadGuard<BdkWallet>, error::Read> {
         tracing::trace!(
             timeout = format!("{:?}", Self::LOCK_TIMEOUT),
             "wallet: acquiring read lock"
         );
         let read_guard = self.bitcoin_wallet.try_read_for(Self::LOCK_TIMEOUT);
         let Some(read_guard) = read_guard else {
-            return Err(WalletInitialization::ReadLockTimedOut);
+            return Err(error::Read::TimedOut);
         };
         RwLockReadGuard::try_map(read_guard, |wallet| wallet.as_ref())
-            .map_err(|_| WalletInitialization::NotUnlocked)
+            .map_err(|_| error::NotUnlocked.into())
     }
 
-    fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, WalletInitialization> {
+    fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, error::Write> {
         let start = SystemTime::now();
 
         tracing::trace!(
@@ -320,12 +322,12 @@ impl WalletInner {
         );
         let write_guard = self.bitcoin_wallet.try_write_for(Self::LOCK_TIMEOUT);
         let Some(write_guard) = write_guard else {
-            return Err(WalletInitialization::WriteLockTimedOut);
+            return Err(error::Write::TimedOut);
         };
         RwLockWriteGuard::try_map(write_guard, |wallet| wallet.as_mut())
             .map_err(|err| {
                 tracing::trace!("wallet: failed to acquire write lock: {err:?}");
-                WalletInitialization::NotUnlocked
+                error::NotUnlocked.into()
             })
             .inspect(|_| {
                 tracing::trace!(
@@ -548,87 +550,6 @@ impl WalletInner {
             Ok(())
         };
         with_connection(&self.db_connection.lock())
-    }
-
-    fn handle_connect_block(
-        &self,
-        block: &bitcoin::Block,
-        block_info: crate::types::BlockInfo,
-    ) -> Result<(), error::ConnectBlock> {
-        // Acquire a wallet lock immediately, so that it does not update
-        // while other dbs are being written to
-        let mut wallet_write = self.write_wallet()?;
-        let finalized_withdrawal_bundles =
-            block_info
-                .withdrawal_bundle_events()
-                .filter_map(|event| match event.kind {
-                    WithdrawalBundleEventKind::Failed
-                    | WithdrawalBundleEventKind::Succeeded {
-                        sequence_number: _,
-                        transaction: _,
-                    } => Some((event.sidechain_id, event.m6id)),
-                    WithdrawalBundleEventKind::Submitted => None,
-                });
-        let () = self.delete_bundle_proposals(finalized_withdrawal_bundles)?;
-        let sidechain_proposal_ids = block_info
-            .sidechain_proposals()
-            .map(|(_vout, proposal)| proposal.compute_id());
-        let () = self.delete_pending_sidechain_proposals(sidechain_proposal_ids)?;
-        wallet_write.apply_block(block, block.bip34_block_height()? as u32)?;
-        let mut database = self.bitcoin_db.lock();
-        wallet_write.persist(&mut database)?;
-        drop(wallet_write);
-        Ok(())
-    }
-
-    fn sync(&self) -> Result<(), miette::Report> {
-        let start = SystemTime::now();
-        tracing::trace!("starting wallet sync");
-
-        // Don't error out here if the wallet is locked, just skip the sync.
-        let wallet_read = match self.read_wallet() {
-            Ok(wallet_read) => wallet_read,
-
-            // "Accepted" errors, that aren't really errors in this case.
-            Err(WalletInitialization::NotUnlocked | WalletInitialization::NotFound) => {
-                tracing::trace!("sync: skipping sync due to wallet error");
-                return Ok(());
-            }
-            Err(err) => {
-                return Err(miette!("sync: failed to acquire write lock: {err:#}"));
-            }
-        };
-
-        let mut last_sync_write = self.last_sync.write();
-        let request = wallet_read.start_sync_with_revealed_spks();
-        drop(wallet_read);
-
-        const BATCH_SIZE: usize = 5;
-        const FETCH_PREV_TXOUTS: bool = false;
-
-        let update = self
-            .electrum_client
-            .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
-            .into_diagnostic()?;
-
-        // Be a bit smart about the wallet locks, and only acquire the write lock
-        // after the sync itself has completed and we're ready the apply
-        // it to the wallet.
-        let mut wallet_write = self.write_wallet()?;
-        wallet_write.apply_update(update).into_diagnostic()?;
-
-        let mut database = self.bitcoin_db.lock();
-        wallet_write.persist(&mut database).into_diagnostic()?;
-
-        tracing::debug!(
-            "wallet sync complete in {:?}",
-            start.elapsed().unwrap_or_default(),
-        );
-
-        *last_sync_write = Some(SystemTime::now());
-        drop(last_sync_write);
-        drop(wallet_write);
-        Ok(())
     }
 }
 

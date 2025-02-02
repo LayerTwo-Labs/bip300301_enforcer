@@ -53,12 +53,37 @@ impl From<Electrum> for tonic::Status {
     }
 }
 
+/// Wallet not unlocked
+#[derive(Debug, Diagnostic, Error)]
+#[diagnostic(code(wallet_not_unlocked))]
+#[error("Enforcer wallet not unlocked")]
+pub struct NotUnlocked;
+
+/// Errors related to acquiring a read-lock on a wallet
+#[derive(Debug, Diagnostic, Error)]
+pub enum Read {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    // The wallet could not be obtained for reading, because of a timeout
+    #[error("Acquiring read lock for enforcer wallet timed out")]
+    #[diagnostic(code(wallet_read_lock_timed_out))]
+    TimedOut,
+}
+
+/// Errors related to acquiring a write-lock on a wallet
+#[derive(Debug, Diagnostic, Error)]
+pub enum Write {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    // The wallet could not be obtained for reading, because of a timeout
+    #[error("Acquiring write lock for enforcer wallet timed out")]
+    #[diagnostic(code(wallet_write_lock_timed_out))]
+    TimedOut,
+}
+
 // Errors related to creating/unlocking wallets.
 #[derive(Debug, Diagnostic, Error)]
 pub enum WalletInitialization {
-    #[error("enforcer wallet not unlocked")]
-    #[diagnostic(code(wallet_not_unlocked))]
-    NotUnlocked,
     #[error("enforcer wallet already unlocked")]
     #[diagnostic(code(wallet_already_unlocked))]
     AlreadyUnlocked,
@@ -79,19 +104,24 @@ pub enum WalletInitialization {
     #[diagnostic(code(wallet_invalid_password))]
     InvalidPassword,
     // These errors are strictly speaking not related to wallet initialization...
-
-    // The wallet could not be obtained for writing, because of a timeout
-    #[error("acquiring write lock for enforcer wallet timed out")]
-    #[diagnostic(code(wallet_write_lock_timed_out))]
-    WriteLockTimedOut,
-    // The wallet could not be obtained for reading, because of a timeout
-    #[error("acquiring read lock for enforcer wallet timed out")]
-    #[diagnostic(code(wallet_read_lock_timed_out))]
-    ReadLockTimedOut,
     // The wallet is not synced to the blockchain
     #[error("enforcer wallet not synced")]
     #[diagnostic(code(wallet_not_synced))]
     NotSynced,
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum WalletSync {
+    #[error(transparent)]
+    BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
+    #[error(transparent)]
+    BdkWalletPersist(#[from] bdk_wallet::FileStoreError),
+    #[error(transparent)]
+    ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
+    #[error(transparent)]
+    Read(#[from] Read),
+    #[error(transparent)]
+    Write(#[from] Write),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -161,7 +191,7 @@ pub enum ConnectBlock {
     #[error(transparent)]
     Rustqlite(#[from] rusqlite::Error),
     #[error(transparent)]
-    WalletInit(#[from] WalletInitialization),
+    WalletWrite(#[from] Write),
 }
 
 #[derive(Debug, Diagnostic, Error)]

@@ -96,17 +96,8 @@ impl IntoStatus for miette::Report {
                 crate::wallet::error::WalletInitialization::NotSynced => {
                     tonic::Code::FailedPrecondition
                 }
-                crate::wallet::error::WalletInitialization::WriteLockTimedOut => {
-                    tonic::Code::DeadlineExceeded
-                }
-                crate::wallet::error::WalletInitialization::ReadLockTimedOut => {
-                    tonic::Code::DeadlineExceeded
-                }
                 crate::wallet::error::WalletInitialization::InvalidPassword => {
                     tonic::Code::InvalidArgument
-                }
-                crate::wallet::error::WalletInitialization::NotUnlocked => {
-                    tonic::Code::FailedPrecondition
                 }
                 crate::wallet::error::WalletInitialization::DataMismatch => tonic::Code::Internal,
                 crate::wallet::error::WalletInitialization::NotFound => tonic::Code::NotFound,
