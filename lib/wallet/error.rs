@@ -15,7 +15,7 @@ use crate::{
     help("The error is from the Electrum server. Check the message for more details.")
 )]
 #[error("electrum error `{code}`: `{message}`")]
-pub struct ElectrumError {
+pub struct Electrum {
     code: i32,
     message: String,
 }
@@ -23,9 +23,9 @@ pub struct ElectrumError {
 // Add new TonicStatusError type
 #[derive(Debug, Diagnostic, Error, Clone)]
 #[error("tonic error: {0}")]
-pub struct TonicStatusError(#[from] tonic::Status);
+pub struct TonicStatus(#[from] tonic::Status);
 
-impl TonicStatusError {
+impl TonicStatus {
     pub fn into_status(&self) -> tonic::Status {
         self.0.clone()
     }
@@ -38,12 +38,12 @@ pub trait TonicStatusExt {
 
 impl TonicStatusExt for tonic::Status {
     fn into_diagnostic(self) -> miette::Result<()> {
-        Err(TonicStatusError(self).into())
+        Err(TonicStatus(self).into())
     }
 }
 
-impl From<ElectrumError> for tonic::Status {
-    fn from(error: ElectrumError) -> Self {
+impl From<Electrum> for tonic::Status {
+    fn from(error: Electrum) -> Self {
         let code = match error.code {
             // https://github.com/bitcoin/bitcoin/blob/e8f72aefd20049eac81b150e7f0d33709acd18ed/src/common/messages.cpp
             -25 => tonic::Code::InvalidArgument,
@@ -53,25 +53,46 @@ impl From<ElectrumError> for tonic::Status {
     }
 }
 
+/// Wallet not unlocked
+#[derive(Debug, Diagnostic, Error)]
+#[diagnostic(code(wallet_not_unlocked))]
+#[error("Enforcer wallet not unlocked")]
+pub struct NotUnlocked;
+
+/// Errors related to acquiring a read-lock on a wallet
+#[derive(Debug, Diagnostic, Error)]
+pub enum Read {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    // The wallet could not be obtained for reading, because of a timeout
+    #[error("Acquiring read lock for enforcer wallet timed out")]
+    #[diagnostic(code(wallet_read_lock_timed_out))]
+    TimedOut,
+}
+
+/// Errors related to acquiring a write-lock on a wallet
+#[derive(Debug, Diagnostic, Error)]
+pub enum Write {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    // The wallet could not be obtained for reading, because of a timeout
+    #[error("Acquiring write lock for enforcer wallet timed out")]
+    #[diagnostic(code(wallet_write_lock_timed_out))]
+    TimedOut,
+}
+
 // Errors related to creating/unlocking wallets.
 #[derive(Debug, Diagnostic, Error)]
 pub enum WalletInitialization {
-    #[error("enforcer wallet not unlocked")]
-    #[diagnostic(code(wallet_not_unlocked))]
-    NotUnlocked,
-
     #[error("enforcer wallet already unlocked")]
     #[diagnostic(code(wallet_already_unlocked))]
     AlreadyUnlocked,
-
     #[error("enforcer wallet not found (can be created with CreateWallet RPC)")]
     #[diagnostic(code(wallet_not_found))]
     NotFound,
-
     #[error("enforcer wallet already exists (but might not be initialized)")]
     #[diagnostic(code(wallet_already_exists))]
     AlreadyExists,
-
     /// This means you've been fooling around with different mnemonics and data directories!
     /// Wallet directory probably needs to be wiped.
     #[error(
@@ -79,27 +100,28 @@ pub enum WalletInitialization {
     )]
     #[diagnostic(code(wallet_data_mismatch))]
     DataMismatch,
-
     #[error("invalid password for enforcer wallet")]
     #[diagnostic(code(wallet_invalid_password))]
     InvalidPassword,
-
     // These errors are strictly speaking not related to wallet initialization...
-
-    // The wallet could not be obtained for writing, because of a timeout
-    #[error("acquiring write lock for enforcer wallet timed out")]
-    #[diagnostic(code(wallet_write_lock_timed_out))]
-    WriteLockTimedOut,
-
-    // The wallet could not be obtained for reading, because of a timeout
-    #[error("acquiring read lock for enforcer wallet timed out")]
-    #[diagnostic(code(wallet_read_lock_timed_out))]
-    ReadLockTimedOut,
-
     // The wallet is not synced to the blockchain
     #[error("enforcer wallet not synced")]
     #[diagnostic(code(wallet_not_synced))]
     NotSynced,
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum WalletSync {
+    #[error(transparent)]
+    BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
+    #[error(transparent)]
+    BdkWalletPersist(#[from] bdk_wallet::FileStoreError),
+    #[error(transparent)]
+    ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
+    #[error(transparent)]
+    Read(#[from] Read),
+    #[error(transparent)]
+    Write(#[from] Write),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -155,13 +177,21 @@ pub(in crate::wallet) enum GenerateSuffixTxs {
 }
 
 #[derive(Debug, Error)]
-pub enum ConnectBlockError {
+pub enum ConnectBlock {
+    #[error(transparent)]
+    BdkConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
+    #[error(transparent)]
+    BdkFileStore(#[from] bdk_wallet::FileStoreError),
     #[error(transparent)]
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
     GetBlockInfo(#[from] validator::GetBlockInfoError),
     #[error(transparent)]
+    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+    #[error(transparent)]
     Rustqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    WalletWrite(#[from] Write),
 }
 
 #[derive(Debug, Diagnostic, Error)]

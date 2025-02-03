@@ -87,7 +87,7 @@ where
 // place to add logs for unexpected errors.
 impl IntoStatus for miette::Report {
     fn into_status(self) -> tonic::Status {
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::ElectrumError>() {
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::Electrum>() {
             return source.clone().into();
         }
 
@@ -96,17 +96,8 @@ impl IntoStatus for miette::Report {
                 crate::wallet::error::WalletInitialization::NotSynced => {
                     tonic::Code::FailedPrecondition
                 }
-                crate::wallet::error::WalletInitialization::WriteLockTimedOut => {
-                    tonic::Code::DeadlineExceeded
-                }
-                crate::wallet::error::WalletInitialization::ReadLockTimedOut => {
-                    tonic::Code::DeadlineExceeded
-                }
                 crate::wallet::error::WalletInitialization::InvalidPassword => {
                     tonic::Code::InvalidArgument
-                }
-                crate::wallet::error::WalletInitialization::NotUnlocked => {
-                    tonic::Code::FailedPrecondition
                 }
                 crate::wallet::error::WalletInitialization::DataMismatch => tonic::Code::Internal,
                 crate::wallet::error::WalletInitialization::NotFound => tonic::Code::NotFound,
@@ -120,7 +111,7 @@ impl IntoStatus for miette::Report {
             return tonic::Status::new(code, format!("{self:#}"));
         }
 
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::TonicStatusError>() {
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::TonicStatus>() {
             return source.into_status();
         }
 

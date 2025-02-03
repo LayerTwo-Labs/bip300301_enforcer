@@ -14,26 +14,66 @@ use crate::{
     wallet::{error, Wallet},
 };
 
-impl CusfEnforcer for Wallet {
-    type SyncError = <Validator as CusfEnforcer>::SyncError;
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+pub enum SyncError {
+    #[error(transparent)]
+    Validator(#[from] <Validator as CusfEnforcer>::SyncError),
+    #[error(transparent)]
+    Wallet(#[from] error::WalletSync),
+    #[error(transparent)]
+    WalletNotUnlocked(#[from] error::NotUnlocked),
+    #[error("Wallet synced to other tip ({wallet_tip}): expected {expected}")]
+    WalletTip {
+        expected: BlockHash,
+        wallet_tip: BlockHash,
+    },
+}
 
-    async fn sync_to_tip(&mut self, tip: BlockHash) -> std::result::Result<(), Self::SyncError> {
-        self.inner.validator.clone().sync_to_tip(tip).await
+impl CusfEnforcer for Wallet {
+    type SyncError = SyncError;
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "false positive, sync_write is consumed by commit()"
+    )]
+    async fn sync_to_tip(
+        &mut self,
+        tip_hash: BlockHash,
+    ) -> std::result::Result<(), Self::SyncError> {
+        let () = self.inner.validator.clone().sync_to_tip(tip_hash).await?;
+        let sync_write = self
+            .inner
+            .sync_lock()?
+            .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
+        let wallet_tip = sync_write.wallet.local_chain().tip().hash();
+        if tip_hash == wallet_tip {
+            let () = sync_write.commit().map_err(error::WalletSync::from)?;
+            Ok(())
+        } else {
+            Err(Self::SyncError::WalletTip {
+                expected: tip_hash,
+                wallet_tip,
+            })
+        }
     }
 
-    type ConnectBlockError = error::ConnectBlockError;
+    type ConnectBlockError = error::ConnectBlock;
 
     fn connect_block(
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
+        let block_hash = block.block_hash();
         tracing::info!(
-            "CUSF block producer: connecting block {}",
-            block.block_hash()
+            %block_hash,
+            "CUSF block producer: connecting block"
         );
         let res = self.inner.validator.clone().connect_block(block)?;
+        let block_height = self.inner.validator.get_header_info(&block_hash)?.height;
         let block_info = self.inner.validator.get_block_info(&block.block_hash())?;
-        let () = self.inner.handle_connect_block(block_info)?;
+        let () = self
+            .inner
+            .handle_connect_block(block, block_height, block_info)?;
         Ok(res)
     }
 

@@ -16,7 +16,7 @@ authors = [
 ]
 edition = "2021"
 publish = false
-version = "0.3.1"
+version = "0.3.2"
 
 [workspace.dependencies]
 bdk_wallet = { version = "1.0.0" }
@@ -38,13 +38,9 @@ tracing-subscriber = "0.3.18"
 git = "https://github.com/Ash-L2L/bip300301.git"
 rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
 
-[workspace.dependencies.bitcoin-send-tx-p2p]
-git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p"
-rev = "4e03ed7c6807771b4709864b0357e2bd8843c83f"
-
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "fce4283eba07df788ed3830cf3b51e35a7c590a9"
+rev = "cf467500d9cd68d6736b98d6fb3653bcebbf54bc"
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"
