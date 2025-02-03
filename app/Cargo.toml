@@ -13,6 +13,7 @@ clap = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
 either = { workspace = true }
 futures = { workspace = true }
+http = "1.2.0"
 jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
@@ -20,10 +21,11 @@ tonic = { workspace = true }
 tonic-health = "0.12.3"
 tonic-reflection = "0.12.3"
 tower = "0.5.1"
-tower-http = { version = "0.6.1", features = ["trace"] }
+tower-http = { version = "0.6.1", features = ["trace", "request-id"] }
 tracing = { workspace = true }
 tracing-appender = "0.2.3"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = "1.12.1"
 
 [features]
 default = ["rustls"]
