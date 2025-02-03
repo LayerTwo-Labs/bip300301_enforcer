@@ -4,11 +4,16 @@ use bip300301::MainClient;
 use clap::Parser;
 use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
+use http::{header::HeaderName, Request};
+
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
-use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tower_http::{
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
+};
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 use bip300301_enforcer_lib::{
@@ -133,15 +138,61 @@ where
         })
 }
 
+#[derive(Clone, Debug)]
+struct RequestIdMaker;
+
+impl MakeRequestId for RequestIdMaker {
+    fn make_request_id<B>(&mut self, _: &Request<B>) -> Option<RequestId> {
+        use uuid::Uuid;
+        // the 'simple' format renders the UUID with no dashes, which
+        // makes for easier copy/pasting.
+        let id = Uuid::new_v4();
+        let id = id.as_simple();
+        let id = format!("req_{id}"); // prefix all IDs with "req_", to make them easier to identify
+
+        let Ok(header_value) = http::HeaderValue::from_str(&id) else {
+            return None;
+        };
+
+        Some(RequestId::new(header_value))
+    }
+}
+
 async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
+    const REQUEST_ID_HEADER: &str = "x-request-id";
+
+    // Ordering here matters! Order here is from official docs on request IDs tracings
+    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
     let tracer = ServiceBuilder::new()
+        .layer(SetRequestIdLayer::new(
+            HeaderName::from_static(REQUEST_ID_HEADER),
+            RequestIdMaker,
+        ))
         .layer(
             TraceLayer::new_for_grpc()
+                .make_span_with(move |request: &Request<_>| {
+                    let request_id = request
+                        .headers()
+                        .get(HeaderName::from_static(REQUEST_ID_HEADER))
+                        .and_then(|h| h.to_str().ok())
+                        .filter(|s| !s.is_empty());
+
+                    tracing::span!(
+                        tracing::Level::DEBUG,
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        request_id , // this is needed for the record call below to work
+                    )
+                })
                 .on_request(())
                 .on_eos(())
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
         )
+        .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
+            REQUEST_ID_HEADER,
+        )))
         .into_inner();
 
     let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
