@@ -438,9 +438,13 @@ fn task(
                     &cli.node_zmq_addr_sequence,
                     enforcer_task_err_tx,
                     |mempool| async {
-                        tracing::info!("mempool sync complete, starting wallet sync task");
-                        let task = Task::new(wallet.clone());
-                        wallet.assign_sync_task(task);
+                        if cli.wallet_opts.skip_periodic_sync {
+                            tracing::info!("mempool sync complete, configured to NOT start periodic wallet sync task");
+                        } else {
+                            tracing::info!("mempool sync complete, starting wallet sync task");
+                            let task = Task::new(wallet.clone());
+                            wallet.assign_sync_task(task);
+                        }
 
                         match run_gbt_server(
                             mining_reward_address,

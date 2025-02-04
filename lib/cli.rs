@@ -248,6 +248,11 @@ pub struct WalletConfig {
     /// Signet: 50001, regtest: 60401
     #[arg(long = "wallet-electrum-port")]
     pub electrum_port: Option<u16>,
+
+    /// If true, skip the periodic wallet sync task. This can be useful if
+    /// the wallet is large and periodic syncs are not feasible.
+    #[arg(long = "wallet-skip-periodic-sync", default_value_t = false)]
+    pub skip_periodic_sync: bool,
 }
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
