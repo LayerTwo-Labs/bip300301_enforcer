@@ -150,6 +150,23 @@ where
     }
 }
 
+impl<'writer> tracing_subscriber::fmt::FormatFields<'writer> for LogFormatter {
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        writer: tracing_format::Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        use tracing_subscriber::fmt::format::{DefaultFields, JsonFields, Pretty};
+        match self.format {
+            LogFormat::Compact | LogFormat::Full => {
+                DefaultFields::new().format_fields(writer, fields)
+            }
+            LogFormat::Json => JsonFields::new().format_fields(writer, fields),
+            LogFormat::Pretty => Pretty::default().format_fields(writer, fields),
+        }
+    }
+}
+
 #[derive(Clone, Args)]
 pub struct LoggerConfig {
     /// File path to write logs to, in addition to stdout.

@@ -87,7 +87,8 @@ fn set_tracing_subscriber(
     };
     // If no writer is provided (as here!), logs end up at stdout.
     let mut stdout_layer = tracing_subscriber::fmt::layer()
-        .event_format(log_formatter.with_file(true).with_line_number(true));
+        .event_format(log_formatter.with_file(true).with_line_number(true))
+        .fmt_fields(log_formatter);
     let is_terminal = std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
     stdout_layer.set_ansi(is_terminal);
 
@@ -103,9 +104,9 @@ fn set_tracing_subscriber(
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(file_appender)
-        .with_ansi(false)
-        .with_line_number(true);
-
+        .event_format(log_formatter.with_file(true).with_line_number(true))
+        .fmt_fields(log_formatter)
+        .with_ansi(false);
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
         .with(stdout_layer)
