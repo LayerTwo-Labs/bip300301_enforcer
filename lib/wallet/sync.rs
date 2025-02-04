@@ -80,7 +80,11 @@ impl WalletInner {
         let request = wallet_read.start_sync_with_revealed_spks();
         drop(wallet_read);
 
-        const BATCH_SIZE: usize = 5;
+        // I (Torkel) have no idea what's a suitable batch size. ChatGPT tells me
+        // 25 is a reasonable default. Too large batch sizes could cause timeouts
+        // or overload some Electrum server. We're the only user of our Electrum server,
+        // so sending large requests is probably fine.
+        const BATCH_SIZE: usize = 100;
         const FETCH_PREV_TXOUTS: bool = false;
         let update = self
             .electrum_client
