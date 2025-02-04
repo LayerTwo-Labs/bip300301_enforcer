@@ -81,6 +81,8 @@ struct WalletInner {
     electrum_client: ElectrumClient,
     last_sync: RwLock<Option<SystemTime>>,
     config: Config,
+
+    _sync_task: Mutex<Option<Task>>,
 }
 
 impl WalletInner {
@@ -297,6 +299,7 @@ impl WalletInner {
             db_connection: Mutex::new(db_connection),
             electrum_client,
             last_sync: RwLock::new(None),
+            _sync_task: Mutex::new(None),
         })
     }
 
@@ -600,11 +603,11 @@ impl Task {
         }
     }
 
-    fn new(wallet: Arc<WalletInner>) -> Self {
+    pub fn new(wallet: Wallet) -> Self {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         Self {
             shutdown_tx: Some(shutdown_tx),
-            sync: spawn(Self::sync_task(wallet, shutdown_rx)),
+            sync: spawn(Self::sync_task(wallet.inner, shutdown_rx)),
         }
     }
 }
@@ -623,7 +626,6 @@ impl Drop for Task {
 #[derive(Clone)]
 pub struct Wallet {
     inner: Arc<WalletInner>,
-    _task: Arc<Task>,
 }
 
 impl Wallet {
@@ -641,11 +643,12 @@ impl Wallet {
             validator,
             magic,
         )?);
-        let task = Task::new(inner.clone());
-        Ok(Self {
-            inner,
-            _task: Arc::new(task),
-        })
+        Ok(Self { inner })
+    }
+
+    pub fn assign_sync_task(&self, task: Task) {
+        let mut guard = self.inner._sync_task.lock();
+        *guard = Some(task);
     }
 
     pub fn is_initialized(&self) -> bool {

@@ -27,7 +27,7 @@ use bip300301_enforcer_lib::{
     },
     rpc_client, server,
     validator::Validator,
-    wallet,
+    wallet::{self, Task},
 };
 
 use wallet::Wallet;
@@ -307,7 +307,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
     err_tx: oneshot::Sender<miette::Report>,
-    f: F,
+    on_mempool_sync_complete: F,
 ) where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
     RpcClient: bip300301::client::MainClient + Send + Sync + 'static,
@@ -360,7 +360,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     );
-    f(mempool).await
+    on_mempool_sync_complete(mempool).await
 }
 
 /// Error receivers for main task
@@ -433,11 +433,15 @@ fn task(
                         }
                     };
                 mempool_task(
-                    wallet,
+                    wallet.clone(),
                     mainchain_client,
                     &cli.node_zmq_addr_sequence,
                     enforcer_task_err_tx,
                     |mempool| async {
+                        tracing::info!("mempool sync complete, starting wallet sync task");
+                        let task = Task::new(wallet.clone());
+                        wallet.assign_sync_task(task);
+
                         match run_gbt_server(
                             mining_reward_address,
                             network,
