@@ -119,8 +119,6 @@ pub enum WalletSync {
     #[error(transparent)]
     ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
     #[error(transparent)]
-    Read(#[from] Read),
-    #[error(transparent)]
     Write(#[from] Write),
 }
 

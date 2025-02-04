@@ -546,7 +546,7 @@ async fn main() -> Result<()> {
 
     let (_task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain)?;
 
-    let res = tokio::select! {
+    tokio::select! {
         enforcer_task_err = err_rxs.enforcer_task => {
             match enforcer_task_err {
                 Ok(err) => {
@@ -585,8 +585,5 @@ async fn main() -> Result<()> {
                 }
             }
         }
-    };
-
-    // Clean up the tracing guard when the program exits.
-    res
+    }
 }

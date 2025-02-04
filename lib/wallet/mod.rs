@@ -31,7 +31,7 @@ use bitcoin::{
 use either::Either;
 use error::WalletInitialization;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::channel::oneshot;
+use futures::{channel::oneshot, FutureExt};
 use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::{
@@ -41,7 +41,6 @@ use rusqlite::Connection;
 use tokio::{
     spawn,
     task::{block_in_place, JoinHandle},
-    time::interval,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -559,6 +558,8 @@ impl WalletInner {
 }
 
 pub struct Task {
+    /// Send a startup signal
+    start_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// Send a shutdown signal.
     /// Should only be `None` during drop.
     /// Shutdown signal must be sent before dropping owned tasks.
@@ -571,20 +572,49 @@ impl Task {
     /// see https://docs.rs/tokio/latest/tokio/task/fn.block_in_place.html
     /// A shutdown signal is used to ensure that the task stops after
     /// the blocking task completes.
-    async fn sync_task(wallet: Arc<WalletInner>, mut shutdown_rx: oneshot::Receiver<()>) {
+    async fn sync_task(
+        wallet: Arc<WalletInner>,
+        start_rx: oneshot::Receiver<()>,
+        mut shutdown_rx: oneshot::Receiver<()>,
+    ) {
+        use futures::future::{select, Either};
         const SYNC_INTERVAL: Duration = Duration::from_secs(15);
-        tracing::debug!("wallet sync task: starting with interval {SYNC_INTERVAL:?}",);
-
-        let mut interval = interval(SYNC_INTERVAL);
+        tracing::debug!(
+            interval = %humantime::format_duration(SYNC_INTERVAL),
+            "wallet sync task: starting"
+        );
+        // Wait for the start signal to be sent before starting the sync.
+        // Take care to also listen for the shutdown signal or channel
+        // closures, which might happen while waiting for the start signal
+        shutdown_rx = match select(start_rx, shutdown_rx).await {
+            // Start signal received
+            Either::Left((Ok(()), shutdown_rx)) => shutdown_rx,
+            // Start signal cancelled
+            Either::Left((Err(_), _shutdown_rx)) => {
+                tracing::info!("shutting down (start signal channel closed)");
+                return;
+            }
+            // Shutdown signal received
+            Either::Right((Ok(()), _start_rx)) => {
+                tracing::info!("shutting down)");
+                return;
+            }
+            // Shutdown signal cancelled
+            Either::Right((Err(_), _start_rx)) => {
+                tracing::info!("shutting down (shutdown signal channel closed)");
+                return;
+            }
+        };
+        let mut sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
         loop {
             tokio::select! {
                 biased;  // Prioritize shutdown
 
                 _ = &mut shutdown_rx => {
-                    tracing::info!("wallet sync task: shutting down");
+                    tracing::info!("shutting down");
                     return
                 }
-                _ = interval.tick() => {
+                _ = &mut sleep => {
                     let tick = Uuid::new_v4().simple();
                     let span = tracing::span!(tracing::Level::DEBUG,
                         "wallet_sync",
@@ -595,23 +625,30 @@ impl Task {
                         tracing::error!("wallet sync error: {err:#}");
                     }
                     drop(guard);
+                    sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
                 }
             }
         }
     }
 
     fn new(wallet: Arc<WalletInner>) -> Self {
+        let (start_tx, start_rx) = oneshot::channel();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         Self {
+            start_tx: Mutex::new(Some(start_tx)),
             shutdown_tx: Some(shutdown_tx),
-            sync: spawn(Self::sync_task(wallet, shutdown_rx)),
+            sync: spawn(Self::sync_task(wallet, start_rx, shutdown_rx)),
         }
     }
 }
 
 impl Drop for Task {
     fn drop(&mut self) {
-        let Self { shutdown_tx, sync } = self;
+        let Self {
+            start_tx: _start_tx,
+            shutdown_tx,
+            sync,
+        } = self;
         if let Some(shutdown_tx) = shutdown_tx.take() {
             let _send_shutdown_signal_result: Result<(), ()> = shutdown_tx.send(());
         };
@@ -623,7 +660,7 @@ impl Drop for Task {
 #[derive(Clone)]
 pub struct Wallet {
     inner: Arc<WalletInner>,
-    _task: Arc<Task>,
+    task: Arc<Task>,
 }
 
 impl Wallet {
@@ -644,7 +681,7 @@ impl Wallet {
         let task = Task::new(inner.clone());
         Ok(Self {
             inner,
-            _task: Arc::new(task),
+            task: Arc::new(task),
         })
     }
 

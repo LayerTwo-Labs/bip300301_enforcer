@@ -34,6 +34,7 @@ futures = { workspace = true }
 hashlink = { version = "0.10.0", features = ["serde_impl"] }
 heed = "0.21.0"
 hex = { workspace = true }
+humantime = "2.1.0"
 jsonrpsee = { workspace = true }
 miette = { workspace = true, features = ["derive"] }
 nom = "7.1.3"
