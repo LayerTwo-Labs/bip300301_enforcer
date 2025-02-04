@@ -55,6 +55,7 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
+uuid = "1.12.1"
 zeromq = "0.4.1"
 
 [dependencies.educe]

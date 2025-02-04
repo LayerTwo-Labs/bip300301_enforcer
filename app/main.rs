@@ -14,6 +14,7 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
 };
+use tracing::Instrument;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 use bip300301_enforcer_lib::{
@@ -331,23 +332,22 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         }
     }
 
-    tracing::info!(%zmq_addr_sequence, "Starting initial mempool sync from ZMQ");
-    let (sequence_stream, mempool, tx_cache) =
-        match cusf_enforcer_mempool::mempool::init_sync_mempool(
-            &mut enforcer,
-            &rpc_client,
-            zmq_addr_sequence,
-        )
-        .await
-        {
-            Ok(res) => res,
-            Err(err) => {
-                let err = miette::miette!("mempool: initial sync error: {err:#}");
-                let _send_err: Result<(), _> = err_tx.send(err);
-                return;
-            }
-        };
-    tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete");
+    let init_sync_mempool_future = cusf_enforcer_mempool::mempool::init_sync_mempool(
+        &mut enforcer,
+        &rpc_client,
+        zmq_addr_sequence,
+    )
+    .inspect_ok(|_| tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete"))
+    .instrument(tracing::info_span!("initial_mempool_sync"));
+
+    let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
+        Ok(res) => res,
+        Err(err) => {
+            let err = miette::miette!("mempool: initial sync error: {err:#}");
+            let _send_err: Result<(), _> = err_tx.send(err);
+            return;
+        }
+    };
     let mempool = cusf_enforcer_mempool::mempool::MempoolSync::new(
         enforcer,
         mempool,

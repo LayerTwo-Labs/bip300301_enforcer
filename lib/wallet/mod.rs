@@ -43,6 +43,8 @@ use tokio::{
     task::{block_in_place, JoinHandle},
     time::interval,
 };
+use tracing::instrument;
+use uuid::Uuid;
 
 use crate::{
     cli::{Config, WalletConfig},
@@ -316,6 +318,9 @@ impl WalletInner {
     fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, error::Write> {
         let start = SystemTime::now();
 
+        let span = tracing::span!(tracing::Level::TRACE, "acquire_write_lock");
+        let _guard = span.enter();
+
         tracing::trace!(
             timeout = format!("{:?}", Self::LOCK_TIMEOUT),
             "wallet: acquiring write lock"
@@ -580,9 +585,16 @@ impl Task {
                     return
                 }
                 _ = interval.tick() => {
+                    let tick = Uuid::new_v4().simple();
+                    let span = tracing::span!(tracing::Level::DEBUG,
+                        "wallet_sync",
+                        %tick,
+                    );
+                    let guard = span.enter();
                     if let Err(err) = block_in_place(|| wallet.sync()) {
                         tracing::error!("wallet sync error: {err:#}");
                     }
+                    drop(guard);
                 }
             }
         }
@@ -1160,6 +1172,7 @@ impl Wallet {
         }
     }
 
+    #[instrument(skip_all)]
     pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance> {
         if self.inner.last_sync.read().is_none() {
             return Err(miette!("get balance: wallet not synced"));
@@ -1174,6 +1187,7 @@ impl Wallet {
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
     )]
+    #[instrument(skip_all)]
     pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
@@ -1361,6 +1375,7 @@ impl Wallet {
         reason = "false positive for `bitcoin_wallet`"
     )]
     #[allow(dead_code)]
+    #[instrument(skip_all)]
     fn get_utxos(&self) -> Result<()> {
         if self.inner.last_sync.read().is_none() {
             return Err(miette!("get utxos: wallet not synced"));
