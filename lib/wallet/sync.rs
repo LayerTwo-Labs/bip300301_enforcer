@@ -101,14 +101,18 @@ impl WalletInner {
         }))
     }
 
-    /// Sync the wallet if the wallet is not locked, commiting changes
+    /// Sync the wallet if the wallet is not locked, committing changes
     pub(in crate::wallet) fn sync(&self) -> Result<(), error::WalletSync> {
         match self.sync_lock()? {
             Some(sync_write) => {
+                tracing::trace!("obtained sync lock, committing changes");
                 let () = sync_write.commit()?;
                 Ok(())
             }
-            None => Ok(()),
+            None => {
+                tracing::trace!("no sync lock, skipping commit");
+                Ok(())
+            }
         }
     }
 }

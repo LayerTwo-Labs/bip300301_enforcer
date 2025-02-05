@@ -8,6 +8,7 @@ use cusf_enforcer_mempool::{
     },
     cusf_enforcer::{ConnectBlockAction, CusfEnforcer},
 };
+use tracing::instrument;
 
 use crate::{
     validator::Validator,
@@ -36,6 +37,7 @@ impl CusfEnforcer for Wallet {
         clippy::significant_drop_tightening,
         reason = "false positive, sync_write is consumed by commit()"
     )]
+    #[instrument(skip_all, fields(tip_hash))]
     async fn sync_to_tip(
         &mut self,
         tip_hash: BlockHash,

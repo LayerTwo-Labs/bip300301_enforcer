@@ -602,6 +602,7 @@ dependencies = [
  "tonic-build",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "zeromq",
 ]
 
