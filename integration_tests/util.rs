@@ -383,11 +383,12 @@ impl Enforcer {
             format!("127.0.0.1:{}", self.serve_grpc_port),
             "--serve-rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.serve_rpc_port),
+            "--wallet-auto-create".to_owned(),
             "--wallet-electrum-host".to_owned(),
             "127.0.0.1".to_owned(),
             "--wallet-electrum-port".to_owned(),
             self.wallet_electrum_port.to_string(),
-            "--wallet-auto-create".to_owned(),
+            "--wallet-skip-periodic-sync".to_owned(),
         ];
         if self.enable_mempool {
             default_args.push("--enable-mempool".to_owned());

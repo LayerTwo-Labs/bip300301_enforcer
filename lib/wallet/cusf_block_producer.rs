@@ -43,20 +43,31 @@ impl CusfEnforcer for Wallet {
         tip_hash: BlockHash,
     ) -> std::result::Result<(), Self::SyncError> {
         let () = self.inner.validator.clone().sync_to_tip(tip_hash).await?;
-        let sync_write = self
-            .inner
-            .sync_lock()?
-            .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
-        let wallet_tip = sync_write.wallet.local_chain().tip().hash();
-        if tip_hash == wallet_tip {
-            let () = sync_write.commit().map_err(error::WalletSync::from)?;
-            Ok(())
-        } else {
-            Err(Self::SyncError::WalletTip {
-                expected: tip_hash,
-                wallet_tip,
-            })
-        }
+        tracing::debug!(%tip_hash, "Synced validator, syncing wallet..");
+        tokio::task::block_in_place(|| {
+            let sync_write = self
+                .inner
+                .sync_lock()?
+                .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
+            let wallet_tip = sync_write.wallet.local_chain().tip().hash();
+            if tip_hash == wallet_tip {
+                let () = sync_write.commit().map_err(error::WalletSync::from)?;
+                if !self.inner.config.wallet_opts.skip_periodic_sync {
+                    let mut start_tx_lock = self.task.start_tx.lock();
+                    if let Some(start_tx) = start_tx_lock.take() {
+                        start_tx.send(()).unwrap_or_else(|_| {
+                            tracing::error!("Failed to send start signal to wallet task")
+                        });
+                    }
+                }
+                Ok(())
+            } else {
+                Err(Self::SyncError::WalletTip {
+                    expected: tip_hash,
+                    wallet_tip,
+                })
+            }
+        })
     }
 
     type ConnectBlockError = error::ConnectBlock;

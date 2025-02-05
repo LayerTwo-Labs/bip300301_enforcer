@@ -66,29 +66,35 @@ impl WalletInner {
     pub(in crate::wallet) fn sync_lock(&self) -> Result<Option<SyncWriteGuard>, error::WalletSync> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
+        // Hold a write lock for the duration of the sync, to prevent other
+        // updates to the wallet between fetching an update via electrum
+        // client, and applying the update.
         // Don't error out here if the wallet is locked, just skip the sync.
-        let wallet_read = match self.read_wallet() {
-            Ok(wallet_read) => wallet_read,
+        let mut wallet_write = match self.write_wallet() {
+            Ok(wallet_write) => wallet_write,
             // "Accepted" errors, that aren't really errors in this case.
-            Err(error::Read::NotUnlocked(_)) => {
+            Err(error::Write::NotUnlocked(_)) => {
                 tracing::trace!("sync: skipping sync due to wallet error");
                 return Ok(None);
             }
             Err(err) => return Err(err.into()),
         };
+        tracing::trace!("Acquired write lock on wallet");
         let last_sync_write = self.last_sync.write();
-        let request = wallet_read.start_sync_with_revealed_spks();
-        drop(wallet_read);
+        let request = wallet_write.start_sync_with_revealed_spks().build();
 
+        tracing::trace!(
+            spks = request.progress().spks_remaining,
+            txids = request.progress().txids_remaining,
+            outpoints = request.progress().outpoints_remaining,
+            "Requesting sync via electrum client"
+        );
         const BATCH_SIZE: usize = 5;
         const FETCH_PREV_TXOUTS: bool = false;
         let update = self
             .electrum_client
             .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?;
-        // Be a bit smart about the wallet locks, and only acquire the write lock
-        // after the sync itself has completed and we're ready the apply
-        // it to the wallet.
-        let mut wallet_write = self.write_wallet()?;
+        tracing::trace!("Fetched update from electrum client, applying update");
         wallet_write.apply_update(update)?;
         tracing::debug!(
             "wallet sync complete in {:?}",
