@@ -44,6 +44,7 @@ use tokio::{
     time::Instant,
 };
 use tracing::instrument;
+use util::RwLockUpgradableReadGuardSome;
 use uuid::Uuid;
 
 use crate::{
@@ -62,6 +63,7 @@ pub mod error;
 mod mine;
 mod mnemonic;
 mod sync;
+mod util;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
@@ -313,6 +315,21 @@ impl WalletInner {
         };
         RwLockReadGuard::try_map(read_guard, |wallet| wallet.as_ref())
             .map_err(|_| error::NotUnlocked.into())
+    }
+
+    /// Obtain an upgradable read lock on the inner wallet
+    fn read_wallet_upgradable(
+        &self,
+    ) -> Result<RwLockUpgradableReadGuardSome<BdkWallet>, error::Read> {
+        tracing::trace!(
+            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
+            "wallet: acquiring upgradable read lock"
+        );
+        let read_guard = self
+            .bitcoin_wallet
+            .try_upgradable_read_for(Self::LOCK_TIMEOUT)
+            .ok_or(error::Read::TimedOut)?;
+        RwLockUpgradableReadGuardSome::new(read_guard).ok_or_else(|| error::NotUnlocked.into())
     }
 
     fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, error::Write> {
