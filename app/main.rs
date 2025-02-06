@@ -524,13 +524,15 @@ async fn main() -> Result<()> {
             .signet_challenge
             .map(|signet_challenge| compute_signet_magic(&signet_challenge))
             .unwrap_or_else(|| info.chain.magic());
-        let wallet = Wallet::new(
-            &wallet_data_dir,
-            &cli,
-            mainchain_client.clone(),
-            validator,
-            magic,
-        )?;
+        let wallet = tokio::task::block_in_place(|| {
+            Wallet::new(
+                &wallet_data_dir,
+                &cli,
+                mainchain_client.clone(),
+                validator,
+                magic,
+            )
+        })?;
 
         if !wallet.is_initialized() && cli.wallet_opts.auto_create {
             tracing::info!("auto-creating new wallet");
