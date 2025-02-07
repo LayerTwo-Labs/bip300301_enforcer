@@ -388,7 +388,6 @@ impl Enforcer {
             "127.0.0.1".to_owned(),
             "--wallet-electrum-port".to_owned(),
             self.wallet_electrum_port.to_string(),
-            "--wallet-skip-periodic-sync".to_owned(),
         ];
         if self.enable_mempool {
             default_args.push("--enable-mempool".to_owned());
