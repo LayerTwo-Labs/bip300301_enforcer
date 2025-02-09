@@ -35,23 +35,25 @@ use crate::{
             get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
-            server::ValidatorService, wallet_service_server::WalletService,
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
-            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
-            CreateSidechainProposalResponse, CreateWalletRequest, CreateWalletResponse,
-            GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
-            GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
-            GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
-            GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
+            list_unspent_outputs_response, server::ValidatorService,
+            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
+            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
+            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
+            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
+            CreateSidechainProposalRequest, CreateSidechainProposalResponse, CreateWalletRequest,
+            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
+            GetBalanceResponse, GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse,
+            GetBlockInfoRequest, GetBlockInfoResponse, GetBmmHStarCommitmentRequest,
+            GetBmmHStarCommitmentResponse, GetChainInfoRequest, GetChainInfoResponse,
+            GetChainTipRequest, GetChainTipResponse, GetCoinbasePsbtRequest,
+            GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
             ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
-            ListTransactionsRequest, ListTransactionsResponse, Network, SendTransactionRequest,
-            SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
-            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
+            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
+            ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
+            SubscribeEventsRequest, SubscribeEventsResponse, UnlockWalletRequest,
+            UnlockWalletResponse, WalletTransaction,
         },
         IntoStatus,
     },
@@ -1047,6 +1049,26 @@ impl WalletService for crate::wallet::Wallet {
         };
 
         Ok(tonic::Response::new(response))
+    }
+
+    async fn list_unspent_outputs(
+        &self,
+        request: tonic::Request<ListUnspentOutputsRequest>,
+    ) -> Result<tonic::Response<ListUnspentOutputsResponse>, tonic::Status> {
+        let ListUnspentOutputsRequest {} = request.into_inner();
+        let bdk_utxos = self.get_utxos().map_err(|err| err.into_status())?;
+
+        let outputs = bdk_utxos
+            .into_iter()
+            .map(|utxo| list_unspent_outputs_response::Output {
+                txid: Some(ReverseHex::encode(&utxo.outpoint.txid)),
+                vout: utxo.outpoint.vout,
+                value_sats: utxo.txout.value.to_sat(),
+                is_internal: utxo.keychain == bdk_wallet::KeychainKind::Internal,
+            })
+            .collect();
+
+        Ok(tonic::Response::new(ListUnspentOutputsResponse { outputs }))
     }
 
     async fn list_sidechain_deposit_transactions(
