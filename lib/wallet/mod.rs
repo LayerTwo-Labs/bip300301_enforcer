@@ -41,6 +41,7 @@ use rusqlite::Connection;
 use tokio::{
     spawn,
     task::{block_in_place, JoinHandle},
+    time::Instant,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -1411,23 +1412,22 @@ impl Wallet {
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
     )]
-    #[allow(dead_code)]
     #[instrument(skip_all)]
-    fn get_utxos(&self) -> Result<()> {
+    pub fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>> {
+        let start = Instant::now();
         if self.inner.last_sync.read().is_none() {
-            return Err(miette!("get utxos: wallet not synced"));
+            return Err(error::WalletInitialization::NotSynced.into());
         }
 
         let wallet_read = self.inner.read_wallet()?;
-        let utxos = wallet_read.list_unspent();
-        for utxo in utxos {
-            tracing::trace!(
-                "address: {}, value: {}",
-                utxo.txout.script_pubkey,
-                utxo.txout.value
-            );
-        }
-        Ok(())
+        let utxos = wallet_read.list_unspent().collect::<Vec<_>>();
+
+        tracing::debug!(
+            "listed {} wallet utxos in {:?}",
+            utxos.len(),
+            start.elapsed()
+        );
+        Ok(utxos)
     }
 
     /// Persists a sidechain proposal into our database.
