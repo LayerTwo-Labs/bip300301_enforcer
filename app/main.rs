@@ -406,16 +406,22 @@ fn task(
         }),
         (true, Either::Right(wallet)) => {
             tracing::info!("mempool sync task w/wallet: starting");
-
-            // A pre-requisite for the mempool sync task is that the wallet is
-            // initialized and unlocked. Give a nice error message if this is not
-            // the case!
-            if !wallet.is_initialized() {
-                return Err(miette!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."));
-            }
-
-            let mining_reward_address = wallet.get_new_address()?;
             spawn(async move {
+                // A pre-requisite for the mempool sync task is that the wallet is
+                // initialized and unlocked. Give a nice error message if this is not
+                // the case!
+                if !wallet.is_initialized().await {
+                    tracing::error!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method.");
+                    return;
+                }
+                let mining_reward_address = match wallet.get_new_address().await {
+                    Ok(mining_reward_address) => mining_reward_address,
+                    Err(err) => {
+                        let err: miette::Report = err;
+                        tracing::error!("failed to get mining reward address: {err:#}");
+                        return;
+                    }
+                };
                 let network_info = match mainchain_client.get_network_info().await {
                     Ok(network_info) => network_info,
                     Err(err) => {
@@ -534,11 +540,11 @@ async fn main() -> Result<()> {
             )
         })?;
 
-        if !wallet.is_initialized() && cli.wallet_opts.auto_create {
+        if !wallet.is_initialized().await && cli.wallet_opts.auto_create {
             tracing::info!("auto-creating new wallet");
             let mnemonic = None;
             let password = None;
-            wallet.create_wallet(mnemonic, password)?;
+            wallet.create_wallet(mnemonic, password).await?;
         }
 
         Either::Right(wallet)

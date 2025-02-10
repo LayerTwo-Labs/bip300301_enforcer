@@ -44,35 +44,34 @@ impl CusfEnforcer for Wallet {
     ) -> std::result::Result<(), Self::SyncError> {
         let () = self.inner.validator.clone().sync_to_tip(tip_hash).await?;
         tracing::debug!(%tip_hash, "Synced validator, syncing wallet..");
-        tokio::task::block_in_place(|| {
-            let sync_write = self
-                .inner
-                .sync_lock()?
-                .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
-            let wallet_tip = sync_write.wallet.local_chain().tip().hash();
-            if tip_hash == wallet_tip {
-                let () = sync_write.commit().map_err(error::WalletSync::from)?;
-                if !self.inner.config.wallet_opts.skip_periodic_sync {
-                    let mut start_tx_lock = self.task.start_tx.lock();
-                    if let Some(start_tx) = start_tx_lock.take() {
-                        start_tx.send(()).unwrap_or_else(|_| {
-                            tracing::error!("Failed to send start signal to wallet task")
-                        });
-                    }
+        let sync_write = self
+            .inner
+            .sync_lock()
+            .await?
+            .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
+        let wallet_tip = sync_write.wallet.local_chain().tip().hash();
+        if tip_hash == wallet_tip {
+            let () = sync_write.commit().map_err(error::WalletSync::from)?;
+            if !self.inner.config.wallet_opts.skip_periodic_sync {
+                let mut start_tx_lock = self.task.start_tx.lock();
+                if let Some(start_tx) = start_tx_lock.take() {
+                    start_tx.send(()).unwrap_or_else(|_| {
+                        tracing::error!("Failed to send start signal to wallet task")
+                    });
                 }
-                Ok(())
-            } else {
-                Err(Self::SyncError::WalletTip {
-                    expected: tip_hash,
-                    wallet_tip,
-                })
             }
-        })
+            Ok(())
+        } else {
+            Err(Self::SyncError::WalletTip {
+                expected: tip_hash,
+                wallet_tip,
+            })
+        }
     }
 
     type ConnectBlockError = error::ConnectBlock;
 
-    fn connect_block(
+    async fn connect_block(
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
@@ -81,22 +80,27 @@ impl CusfEnforcer for Wallet {
             %block_hash,
             "CUSF block producer: connecting block"
         );
-        let res = self.inner.validator.clone().connect_block(block)?;
+        let res = self.inner.validator.clone().connect_block(block).await?;
         let block_height = self.inner.validator.get_header_info(&block_hash)?.height;
         let block_info = self.inner.validator.get_block_info(&block.block_hash())?;
         let () = self
             .inner
-            .handle_connect_block(block, block_height, block_info)?;
+            .handle_connect_block(block, block_height, block_info)
+            .await?;
         Ok(res)
     }
 
     type DisconnectBlockError = <Validator as CusfEnforcer>::DisconnectBlockError;
 
-    fn disconnect_block(
+    async fn disconnect_block(
         &mut self,
         block_hash: BlockHash,
     ) -> std::result::Result<(), Self::DisconnectBlockError> {
-        self.inner.validator.clone().disconnect_block(block_hash)
+        self.inner
+            .validator
+            .clone()
+            .disconnect_block(block_hash)
+            .await
         // FIXME: disconnect block for wallet
     }
 
@@ -125,7 +129,7 @@ impl CusfBlockProducer for Wallet {
     ///
     /// This function is our "hook" for adding Drivechain coinbase messages to
     /// the about-to-be-generated block.
-    fn initial_block_template<const COINBASE_TXN: bool>(
+    async fn initial_block_template<const COINBASE_TXN: bool>(
         &self,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
         mut template: InitialBlockTemplate<COINBASE_TXN>,
@@ -167,7 +171,7 @@ impl CusfBlockProducer for Wallet {
 
     type SuffixTxsError = error::SuffixTxs;
 
-    fn suffix_txs<const COINBASE_TXN: bool>(
+    async fn suffix_txs<const COINBASE_TXN: bool>(
         &self,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
         template: &InitialBlockTemplate<COINBASE_TXN>,

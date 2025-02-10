@@ -4,8 +4,8 @@
 mod rwlock_write_guard_some {
     /// Write guard over values of `Option<T>` that are guaranteed to be `Some`
     #[ouroboros::self_referencing]
-    struct Inner<'a, T> {
-        write_guard: parking_lot::RwLockWriteGuard<'a, Option<T>>,
+    struct Inner<'a, T: 'a> {
+        write_guard: async_lock::RwLockWriteGuard<'a, Option<T>>,
         #[borrows(mut write_guard)]
         inner: &'this mut T,
     }
@@ -15,9 +15,16 @@ mod rwlock_write_guard_some {
     pub struct RwLockWriteGuardSome<'a, T>(Inner<'a, T>);
 
     impl<'a, T> RwLockWriteGuardSome<'a, T> {
+        pub fn new(write_guard: async_lock::RwLockWriteGuard<'a, Option<T>>) -> Option<Self> {
+            match Inner::try_new(write_guard, |write_guard| write_guard.as_mut().ok_or(())) {
+                Ok(inner) => Some(Self(inner)),
+                Err(()) => None,
+            }
+        }
+
         /// Panics if the inner value is `None`
         pub(in crate::wallet::util) fn new_unchecked(
-            write_guard: parking_lot::RwLockWriteGuard<'a, Option<T>>,
+            write_guard: async_lock::RwLockWriteGuard<'a, Option<T>>,
         ) -> Self {
             Self(Inner::new(write_guard, |write_guard| {
                 write_guard
@@ -50,14 +57,14 @@ pub(in crate::wallet) use rwlock_write_guard_some::RwLockWriteGuardSome;
 
 #[allow(clippy::significant_drop_tightening, reason = "False positive")]
 mod rwlock_upgradable_read_guard_some {
-    use parking_lot::RwLockUpgradableReadGuard;
+    use async_lock::RwLockUpgradableReadGuard;
 
     use super::RwLockWriteGuardSome;
 
     /// Upgradable read guard over values of `Option<T>` that are guaranteed to
     /// be `Some`
     #[ouroboros::self_referencing]
-    struct Inner<'a, T> {
+    struct Inner<'a, T: 'a> {
         read_guard: RwLockUpgradableReadGuard<'a, Option<T>>,
         #[borrows(read_guard)]
         inner: &'this T,
@@ -76,32 +83,14 @@ mod rwlock_upgradable_read_guard_some {
             }
         }
 
-        /// Tries to atomically upgrade an upgradable read lock into an exclusive
-        /// write lock, until a timeout is reached.
-        ///
-        /// If the access could not be granted before the timeout expires, then the
-        /// current guard is returned.
-        ///
         /// This is an associated function that needs to be used as
-        /// RwLockUpgradableReadGuard::try_upgrade_for(...).
+        /// RwLockUpgradableReadGuard::upgrade(...).
         /// A method would interfere with methods of the same name on the contents
         /// of the locked data.
-        pub fn try_upgrade_for(
-            s: Self,
-            timeout: std::time::Duration,
-        ) -> Result<RwLockWriteGuardSome<'a, T>, Self> {
+        pub async fn upgrade(s: Self) -> RwLockWriteGuardSome<'a, T> {
             let read_guard = s.0.into_heads().read_guard;
-            match RwLockUpgradableReadGuard::try_upgrade_for(read_guard, timeout) {
-                Ok(write_guard) => Ok(RwLockWriteGuardSome::new_unchecked(write_guard)),
-                Err(read_guard) => {
-                    let inner = Inner::new(read_guard, |read_guard| {
-                        read_guard
-                            .as_ref()
-                            .expect("Inner value of RwLockUpgradableReadGuardSome should be Some")
-                    });
-                    Err(Self(inner))
-                }
-            }
+            let write_guard = RwLockUpgradableReadGuard::upgrade(read_guard).await;
+            RwLockWriteGuardSome::new_unchecked(write_guard)
         }
     }
 
@@ -115,3 +104,41 @@ mod rwlock_upgradable_read_guard_some {
 }
 
 pub(in crate::wallet) use rwlock_upgradable_read_guard_some::RwLockUpgradableReadGuardSome;
+
+#[allow(clippy::significant_drop_tightening, reason = "False positive")]
+mod rwlock_read_guard_some {
+    use async_lock::RwLockReadGuard;
+
+    /// Read guard over values of `Option<T>` that are guaranteed to
+    /// be `Some`
+    #[ouroboros::self_referencing]
+    struct Inner<'a, T: 'a> {
+        read_guard: RwLockReadGuard<'a, Option<T>>,
+        #[borrows(read_guard)]
+        inner: &'this T,
+    }
+
+    /// Upgradable read guard over values of `Option<T>` that are guaranteed to
+    /// be `Some`
+    #[repr(transparent)]
+    pub struct RwLockReadGuardSome<'a, T>(Inner<'a, T>);
+
+    impl<'a, T> RwLockReadGuardSome<'a, T> {
+        pub fn new(read_guard: RwLockReadGuard<'a, Option<T>>) -> Option<Self> {
+            match Inner::try_new(read_guard, |read_guard| read_guard.as_ref().ok_or(())) {
+                Ok(inner) => Some(Self(inner)),
+                Err(()) => None,
+            }
+        }
+    }
+
+    impl<T> std::ops::Deref for RwLockReadGuardSome<'_, T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            self.0.borrow_inner()
+        }
+    }
+}
+
+pub(in crate::wallet) use rwlock_read_guard_some::RwLockReadGuardSome;

@@ -34,9 +34,7 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{channel::oneshot, FutureExt};
 use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
-use parking_lot::{
-    MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
-};
+use parking_lot::Mutex;
 use rusqlite::Connection;
 use tokio::{
     spawn,
@@ -44,7 +42,7 @@ use tokio::{
     time::Instant,
 };
 use tracing::instrument;
-use util::RwLockUpgradableReadGuardSome;
+use util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome};
 use uuid::Uuid;
 
 use crate::{
@@ -77,11 +75,11 @@ struct WalletInner {
     magic: bitcoin::p2p::Magic,
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
-    bitcoin_wallet: RwLock<Option<BdkWallet>>,
-    bitcoin_db: Mutex<file_store::Store<ChangeSet>>,
+    bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
+    bitcoin_db: async_lock::Mutex<file_store::Store<ChangeSet>>,
     db_connection: Mutex<rusqlite::Connection>,
     electrum_client: ElectrumClient,
-    last_sync: RwLock<Option<SystemTime>>,
+    last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
 
@@ -294,72 +292,94 @@ impl WalletInner {
             main_client,
             validator,
             magic,
-            bitcoin_wallet: RwLock::new(bitcoin_wallet),
-            bitcoin_db: Mutex::new(wallet_database),
+            bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
+            bitcoin_db: async_lock::Mutex::new(wallet_database),
             db_connection: Mutex::new(db_connection),
             electrum_client,
-            last_sync: RwLock::new(None),
+            last_sync: async_lock::RwLock::new(None),
         })
     }
 
-    const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+    /// Warn if lock takes this long to acquire
+    const LOCK_WARN_DURATION: Duration = Duration::from_secs(1);
 
-    fn read_wallet(&self) -> Result<MappedRwLockReadGuard<BdkWallet>, error::Read> {
-        tracing::trace!(
-            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
-            "wallet: acquiring read lock"
-        );
-        let read_guard = self.bitcoin_wallet.try_read_for(Self::LOCK_TIMEOUT);
-        let Some(read_guard) = read_guard else {
-            return Err(error::Read::TimedOut);
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
+    async fn read_wallet(&self) -> Result<RwLockReadGuardSome<BdkWallet>, error::NotUnlocked> {
+        use futures::future::{select, Either};
+        tracing::trace!("wallet: acquiring read lock");
+        let read_guard = match select(
+            self.bitcoin_wallet.read().boxed(),
+            tokio::time::sleep(Self::LOCK_WARN_DURATION).boxed(),
+        )
+        .await
+        {
+            Either::Left((read_guard, _sleep)) => read_guard,
+            Either::Right(((), acquiring_read_lock)) => {
+                tracing::warn!(
+                    "wallet: waiting over {} to acquire read lock",
+                    humantime::format_duration(Self::LOCK_WARN_DURATION)
+                );
+                acquiring_read_lock.await
+            }
         };
-        RwLockReadGuard::try_map(read_guard, |wallet| wallet.as_ref())
-            .map_err(|_| error::NotUnlocked.into())
+        RwLockReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
     }
 
     /// Obtain an upgradable read lock on the inner wallet
-    fn read_wallet_upgradable(
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
+    async fn read_wallet_upgradable(
         &self,
-    ) -> Result<RwLockUpgradableReadGuardSome<BdkWallet>, error::Read> {
-        tracing::trace!(
-            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
-            "wallet: acquiring upgradable read lock"
-        );
-        let read_guard = self
-            .bitcoin_wallet
-            .try_upgradable_read_for(Self::LOCK_TIMEOUT)
-            .ok_or(error::Read::TimedOut)?;
-        RwLockUpgradableReadGuardSome::new(read_guard).ok_or_else(|| error::NotUnlocked.into())
+    ) -> Result<RwLockUpgradableReadGuardSome<BdkWallet>, error::NotUnlocked> {
+        use futures::future::{select, Either};
+        tracing::trace!("wallet: acquiring upgradable read lock");
+        let read_guard = match select(
+            self.bitcoin_wallet.upgradable_read().boxed(),
+            tokio::time::sleep(Self::LOCK_WARN_DURATION).boxed(),
+        )
+        .await
+        {
+            Either::Left((read_guard, _sleep)) => read_guard,
+            Either::Right(((), acquiring_read_lock)) => {
+                tracing::warn!(
+                    "waiting over {} to acquire read lock",
+                    humantime::format_duration(Self::LOCK_WARN_DURATION)
+                );
+                acquiring_read_lock.await
+            }
+        };
+        RwLockUpgradableReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
     }
 
-    fn write_wallet(&self) -> Result<MappedRwLockWriteGuard<BdkWallet>, error::Write> {
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
+    async fn write_wallet(&self) -> Result<RwLockWriteGuardSome<BdkWallet>, error::NotUnlocked> {
+        use futures::future::{select, Either};
         let start = SystemTime::now();
-
         let span = tracing::span!(tracing::Level::TRACE, "acquire_write_lock");
         let _guard = span.enter();
-
-        tracing::trace!(
-            timeout = format!("{:?}", Self::LOCK_TIMEOUT),
-            "wallet: acquiring write lock"
-        );
-        let write_guard = self.bitcoin_wallet.try_write_for(Self::LOCK_TIMEOUT);
-        let Some(write_guard) = write_guard else {
-            return Err(error::Write::TimedOut);
+        tracing::trace!("acquiring write lock");
+        let write_guard = match select(
+            self.bitcoin_wallet.write().boxed(),
+            tokio::time::sleep(Self::LOCK_WARN_DURATION).boxed(),
+        )
+        .await
+        {
+            Either::Left((write_guard, _sleep)) => write_guard,
+            Either::Right(((), acquiring_write_lock)) => {
+                tracing::warn!(
+                    "waiting over {} to acquire write lock",
+                    humantime::format_duration(Self::LOCK_WARN_DURATION)
+                );
+                acquiring_write_lock.await
+            }
         };
-        RwLockWriteGuard::try_map(write_guard, |wallet| wallet.as_mut())
-            .map_err(|err| {
-                tracing::trace!("wallet: failed to acquire write lock: {err:?}");
-                error::NotUnlocked.into()
-            })
-            .inspect(|_| {
-                tracing::trace!(
-                    "wallet: acquired write lock successfully in {:?}",
-                    start.elapsed().unwrap_or_default()
-                )
-            })
+        tracing::trace!(
+            "wallet: acquired write lock successfully in {:?}",
+            start.elapsed().unwrap_or_default()
+        );
+        RwLockWriteGuardSome::new(write_guard).ok_or(error::NotUnlocked)
     }
 
-    pub fn create_new_wallet(
+    pub async fn create_new_wallet(
         &self,
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
@@ -425,20 +445,20 @@ impl WalletInner {
             }
         }
 
-        let mut database = self.bitcoin_db.lock();
+        let mut database = self.bitcoin_db.lock().await;
         let network = self.validator.network();
         let wallet =
             WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database)?;
         drop(database);
 
-        let mut write_guard = self.bitcoin_wallet.write();
+        let mut write_guard = self.bitcoin_wallet.write().await;
         *write_guard = Some(wallet);
         drop(write_guard);
         Ok(())
     }
 
-    pub fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
-        if self.bitcoin_wallet.read().is_some() {
+    pub async fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
+        if self.bitcoin_wallet.read().await.is_some() {
             return Err(WalletInitialization::AlreadyUnlocked.into());
         }
 
@@ -466,7 +486,7 @@ impl WalletInner {
             WalletInitialization::InvalidPassword
         })?;
 
-        let mut database = self.bitcoin_db.lock();
+        let mut database = self.bitcoin_db.lock().await;
         let network = self.validator.network();
 
         tracing::debug!("unlock wallet: initializing BDK wallet struct");
@@ -474,7 +494,7 @@ impl WalletInner {
             WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database)?;
         drop(database);
 
-        let mut write_guard = self.bitcoin_wallet.write();
+        let mut write_guard = self.bitcoin_wallet.write().await;
         *write_guard = Some(wallet);
         drop(write_guard);
 
@@ -639,7 +659,7 @@ impl Task {
                         %tick,
                     );
                     let guard = span.enter();
-                    if let Err(err) = block_in_place(|| wallet.sync()) {
+                    if let Err(err) = wallet.sync().await {
                         tracing::error!("wallet sync error: {err:#}");
                     }
                     drop(guard);
@@ -703,8 +723,8 @@ impl Wallet {
         })
     }
 
-    pub fn is_initialized(&self) -> bool {
-        self.inner.bitcoin_wallet.read().is_some()
+    pub async fn is_initialized(&self) -> bool {
+        self.inner.bitcoin_wallet.read().await.is_some()
     }
 
     pub fn validator(&self) -> &Validator {
@@ -1107,42 +1127,44 @@ impl Wallet {
         };
 
         let psbt = {
-            let mut wallet_write = self.inner.write_wallet()?;
-            let mut builder = wallet_write.build_tx();
+            let mut wallet_write = self.inner.write_wallet().await?;
+            block_in_place(|| {
+                wallet_write.with_mut(|wallet| {
+                    let mut builder = wallet.build_tx();
+                    builder
+                        // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
+                        .add_recipient(
+                            op_drivechain_output.script_pubkey,
+                            op_drivechain_output.value,
+                        )
+                        .add_data(&sidechain_address_data);
 
-            builder
-                // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
-                .add_recipient(
-                    op_drivechain_output.script_pubkey,
-                    op_drivechain_output.value,
-                )
-                .add_data(&sidechain_address_data);
+                    if let Some(fee) = fee {
+                        builder.fee_absolute(fee);
+                    }
 
-            if let Some(fee) = fee {
-                builder.fee_absolute(fee);
-            }
+                    if let Some((ctip_psbt_input, outpoint)) = ctip_foreign_utxo {
+                        // This might be wrong. Seems to work!
+                        let satisfaction_weight = bdk_wallet::bitcoin::Weight::ZERO;
 
-            if let Some((ctip_psbt_input, outpoint)) = ctip_foreign_utxo {
-                // This might be wrong. Seems to work!
-                let satisfaction_weight = bdk_wallet::bitcoin::Weight::ZERO;
+                        builder
+                            .add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)
+                            .into_diagnostic()?;
+                    }
 
-                builder
-                    .add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)
-                    .into_diagnostic()?;
-            }
+                    builder.ordering(Self::deposit_txordering(
+                        [(
+                            sidechain_address_data.as_bytes().to_owned(),
+                            sidechain_number,
+                        )]
+                        .into_iter()
+                        .collect(),
+                    ));
 
-            builder.ordering(Self::deposit_txordering(
-                [(
-                    sidechain_address_data.as_bytes().to_owned(),
-                    sidechain_number,
-                )]
-                .into_iter()
-                .collect(),
-            ));
-
-            builder.finish().into_diagnostic()?
+                    builder.finish().into_diagnostic()
+                })
+            })?
         };
-
         Ok(psbt)
     }
 
@@ -1192,7 +1214,7 @@ impl Wallet {
             )
             .await?;
         tracing::debug!("Created deposit PSBT: {psbt}");
-        let tx = self.sign_transaction(psbt)?;
+        let tx = self.sign_transaction(psbt).await?;
         let txid = tx.compute_txid();
         tracing::info!(%txid, "Signed deposit transaction");
         tracing::debug!("Serialized deposit transaction: {}", {
@@ -1229,11 +1251,11 @@ impl Wallet {
 
     #[instrument(skip_all)]
     pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance> {
-        if self.inner.last_sync.read().is_none() {
+        if self.inner.last_sync.read().await.is_none() {
             return Err(miette!("get balance: wallet not synced"));
         }
 
-        let balance = self.inner.read_wallet()?.balance();
+        let balance = self.inner.read_wallet().await?.balance();
 
         Ok(balance)
     }
@@ -1246,7 +1268,7 @@ impl Wallet {
     pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
-            let wallet_read = self.inner.read_wallet()?;
+            let wallet_read = self.inner.read_wallet().await?;
             let transactions = wallet_read.transactions();
 
             transactions
@@ -1312,7 +1334,7 @@ impl Wallet {
                         .into_diagnostic()?;
 
                 let value = prev_output.output[input.previous_output.vout as usize].value;
-                if self.inner.read_wallet()?.is_mine(
+                if self.inner.read_wallet().await?.is_mine(
                     prev_output.output[input.previous_output.vout as usize]
                         .script_pubkey
                         .clone(),
@@ -1354,29 +1376,35 @@ impl Wallet {
         op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         let psbt = {
-            let mut wallet_write = self.inner.write_wallet()?;
-            let mut builder = wallet_write.build_tx();
+            let mut wallet_write = self.inner.write_wallet().await?;
+            block_in_place(|| {
+                wallet_write.with_mut(|wallet| {
+                    let mut builder = wallet.build_tx();
 
-            if let Some(op_return_output) = op_return_output {
-                builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
-            }
+                    if let Some(op_return_output) = op_return_output {
+                        builder
+                            .add_recipient(op_return_output.script_pubkey, op_return_output.value);
+                    }
 
-            // Add outputs for each destination address
-            for (address, value) in destinations {
-                builder.add_recipient(address.script_pubkey(), value);
-            }
+                    // Add outputs for each destination address
+                    for (address, value) in destinations {
+                        builder.add_recipient(address.script_pubkey(), value);
+                    }
 
-            match fee_policy {
-                Some(crate::types::FeePolicy::Absolute(fee)) => {
-                    builder.fee_absolute(fee);
-                }
-                Some(crate::types::FeePolicy::Rate(rate)) => {
-                    builder.fee_rate(rate);
-                }
-                None => (),
-            }
+                    match fee_policy {
+                        Some(crate::types::FeePolicy::Absolute(fee)) => {
+                            builder.fee_absolute(fee);
+                        }
+                        Some(crate::types::FeePolicy::Rate(rate)) => {
+                            builder.fee_rate(rate);
+                        }
+                        None => (),
+                    }
 
-            builder.finish().into_diagnostic()?
+                    builder.finish()
+                })
+            })
+            .into_diagnostic()?
         };
 
         Ok(psbt)
@@ -1400,7 +1428,7 @@ impl Wallet {
 
         tracing::debug!(%psbt, "Created send PSBT");
 
-        let tx = self.sign_transaction(psbt)?;
+        let tx = self.sign_transaction(psbt).await?;
         let txid = tx.compute_txid();
 
         tracing::info!(%txid, "Signed send transaction",);
@@ -1430,13 +1458,13 @@ impl Wallet {
         reason = "false positive for `bitcoin_wallet`"
     )]
     #[instrument(skip_all)]
-    pub fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>> {
+    pub async fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>> {
         let start = Instant::now();
-        if self.inner.last_sync.read().is_none() {
+        if self.inner.last_sync.read().await.is_none() {
             return Err(error::WalletInitialization::NotSynced.into());
         }
 
-        let wallet_read = self.inner.read_wallet()?;
+        let wallet_read = self.inner.read_wallet().await?;
         let utxos = wallet_read.list_unspent().collect::<Vec<_>>();
 
         tracing::debug!(
@@ -1501,13 +1529,14 @@ impl Wallet {
         Ok(active)
     }
 
-    fn sign_transaction(
+    async fn sign_transaction(
         &self,
         mut psbt: bdk_wallet::bitcoin::psbt::Psbt,
     ) -> Result<bdk_wallet::bitcoin::Transaction> {
         if !self
             .inner
-            .read_wallet()?
+            .read_wallet()
+            .await?
             .sign(&mut psbt, bdk_wallet::signer::SignOptions::default())
             .into_diagnostic()?
         {
@@ -1540,7 +1569,7 @@ impl Wallet {
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
     )]
-    fn build_bmm_tx(
+    async fn build_bmm_tx(
         &self,
         sidechain_number: SidechainNumber,
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
@@ -1558,23 +1587,27 @@ impl Wallet {
 
         let psbt = {
             tracing::trace!("build_bmm_tx: acquiring wallet write lock");
-            let mut wallet_write = self.inner.write_wallet()?;
+            let mut wallet_write = self.inner.write_wallet().await?;
+            block_in_place(|| {
+                wallet_write.with_mut(|wallet| {
+                    tracing::trace!("build_bmm_tx: creating transaction builder");
+                    let mut builder = wallet.build_tx();
 
-            tracing::trace!("build_bmm_tx: creating transaction builder");
-            let mut builder = wallet_write.build_tx();
+                    tracing::trace!("build_bmm_tx: adding locktime {locktime}");
+                    builder.nlocktime(locktime);
 
-            tracing::trace!("build_bmm_tx: adding locktime {locktime}");
-            builder.nlocktime(locktime);
+                    tracing::trace!("build_bmm_tx: adding recipient");
+                    builder.add_recipient(message, bid_amount);
 
-            tracing::trace!("build_bmm_tx: adding recipient");
-            builder.add_recipient(message, bid_amount);
+                    tracing::trace!("build_bmm_tx: finishing transaction builder");
+                    let res = builder.finish();
 
-            tracing::trace!("build_bmm_tx: finishing transaction builder");
-            let res = builder.finish().into_diagnostic()?;
+                    tracing::trace!("build_bmm_tx: built transaction");
 
-            tracing::trace!("build_bmm_tx: built transaction");
-
-            res
+                    res
+                })
+            })
+            .into_diagnostic()?
         };
 
         Ok(psbt)
@@ -1615,7 +1648,7 @@ impl Wallet {
     /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
     /// request was not stored due to pre-existing request with the same
     /// `sidechain_number` and `prev_mainchain_block_hash`.
-    pub fn create_bmm_request(
+    pub async fn create_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
@@ -1625,14 +1658,16 @@ impl Wallet {
     ) -> Result<Option<bdk_wallet::bitcoin::Transaction>> {
         tracing::debug!("create_bmm_request: building transaction");
 
-        let psbt = self.build_bmm_tx(
-            sidechain_number,
-            prev_mainchain_block_hash,
-            sidechain_block_hash,
-            bid_amount,
-            locktime,
-        )?;
-        let tx = self.sign_transaction(psbt)?;
+        let psbt = self
+            .build_bmm_tx(
+                sidechain_number,
+                prev_mainchain_block_hash,
+                sidechain_block_hash,
+                bid_amount,
+                locktime,
+            )
+            .await?;
+        let tx = self.sign_transaction(psbt).await?;
         tracing::info!("BMM request: PSBT signed successfully");
         if self.insert_new_bmm_request(
             sidechain_number,
@@ -1648,21 +1683,22 @@ impl Wallet {
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    pub fn get_new_address(&self) -> Result<bdk_wallet::bitcoin::Address> {
+    pub async fn get_new_address(&self) -> Result<bdk_wallet::bitcoin::Address> {
         // Using next_unused_address here means that we get a new address
         // when funds are received. Without this we'd need to take care not
         // to cross the wallet scan gap.
         let mut wallet_write = self
             .inner
             .write_wallet()
+            .await
             .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
-
-        let info = wallet_write.next_unused_address(bdk_wallet::KeychainKind::External);
-
-        let mut bitcoin_db = self.inner.bitcoin_db.lock();
-        let bitcoin_db = bitcoin_db.borrow_mut();
-        wallet_write.persist(bitcoin_db).into_diagnostic()?;
-        Ok(info.address)
+        let mut bitcoin_db = self.inner.bitcoin_db.lock().await;
+        wallet_write.with_mut(|wallet| {
+            let info = wallet.next_unused_address(bdk_wallet::KeychainKind::External);
+            let bitcoin_db = bitcoin_db.borrow_mut();
+            wallet.persist(bitcoin_db).into_diagnostic()?;
+            Ok(info.address)
+        })
     }
 
     pub fn put_withdrawal_bundle(
@@ -1682,18 +1718,18 @@ impl Wallet {
         Ok(m6id)
     }
 
-    pub fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
-        self.inner.unlock_existing_wallet(password)
+    pub async fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
+        self.inner.unlock_existing_wallet(password).await
     }
 
     // Creates a new wallet with a given mnemonic and encryption password.
     // Note that the password is NOT a BIP39 passphrase, but is only used to
     // encrypt the mnemonic in storage.
-    pub fn create_wallet(
+    pub async fn create_wallet(
         &self,
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
     ) -> Result<(), miette::Report> {
-        self.inner.create_new_wallet(mnemonic, password)
+        self.inner.create_new_wallet(mnemonic, password).await
     }
 }
