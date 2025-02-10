@@ -40,7 +40,7 @@ rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "cf467500d9cd68d6736b98d6fb3653bcebbf54bc"
+rev = "d188b4153d09ea94469e5edf7c3b35fa103948dc"
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"

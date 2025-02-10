@@ -186,6 +186,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-lock"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff6e472cdea888a4bd64f342f09b3f50e1886d32afe8df3d663c01140b811b18"
+dependencies = [
+ "event-listener",
+ "event-listener-strategy",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,6 +569,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "async-broadcast",
+ "async-lock",
  "bdk_electrum",
  "bdk_wallet",
  "bincode",
@@ -1046,8 +1058,8 @@ dependencies = [
 
 [[package]]
 name = "cusf-enforcer-mempool"
-version = "0.1.5"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=cf467500d9cd68d6736b98d6fb3653bcebbf54bc#cf467500d9cd68d6736b98d6fb3653bcebbf54bc"
+version = "0.2.0"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=d188b4153d09ea94469e5edf7c3b35fa103948dc#d188b4153d09ea94469e5edf7c3b35fa103948dc"
 dependencies = [
  "anyhow",
  "async-trait",

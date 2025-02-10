@@ -246,12 +246,12 @@ impl Wallet {
     }
 
     /// Construct a coinbase tx from txouts
-    fn finalize_coinbase(
+    async fn finalize_coinbase(
         &self,
         best_block_height: u32,
         coinbase_outputs: &[TxOut],
     ) -> miette::Result<Transaction> {
-        let coinbase_addr = self.get_new_address()?;
+        let coinbase_addr = self.get_new_address().await?;
         tracing::trace!(%coinbase_addr, "Fetched address");
         let coinbase_spk = coinbase_addr.script_pubkey();
 
@@ -288,7 +288,7 @@ impl Wallet {
     }
 
     /// Finalize a new block by constructing the coinbase tx
-    fn finalize_block(
+    async fn finalize_block(
         &self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
@@ -297,7 +297,9 @@ impl Wallet {
         let best_block_height = self.validator().get_header_info(&best_block_hash)?.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
 
-        let coinbase_tx = self.finalize_coinbase(best_block_height, coinbase_outputs)?;
+        let coinbase_tx = self
+            .finalize_coinbase(best_block_height, coinbase_outputs)
+            .await?;
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -348,7 +350,7 @@ impl Wallet {
     ) -> miette::Result<BlockHash> {
         let transaction_count = transactions.len();
 
-        let mut block = self.finalize_block(coinbase_outputs, transactions)?;
+        let mut block = self.finalize_block(coinbase_outputs, transactions).await?;
         loop {
             block.header.nonce += 1;
             if block.header.validate_pow(block.header.target()).is_ok() {

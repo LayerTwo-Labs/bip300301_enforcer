@@ -743,7 +743,10 @@ impl WalletService for crate::wallet::Wallet {
         &self,
         _request: tonic::Request<CreateNewAddressRequest>,
     ) -> std::result::Result<tonic::Response<CreateNewAddressResponse>, tonic::Status> {
-        let address = self.get_new_address().map_err(|err| err.into_status())?;
+        let address = self
+            .get_new_address()
+            .await
+            .map_err(|err| err.into_status())?;
 
         let response = CreateNewAddressResponse {
             address: address.to_string(),
@@ -935,6 +938,7 @@ impl WalletService for crate::wallet::Wallet {
                 amount,
                 locktime,
             )
+            .await
             .map_err(|err| err.into_status())
             .and_then(|tx| {
                 tx.ok_or_else(|| {
@@ -1056,7 +1060,7 @@ impl WalletService for crate::wallet::Wallet {
         request: tonic::Request<ListUnspentOutputsRequest>,
     ) -> Result<tonic::Response<ListUnspentOutputsResponse>, tonic::Status> {
         let ListUnspentOutputsRequest {} = request.into_inner();
-        let bdk_utxos = self.get_utxos().map_err(|err| err.into_status())?;
+        let bdk_utxos = self.get_utxos().await.map_err(|err| err.into_status())?;
 
         let outputs = bdk_utxos
             .into_iter()
@@ -1228,6 +1232,7 @@ impl WalletService for crate::wallet::Wallet {
     ) -> Result<tonic::Response<UnlockWalletResponse>, tonic::Status> {
         let UnlockWalletRequest { password } = request.into_inner();
         self.unlock_existing_wallet(password.as_str())
+            .await
             .map_err(|err| err.into_status())?;
 
         Ok(tonic::Response::new(UnlockWalletResponse {}))
@@ -1238,7 +1243,7 @@ impl WalletService for crate::wallet::Wallet {
         request: tonic::Request<CreateWalletRequest>,
     ) -> Result<tonic::Response<CreateWalletResponse>, tonic::Status> {
         // TODO: needs a way of creating /multiple/ wallets. RPC for unloading/erasing a wallet?
-        if self.is_initialized() {
+        if self.is_initialized().await {
             let err = WalletInitialization::AlreadyExists;
             return Err(tonic::Status::new(
                 tonic::Code::AlreadyExists,
@@ -1297,6 +1302,7 @@ impl WalletService for crate::wallet::Wallet {
         };
 
         self.create_wallet(parsed, password)
+            .await
             .map_err(|err| err.into_status())?;
 
         Ok(tonic::Response::new(CreateWalletResponse {}))
