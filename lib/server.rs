@@ -59,7 +59,7 @@ use crate::{
     },
     types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
-    wallet::error::WalletInitialization,
+    wallet::{error::WalletInitialization, CreateTransactionParams},
 };
 
 fn invalid_field_value<Message, Error>(
@@ -1217,7 +1217,13 @@ impl WalletService for crate::wallet::Wallet {
             .transpose()?;
 
         let txid = self
-            .send_wallet_transaction(destinations_validated, fee_policy, op_return_message)
+            .send_wallet_transaction(
+                destinations_validated,
+                CreateTransactionParams {
+                    fee_policy,
+                    op_return_message,
+                },
+            )
             .await
             .map_err(|err| err.into_status())?;
 
