@@ -2,8 +2,8 @@
 
 use std::time::SystemTime;
 
+use async_lock::{MutexGuard, RwLockWriteGuard};
 use bdk_wallet::{file_store::Store, ChangeSet, FileStoreError};
-use parking_lot::{MutexGuard, RwLockWriteGuard};
 
 use crate::{
     types::WithdrawalBundleEventKind,
@@ -33,7 +33,7 @@ impl SyncWriteGuard<'_> {
 }
 
 impl WalletInner {
-    pub(in crate::wallet) fn handle_connect_block(
+    pub(in crate::wallet) async fn handle_connect_block(
         &self,
         block: &bitcoin::Block,
         block_height: u32,
@@ -41,7 +41,7 @@ impl WalletInner {
     ) -> Result<(), error::ConnectBlock> {
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
-        let mut wallet_write = self.write_wallet()?;
+        let mut wallet_write = self.write_wallet().await?;
         let finalized_withdrawal_bundles =
             block_info
                 .withdrawal_bundle_events()
@@ -58,9 +58,13 @@ impl WalletInner {
             .sidechain_proposals()
             .map(|(_vout, proposal)| proposal.compute_id());
         let () = self.delete_pending_sidechain_proposals(sidechain_proposal_ids)?;
-        wallet_write.apply_block(block, block_height)?;
-        let mut database = self.bitcoin_db.lock();
-        wallet_write.persist(&mut database)?;
+        let mut database = self.bitcoin_db.lock().await;
+        wallet_write.with_mut(|wallet| {
+            let () = wallet.apply_block(block, block_height)?;
+            wallet
+                .persist(&mut database)
+                .map_err(error::ConnectBlock::from)
+        })?;
         drop(wallet_write);
         Ok(())
     }
@@ -68,24 +72,28 @@ impl WalletInner {
     /// Sync the wallet, returning a write guard on last_sync, wallet, and database
     /// if wallet was not locked.
     /// Does not commit changes.
-    pub(in crate::wallet) fn sync_lock(&self) -> Result<Option<SyncWriteGuard>, error::WalletSync> {
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
+    pub(in crate::wallet) async fn sync_lock(
+        &self,
+    ) -> Result<Option<SyncWriteGuard>, error::WalletSync> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
         // Hold an upgradable lock for the duration of the sync, to prevent other
         // updates to the wallet between fetching an update via electrum
         // client, and applying the update.
         // Don't error out here if the wallet is locked, just skip the sync.
-        let wallet_read = match self.read_wallet_upgradable() {
-            Ok(wallet_read) => wallet_read,
-            // "Accepted" errors, that aren't really errors in this case.
-            Err(error::Read::NotUnlocked(_)) => {
-                tracing::trace!("sync: skipping sync due to wallet error");
-                return Ok(None);
+        let wallet_read = {
+            match self.read_wallet_upgradable().await {
+                Ok(wallet_read) => wallet_read,
+                // "Accepted" errors, that aren't really errors in this case.
+                Err(error::NotUnlocked) => {
+                    tracing::trace!("sync: skipping sync due to wallet error");
+                    return Ok(None);
+                }
             }
-            Err(err) => return Err(err.into()),
         };
         tracing::trace!("Acquired upgradable read lock on wallet");
-        let last_sync_write = self.last_sync.write();
+        let last_sync_write = self.last_sync.write().await;
         let request = wallet_read.start_sync_with_revealed_spks().build();
 
         tracing::trace!(
@@ -101,24 +109,23 @@ impl WalletInner {
             .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?;
         tracing::trace!("Fetched update from electrum client, applying update");
         // Upgrade wallet lock
-        let mut wallet_write =
-            RwLockUpgradableReadGuardSome::try_upgrade_for(wallet_read, Self::LOCK_TIMEOUT)
-                .map_err(|_| error::Write::TimedOut)?;
+        let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
         wallet_write.with_mut(|wallet| wallet.apply_update(update))?;
         tracing::debug!(
             "wallet sync complete in {:?}",
             start.elapsed().unwrap_or_default(),
         );
         Ok(Some(SyncWriteGuard {
-            database: self.bitcoin_db.lock(),
+            database: self.bitcoin_db.lock().await,
             last_sync: last_sync_write,
             wallet: wallet_write,
         }))
     }
 
     /// Sync the wallet if the wallet is not locked, committing changes
-    pub(in crate::wallet) fn sync(&self) -> Result<(), error::WalletSync> {
-        match self.sync_lock()? {
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
+    pub(in crate::wallet) async fn sync(&self) -> Result<(), error::WalletSync> {
+        match self.sync_lock().await? {
             Some(sync_write) => {
                 tracing::trace!("obtained sync lock, committing changes");
                 let () = sync_write.commit()?;

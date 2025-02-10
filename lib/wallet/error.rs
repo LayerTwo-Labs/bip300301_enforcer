@@ -59,28 +59,6 @@ impl From<Electrum> for tonic::Status {
 #[error("Enforcer wallet not unlocked")]
 pub struct NotUnlocked;
 
-/// Errors related to acquiring a read-lock on a wallet
-#[derive(Debug, Diagnostic, Error)]
-pub enum Read {
-    #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    // The wallet could not be obtained for reading, because of a timeout
-    #[error("Acquiring read lock for enforcer wallet timed out")]
-    #[diagnostic(code(wallet_read_lock_timed_out))]
-    TimedOut,
-}
-
-/// Errors related to acquiring a write-lock on a wallet
-#[derive(Debug, Diagnostic, Error)]
-pub enum Write {
-    #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    // The wallet could not be obtained for reading, because of a timeout
-    #[error("Acquiring write lock for enforcer wallet timed out")]
-    #[diagnostic(code(wallet_write_lock_timed_out))]
-    TimedOut,
-}
-
 // Errors related to creating/unlocking wallets.
 #[derive(Debug, Diagnostic, Error)]
 pub enum WalletInitialization {
@@ -119,9 +97,7 @@ pub enum WalletSync {
     #[error(transparent)]
     ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
     #[error(transparent)]
-    Read(#[from] Read),
-    #[error(transparent)]
-    Write(#[from] Write),
+    WalletNotUnlocked(#[from] NotUnlocked),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -191,7 +167,7 @@ pub enum ConnectBlock {
     #[error(transparent)]
     Rustqlite(#[from] rusqlite::Error),
     #[error(transparent)]
-    WalletWrite(#[from] Write),
+    WalletNotUnlocked(#[from] NotUnlocked),
 }
 
 #[derive(Debug, Diagnostic, Error)]

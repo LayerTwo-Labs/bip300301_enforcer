@@ -310,7 +310,7 @@ impl CusfEnforcer for Validator {
 
     type ConnectBlockError = ConnectBlockError;
 
-    fn connect_block(
+    async fn connect_block(
         &mut self,
         block: &Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
@@ -319,7 +319,7 @@ impl CusfEnforcer for Validator {
 
     type DisconnectBlockError = DisconnectBlockError;
 
-    fn disconnect_block(
+    async fn disconnect_block(
         &mut self,
         block_hash: BlockHash,
     ) -> Result<(), Self::DisconnectBlockError> {
