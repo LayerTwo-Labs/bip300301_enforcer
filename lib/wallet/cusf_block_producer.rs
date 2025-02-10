@@ -52,7 +52,7 @@ impl CusfEnforcer for Wallet {
             let wallet_tip = sync_write.wallet.local_chain().tip().hash();
             if tip_hash == wallet_tip {
                 let () = sync_write.commit().map_err(error::WalletSync::from)?;
-                if !self.inner.config.wallet_opts.skip_periodic_sync {
+                if self.inner.config.wallet_opts.periodic_sync {
                     let mut start_tx_lock = self.task.start_tx.lock();
                     if let Some(start_tx) = start_tx_lock.take() {
                         start_tx.send(()).unwrap_or_else(|_| {
