@@ -59,7 +59,7 @@ use crate::{
     },
     types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
-    wallet::error::WalletInitialization,
+    wallet::{error::WalletInitialization, SendTransactionParams},
 };
 
 fn invalid_field_value<Message, Error>(
@@ -91,6 +91,14 @@ impl IntoStatus for miette::Report {
     fn into_status(self) -> tonic::Status {
         if let Some(source) = self.downcast_ref::<crate::wallet::error::Electrum>() {
             return source.clone().into();
+        }
+
+        if let Some(source) = self.downcast_ref::<crate::wallet::error::SendTransaction>() {
+            match source {
+                err @ crate::wallet::error::SendTransaction::UnknownUTXO(_) => {
+                    return tonic::Status::invalid_argument(err.to_string());
+                }
+            }
         }
 
         if let Some(source) = self.downcast_ref::<crate::wallet::error::WalletInitialization>() {
@@ -131,7 +139,9 @@ impl IntoStatus for miette::Report {
                         "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet WALLET_NAME`)",
                     );
                 }
-                _ => (),
+                _ => {
+                    tracing::error!("unexpected bitcoin core RPC error: {source:#}");
+                }
             }
         }
 
@@ -1166,7 +1176,26 @@ impl WalletService for crate::wallet::Wallet {
             destinations,
             fee_rate,
             op_return_message,
+            required_utxos,
         } = request.into_inner();
+
+        let required_utxos = required_utxos
+            .iter()
+            .map(|utxo| {
+                let txid = utxo.txid.as_ref().ok_or_else(|| {
+                    missing_field::<SendTransactionRequest>("required_utxos.txid")
+                })?;
+
+                let txid = txid
+                    .clone()
+                    .decode_tonic::<SendTransactionRequest, _>("required_utxos.txid")?;
+
+                Ok(bdk_wallet::bitcoin::OutPoint {
+                    txid,
+                    vout: utxo.vout,
+                })
+            })
+            .collect::<Result<Vec<_>, tonic::Status>>()?;
 
         // Parse and validate all destination addresses, but assume network valid
         let destinations_validated = destinations
@@ -1213,7 +1242,14 @@ impl WalletService for crate::wallet::Wallet {
             .transpose()?;
 
         let txid = self
-            .send_wallet_transaction(destinations_validated, fee_policy, op_return_message)
+            .send_wallet_transaction(
+                destinations_validated,
+                SendTransactionParams {
+                    fee_policy,
+                    op_return_message,
+                    required_utxos,
+                },
+            )
             .await
             .map_err(|err| err.into_status())?;
 
