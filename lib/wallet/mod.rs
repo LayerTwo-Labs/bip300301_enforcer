@@ -664,6 +664,8 @@ pub struct SendTransactionParams {
     pub fee_policy: Option<crate::types::FeePolicy>,
     /// Optional OP_RETURN message to include in the transaction
     pub op_return_message: Option<Vec<u8>>,
+    /// Optional UTXOs that must be included in the transaction
+    pub required_utxos: Vec<bdk_wallet::bitcoin::OutPoint>,
 }
 
 /// Cheap to clone, since it uses Arc internally
@@ -1346,6 +1348,9 @@ impl Wallet {
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         let psbt = {
             let mut wallet_write = self.inner.write_wallet()?;
+
+            // TODO: if params include required UTXOs, could consider overriding the coin selection algorithm
+            // to ensure that no other UTXOs are selected.
             let mut builder = wallet_write.build_tx();
 
             if let Some(op_return_message) = params.op_return_message {
@@ -1357,6 +1362,16 @@ impl Wallet {
             // Add outputs for each destination address
             for (address, value) in destinations {
                 builder.add_recipient(address.script_pubkey(), value);
+            }
+
+            if !params.required_utxos.is_empty() {
+                builder
+                    .add_utxos(&params.required_utxos)
+                    .map_err(|err| match err {
+                        bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
+                            error::SendTransaction::UnknownUTXO(outpoint)
+                        }
+                    })?;
             }
 
             match params.fee_policy {
