@@ -657,6 +657,15 @@ impl Drop for Task {
     }
 }
 
+/// Optional parameters for sending a wallet transaction
+#[derive(Debug, Default)]
+pub struct SendTransactionParams {
+    /// Optional fee policy to use for the transaction
+    pub fee_policy: Option<crate::types::FeePolicy>,
+    /// Optional OP_RETURN message to include in the transaction
+    pub op_return_message: Option<Vec<u8>>,
+}
+
 /// Cheap to clone, since it uses Arc internally
 #[derive(Clone)]
 pub struct Wallet {
@@ -1333,14 +1342,15 @@ impl Wallet {
     async fn create_send_psbt(
         &self,
         destinations: HashMap<bitcoin::Address, Amount>,
-        fee_policy: Option<crate::types::FeePolicy>,
-        op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
+        params: SendTransactionParams,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
         let psbt = {
             let mut wallet_write = self.inner.write_wallet()?;
             let mut builder = wallet_write.build_tx();
 
-            if let Some(op_return_output) = op_return_output {
+            if let Some(op_return_message) = params.op_return_message {
+                let op_return_output =
+                    Self::create_op_return_output(op_return_message).into_diagnostic()?;
                 builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
             }
 
@@ -1349,7 +1359,7 @@ impl Wallet {
                 builder.add_recipient(address.script_pubkey(), value);
             }
 
-            match fee_policy {
+            match params.fee_policy {
                 Some(crate::types::FeePolicy::Absolute(fee)) => {
                     builder.fee_absolute(fee);
                 }
@@ -1369,17 +1379,9 @@ impl Wallet {
     pub async fn send_wallet_transaction(
         &self,
         destinations: HashMap<bdk_wallet::bitcoin::Address, Amount>,
-        fee_policy: Option<crate::types::FeePolicy>,
-        op_return_message: Option<Vec<u8>>,
+        params: SendTransactionParams,
     ) -> Result<bitcoin::Txid> {
-        let op_return_output = op_return_message
-            .map(Self::create_op_return_output)
-            .transpose()
-            .into_diagnostic()?;
-
-        let psbt = self
-            .create_send_psbt(destinations, fee_policy, op_return_output)
-            .await?;
+        let psbt = self.create_send_psbt(destinations, params).await?;
 
         tracing::debug!(%psbt, "Created send PSBT");
 
