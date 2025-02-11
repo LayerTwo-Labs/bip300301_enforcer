@@ -1385,6 +1385,7 @@ impl Wallet {
         destinations: HashMap<bitcoin::Address, Amount>,
         params: CreateTransactionParams,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+        let mut timestamp = Instant::now();
         let psbt = {
             let mut wallet_write = self.inner.write_wallet().await?;
             block_in_place(|| {
@@ -1396,12 +1397,24 @@ impl Wallet {
                             Self::create_op_return_output(op_return_message).into_diagnostic()?;
                         builder
                             .add_recipient(op_return_output.script_pubkey, op_return_output.value);
+
+                        tracing::debug!("Added OP_RETURN output in {:?}", timestamp.elapsed());
+                        timestamp = Instant::now();
                     }
+
+                    let destinations_len = destinations.len();
 
                     // Add outputs for each destination address
                     for (address, value) in destinations {
                         builder.add_recipient(address.script_pubkey(), value);
                     }
+
+                    tracing::debug!(
+                        "Added {} destinations in {:?}",
+                        destinations_len,
+                        timestamp.elapsed()
+                    );
+                    timestamp = Instant::now();
 
                     if !params.required_utxos.is_empty() {
                         builder
@@ -1411,6 +1424,15 @@ impl Wallet {
                                     error::SendTransaction::UnknownUTXO(outpoint)
                                 }
                             })?;
+
+                        builder.manually_selected_only();
+
+                        tracing::debug!(
+                            "Added {} required UTXOs in {:?}",
+                            params.required_utxos.len(),
+                            timestamp.elapsed()
+                        );
+                        timestamp = Instant::now();
                     }
 
                     match params.fee_policy {
@@ -1423,7 +1445,18 @@ impl Wallet {
                         None => (),
                     }
 
-                    builder.finish().into_diagnostic()
+                    tracing::debug!("Set fee policy in {:?}", timestamp.elapsed());
+                    timestamp = Instant::now();
+
+                    builder
+                        .finish()
+                        .inspect(|_| {
+                            tracing::debug!(
+                                "Finished transaction builder in {:?}",
+                                timestamp.elapsed()
+                            );
+                        })
+                        .into_diagnostic()
                 })
             })?
         };
@@ -1437,26 +1470,37 @@ impl Wallet {
         destinations: HashMap<bdk_wallet::bitcoin::Address, Amount>,
         params: CreateTransactionParams,
     ) -> Result<bitcoin::Txid> {
+        tracing::debug!(
+            "destinations" = destinations.len(),
+            "required_utxos" = params.required_utxos.len(),
+            "Sending wallet transaction",
+        );
+        let mut timestamp = Instant::now();
         let psbt = self.create_send_psbt(destinations, params).await?;
 
-        tracing::debug!(%psbt, "Created send PSBT");
+        tracing::debug!("Created send PSBT in {:?}", timestamp.elapsed());
+        timestamp = Instant::now();
 
         let tx = self.sign_transaction(psbt).await?;
         let txid = tx.compute_txid();
 
-        tracing::info!(%txid, "Signed send transaction",);
-
-        tracing::debug!("Serialized send transaction: {} bytes", {
-            let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
-            tx_bytes.len()
-        });
+        tracing::info!(
+            %txid,
+            "Signed send transaction in {:?}, {} bytes",
+            timestamp.elapsed(),
+            {
+                let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
+                tx_bytes.len()
+            },
+        );
+        timestamp = Instant::now();
 
         if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
             .await
             .into_diagnostic()?
             .is_some()
         {
-            tracing::info!(%txid, "Broadcast send transaction",);
+            tracing::info!(%txid, "Broadcast send transaction in {:?}", timestamp.elapsed());
             Ok(convert::bdk_txid_to_bitcoin_txid(txid))
         } else {
             const ERR_MSG: &str =
@@ -1555,8 +1599,6 @@ impl Wallet {
         {
             return Err(miette!("failed to sign transaction"));
         }
-
-        tracing::debug!("Signed PSBT: {psbt}",);
 
         psbt.extract_tx().into_diagnostic()
     }
