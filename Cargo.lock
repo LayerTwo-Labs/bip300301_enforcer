@@ -613,6 +613,7 @@ dependencies = [
  "serde_path_to_error",
  "thiserror 2.0.11",
  "tokio",
+ "tokio-rusqlite",
  "tokio-stream",
  "tonic",
  "tonic-build",
@@ -4399,6 +4400,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.96",
+]
+
+[[package]]
+name = "tokio-rusqlite"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2cc5f712424f089fc6549afe39773e9f8914ce170c45b546be24830b482b127"
+dependencies = [
+ "crossbeam-channel",
+ "rusqlite",
+ "tokio",
 ]
 
 [[package]]

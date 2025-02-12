@@ -58,6 +58,8 @@ serde = { version = "1.0.197", features = ["derive"] }
 serde_path_to_error = "0.1.16"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
+# Latest version (0.6.0) introduces a non-compatible libsqlite3-sys version
+tokio-rusqlite = "0.5.1"
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }

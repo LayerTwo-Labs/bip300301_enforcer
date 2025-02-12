@@ -165,9 +165,29 @@ pub enum ConnectBlock {
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
     #[error(transparent)]
-    Rustqlite(#[from] rusqlite::Error),
+    Sqlite(#[from] SqliteError),
     #[error(transparent)]
     WalletNotUnlocked(#[from] NotUnlocked),
+}
+
+#[derive(Debug, Error)]
+pub enum SqliteError {
+    #[error(transparent)]
+    Rusqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    TokioRusqlite(#[from] tokio_rusqlite::Error),
+}
+
+impl From<tokio_rusqlite::Error> for ConnectBlock {
+    fn from(error: tokio_rusqlite::Error) -> Self {
+        Self::Sqlite(SqliteError::TokioRusqlite(error))
+    }
+}
+
+impl From<rusqlite::Error> for ConnectBlock {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(SqliteError::Rusqlite(error))
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]

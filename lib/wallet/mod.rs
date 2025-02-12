@@ -63,7 +63,7 @@ mod util;
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
 pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
-pub(crate) type PersistenceError = bdk_wallet::rusqlite::Error;
+pub(crate) type PersistenceError = tokio_rusqlite::Error;
 type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
@@ -287,8 +287,9 @@ impl WalletInner {
             network,
         );
 
-        let mut wallet_database =
-            thread_safe_connection::ThreadSafeConnection::open(database_path).into_diagnostic()?;
+        let mut wallet_database = thread_safe_connection::ThreadSafeConnection::open(database_path)
+            .await
+            .into_diagnostic()?;
 
         let chain_source = match config.wallet_opts.sync_source {
             WalletSyncSource::Electrum => {

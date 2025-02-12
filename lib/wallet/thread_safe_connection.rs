@@ -1,28 +1,25 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Mutex;
-
-use rusqlite::{Connection, Result};
 
 use bdk_wallet::{AsyncWalletPersister, ChangeSet};
 
 /// A simple thread‑safe wrapper around a rusqlite::Connection that implements AsyncWalletPersister.
 #[derive(Debug)]
-pub struct ThreadSafeConnection(Mutex<Connection>);
+pub struct ThreadSafeConnection(tokio_rusqlite::Connection);
 
 impl ThreadSafeConnection {
     /// Opens a new connection at the given path and returns a new ThreadSafeConnection.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        Ok(ThreadSafeConnection(Mutex::new(conn)))
+    pub async fn open<P: AsRef<Path>>(path: P) -> tokio_rusqlite::Result<Self> {
+        let conn = tokio_rusqlite::Connection::open(path).await?;
+        Ok(ThreadSafeConnection(conn))
     }
 }
 
 /// Cribbed from the implementation of WalletPersister from BDK
 /// https://github.com/bitcoindevkit/bdk/blob/7067da1522c5c2ae4e457846cfe5bd6aefafbe9e/crates/wallet/src/wallet/persisted.rs#L271-L287
 impl AsyncWalletPersister for ThreadSafeConnection {
-    type Error = rusqlite::Error;
+    type Error = tokio_rusqlite::Error;
 
     /// Initializes the persister, e.g., running any necessary migrations.
     /// This implementation acquires a transaction, runs the necessary initialization
@@ -34,13 +31,16 @@ impl AsyncWalletPersister for ThreadSafeConnection {
         Self: 'a,
     {
         Box::pin(async move {
-            let mut conn = persister.0.lock().expect("Mutex poisoned");
-            let tx = conn.transaction()?;
-            ChangeSet::init_sqlite_tables(&tx)?;
-            let cs = ChangeSet::from_sqlite(&tx)?;
-            tx.commit()?;
-            drop(conn);
-            Ok(cs)
+            persister
+                .0
+                .call(move |conn| {
+                    let tx = conn.transaction()?;
+                    ChangeSet::init_sqlite_tables(&tx)?;
+                    let cs = ChangeSet::from_sqlite(&tx)?;
+                    tx.commit()?;
+                    Ok(cs)
+                })
+                .await
         })
     }
 
@@ -52,13 +52,17 @@ impl AsyncWalletPersister for ThreadSafeConnection {
     where
         Self: 'a,
     {
+        let changeset = changeset.clone();
         Box::pin(async move {
-            let mut conn = persister.0.lock().expect("Mutex poisoned");
-            let tx = conn.transaction()?;
-            changeset.persist_to_sqlite(&tx)?;
-            tx.commit()?;
-            drop(conn);
-            Ok(())
+            persister
+                .0
+                .call(move |conn| {
+                    let tx = conn.transaction()?;
+                    changeset.persist_to_sqlite(&tx)?;
+                    tx.commit()?;
+                    Ok(())
+                })
+                .await
         })
     }
 }
