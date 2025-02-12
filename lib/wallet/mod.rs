@@ -1843,13 +1843,19 @@ impl Wallet {
             .write_wallet()
             .await
             .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
-        let mut bitcoin_db = self.inner.bdk_db.lock().await;
-        wallet_write.with_mut(|wallet| {
-            let info = wallet.next_unused_address(bdk_wallet::KeychainKind::External);
-            let bitcoin_db = bitcoin_db.borrow_mut();
-            wallet.persist_async(bitcoin_db).await.into_diagnostic()?;
-            Ok(info.address)
-        })
+
+        let address = wallet_write
+            .with_mut(|wallet| async move {
+                let info = wallet.next_unused_address(bdk_wallet::KeychainKind::External);
+                wallet
+                    .persist_async(self.inner.bdk_db.lock().await.borrow_mut())
+                    .await
+                    .map(|_| info.address)
+            })
+            .await
+            .into_diagnostic()?;
+
+        Ok(address)
     }
 
     pub async fn put_withdrawal_bundle(
