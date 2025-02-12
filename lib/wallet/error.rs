@@ -219,3 +219,10 @@ where
         Self(err.into())
     }
 }
+
+#[derive(Diagnostic, Debug, Error)]
+pub enum SendTransaction {
+    #[diagnostic(code(send_transaction_add_utxo))]
+    #[error("UTXO is not in wallet: {}:{}", .0.txid, .0.vout)]
+    UnknownUTXO(bdk_wallet::bitcoin::OutPoint),
+}

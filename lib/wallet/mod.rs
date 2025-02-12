@@ -694,6 +694,17 @@ impl Drop for Task {
     }
 }
 
+/// Optional parameters for sending a wallet transaction
+#[derive(Debug, Default)]
+pub struct CreateTransactionParams {
+    /// Optional fee policy to use for the transaction
+    pub fee_policy: Option<crate::types::FeePolicy>,
+    /// Optional OP_RETURN message to include in the transaction
+    pub op_return_message: Option<Vec<u8>>,
+    /// Optional UTXOs that must be included in the transaction
+    pub required_utxos: Vec<bdk_wallet::bitcoin::OutPoint>,
+}
+
 /// Cheap to clone, since it uses Arc internally
 #[derive(Clone)]
 pub struct Wallet {
@@ -1372,26 +1383,59 @@ impl Wallet {
     async fn create_send_psbt(
         &self,
         destinations: HashMap<bitcoin::Address, Amount>,
-        fee_policy: Option<crate::types::FeePolicy>,
-        op_return_output: Option<bdk_wallet::bitcoin::TxOut>,
+        params: CreateTransactionParams,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+        let mut timestamp = Instant::now();
         let psbt = {
             let mut wallet_write = self.inner.write_wallet().await?;
             block_in_place(|| {
-                wallet_write.with_mut(|wallet| {
+                wallet_write.with_mut(|wallet| -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
                     let mut builder = wallet.build_tx();
 
-                    if let Some(op_return_output) = op_return_output {
+                    if let Some(op_return_message) = params.op_return_message {
+                        let op_return_output =
+                            Self::create_op_return_output(op_return_message).into_diagnostic()?;
                         builder
                             .add_recipient(op_return_output.script_pubkey, op_return_output.value);
+
+                        tracing::debug!("Added OP_RETURN output in {:?}", timestamp.elapsed());
+                        timestamp = Instant::now();
                     }
+
+                    let destinations_len = destinations.len();
 
                     // Add outputs for each destination address
                     for (address, value) in destinations {
                         builder.add_recipient(address.script_pubkey(), value);
                     }
 
-                    match fee_policy {
+                    tracing::debug!(
+                        "Added {} destinations in {:?}",
+                        destinations_len,
+                        timestamp.elapsed()
+                    );
+                    timestamp = Instant::now();
+
+                    if !params.required_utxos.is_empty() {
+                        builder
+                            .add_utxos(&params.required_utxos)
+                            .map_err(|err| match err {
+                                bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
+                                    error::SendTransaction::UnknownUTXO(outpoint)
+                                }
+                            })?;
+
+                        builder.manually_selected_only();
+
+                        tracing::debug!(
+                            "Added {} required UTXOs in {:?}",
+                            params.required_utxos.len(),
+                            timestamp.elapsed()
+                        );
+                        timestamp = Instant::now();
+                    }
+
+                    match params.fee_policy {
                         Some(crate::types::FeePolicy::Absolute(fee)) => {
                             builder.fee_absolute(fee);
                         }
@@ -1401,10 +1445,20 @@ impl Wallet {
                         None => (),
                     }
 
-                    builder.finish()
+                    tracing::debug!("Set fee policy in {:?}", timestamp.elapsed());
+                    timestamp = Instant::now();
+
+                    builder
+                        .finish()
+                        .inspect(|_| {
+                            tracing::debug!(
+                                "Finished transaction builder in {:?}",
+                                timestamp.elapsed()
+                            );
+                        })
+                        .into_diagnostic()
                 })
-            })
-            .into_diagnostic()?
+            })?
         };
 
         Ok(psbt)
@@ -1414,36 +1468,39 @@ impl Wallet {
     pub async fn send_wallet_transaction(
         &self,
         destinations: HashMap<bdk_wallet::bitcoin::Address, Amount>,
-        fee_policy: Option<crate::types::FeePolicy>,
-        op_return_message: Option<Vec<u8>>,
+        params: CreateTransactionParams,
     ) -> Result<bitcoin::Txid> {
-        let op_return_output = op_return_message
-            .map(Self::create_op_return_output)
-            .transpose()
-            .into_diagnostic()?;
+        tracing::debug!(
+            "destinations" = destinations.len(),
+            "required_utxos" = params.required_utxos.len(),
+            "Sending wallet transaction",
+        );
+        let mut timestamp = Instant::now();
+        let psbt = self.create_send_psbt(destinations, params).await?;
 
-        let psbt = self
-            .create_send_psbt(destinations, fee_policy, op_return_output)
-            .await?;
-
-        tracing::debug!(%psbt, "Created send PSBT");
+        tracing::debug!("Created send PSBT in {:?}", timestamp.elapsed());
+        timestamp = Instant::now();
 
         let tx = self.sign_transaction(psbt).await?;
         let txid = tx.compute_txid();
 
-        tracing::info!(%txid, "Signed send transaction",);
-
-        tracing::debug!("Serialized send transaction: {} bytes", {
-            let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
-            tx_bytes.len()
-        });
+        tracing::info!(
+            %txid,
+            "Signed send transaction in {:?}, {} bytes",
+            timestamp.elapsed(),
+            {
+                let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
+                tx_bytes.len()
+            },
+        );
+        timestamp = Instant::now();
 
         if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
             .await
             .into_diagnostic()?
             .is_some()
         {
-            tracing::info!(%txid, "Broadcast send transaction",);
+            tracing::info!(%txid, "Broadcast send transaction in {:?}", timestamp.elapsed());
             Ok(convert::bdk_txid_to_bitcoin_txid(txid))
         } else {
             const ERR_MSG: &str =
@@ -1542,8 +1599,6 @@ impl Wallet {
         {
             return Err(miette!("failed to sign transaction"));
         }
-
-        tracing::debug!("Signed PSBT: {psbt}",);
 
         psbt.extract_tx().into_diagnostic()
     }
