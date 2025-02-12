@@ -47,8 +47,9 @@ use crate::{
             GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
             GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
             GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
+            GetInfoRequest, GetInfoResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
             ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
             ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
             ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
@@ -696,6 +697,36 @@ impl WalletService for crate::wallet::Wallet {
         BoxStream<'static, Result<CreateSidechainProposalResponse, tonic::Status>>;
 
     type GenerateBlocksStream = BoxStream<'static, Result<GenerateBlocksResponse, tonic::Status>>;
+
+    async fn get_info(
+        &self,
+        _request: tonic::Request<GetInfoRequest>,
+    ) -> Result<tonic::Response<GetInfoResponse>, tonic::Status> {
+        let info = self
+            .get_wallet_info()
+            .await
+            .map_err(|err| err.into_status())?;
+
+        let response = GetInfoResponse {
+            network: info.network.to_string(),
+            transaction_count: info.transaction_count as u32,
+            unspent_output_count: info.unspent_output_count as u32,
+            descriptors: info
+                .keychain_descriptors
+                .iter()
+                .map(|(kind, descriptor)| {
+                    (
+                        match kind {
+                            bdk_wallet::KeychainKind::External => "external".to_string(),
+                            bdk_wallet::KeychainKind::Internal => "internal".to_string(),
+                        },
+                        descriptor.to_string(),
+                    )
+                })
+                .collect(),
+        };
+        Ok(tonic::Response::new(response))
+    }
 
     async fn create_sidechain_proposal(
         &self,

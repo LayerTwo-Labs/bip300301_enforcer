@@ -705,6 +705,17 @@ pub struct CreateTransactionParams {
     pub required_utxos: Vec<bdk_wallet::bitcoin::OutPoint>,
 }
 
+pub struct WalletInfo {
+    // Public (i.e. without private keys) descriptors for the wallet
+    pub keychain_descriptors: std::collections::HashMap<
+        bdk_wallet::KeychainKind,
+        bdk_wallet::descriptor::ExtendedDescriptor,
+    >,
+    pub network: bdk_wallet::bitcoin::Network,
+    pub transaction_count: usize,
+    pub unspent_output_count: usize,
+}
+
 /// Cheap to clone, since it uses Arc internally
 #[derive(Clone)]
 pub struct Wallet {
@@ -1735,6 +1746,21 @@ impl Wallet {
             tracing::warn!("BMM request: Ignored, request exists with same sidechain slot and previous block hash");
             Ok(None)
         }
+    }
+
+    pub async fn get_wallet_info(&self) -> Result<WalletInfo> {
+        let w = self.inner.read_wallet().await?;
+        let mut keychain_descriptors = std::collections::HashMap::new();
+        for (kind, _) in w.keychains() {
+            keychain_descriptors.insert(kind, w.public_descriptor(kind).clone());
+        }
+
+        Ok(WalletInfo {
+            keychain_descriptors,
+            network: w.network(),
+            transaction_count: w.transactions().count(),
+            unspent_output_count: w.list_unspent().count(),
+        })
     }
 
     #[allow(clippy::significant_drop_tightening)]
