@@ -2,13 +2,11 @@
 
 use std::time::SystemTime;
 
-use async_lock::{MutexGuard, RwLockWriteGuard};
+use async_lock::RwLockWriteGuard;
 use bdk_electrum::electrum_client::ElectrumApi;
 use bdk_esplora::EsploraAsyncExt as _;
-use bdk_wallet::{file_store::Store, ChangeSet, FileStoreError};
 use either::Either;
 use miette::{miette, IntoDiagnostic};
-use parking_lot::RwLockWriteGuard;
 use tokio::time::Instant;
 
 use crate::{
@@ -32,7 +30,8 @@ impl SyncWriteGuard<'_> {
     /// Persist changes from the sync
     pub(in crate::wallet) async fn commit(mut self) -> Result<(), PersistenceError> {
         self.wallet
-            .with_mut(|wallet| wallet.persist_async(&mut self.database).await)?;
+            .with_mut(|wallet| wallet.persist_async(&mut self.database))
+            .await?;
         *self.last_sync = Some(SystemTime::now());
         Ok(())
     }
@@ -71,13 +70,11 @@ impl WalletInner {
             .delete_pending_sidechain_proposals(sidechain_proposal_ids)
             .await?;
         let mut database = self.bdk_db.lock().await;
-        wallet_write.with_mut(|wallet| {
-            let () = wallet.apply_block(block, block_height)?;
-            wallet
-                .persist_async(&mut database)
-                .await
-                .map_err(error::ConnectBlock::from)
-        })?;
+        let () = wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height))?;
+        let _: bool = wallet_write
+            .with_mut(|wallet| wallet.persist_async(&mut database))
+            .await
+            .map_err(error::ConnectBlock::from)?;
         drop(wallet_write);
         Ok(())
     }
@@ -85,6 +82,7 @@ impl WalletInner {
     /// Sync the wallet, returning a write guard on last_sync, wallet, and database
     /// if wallet was not locked.
     /// Does not commit changes.
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync_lock(
         &self,
     ) -> Result<Option<SyncWriteGuard>, error::WalletSync> {
@@ -272,6 +270,7 @@ impl WalletInner {
     }
 
     /// Sync the wallet if the wallet is not locked, committing changes
+    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync(&self) -> Result<(), error::WalletSync> {
         match self.sync_lock().await? {
             Some(sync_write) => {

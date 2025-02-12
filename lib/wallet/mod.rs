@@ -1,5 +1,4 @@
 use std::{
-    borrow::BorrowMut,
     collections::HashMap,
     path::Path,
     str::FromStr,
@@ -32,7 +31,7 @@ use bitcoin::{
 use either::Either;
 use error::WalletInitialization;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{channel::oneshot, FutureExt};
+use futures::{channel::oneshot, FutureExt, TryFutureExt};
 use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::Mutex;
@@ -1844,17 +1843,16 @@ impl Wallet {
             .await
             .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
 
+        let mut bdk_db_lock = self.inner.bdk_db.lock().await;
         let address = wallet_write
-            .with_mut(|wallet| async move {
+            .with_mut(|wallet| {
                 let info = wallet.next_unused_address(bdk_wallet::KeychainKind::External);
                 wallet
-                    .persist_async(self.inner.bdk_db.lock().await.borrow_mut())
-                    .await
-                    .map(|_| info.address)
+                    .persist_async(&mut bdk_db_lock)
+                    .map_ok(|_: bool| info.address)
             })
             .await
             .into_diagnostic()?;
-
         Ok(address)
     }
 
