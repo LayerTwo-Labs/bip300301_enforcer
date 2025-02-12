@@ -387,6 +387,7 @@ dependencies = [
  "bdk_core",
  "bitcoin",
  "miniscript",
+ "rusqlite",
  "serde",
 ]
 
@@ -424,24 +425,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "bdk_file_store"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2502fb75506a21d0b6e1b2002ecd9953ad1f70d82d4c3aaf812db1c028662ff1"
-dependencies = [
- "bdk_core",
- "bincode",
- "serde",
-]
-
-[[package]]
 name = "bdk_wallet"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c6362d350e13a94f68a102dafadbcc1500705016e4c2971b4c4e6f46054cb18"
 dependencies = [
  "bdk_chain",
- "bdk_file_store",
  "bip39",
  "bitcoin",
  "miniscript",
@@ -2662,9 +2651,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.30.1"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
+checksum = "0c10584274047cb335c23d3e61bcef8e323adae7c5c8c760540f73610177fc3f"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3617,9 +3606,9 @@ checksum = "afab94fb28594581f62d981211a9a4d53cc8130bbcbbb89a0440d9b8e81a7746"
 
 [[package]]
 name = "rusqlite"
-version = "0.32.1"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+checksum = "b838eba278d213a8beaf485bd313fd580ca4505a00d5871caeb1457c55322cae"
 dependencies = [
  "bitflags 2.7.0",
  "fallible-iterator",
@@ -3631,9 +3620,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite_migration"
-version = "1.3.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "923b42e802f7dc20a0a6b5e097ba7c83fe4289da07e49156fecf6af08aa9cd1c"
+checksum = "55709bc01054c69e2f1cefdc886642b5e6376a8db3c86f761be0c423eebf178b"
 dependencies = [
  "log",
  "rusqlite",

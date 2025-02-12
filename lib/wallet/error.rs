@@ -93,7 +93,7 @@ pub enum WalletSync {
     #[error(transparent)]
     BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
     #[error(transparent)]
-    BdkWalletPersist(#[from] bdk_wallet::FileStoreError),
+    BdkWalletPersist(#[from] super::PersistenceError),
     #[error(transparent)]
     ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
     #[error(transparent)]
@@ -158,8 +158,6 @@ pub(in crate::wallet) enum GenerateSuffixTxs {
 pub enum ConnectBlock {
     #[error(transparent)]
     BdkConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
-    #[error(transparent)]
-    BdkFileStore(#[from] bdk_wallet::FileStoreError),
     #[error(transparent)]
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]

@@ -8,6 +8,7 @@ use bdk_esplora::EsploraAsyncExt as _;
 use bdk_wallet::{file_store::Store, ChangeSet, FileStoreError};
 use either::Either;
 use miette::{miette, IntoDiagnostic};
+use parking_lot::RwLockWriteGuard;
 use tokio::time::Instant;
 
 use crate::{
@@ -15,23 +16,23 @@ use crate::{
     wallet::{
         error,
         util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
-        BdkWallet, WalletInner,
+        BdkWallet, Persistence, PersistenceError, WalletInner,
     },
 };
 
 /// Write-locked last_sync, wallet, and database
 #[must_use]
 pub(in crate::wallet) struct SyncWriteGuard<'a> {
-    database: MutexGuard<'a, Store<ChangeSet>>,
+    database: tokio::sync::MutexGuard<'a, Persistence>,
     last_sync: RwLockWriteGuard<'a, Option<SystemTime>>,
     pub(in crate::wallet) wallet: RwLockWriteGuardSome<'a, BdkWallet>,
 }
 
 impl SyncWriteGuard<'_> {
     /// Persist changes from the sync
-    pub(in crate::wallet) fn commit(mut self) -> Result<(), FileStoreError> {
+    pub(in crate::wallet) async fn commit(mut self) -> Result<(), PersistenceError> {
         self.wallet
-            .with_mut(|wallet| wallet.persist(&mut self.database))?;
+            .with_mut(|wallet| wallet.persist_async(&mut self.database).await)?;
         *self.last_sync = Some(SystemTime::now());
         Ok(())
     }
@@ -60,16 +61,21 @@ impl WalletInner {
                     } => Some((event.sidechain_id, event.m6id)),
                     WithdrawalBundleEventKind::Submitted => None,
                 });
-        let () = self.delete_bundle_proposals(finalized_withdrawal_bundles)?;
+        let () = self
+            .delete_bundle_proposals(finalized_withdrawal_bundles)
+            .await?;
         let sidechain_proposal_ids = block_info
             .sidechain_proposals()
             .map(|(_vout, proposal)| proposal.compute_id());
-        let () = self.delete_pending_sidechain_proposals(sidechain_proposal_ids)?;
-        let mut database = self.bitcoin_db.lock().await;
+        let () = self
+            .delete_pending_sidechain_proposals(sidechain_proposal_ids)
+            .await?;
+        let mut database = self.bdk_db.lock().await;
         wallet_write.with_mut(|wallet| {
             let () = wallet.apply_block(block, block_height)?;
             wallet
-                .persist(&mut database)
+                .persist_async(&mut database)
+                .await
                 .map_err(error::ConnectBlock::from)
         })?;
         drop(wallet_write);
@@ -79,7 +85,6 @@ impl WalletInner {
     /// Sync the wallet, returning a write guard on last_sync, wallet, and database
     /// if wallet was not locked.
     /// Does not commit changes.
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync_lock(
         &self,
     ) -> Result<Option<SyncWriteGuard>, error::WalletSync> {
@@ -135,7 +140,7 @@ impl WalletInner {
             start.elapsed().unwrap_or_default(),
         );
         Ok(Some(SyncWriteGuard {
-            database: self.bitcoin_db.lock().await,
+            database: self.bdk_db.lock().await,
             last_sync: last_sync_write,
             wallet: wallet_write,
         }))
@@ -267,13 +272,12 @@ impl WalletInner {
     }
 
     /// Sync the wallet if the wallet is not locked, committing changes
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync(&self) -> Result<(), error::WalletSync> {
         match self.sync_lock().await? {
             Some(sync_write) => {
                 let start = Instant::now();
                 tracing::trace!("obtained sync lock, committing changes");
-                let () = sync_write.commit()?;
+                let () = sync_write.commit().await?;
                 tracing::trace!("sync lock commit complete in {:?}", start.elapsed());
                 Ok(())
             }

@@ -13,12 +13,12 @@ use bdk_electrum::{
 };
 use bdk_esplora::esplora_client;
 use bdk_wallet::{
-    self, file_store,
+    self,
     keys::{
         bip39::{Language, Mnemonic},
         DerivableKey as _, ExtendedKey,
     },
-    ChangeSet, KeychainKind,
+    KeychainKind,
 };
 use bip300301::{
     client::{GetRawTransactionClient, GetRawTransactionVerbose},
@@ -37,11 +37,7 @@ use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use tokio::{
-    spawn,
-    task::{block_in_place, JoinHandle},
-    time::Instant,
-};
+use tokio::{spawn, task::JoinHandle, time::Instant};
 use tracing::instrument;
 use util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome};
 use uuid::Uuid;
@@ -62,11 +58,14 @@ pub mod error;
 mod mine;
 pub mod mnemonic;
 mod sync;
+mod thread_safe_connection;
 mod util;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
-type BdkWallet = bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>;
+pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
+pub(crate) type PersistenceError = bdk_wallet::rusqlite::Error;
+type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
@@ -78,8 +77,10 @@ struct WalletInner {
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
     bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
-    bitcoin_db: async_lock::Mutex<file_store::Store<ChangeSet>>,
-    db_connection: Mutex<rusqlite::Connection>,
+    /// Persistence for the BDK wallet
+    bdk_db: tokio::sync::Mutex<Persistence>,
+    // Persistence for things /we/ care about. Wallet seed, M* messages, ++.
+    self_db: tokio::sync::Mutex<rusqlite::Connection>,
     chain_source: Either<ElectrumClient, EsploraClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
@@ -212,11 +213,11 @@ impl WalletInner {
         Ok(db_connection)
     }
 
-    fn initialize_wallet_from_mnemonic(
+    async fn initialize_wallet_from_mnemonic(
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
-        wallet_database: &mut file_store::Store<ChangeSet>,
-    ) -> Result<bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>, miette::Report> {
+        wallet_database: &mut Persistence,
+    ) -> Result<BdkWallet, miette::Report> {
         let extended_key: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
 
         let xpriv = extended_key
@@ -233,7 +234,8 @@ impl WalletInner {
             .descriptor(KeychainKind::Internal, Some(internal_desc.clone()))
             .extract_keys()
             .check_network(network)
-            .load_wallet(wallet_database)
+            .load_wallet_async(wallet_database)
+            .await
             .map_err(|err| match err {
                 e if e.to_string().contains("data mismatch") => {
                     tracing::error!(
@@ -255,7 +257,8 @@ impl WalletInner {
 
                 bdk_wallet::Wallet::create(external_desc, internal_desc)
                     .network(network)
-                    .create_wallet(wallet_database)
+                    .create_wallet_async(wallet_database)
+                    .await
                     .map_err(|err| miette!("failed to create wallet: {err:#}"))?
             }
         };
@@ -276,17 +279,17 @@ impl WalletInner {
                 .into_diagnostic()?
         };
 
+        let database_path = data_dir.join("wallet.sqlite.db");
+
         tracing::info!(
-            "Instantiating {} wallet with data dir: {}",
+            "data_dir" = %data_dir.display(),
+            "database_path" = %database_path.display(),
+            "Instantiating {} wallet",
             network,
-            data_dir.display()
         );
 
-        let mut wallet_database = file_store::Store::open_or_create_new(
-            b"bip300301_enforcer",
-            data_dir.join("wallet.db"),
-        )
-        .into_diagnostic()?;
+        let mut wallet_database =
+            thread_safe_connection::ThreadSafeConnection::open(database_path).into_diagnostic()?;
 
         let chain_source = match config.wallet_opts.sync_source {
             WalletSyncSource::Electrum => {
@@ -313,7 +316,8 @@ impl WalletInner {
                     &mnemonic,
                     network,
                     &mut wallet_database,
-                )?;
+                )
+                .await?;
 
                 Some(initialized)
             } else {
@@ -331,8 +335,8 @@ impl WalletInner {
             validator,
             magic,
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
-            bitcoin_db: async_lock::Mutex::new(wallet_database),
-            db_connection: Mutex::new(db_connection),
+            bdk_db: tokio::sync::Mutex::new(wallet_database),
+            self_db: tokio::sync::Mutex::new(db_connection),
             chain_source,
             last_sync: async_lock::RwLock::new(None),
         })
@@ -422,9 +426,11 @@ impl WalletInner {
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
     ) -> Result<(), miette::Report> {
-        if WalletInner::read_db_mnemonic(&self.db_connection.lock())?.is_some() {
+        let connection = self.self_db.lock().await;
+        if WalletInner::read_db_mnemonic(&connection)?.is_some() {
             return Err(WalletInitialization::AlreadyExists.into());
         }
+        drop(connection);
 
         let mnemonic = match mnemonic {
             Some(mnemonic) => mnemonic,
@@ -460,7 +466,8 @@ impl WalletInner {
                     Ok(())
                 };
 
-                with_connection(&self.db_connection.lock())?
+                let connection = self.self_db.lock().await;
+                with_connection(&connection)?
             }
             None => {
                 tracing::info!(
@@ -479,14 +486,15 @@ impl WalletInner {
                     Ok(())
                 };
 
-                with_connection(&self.db_connection.lock())?
+                let connection = self.self_db.lock().await;
+                with_connection(&connection)?
             }
         }
 
-        let mut database = self.bitcoin_db.lock().await;
+        let mut database = self.bdk_db.lock().await;
         let network = self.validator.network();
         let wallet =
-            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database)?;
+            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database).await?;
         drop(database);
 
         let mut write_guard = self.bitcoin_wallet.write().await;
@@ -501,7 +509,9 @@ impl WalletInner {
         }
 
         // Read the mnemonic from the database.
-        let read = WalletInner::read_db_mnemonic(&self.db_connection.lock())?;
+        let connection = self.self_db.lock().await;
+        let read = WalletInner::read_db_mnemonic(&connection)?;
+        drop(connection);
 
         tracing::debug!("unlock wallet: read from DB");
 
@@ -524,12 +534,12 @@ impl WalletInner {
             WalletInitialization::InvalidPassword
         })?;
 
-        let mut database = self.bitcoin_db.lock().await;
+        let mut database = self.bdk_db.lock().await;
         let network = self.validator.network();
 
         tracing::debug!("unlock wallet: initializing BDK wallet struct");
         let wallet =
-            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database)?;
+            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database).await?;
         drop(database);
 
         let mut write_guard = self.bitcoin_wallet.write().await;
@@ -597,7 +607,7 @@ impl WalletInner {
 
     // Gets wiped upon generating a new block.
     // TODO: how will this work for non-regtest?
-    fn delete_bundle_proposals<I>(&self, iter: I) -> Result<(), rusqlite::Error>
+    async fn delete_bundle_proposals<I>(&self, iter: I) -> Result<(), rusqlite::Error>
     where
         I: IntoIterator<Item = (SidechainNumber, M6id)>,
     {
@@ -611,12 +621,16 @@ impl WalletInner {
             }
             Ok(())
         };
-        with_connection(&self.db_connection.lock())
+        let connection = self.self_db.lock().await;
+        with_connection(&connection)
     }
 
     // Gets wiped upon generating a new block.
     // TODO: how will this work for non-regtest?
-    fn delete_pending_sidechain_proposals<I>(&self, proposals: I) -> Result<(), rusqlite::Error>
+    async fn delete_pending_sidechain_proposals<I>(
+        &self,
+        proposals: I,
+    ) -> Result<(), rusqlite::Error>
     where
         I: IntoIterator<Item = SidechainProposalId>,
     {
@@ -629,7 +643,8 @@ impl WalletInner {
             }
             Ok(())
         };
-        with_connection(&self.db_connection.lock())
+        let connection = self.self_db.lock().await;
+        with_connection(&connection)
     }
 }
 
@@ -769,9 +784,8 @@ impl Wallet {
         validator: Validator,
         magic: bitcoin::p2p::Magic,
     ) -> Result<Self> {
-        let inner = WalletInner::new(data_dir, config, main_client, validator, magic).await?;
-
-        let inner = Arc::new(inner);
+        let inner =
+            Arc::new(WalletInner::new(data_dir, config, main_client, validator, magic).await?);
         let task = Task::new(inner.clone());
         Ok(Self {
             inner,
@@ -793,7 +807,7 @@ impl Wallet {
 
     /// Returns pending sidechain proposals from the wallet. These are not yet
     /// active on the chain, and not possible to vote on.
-    fn get_our_sidechain_proposals(&self) -> Result<Vec<SidechainProposal>, rusqlite::Error> {
+    async fn get_our_sidechain_proposals(&self) -> Result<Vec<SidechainProposal>, rusqlite::Error> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
             let mut statement =
@@ -812,10 +826,11 @@ impl Wallet {
 
             Ok(proposals)
         };
-        with_connection(&self.inner.db_connection.lock())
+        let connection = self.inner.self_db.lock().await;
+        with_connection(&connection)
     }
 
-    fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>, rusqlite::Error> {
+    async fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>, rusqlite::Error> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, _> {
             let mut statement =
@@ -831,10 +846,11 @@ impl Wallet {
                 .collect::<Result<_, _>>()?;
             Ok(rows)
         };
-        with_connection(&self.inner.db_connection.lock())
+        let connection = self.inner.self_db.lock().await;
+        with_connection(&connection)
     }
 
-    fn get_bundle_proposals(
+    async fn get_bundle_proposals(
         &self,
     ) -> Result<HashMap<SidechainNumber, BundleProposals>, error::GetBundleProposals> {
         // Satisfy clippy with a single function call per lock
@@ -864,7 +880,9 @@ impl Wallet {
                 })?;
             Ok(bundle_proposals)
         };
-        let bundle_proposals = with_connection(&self.inner.db_connection.lock())?;
+        let connection = self.inner.self_db.lock().await;
+        let bundle_proposals = with_connection(&connection)?;
+        drop(connection);
         // Filter out proposals that have already been created
         let res = bundle_proposals
             .into_iter()
@@ -905,17 +923,19 @@ impl Wallet {
         Ok(pending_proposals)
     }
 
-    pub fn ack_sidechain(
+    pub async fn ack_sidechain(
         &self,
         sidechain_number: SidechainNumber,
         data_hash: sha256d::Hash,
     ) -> Result<(), rusqlite::Error> {
         let sidechain_number: u8 = sidechain_number.into();
         let data_hash: &[u8; 32] = data_hash.as_byte_array();
-        self.inner.db_connection.lock().execute(
+        let connection = self.inner.self_db.lock().await;
+        connection.execute(
             "INSERT INTO sidechain_acks (number, data_hash) VALUES (?1, ?2)",
             (sidechain_number, data_hash),
         )?;
+        drop(connection);
         Ok(())
     }
 
@@ -944,17 +964,19 @@ impl Wallet {
         }
     }
 
-    fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<(), rusqlite::Error> {
-        self.inner.db_connection.lock().execute(
+    async fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<(), rusqlite::Error> {
+        let connection = self.inner.self_db.lock().await;
+        connection.execute(
             "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
             (ack.sidechain_number.0, ack.description_hash.as_byte_array()),
         )?;
+        drop(connection);
         Ok(())
     }
 
     /// Get BMM requests with the specified previous blockhash.
     /// Returns pairs of sidechain numbers and side blockhash.
-    fn get_bmm_requests(
+    async fn get_bmm_requests(
         &self,
         prev_blockhash: &bitcoin::BlockHash,
     ) -> Result<Vec<(SidechainNumber, [u8; 32])>, rusqlite::Error> {
@@ -975,15 +997,17 @@ impl Wallet {
 
             Ok(queried)
         };
-        with_connection(&self.inner.db_connection.lock())
+        let connection = self.inner.self_db.lock().await;
+        with_connection(&connection)
     }
 
     // Gets wiped upon generating a new block.
     // TODO: how will this work for non-regtest?
-    fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
+    async fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
         self.inner
-            .db_connection
+            .self_db
             .lock()
+            .await
             .execute(
                 "DELETE FROM bmm_requests where prev_block_hash = ?;",
                 [prev_blockhash.as_byte_array()],
@@ -1188,7 +1212,7 @@ impl Wallet {
 
         let psbt = {
             let mut wallet_write = self.inner.write_wallet().await?;
-            block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 wallet_write.with_mut(|wallet| {
                     let mut builder = wallet.build_tx();
                     builder
@@ -1437,8 +1461,8 @@ impl Wallet {
         let mut timestamp = Instant::now();
         let psbt = {
             let mut wallet_write = self.inner.write_wallet().await?;
-            block_in_place(|| {
-                wallet_write.with_mut(|wallet| -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+            tokio::task::block_in_place(|| {
+                wallet_write.with_mut(|wallet| {
                     let mut builder = wallet.build_tx();
 
                     if let Some(op_return_message) = params.op_return_message {
@@ -1584,19 +1608,23 @@ impl Wallet {
     /// Persists a sidechain proposal into our database.
     /// On regtest: picked up by the next block generation.
     /// On signet: TBD, but needs some way of getting communicated to the miner.
-    pub fn propose_sidechain(&self, proposal: &SidechainProposal) -> Result<(), rusqlite::Error> {
+    pub async fn propose_sidechain(
+        &self,
+        proposal: &SidechainProposal,
+    ) -> Result<(), rusqlite::Error> {
         let sidechain_number: u8 = proposal.sidechain_number.into();
-        self.inner.db_connection.lock().execute(
+        self.inner.self_db.lock().await.execute(
             "INSERT INTO sidechain_proposals (sidechain_number, data_hash, data) VALUES (?1, ?2, ?3)",
             (sidechain_number, proposal.description.sha256d_hash().to_byte_array(), &proposal.description.0),
         )?;
         Ok(())
     }
 
-    pub fn nack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
+    pub async fn nack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
         self.inner
-            .db_connection
+            .self_db
             .lock()
+            .await
             .execute(
                 "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
                 (sidechain_number, data_hash),
@@ -1692,7 +1720,7 @@ impl Wallet {
         let psbt = {
             tracing::trace!("build_bmm_tx: acquiring wallet write lock");
             let mut wallet_write = self.inner.write_wallet().await?;
-            block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 wallet_write.with_mut(|wallet| {
                     tracing::trace!("build_bmm_tx: creating transaction builder");
                     let mut builder = wallet.build_tx();
@@ -1719,7 +1747,7 @@ impl Wallet {
 
     /// Returns `true` if a BMM request was inserted, `false` if a BMM request
     /// already exists for that sidechain and previous blockhash
-    fn insert_new_bmm_request(
+    async fn insert_new_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
         prev_blockhash: bdk_wallet::bitcoin::BlockHash,
@@ -1745,7 +1773,8 @@ impl Wallet {
                     |_| Ok(true)
                 )
         };
-        with_connection(&self.inner.db_connection.lock()).into_diagnostic()
+        let connection = self.inner.self_db.lock().await;
+        with_connection(&connection).into_diagnostic()
     }
 
     /// Creates a BMM request transaction. Does NOT broadcast.
@@ -1773,11 +1802,14 @@ impl Wallet {
             .await?;
         let tx = self.sign_transaction(psbt).await?;
         tracing::info!("BMM request: PSBT signed successfully");
-        if self.insert_new_bmm_request(
-            sidechain_number,
-            prev_mainchain_block_hash,
-            sidechain_block_hash,
-        )? {
+        if self
+            .insert_new_bmm_request(
+                sidechain_number,
+                prev_mainchain_block_hash,
+                sidechain_block_hash,
+            )
+            .await?
+        {
             tracing::info!("BMM request: inserted new bmm request into db");
             Ok(Some(tx))
         } else {
@@ -1811,24 +1843,25 @@ impl Wallet {
             .write_wallet()
             .await
             .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
-        let mut bitcoin_db = self.inner.bitcoin_db.lock().await;
+        let mut bitcoin_db = self.inner.bdk_db.lock().await;
         wallet_write.with_mut(|wallet| {
             let info = wallet.next_unused_address(bdk_wallet::KeychainKind::External);
             let bitcoin_db = bitcoin_db.borrow_mut();
-            wallet.persist(bitcoin_db).into_diagnostic()?;
+            wallet.persist_async(bitcoin_db).await.into_diagnostic()?;
             Ok(info.address)
         })
     }
 
-    pub fn put_withdrawal_bundle(
+    pub async fn put_withdrawal_bundle(
         &self,
         sidechain_number: SidechainNumber,
-        blinded_m6: &BlindedM6,
+        blinded_m6: &BlindedM6<'static>,
     ) -> Result<M6id> {
         let m6id = blinded_m6.compute_m6id();
         let tx_bytes = bitcoin::consensus::serialize(blinded_m6.as_ref());
-        self.inner.db_connection
+        self.inner.self_db
             .lock()
+            .await
             .execute(
                 "INSERT OR IGNORE INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
                 (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),

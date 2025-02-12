@@ -761,17 +761,20 @@ impl WalletService for crate::wallet::Wallet {
             sidechain_number: sidechain_id,
             description,
         };
-        let () = self.propose_sidechain(&sidechain_proposal).map_err(|err| {
-            if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
-                tracing::error!("SQLite error: {:?}", sqlite_err);
+        let () = self
+            .propose_sidechain(&sidechain_proposal)
+            .await
+            .map_err(|err| {
+                if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
+                    tracing::error!("SQLite error: {:?}", sqlite_err);
 
-                if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
-                    return tonic::Status::already_exists("Sidechain proposal already exists");
+                    if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
+                        return tonic::Status::already_exists("Sidechain proposal already exists");
+                    }
                 }
-            }
 
-            tonic::Status::internal(err.to_string())
-        })?;
+                tonic::Status::internal(err.to_string())
+            })?;
 
         tracing::info!("Persisted sidechain proposal into DB",);
 
@@ -867,6 +870,7 @@ impl WalletService for crate::wallet::Wallet {
                 })?;
         let _m6id = self
             .put_withdrawal_bundle(sidechain_id, &transaction)
+            .await
             .map_err(|err| err.into_status())?;
         /*
         self.broadcast_transaction(transaction.tx().into_owned())
