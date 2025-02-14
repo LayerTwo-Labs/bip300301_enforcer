@@ -36,9 +36,9 @@ mod rwlock_write_guard_some {
 
     impl<T> RwLockWriteGuardSome<'_, T> {
         /// Use the mutable inner value
-        pub fn with_mut<F, Output>(&mut self, f: F) -> Output
+        pub fn with_mut<'a, F, Output>(&'a mut self, f: F) -> Output
         where
-            F: FnOnce(&mut T) -> Output,
+            F: FnOnce(&'a mut T) -> Output,
         {
             self.0.with_inner_mut(|inner| f(*inner))
         }
