@@ -255,7 +255,7 @@ pub struct WalletConfig {
     pub auto_create: bool,
     /// URL of the Esplora server to use for the wallet.
     ///
-    /// Signet: https://mempool.drivechain.live/api
+    /// Signet: http://172.105.148.135:3000
     /// Regtest: http://localhost:3003
     #[arg(long = "wallet-esplora-url")]
     pub esplora_url: Option<url::Url>,
