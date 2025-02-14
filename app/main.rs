@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, path::Path, time::Duration};
+use std::{future::Future, net::SocketAddr, path::Path, str::FromStr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
@@ -547,8 +547,14 @@ async fn main() -> Result<()> {
             (Some(mnemonic_path), _) => {
                 tracing::debug!("Reading mnemonic from file: {}", mnemonic_path.display());
 
-                let mnemonic_str = std::fs::read_to_string(mnemonic_path)
-                    .map_err(|err| miette!("failed to read mnemonic file: {}", err))?;
+                let mnemonic_str =
+                    std::fs::read_to_string(mnemonic_path.clone()).map_err(|err| {
+                        miette!(
+                            "failed to read mnemonic file `{}`: {}",
+                            mnemonic_path.display(),
+                            err
+                        )
+                    })?;
 
                 let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_str)
                     .map_err(|err| miette!("invalid mnemonic: {}", err))?;
