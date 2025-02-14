@@ -564,6 +564,11 @@ async fn main() -> Result<()> {
             wallet.create_wallet(mnemonic, None).await?;
         }
 
+        if cli.wallet_opts.full_scan && wallet.is_initialized().await {
+            tracing::info!("full wallet scan enabled, starting...");
+            wallet.full_scan().await?;
+        }
+
         Either::Right(wallet)
     } else {
         Either::Left(validator)

@@ -241,6 +241,10 @@ pub enum WalletSyncSource {
 
 #[derive(Clone, Args)]
 pub struct WalletConfig {
+    /// If true, the wallet will perform a full scan of the blockchain on startup, before
+    /// proceeding with the normal operations of the wallet.
+    #[arg(long = "wallet-full-scan", default_value_t = false)]
+    pub full_scan: bool,
     /// If no existing wallet is found, automatically create and load
     /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
     #[arg(

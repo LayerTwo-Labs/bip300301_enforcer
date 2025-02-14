@@ -777,6 +777,10 @@ impl Wallet {
         })
     }
 
+    pub async fn full_scan(&self) -> miette::Result<()> {
+        self.inner.full_scan().await
+    }
+
     pub async fn is_initialized(&self) -> bool {
         self.inner.bitcoin_wallet.read().await.is_some()
     }
