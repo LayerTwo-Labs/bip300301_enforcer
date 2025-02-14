@@ -299,8 +299,6 @@ pub async fn setup(
     let electrs_dir = out_dir.path().join("electrs");
     std::fs::create_dir(&electrs_dir)?;
     tracing::info!("Electrs dir: {}", electrs_dir.display());
-    let electrs_conf = electrs_dir.join("config.toml");
-    std::fs::write(&electrs_conf, "auth = \"drivechain:integrationtesting\"")?;
     let enforcer_dir = out_dir.path().join("enforcer");
     std::fs::create_dir(&enforcer_dir)?;
     tracing::info!("Enforcer dir: {}", enforcer_dir.display());
@@ -419,9 +417,8 @@ pub async fn setup(
     let electrs = Electrs {
         path: bin_paths.electrs.clone(),
         db_dir: electrs_dir,
-        config: electrs_conf,
+        auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
         daemon_dir: bitcoind.data_dir.join("path"),
-        daemon_p2p_port: bitcoind.listen_port,
         daemon_rpc_port: bitcoind.rpc_port,
         electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
         monitoring_port: reserved_ports.electrs_monitoring.port(),

@@ -69,7 +69,7 @@ jobs:
       - name: Checkout electrs
         run: |
           pushd ..
-          git clone https://github.com/romanz/electrs.git
+          git clone https://github.com/mempool/electrs.git
           popd
 
       - name: Install latest stable toolchain

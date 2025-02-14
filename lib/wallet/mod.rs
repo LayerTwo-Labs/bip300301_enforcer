@@ -115,7 +115,7 @@ impl WalletInner {
     fn init_electrum_client(config: &WalletConfig, network: Network) -> Result<ElectrumClient> {
         let (default_host, default_port) = match network {
             Network::Signet => ("drivechain.live", 50001),
-            Network::Regtest => ("127.0.0.1", 60401), // Default for romanz/electrs
+            Network::Regtest => ("127.0.0.1", 60401), // Default for mempool/electrs
             default => return Err(miette!("unsupported network: {default}")),
         };
         let electrum_host = config
