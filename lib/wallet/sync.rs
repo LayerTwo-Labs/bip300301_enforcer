@@ -3,7 +3,9 @@
 use std::time::SystemTime;
 
 use async_lock::{MutexGuard, RwLockWriteGuard};
+use bdk_esplora::EsploraAsyncExt as _;
 use bdk_wallet::{file_store::Store, ChangeSet, FileStoreError};
+use either::Either;
 
 use crate::{
     types::WithdrawalBundleEventKind,
@@ -79,8 +81,8 @@ impl WalletInner {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
         // Hold an upgradable lock for the duration of the sync, to prevent other
-        // updates to the wallet between fetching an update via electrum
-        // client, and applying the update.
+        // updates to the wallet between fetching an update via the chain source,
+        // and applying the update.
         // Don't error out here if the wallet is locked, just skip the sync.
         let wallet_read = {
             match self.read_wallet_upgradable().await {
@@ -100,14 +102,22 @@ impl WalletInner {
             spks = request.progress().spks_remaining,
             txids = request.progress().txids_remaining,
             outpoints = request.progress().outpoints_remaining,
-            "Requesting sync via electrum client"
+            "Requesting sync via chain source"
         );
+        const PARALLEL_REQUESTS: usize = 5;
         const BATCH_SIZE: usize = 5;
         const FETCH_PREV_TXOUTS: bool = false;
-        let update = self
-            .electrum_client
-            .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?;
-        tracing::trace!("Fetched update from electrum client, applying update");
+        let (source, update) = match &self.chain_source {
+            Either::Left(electrum_client) => (
+                "electrum",
+                electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
+            ),
+            Either::Right(esplora_client) => (
+                "esplora",
+                esplora_client.sync(request, PARALLEL_REQUESTS).await?,
+            ),
+        };
+        tracing::trace!("Fetched update from {source}, applying update");
         // Upgrade wallet lock
         let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
         wallet_write.with_mut(|wallet| wallet.apply_update(update))?;

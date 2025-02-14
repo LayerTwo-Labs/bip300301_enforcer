@@ -230,12 +230,27 @@ pub struct NodeRpcConfig {
     pub pass: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum WalletSyncSource {
+    #[default]
+    /// Communicates over the Electrum protocol.
+    Electrum,
+    /// Communicates over REST to a Esplora server (i.e. mempool.space APIt
+    Esplora,
+}
+
 #[derive(Clone, Args)]
 pub struct WalletConfig {
     /// If no existing wallet is found, automatically create and load
     /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
     #[arg(long = "wallet-auto-create", default_value_t = false)]
     pub auto_create: bool,
+    /// URL of the Esplora server to use for the wallet.
+    ///
+    /// Signet: https://mempool.drivechain.live/api
+    /// Regtest: http://localhost:3003
+    #[arg(long = "wallet-esplora-url")]
+    pub esplora_url: Option<url::Url>,
     /// If no host is provided, a default value is used based on the network
     /// we're on.
     ///
@@ -253,6 +268,9 @@ pub struct WalletConfig {
     /// the wallet is large and periodic syncs are not feasible.
     #[arg(long = "wallet-skip-periodic-sync", default_value_t = false)]
     pub skip_periodic_sync: bool,
+    /// The source of the wallet sync.
+    #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::Electrum, value_enum)]
+    pub sync_source: WalletSyncSource,
 }
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
