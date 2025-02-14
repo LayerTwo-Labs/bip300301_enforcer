@@ -29,6 +29,17 @@ pub fn get_env_var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
     dotenvy::var(&key).map_err(|err| VarError::new(key.as_ref().to_string_lossy(), err))
 }
 
+pub fn get_env_var_or<K: AsRef<OsStr>>(key: K, default: &str) -> Result<String, VarError> {
+    match get_env_var(&key) {
+        Ok(val) => Ok(val),
+        Err(VarError {
+            err: dotenvy::Error::EnvVar(std::env::VarError::NotPresent),
+            ..
+        }) => Ok(default.to_string()),
+        Err(err) => Err(err),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BinPaths {
     pub bitcoind: PathBuf,
@@ -46,7 +57,11 @@ impl BinPaths {
             bitcoind: get_env_var("BITCOIND")?.into(),
             bitcoin_cli: get_env_var("BITCOIN_CLI")?.into(),
             bitcoin_util: get_env_var("BITCOIN_UTIL")?.into(),
-            bip300301_enforcer: get_env_var("BIP300301_ENFORCER")?.into(),
+            bip300301_enforcer: get_env_var_or(
+                "BIP300301_ENFORCER",
+                "./target/debug/bip300301_enforcer",
+            )?
+            .into(),
             electrs: get_env_var("ELECTRS")?.into(),
             signet_miner: get_env_var("SIGNET_MINER")?.into(),
         })

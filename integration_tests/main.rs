@@ -75,8 +75,15 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     // Read env vars
     if let Some(env_filepath) = std::env::var_os("BIP300301_ENFORCER_INTEGRATION_TEST_ENV") {
         let env_filepath: &std::path::Path = env_filepath.as_ref();
-        tracing::info!("Adding env vars from `{}`", env_filepath.display());
-        dotenvy::from_filename_override(env_filepath)?;
+        tracing::debug!("Adding env vars from `{}`", env_filepath.display());
+        dotenvy::from_filename_override(env_filepath).map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to load env vars from `{}`: {err:#}",
+                env_filepath.display()
+            )
+        })?;
+
+        tracing::info!("Loaded env vars from `{}`", env_filepath.display());
     }
 
     // Create a list of tests
