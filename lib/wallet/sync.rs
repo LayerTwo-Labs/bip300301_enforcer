@@ -1,6 +1,6 @@
 //! Wallet synchronization
 
-use std::{collections::HashSet, time::SystemTime};
+use std::time::SystemTime;
 
 use async_lock::{MutexGuard, RwLockWriteGuard};
 use bdk_electrum::electrum_client::ElectrumApi;
@@ -36,6 +36,8 @@ impl SyncWriteGuard<'_> {
         Ok(())
     }
 }
+
+const ESPLORA_PARALLEL_REQUESTS: usize = 25;
 
 impl WalletInner {
     pub(in crate::wallet) async fn handle_connect_block(
@@ -107,17 +109,21 @@ impl WalletInner {
             outpoints = request.progress().outpoints_remaining,
             "Requesting sync via chain source"
         );
-        const PARALLEL_REQUESTS: usize = 5;
-        const BATCH_SIZE: usize = 5;
-        const FETCH_PREV_TXOUTS: bool = false;
         let (source, update) = match &self.chain_source {
-            Either::Left(electrum_client) => (
-                "electrum",
-                electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
-            ),
+            Either::Left(electrum_client) => {
+                const BATCH_SIZE: usize = 5;
+                const FETCH_PREV_TXOUTS: bool = false;
+                (
+                    "electrum",
+                    electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
+                )
+            }
+
             Either::Right(esplora_client) => (
                 "esplora",
-                esplora_client.sync(request, PARALLEL_REQUESTS).await?,
+                esplora_client
+                    .sync(request, ESPLORA_PARALLEL_REQUESTS)
+                    .await?,
             ),
         };
         tracing::trace!("Fetched update from {source}, applying update");
@@ -136,19 +142,20 @@ impl WalletInner {
     }
 
     async fn address_has_txs(&self, address: &bitcoin::Address) -> miette::Result<bool> {
-        match &self.chain_source {
+        let res = match &self.chain_source {
             Either::Left(electrum_client) => electrum_client
                 .inner
                 .script_get_history(&address.script_pubkey())
                 .map(|txs| !txs.is_empty())
-                .map_err(|err| miette!("failed to get address txs: {err:#}")),
+                .map_err(|err| miette!(err)),
 
             Either::Right(esplora_client) => esplora_client
                 .get_address_txs(address, None)
                 .await
                 .map(|txs| !txs.is_empty())
-                .map_err(|err| miette!("failed to get address txs: {err:#}")),
-        }
+                .map_err(|err| miette!(err)),
+        };
+        res.map_err(|err| miette!("failed to get address txs for `{address}`: {err:#}`"))
     }
 
     // TODO: is this actually correct? Need help from the Rust grownups!
@@ -213,27 +220,21 @@ impl WalletInner {
                 wallet_write.with_mut(|wallet| wallet.reveal_addresses_to(keychain, index));
         }
 
-        let request = wallet_write.start_full_scan().inspect({
-            let mut once = HashSet::<bdk_wallet::KeychainKind>::new();
-            move |k, spk_i, _| {
-                if once.insert(k) {
-                    tracing::info!("scanning keychain [{:?}]", k);
-                }
-                tracing::info!("scanning spk no. {:<3}", spk_i);
-            }
-        });
-
-        const STOP_GAP: usize = 20;
-        const BATCH_SIZE: usize = 10;
-        const FETCH_PREV_TXOUTS: bool = true;
+        // TODO: even a simple revealed SPK scan results in long-running anchor persistence jobs. Is it
+        // possible to pre-populate this?
+        let request = wallet_write.start_sync_with_revealed_spks();
 
         let update = match &self.chain_source {
-            Either::Left(electrum_client) => electrum_client
-                .full_scan(request, STOP_GAP, BATCH_SIZE, FETCH_PREV_TXOUTS)
-                .into_diagnostic()?,
+            Either::Left(electrum_client) => {
+                const BATCH_SIZE: usize = 100;
+                const FETCH_PREV_TXOUTS: bool = true;
+                electrum_client
+                    .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
+                    .into_diagnostic()?
+            }
 
             Either::Right(esplora_client) => esplora_client
-                .full_scan(request, STOP_GAP, BATCH_SIZE)
+                .sync(request, ESPLORA_PARALLEL_REQUESTS)
                 .await
                 .into_diagnostic()?,
         };
