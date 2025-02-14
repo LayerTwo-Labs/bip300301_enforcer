@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+bdk_wallet = { workspace = true }
 bip300301 = { workspace = true }
 bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }

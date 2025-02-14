@@ -519,6 +519,7 @@ dependencies = [
 name = "bip300301_enforcer"
 version = "0.3.2"
 dependencies = [
+ "bdk_wallet",
  "bip300301",
  "bip300301_enforcer_lib",
  "bitcoin",

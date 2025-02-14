@@ -243,7 +243,11 @@ pub enum WalletSyncSource {
 pub struct WalletConfig {
     /// If no existing wallet is found, automatically create and load
     /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
-    #[arg(long = "wallet-auto-create", default_value_t = false)]
+    #[arg(
+        long = "wallet-auto-create",
+        default_value_t = false,
+        conflicts_with = "mnemonic_path"
+    )]
     pub auto_create: bool,
     /// URL of the Esplora server to use for the wallet.
     ///
@@ -271,6 +275,10 @@ pub struct WalletConfig {
     /// The source of the wallet sync.
     #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::Electrum, value_enum)]
     pub sync_source: WalletSyncSource,
+
+    /// Path to a file containing exactly 12 space-separated BIP39 mnemonic words.
+    #[arg(long = "wallet-seed-file", conflicts_with = "auto_create")]
+    pub mnemonic_path: Option<PathBuf>,
 }
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =

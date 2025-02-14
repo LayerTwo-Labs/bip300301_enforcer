@@ -1,5 +1,6 @@
 use std::{future::Future, net::SocketAddr, path::Path, time::Duration};
 
+use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
 use clap::Parser;
 use either::Either;
@@ -539,11 +540,28 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        if !wallet.is_initialized().await && cli.wallet_opts.auto_create {
+        let (mnemonic, auto_create) = match (
+            cli.wallet_opts.mnemonic_path.clone(),
+            cli.wallet_opts.auto_create,
+        ) {
+            (Some(mnemonic_path), _) => {
+                tracing::debug!("Reading mnemonic from file: {}", mnemonic_path.display());
+
+                let mnemonic_str = std::fs::read_to_string(mnemonic_path)
+                    .map_err(|err| miette!("failed to read mnemonic file: {}", err))?;
+
+                let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_str)
+                    .map_err(|err| miette!("invalid mnemonic: {}", err))?;
+
+                (Some(mnemonic), true)
+            }
+            (_, true) => (None, true),
+            _ => (None, false),
+        };
+
+        if !wallet.is_initialized().await && auto_create {
             tracing::info!("auto-creating new wallet");
-            let mnemonic = None;
-            let password = None;
-            wallet.create_wallet(mnemonic, password).await?;
+            wallet.create_wallet(mnemonic, None).await?;
         }
 
         Either::Right(wallet)

@@ -60,7 +60,7 @@ use crate::{
 mod cusf_block_producer;
 pub mod error;
 mod mine;
-mod mnemonic;
+pub mod mnemonic;
 mod sync;
 mod util;
 
