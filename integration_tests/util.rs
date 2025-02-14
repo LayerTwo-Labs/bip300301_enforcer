@@ -281,9 +281,8 @@ impl Bitcoind {
 pub struct Electrs {
     pub path: PathBuf,
     pub db_dir: PathBuf,
-    pub config: PathBuf,
     pub daemon_dir: PathBuf,
-    pub daemon_p2p_port: u16,
+    pub auth: (String, String), // username + password
     pub daemon_rpc_port: u16,
     pub electrum_rpc_port: u16,
     pub monitoring_port: u16,
@@ -306,12 +305,11 @@ impl Electrs {
         F: FnOnce(anyhow::Error) + Send + 'static,
     {
         let mut default_args = vec![
+            "-vv".to_owned(), // add more v's for even more verbosity
             "--db-dir".to_owned(),
             format!("{}", &self.db_dir.display()),
             "--daemon-dir".to_owned(),
             format!("{}", &self.daemon_dir.display()),
-            "--daemon-p2p-addr".to_owned(),
-            format!("127.0.0.1:{}", self.daemon_p2p_port),
             "--daemon-rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.daemon_rpc_port),
             "--electrum-rpc-addr".to_owned(),
@@ -320,13 +318,11 @@ impl Electrs {
             format!("127.0.0.1:{}", self.monitoring_port),
             "--network".to_owned(),
             self.network.to_core_arg().to_owned(),
-            "--conf".to_owned(),
-            format!("{}", &self.config.display()),
-            "--log-filters".to_owned(),
-            "\"DEBUG\"".to_owned(),
+            format!("--cookie={}:{}", self.auth.0, self.auth.1),
+            "--jsonrpc-import".to_owned(),
         ];
         if let Some(signet_magic) = self.signet_magic {
-            default_args.push("--signet-magic".to_owned());
+            default_args.push("--magic".to_owned());
             default_args.push(hex::encode(signet_magic));
         }
         let args = default_args
