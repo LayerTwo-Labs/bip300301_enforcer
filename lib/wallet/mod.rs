@@ -11,6 +11,7 @@ use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
     BdkElectrumClient,
 };
+use bdk_esplora::esplora_client;
 use bdk_wallet::{
     self, file_store,
     keys::{
@@ -46,7 +47,7 @@ use util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardS
 use uuid::Uuid;
 
 use crate::{
-    cli::{Config, WalletConfig},
+    cli::{Config, WalletConfig, WalletSyncSource},
     convert,
     messages::{self, M8BmmRequest},
     types::{
@@ -68,6 +69,7 @@ type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 type BdkWallet = bdk_wallet::PersistedWallet<file_store::Store<ChangeSet>>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
+type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
 
 struct WalletInner {
     main_client: HttpClient,
@@ -78,12 +80,37 @@ struct WalletInner {
     bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
     bitcoin_db: async_lock::Mutex<file_store::Store<ChangeSet>>,
     db_connection: Mutex<rusqlite::Connection>,
-    electrum_client: ElectrumClient,
+    chain_source: Either<ElectrumClient, EsploraClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
 
 impl WalletInner {
+    async fn init_esplora_client(config: &WalletConfig, network: Network) -> Result<EsploraClient> {
+        let default_url = match network {
+            Network::Signet => "https://mempool.drivechain.live/api",
+            Network::Regtest => "http://localhost:3003",
+            _ => return Err(miette!("esplora: unsupported network: {network}")),
+        };
+        let default_url = url::Url::parse(default_url).into_diagnostic()?;
+
+        let esplora_url = config.esplora_url.clone().unwrap_or(default_url);
+
+        tracing::info!(esplora_url = %esplora_url, "creating esplora client");
+
+        let client = esplora_client::Builder::new(esplora_url.as_str())
+            .build_async()
+            .into_diagnostic()?;
+
+        let height = client
+            .get_height()
+            .await
+            .map_err(|err| miette!("failed to get esplora height: {err:#}"))?;
+
+        tracing::info!(height = height, "esplora client initialized");
+        Ok(client)
+    }
+
     /// Initialize electrum client
     fn init_electrum_client(config: &WalletConfig, network: Network) -> Result<ElectrumClient> {
         let (default_host, default_port) = match network {
@@ -234,7 +261,7 @@ impl WalletInner {
         Ok(bitcoin_wallet)
     }
 
-    fn new(
+    async fn new(
         data_dir: &Path,
         config: &Config,
         main_client: HttpClient,
@@ -259,8 +286,17 @@ impl WalletInner {
         )
         .into_diagnostic()?;
 
-        let electrum_client = Self::init_electrum_client(&config.wallet_opts, network)?;
-
+        let chain_source = match config.wallet_opts.sync_source {
+            WalletSyncSource::Electrum => {
+                let electrum_client = Self::init_electrum_client(&config.wallet_opts, network)?;
+                Either::Left(electrum_client)
+            }
+            WalletSyncSource::Esplora => {
+                let esplora_client =
+                    Self::init_esplora_client(&config.wallet_opts, network).await?;
+                Either::Right(esplora_client)
+            }
+        };
         let db_connection = Self::init_db_connection(data_dir)?;
 
         // If we:
@@ -295,7 +331,7 @@ impl WalletInner {
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bitcoin_db: async_lock::Mutex::new(wallet_database),
             db_connection: Mutex::new(db_connection),
-            electrum_client,
+            chain_source,
             last_sync: async_lock::RwLock::new(None),
         })
     }
@@ -724,20 +760,16 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub fn new(
+    pub async fn new(
         data_dir: &Path,
         config: &Config,
         main_client: HttpClient,
         validator: Validator,
         magic: bitcoin::p2p::Magic,
     ) -> Result<Self> {
-        let inner = Arc::new(WalletInner::new(
-            data_dir,
-            config,
-            main_client,
-            validator,
-            magic,
-        )?);
+        let inner = WalletInner::new(data_dir, config, main_client, validator, magic).await?;
+
+        let inner = Arc::new(inner);
         let task = Task::new(inner.clone());
         Ok(Self {
             inner,

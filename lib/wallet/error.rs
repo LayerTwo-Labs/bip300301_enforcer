@@ -97,6 +97,8 @@ pub enum WalletSync {
     #[error(transparent)]
     ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
     #[error(transparent)]
+    EsploraSync(#[from] Box<bdk_esplora::esplora_client::Error>),
+    #[error(transparent)]
     WalletNotUnlocked(#[from] NotUnlocked),
 }
 
