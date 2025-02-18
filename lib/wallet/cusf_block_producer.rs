@@ -51,7 +51,7 @@ impl CusfEnforcer for Wallet {
             .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
         let wallet_tip = sync_write.wallet.local_chain().tip().hash();
         if tip_hash == wallet_tip {
-            let () = sync_write.commit().map_err(error::WalletSync::from)?;
+            let () = sync_write.commit().await.map_err(error::WalletSync::from)?;
             if !self.inner.config.wallet_opts.skip_periodic_sync {
                 let mut start_tx_lock = self.task.start_tx.lock();
                 if let Some(start_tx) = start_tx_lock.take() {
@@ -157,9 +157,10 @@ impl CusfBlockProducer for Wallet {
             );
 
             const ACK_ALL_PROPOSALS: bool = true;
-            coinbase_txouts
-                .extend(self.generate_coinbase_txouts(ACK_ALL_PROPOSALS, mainchain_tip)?);
-
+            let extend_with = self
+                .generate_coinbase_txouts(ACK_ALL_PROPOSALS, mainchain_tip)
+                .await?;
+            coinbase_txouts.extend(extend_with);
             tracing::debug!(
                 "Initial coinbase txouts post-extension: {:?}",
                 coinbase_txouts
@@ -243,7 +244,8 @@ impl CusfBlockProducer for Wallet {
                 crate::validator::cusf_enforcer::get_ctips_after(&self.inner.validator, &block)?
                     .ok_or(error::SuffixTxsInner::InitialBlockTemplate)?;
             let res = self
-                .generate_suffix_txs(&ctips)?
+                .generate_suffix_txs(&ctips)
+                .await?
                 .into_iter()
                 .map(|tx| (tx, bitcoin::Amount::ZERO))
                 .collect();

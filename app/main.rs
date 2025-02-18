@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, path::Path, str::FromStr, time::Duration};
+use std::{future::Future, net::SocketAddr, path::Path, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
@@ -370,7 +370,7 @@ struct ErrRxs {
     grpc_server: oneshot::Receiver<miette::Report>,
 }
 
-fn task(
+async fn task(
     enforcer: Either<Validator, Wallet>,
     cli: cli::Config,
     mainchain_client: bip300301::jsonrpsee::http_client::HttpClient,
@@ -580,7 +580,7 @@ async fn main() -> Result<()> {
         Either::Left(validator)
     };
 
-    let (_task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain)?;
+    let (_task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain).await?;
 
     tokio::select! {
         enforcer_task_err = err_rxs.enforcer_task => {

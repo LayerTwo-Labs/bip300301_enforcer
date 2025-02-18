@@ -93,7 +93,7 @@ pub enum WalletSync {
     #[error(transparent)]
     BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
     #[error(transparent)]
-    BdkWalletPersist(#[from] bdk_wallet::FileStoreError),
+    BdkWalletPersist(#[from] super::PersistenceError),
     #[error(transparent)]
     ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
     #[error(transparent)]
@@ -159,17 +159,35 @@ pub enum ConnectBlock {
     #[error(transparent)]
     BdkConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
     #[error(transparent)]
-    BdkFileStore(#[from] bdk_wallet::FileStoreError),
-    #[error(transparent)]
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
     GetBlockInfo(#[from] validator::GetBlockInfoError),
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
     #[error(transparent)]
-    Rustqlite(#[from] rusqlite::Error),
+    Sqlite(#[from] SqliteError),
     #[error(transparent)]
     WalletNotUnlocked(#[from] NotUnlocked),
+}
+
+#[derive(Debug, Error)]
+pub enum SqliteError {
+    #[error(transparent)]
+    Rusqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    TokioRusqlite(#[from] tokio_rusqlite::Error),
+}
+
+impl From<tokio_rusqlite::Error> for ConnectBlock {
+    fn from(error: tokio_rusqlite::Error) -> Self {
+        Self::Sqlite(SqliteError::TokioRusqlite(error))
+    }
+}
+
+impl From<rusqlite::Error> for ConnectBlock {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(SqliteError::Rusqlite(error))
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
