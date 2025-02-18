@@ -3,9 +3,12 @@
 use std::time::SystemTime;
 
 use async_lock::{MutexGuard, RwLockWriteGuard};
+use bdk_electrum::electrum_client::ElectrumApi;
 use bdk_esplora::EsploraAsyncExt as _;
 use bdk_wallet::{file_store::Store, ChangeSet, FileStoreError};
 use either::Either;
+use miette::{miette, IntoDiagnostic};
+use tokio::time::Instant;
 
 use crate::{
     types::WithdrawalBundleEventKind,
@@ -33,6 +36,8 @@ impl SyncWriteGuard<'_> {
         Ok(())
     }
 }
+
+const ESPLORA_PARALLEL_REQUESTS: usize = 25;
 
 impl WalletInner {
     pub(in crate::wallet) async fn handle_connect_block(
@@ -104,17 +109,21 @@ impl WalletInner {
             outpoints = request.progress().outpoints_remaining,
             "Requesting sync via chain source"
         );
-        const PARALLEL_REQUESTS: usize = 5;
-        const BATCH_SIZE: usize = 5;
-        const FETCH_PREV_TXOUTS: bool = false;
         let (source, update) = match &self.chain_source {
-            Either::Left(electrum_client) => (
-                "electrum",
-                electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
-            ),
+            Either::Left(electrum_client) => {
+                const BATCH_SIZE: usize = 5;
+                const FETCH_PREV_TXOUTS: bool = false;
+                (
+                    "electrum",
+                    electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
+                )
+            }
+
             Either::Right(esplora_client) => (
                 "esplora",
-                esplora_client.sync(request, PARALLEL_REQUESTS).await?,
+                esplora_client
+                    .sync(request, ESPLORA_PARALLEL_REQUESTS)
+                    .await?,
             ),
         };
         tracing::trace!("Fetched update from {source}, applying update");
@@ -132,13 +141,140 @@ impl WalletInner {
         }))
     }
 
+    async fn address_has_txs(&self, address: &bitcoin::Address) -> miette::Result<bool> {
+        let res = match &self.chain_source {
+            Either::Left(electrum_client) => electrum_client
+                .inner
+                .script_get_history(&address.script_pubkey())
+                .map(|txs| !txs.is_empty())
+                .map_err(|err| miette!(err)),
+
+            Either::Right(esplora_client) => esplora_client
+                .get_address_txs(address, None)
+                .await
+                .map(|txs| !txs.is_empty())
+                .map_err(|err| miette!(err)),
+        };
+        res.map_err(|err| miette!("failed to get address txs for `{address}`: {err:#}`"))
+    }
+
+    // TODO: is this actually correct? Need help from the Rust grownups!
+    #[allow(clippy::significant_drop_tightening, reason = "false positive")]
+    pub(in crate::wallet) async fn full_scan(&self) -> miette::Result<()> {
+        tracing::info!("starting wallet full scan");
+
+        let mut start = SystemTime::now();
+
+        let wallet_read = self.read_wallet_upgradable().await?;
+        let mut reveal_map = std::collections::HashMap::new();
+
+        for (keychain, _) in wallet_read.spk_index().keychains() {
+            let mut last_used_index = 0;
+            let step = 1000;
+
+            // First find upper bound by incrementing by 1000 until we find unused
+            loop {
+                let address = wallet_read.peek_address(keychain, last_used_index);
+                let has_txs = self.address_has_txs(&address).await?;
+
+                if !has_txs {
+                    break;
+                }
+                last_used_index += step;
+            }
+
+            // Now binary search between last_used_index - step and last_used_index
+            let mut high = last_used_index;
+            let mut low = last_used_index.saturating_sub(step);
+
+            while low < high {
+                let mid = low + (high - low) / 2;
+                let address = wallet_read.peek_address(keychain, mid);
+                let has_txs = self.address_has_txs(&address).await?;
+
+                if !has_txs {
+                    high = mid;
+                } else {
+                    low = mid + 1;
+                }
+            }
+
+            tracing::info!(
+                "Found last used address at index {} for keychain {:?}: {} (next: {})",
+                low.saturating_sub(1),
+                keychain,
+                wallet_read.peek_address(keychain, low.saturating_sub(1)),
+                wallet_read.peek_address(keychain, low)
+            );
+
+            reveal_map.insert(keychain, low);
+        }
+
+        // Now upgrade to write lock and reveal all addresses
+        let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
+
+        for (keychain, index) in reveal_map {
+            // Reveal the addresses, so that when we persist later the wallet
+            // will know which index we're at.
+            let _addresses =
+                wallet_write.with_mut(|wallet| wallet.reveal_addresses_to(keychain, index));
+        }
+
+        // TODO: even a simple revealed SPK scan results in long-running anchor persistence jobs. Is it
+        // possible to pre-populate this?
+        let request = wallet_write.start_sync_with_revealed_spks();
+
+        let update = match &self.chain_source {
+            Either::Left(electrum_client) => {
+                const BATCH_SIZE: usize = 100;
+                const FETCH_PREV_TXOUTS: bool = true;
+                electrum_client
+                    .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
+                    .into_diagnostic()?
+            }
+
+            Either::Right(esplora_client) => esplora_client
+                .sync(request, ESPLORA_PARALLEL_REQUESTS)
+                .await
+                .into_diagnostic()?,
+        };
+
+        tracing::info!(
+            "wallet full scan complete in {:?}",
+            start.elapsed().unwrap_or_default(),
+        );
+
+        start = SystemTime::now();
+
+        let mut bdk_db = self.bitcoin_db.lock().await;
+
+        wallet_write
+            .with_mut(|wallet| {
+                wallet
+                    .apply_update(update)
+                    .map(|_| wallet.persist(&mut bdk_db))
+            })
+            .into_diagnostic()?
+            .map_err(|err| miette!("failed to persist wallet: {err:#}"))?;
+        drop(wallet_write);
+
+        tracing::info!(
+            "wallet full scan result persisted in {:?}",
+            start.elapsed().unwrap_or_default(),
+        );
+
+        Ok(())
+    }
+
     /// Sync the wallet if the wallet is not locked, committing changes
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync(&self) -> Result<(), error::WalletSync> {
         match self.sync_lock().await? {
             Some(sync_write) => {
+                let start = Instant::now();
                 tracing::trace!("obtained sync lock, committing changes");
                 let () = sync_write.commit()?;
+                tracing::trace!("sync lock commit complete in {:?}", start.elapsed());
                 Ok(())
             }
             None => {

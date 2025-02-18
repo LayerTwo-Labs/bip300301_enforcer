@@ -241,6 +241,10 @@ pub enum WalletSyncSource {
 
 #[derive(Clone, Args)]
 pub struct WalletConfig {
+    /// If true, the wallet will perform a full scan of the blockchain on startup, before
+    /// proceeding with the normal operations of the wallet.
+    #[arg(long = "wallet-full-scan", default_value_t = false)]
+    pub full_scan: bool,
     /// If no existing wallet is found, automatically create and load
     /// a new, unencrypted wallet from a randomly generated BIP39 mnemonic.
     #[arg(
@@ -251,7 +255,7 @@ pub struct WalletConfig {
     pub auto_create: bool,
     /// URL of the Esplora server to use for the wallet.
     ///
-    /// Signet: https://mempool.drivechain.live/api
+    /// Signet: http://172.105.148.135:3000
     /// Regtest: http://localhost:3003
     #[arg(long = "wallet-esplora-url")]
     pub esplora_url: Option<url::Url>,

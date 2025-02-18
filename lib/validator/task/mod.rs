@@ -798,7 +798,7 @@ where
         })?
     {
         if let Some(latest_missing_header_height) = latest_missing_header_height {
-            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
+            tracing::trace!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
         } else {
             tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
         }

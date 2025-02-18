@@ -88,7 +88,7 @@ struct WalletInner {
 impl WalletInner {
     async fn init_esplora_client(config: &WalletConfig, network: Network) -> Result<EsploraClient> {
         let default_url = match network {
-            Network::Signet => "https://mempool.drivechain.live/api",
+            Network::Signet => "http://172.105.148.135:3000",
             Network::Regtest => "http://localhost:3003",
             _ => return Err(miette!("esplora: unsupported network: {network}")),
         };
@@ -98,7 +98,9 @@ impl WalletInner {
 
         tracing::info!(esplora_url = %esplora_url, "creating esplora client");
 
-        let client = esplora_client::Builder::new(esplora_url.as_str())
+        // URLs with a port number at the end get a `/` when turned back into a string, for
+        // some reason. The Esplora library doesn't like that! Remove it.
+        let client = esplora_client::Builder::new(esplora_url.as_str().trim_end_matches("/"))
             .build_async()
             .into_diagnostic()?;
 
@@ -775,6 +777,10 @@ impl Wallet {
             inner,
             task: Arc::new(task),
         })
+    }
+
+    pub async fn full_scan(&self) -> miette::Result<()> {
+        self.inner.full_scan().await
     }
 
     pub async fn is_initialized(&self) -> bool {
