@@ -308,7 +308,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
     err_tx: oneshot::Sender<miette::Report>,
-    f: F,
+    on_mempool_synced: F,
 ) where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
     RpcClient: bip300301::client::MainClient + Send + Sync + 'static,
@@ -361,7 +361,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     );
-    f(mempool).await
+    on_mempool_synced(mempool).await
 }
 
 /// Error receivers for main task
@@ -575,10 +575,8 @@ async fn main() -> Result<()> {
             wallet.create_wallet(mnemonic, None).await?;
         }
 
-        if cli.wallet_opts.full_scan && wallet.is_initialized().await {
-            tracing::info!("full wallet scan enabled, starting...");
-            wallet.full_scan().await?;
-        }
+        // One might think the full scan could be initiated here - but that needs
+        // to happen /after/ the validator has been synced.
 
         Either::Right(wallet)
     } else {

@@ -97,6 +97,14 @@ where
     }
 }
 
+#[derive(Debug, Error)]
+pub enum ListHeadersError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    Iter(#[from] db_error::Iter),
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum TryGetMainchainTipError {
     #[error(transparent)]
@@ -329,6 +337,38 @@ impl Validator {
     ) -> Result<HeaderInfo, GetHeaderInfoError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
+        Ok(res)
+    }
+
+    // Lists known block heights and their corresponding header hashes in ascending order.
+    pub fn list_headers(
+        &self,
+        start_height: u32,
+    ) -> Result<Vec<(u32, BlockHash)>, ListHeadersError> {
+        let rotxn = self.dbs.read_txn()?;
+        let mut res: Vec<(u32, BlockHash)> = self
+            .dbs
+            .block_hashes
+            .height()
+            .iter(&rotxn)
+            .map_err(db_error::Iter::from)?
+            .filter_map(|(block_hash, height)| {
+                if height >= start_height {
+                    Ok(Some((height, block_hash)))
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect()
+            .map_err(db_error::Iter::from)?;
+
+        res.sort_by(|(first_height, _), (second_height, _)| first_height.cmp(second_height));
+
+        debug_assert!(res
+            .clone()
+            .is_sorted_by(|(first_height, _), (second_height, _)| {
+                first_height < second_height
+            }));
         Ok(res)
     }
 

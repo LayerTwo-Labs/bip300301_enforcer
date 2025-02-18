@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::atomic::Ordering};
 
 use bitcoin::{hashes::Hash as _, BlockHash, Transaction, Txid};
 use cusf_enforcer_mempool::{
@@ -28,6 +28,8 @@ pub enum SyncError {
         expected: BlockHash,
         wallet_tip: BlockHash,
     },
+    #[error(transparent)]
+    FullScan(#[from] error::FullScan),
 }
 
 impl CusfEnforcer for Wallet {
@@ -38,35 +40,44 @@ impl CusfEnforcer for Wallet {
         reason = "false positive, sync_write is consumed by commit()"
     )]
     #[instrument(skip_all, fields(tip_hash))]
+    // TODO: this is confusing. This function is called multiple times? I want an easy
+    // way to run a initial full scan after the validator has synced to the tip.
+    // It seems to me (Torkel)that the CUSF enforcer mempool library exposes hooks for
+    // this in a sub-optimal way.
     async fn sync_to_tip(
         &mut self,
         tip_hash: BlockHash,
     ) -> std::result::Result<(), Self::SyncError> {
         let () = self.inner.validator.clone().sync_to_tip(tip_hash).await?;
         tracing::debug!(%tip_hash, "Synced validator, syncing wallet..");
-        let sync_write = self
-            .inner
-            .sync_lock()
-            .await?
-            .ok_or_else(|| Self::SyncError::WalletNotUnlocked(error::NotUnlocked))?;
-        let wallet_tip = sync_write.wallet.local_chain().tip().hash();
-        if tip_hash == wallet_tip {
-            let () = sync_write.commit().await.map_err(error::WalletSync::from)?;
-            if !self.inner.config.wallet_opts.skip_periodic_sync {
-                let mut start_tx_lock = self.task.start_tx.lock();
-                if let Some(start_tx) = start_tx_lock.take() {
-                    start_tx.send(()).unwrap_or_else(|_| {
-                        tracing::error!("Failed to send start signal to wallet task")
-                    });
-                }
-            }
-            Ok(())
-        } else {
-            Err(Self::SyncError::WalletTip {
-                expected: tip_hash,
-                wallet_tip,
-            })
+
+        // If this branch hits, it means we we're just finishing up the initial sync.
+        // We only want to run the full sync a single time!
+        if self
+            .has_initial_synced
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+            && self.inner.config.wallet_opts.full_scan
+        {
+            tracing::debug!("Full wallet scan requested, starting...");
+            let tip = self.full_scan().await?;
+            tracing::info!(tip = %tip, "Full wallet scan completed");
         }
+
+        // We previously ran a wallet sync here unconditionally within this function. The sync
+        // takes a long time on big wallets (100k+ UTXOs), and therefore has to be omitted in
+        // some cases.
+        if !self.inner.config.wallet_opts.skip_periodic_sync {
+            tracing::debug!("Sending start signal to wallet task, kicking off periodic sync");
+            let mut start_tx_lock = self.task.start_tx.lock();
+            if let Some(start_tx) = start_tx_lock.take() {
+                start_tx.send(()).unwrap_or_else(|_| {
+                    tracing::error!("Failed to send start signal to wallet task")
+                });
+            }
+        }
+
+        Ok(())
     }
 
     type ConnectBlockError = error::ConnectBlock;
@@ -87,6 +98,9 @@ impl CusfEnforcer for Wallet {
             .inner
             .handle_connect_block(block, block_height, block_info)
             .await?;
+
+        self.inner.set_last_synced_now().await;
+
         Ok(res)
     }
 

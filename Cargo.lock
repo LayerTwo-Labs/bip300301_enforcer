@@ -572,6 +572,7 @@ dependencies = [
  "argon2",
  "async-broadcast",
  "async-lock",
+ "bdk_chain",
  "bdk_electrum",
  "bdk_esplora",
  "bdk_wallet",
