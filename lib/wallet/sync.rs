@@ -249,16 +249,18 @@ impl WalletInner {
 
         start = SystemTime::now();
 
-        let mut bdk_db = self.bitcoin_db.lock().await;
+        let mut bdk_db = self.bdk_db.lock().await;
 
         wallet_write
             .with_mut(|wallet| {
                 wallet
                     .apply_update(update)
-                    .map(|_| wallet.persist(&mut bdk_db))
+                    .map(|_| wallet.persist_async(&mut bdk_db))
             })
-            .into_diagnostic()?
-            .map_err(|err| miette!("failed to persist wallet: {err:#}"))?;
+            .map_err(|err| miette!("failed to persist wallet: {err:#}"))?
+            .await
+            .into_diagnostic()?;
+
         drop(wallet_write);
 
         tracing::info!(

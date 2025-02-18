@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, path::Path, str::FromStr, time::Duration};
+use std::{future::Future, net::SocketAddr, path::Path, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
