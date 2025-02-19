@@ -1248,6 +1248,7 @@ impl WalletService for crate::wallet::Wallet {
             fee_rate,
             op_return_message,
             required_utxos,
+            drain_wallet_to,
         } = request.into_inner();
 
         let required_utxos = required_utxos
@@ -1273,14 +1274,7 @@ impl WalletService for crate::wallet::Wallet {
             .map(|(address, amount)| {
                 use bdk_wallet::IsDust;
 
-                let address = bdk_wallet::bitcoin::Address::from_str(address)
-                    .map_err(|e| {
-                        tonic::Status::invalid_argument(format!(
-                            "could not parse bitcoin address: {}",
-                            e
-                        ))
-                    })
-                    .map(|addr| addr.assume_checked())?;
+                let address = self.parse_checked_address(address)?;
 
                 let amount = Amount::from_sat(*amount);
                 if amount.is_dust(&address.script_pubkey()) {
@@ -1294,9 +1288,22 @@ impl WalletService for crate::wallet::Wallet {
             })
             .collect::<Result<HashMap<bdk_wallet::bitcoin::Address, Amount>, tonic::Status>>()?;
 
-        if destinations_validated.is_empty() && op_return_message.is_none() {
+        if destinations_validated.is_empty()
+            && op_return_message.is_none()
+            && drain_wallet_to.is_none()
+        {
             return Err(tonic::Status::invalid_argument(
                 "no destinations or op_return_message provided",
+            ));
+        }
+
+        let drain_wallet_to = drain_wallet_to
+            .map(|drain_wallet_to| self.parse_checked_address(&drain_wallet_to))
+            .transpose()?;
+
+        if drain_wallet_to.is_some() && !required_utxos.is_empty() {
+            return Err(tonic::Status::invalid_argument(
+                "cannot provide both drain_wallet_to and required_utxos",
             ));
         }
 
@@ -1318,6 +1325,7 @@ impl WalletService for crate::wallet::Wallet {
                     fee_policy,
                     op_return_message,
                     required_utxos,
+                    drain_wallet_to,
                 },
             )
             .await

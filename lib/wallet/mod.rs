@@ -756,6 +756,9 @@ pub struct CreateTransactionParams {
     pub op_return_message: Option<Vec<u8>>,
     /// Optional UTXOs that must be included in the transaction
     pub required_utxos: Vec<bdk_wallet::bitcoin::OutPoint>,
+    // If set, sends ALL UTXOs in the wallet to this address.
+    // Incompatible with `required_utxos`.
+    pub drain_wallet_to: Option<bdk_wallet::bitcoin::Address>,
 }
 
 pub struct WalletInfo {
@@ -791,6 +794,24 @@ impl Wallet {
             inner,
             task: Arc::new(task),
         })
+    }
+
+    pub(crate) fn parse_checked_address(
+        &self,
+        address: &str,
+    ) -> Result<bitcoin::Address, tonic::Status> {
+        let network = self.validator().network();
+        let address = bdk_wallet::bitcoin::Address::from_str(address).map_err(|e| {
+            tonic::Status::invalid_argument(format!("invalid bitcoin address: {}", e))
+        })?;
+
+        let address = address.require_network(network).map_err(|_| {
+            tonic::Status::invalid_argument(format!(
+                "bitcoin address is not valid for network `{network}`",
+            ))
+        })?;
+
+        Ok(address)
     }
 
     pub async fn full_scan(&self) -> miette::Result<()> {
@@ -1489,6 +1510,13 @@ impl Wallet {
                     );
                     timestamp = Instant::now();
 
+                    if let Some(drain_wallet_to) = params.drain_wallet_to {
+                        tracing::debug!("Draining wallet to {}", drain_wallet_to);
+                        builder
+                            .drain_to(drain_wallet_to.script_pubkey())
+                            .drain_wallet();
+                    }
+
                     if !params.required_utxos.is_empty() {
                         builder
                             .add_utxos(&params.required_utxos)
@@ -1546,6 +1574,7 @@ impl Wallet {
         tracing::debug!(
             "destinations" = destinations.len(),
             "required_utxos" = params.required_utxos.len(),
+            "drain_wallet" = params.drain_wallet_to.is_some(),
             "Sending wallet transaction",
         );
         let mut timestamp = Instant::now();
