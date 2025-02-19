@@ -5,9 +5,10 @@ use std::time::SystemTime;
 use async_lock::RwLockWriteGuard;
 use bdk_electrum::electrum_client::ElectrumApi;
 use bdk_esplora::EsploraAsyncExt as _;
-use either::Either;
-use miette::{miette, IntoDiagnostic};
+use bip300301::client::{GetBlockClient, U8Witness};
+use either::Either::{self, Left, Right};
 use tokio::time::Instant;
+use tracing::instrument;
 
 use crate::{
     types::WithdrawalBundleEventKind,
@@ -40,6 +41,7 @@ impl SyncWriteGuard<'_> {
 const ESPLORA_PARALLEL_REQUESTS: usize = 25;
 
 impl WalletInner {
+    #[instrument(skip_all, fields(block_height))]
     pub(in crate::wallet) async fn handle_connect_block(
         &self,
         block: &bitcoin::Block,
@@ -70,6 +72,59 @@ impl WalletInner {
             .delete_pending_sidechain_proposals(sidechain_proposal_ids)
             .await?;
         let mut database = self.bdk_db.lock().await;
+        tracing::info!(
+            hash = %block.block_hash(),
+            height = block_height,
+            "applying block to BDK wallet"
+        );
+
+        let bdk_tip_height = wallet_write.local_chain().tip().height();
+
+        // TODO: should really run the entire handle_connect_block logic here
+        if bdk_tip_height < block_height - 1 {
+            tracing::info!(
+                bdk_tip_height = bdk_tip_height,
+                block_height = block_height,
+                "BDK tip is behind newly received block, catching up"
+            );
+
+            // Collect missing blocks by walking backwards
+            let mut missing_blocks = Vec::new();
+            let mut current_hash = block.header.prev_blockhash;
+            let mut current_height = block_height - 1;
+
+            while current_height > bdk_tip_height {
+                let block = self
+                    .main_client
+                    .get_block(current_hash, U8Witness::<0>)
+                    .await
+                    .map_err(|err| {
+                        error::ConnectBlock::FetchBlock(error::BitcoinCoreRPC {
+                            method: "getblock".to_string(),
+                            error: err,
+                        })
+                    })?;
+
+                let block = block.0;
+                missing_blocks.push((current_height, block.clone()));
+                current_hash = block.header.prev_blockhash;
+                current_height -= 1;
+            }
+
+            // Apply blocks in ascending order
+            missing_blocks.reverse();
+
+            for (height, block) in missing_blocks {
+                tracing::debug!(
+                    height = height,
+                    hash = %block.block_hash(),
+                    "applying missing block"
+                );
+
+                let () = wallet_write.with_mut(|wallet| wallet.apply_block(&block, height))?;
+            }
+        }
+
         let () = wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height))?;
         let _: bool = wallet_write
             .with_mut(|wallet| wallet.persist_async(&mut database))
@@ -79,6 +134,10 @@ impl WalletInner {
         Ok(())
     }
 
+    pub(in crate::wallet) async fn set_last_synced_now(&self) {
+        let mut last_sync_write = self.last_sync.write().await;
+        *last_sync_write = Some(SystemTime::now());
+    }
     /// Sync the wallet, returning a write guard on last_sync, wallet, and database
     /// if wallet was not locked.
     /// Does not commit changes.
@@ -144,31 +203,80 @@ impl WalletInner {
         }))
     }
 
-    async fn address_has_txs(&self, address: &bitcoin::Address) -> miette::Result<bool> {
+    async fn address_has_txs(
+        &self,
+        address: &bitcoin::Address,
+    ) -> miette::Result<bool, error::FullScan> {
         let res = match &self.chain_source {
             Either::Left(electrum_client) => electrum_client
                 .inner
                 .script_get_history(&address.script_pubkey())
                 .map(|txs| !txs.is_empty())
-                .map_err(|err| miette!(err)),
+                .map_err(Left),
 
             Either::Right(esplora_client) => esplora_client
                 .get_address_txs(address, None)
                 .await
                 .map(|txs| !txs.is_empty())
-                .map_err(|err| miette!(err)),
+                .map_err(Right),
         };
-        res.map_err(|err| miette!("failed to get address txs for `{address}`: {err:#}`"))
+        res.map_err(|err| error::FullScan::CheckAddressTransactions {
+            address: address.clone(),
+            error: err,
+        })
+    }
+
+    async fn get_chain_checkpoint(
+        &self,
+        local_chain: &bdk_chain::local_chain::LocalChain,
+    ) -> miette::Result<bdk_chain::CheckPoint, error::FullScan> {
+        let start = Instant::now();
+        let headers = self
+            .validator
+            .list_headers(local_chain.tip().height())
+            .map_err(error::FullScan::ListHeaders)?;
+
+        tracing::debug!(
+            "listed {} headers since height {} in {:?}: {} -> {}",
+            headers.len(),
+            local_chain.tip().height(),
+            start.elapsed(),
+            headers
+                .first()
+                .map(|(height, hash)| format!("{height}:{hash}"))
+                .unwrap_or("nil".to_string()),
+            headers
+                .last()
+                .map(|(height, hash)| format!("{height}:{hash}"))
+                .unwrap_or("nil".to_string()),
+        );
+
+        let block_ids = headers
+            .into_iter()
+            .map(|(height, hash)| bdk_chain::BlockId { height, hash });
+
+        let checkpoint =
+            bdk_chain::CheckPoint::from_block_ids(block_ids).map_err(|last_successful_header| {
+                error::FullScan::CreateCheckPointFromHeaders {
+                    last_successful_header,
+                }
+            })?;
+        Ok(checkpoint)
     }
 
     // TODO: is this actually correct? Need help from the Rust grownups!
     #[allow(clippy::significant_drop_tightening, reason = "false positive")]
-    pub(in crate::wallet) async fn full_scan(&self) -> miette::Result<()> {
+    pub(in crate::wallet) async fn full_scan(
+        &self,
+    ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
         tracing::info!("starting wallet full scan");
 
         let mut start = SystemTime::now();
 
-        let wallet_read = self.read_wallet_upgradable().await?;
+        let wallet_read = self
+            .read_wallet_upgradable()
+            .await
+            .map_err(error::FullScan::WalletNotUnlocked)?;
         let mut reveal_map = std::collections::HashMap::new();
 
         for (keychain, _) in wallet_read.spk_index().keychains() {
@@ -223,9 +331,11 @@ impl WalletInner {
                 wallet_write.with_mut(|wallet| wallet.reveal_addresses_to(keychain, index));
         }
 
-        // TODO: even a simple revealed SPK scan results in long-running anchor persistence jobs. Is it
-        // possible to pre-populate this?
-        let request = wallet_write.start_sync_with_revealed_spks();
+        let local_chain = wallet_write.local_chain();
+        let checkpoint = self.get_chain_checkpoint(local_chain).await?;
+        let request = wallet_write
+            .start_sync_with_revealed_spks()
+            .chain_tip(checkpoint);
 
         let update = match &self.chain_source {
             Either::Left(electrum_client) => {
@@ -233,13 +343,13 @@ impl WalletInner {
                 const FETCH_PREV_TXOUTS: bool = true;
                 electrum_client
                     .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
-                    .into_diagnostic()?
+                    .map_err(error::FullScan::ElectrumSync)?
             }
 
             Either::Right(esplora_client) => esplora_client
                 .sync(request, ESPLORA_PARALLEL_REQUESTS)
                 .await
-                .into_diagnostic()?,
+                .map_err(|err| error::FullScan::EsploraSync(*err))?,
         };
 
         tracing::info!(
@@ -257,9 +367,11 @@ impl WalletInner {
                     .apply_update(update)
                     .map(|_| wallet.persist_async(&mut bdk_db))
             })
-            .map_err(|err| miette!("failed to persist wallet: {err:#}"))?
+            .map_err(error::FullScan::CannotConnect)?
             .await
-            .into_diagnostic()?;
+            .map_err(|err| error::FullScan::PersistWallet(error::SqliteError::from(err)))?;
+
+        let tip = wallet_write.local_chain().tip().hash();
 
         drop(wallet_write);
 
@@ -268,7 +380,7 @@ impl WalletInner {
             start.elapsed().unwrap_or_default(),
         );
 
-        Ok(())
+        Ok(tip)
     }
 
     /// Sync the wallet if the wallet is not locked, committing changes

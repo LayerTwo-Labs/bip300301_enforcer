@@ -1,5 +1,7 @@
+use bdk_chain::CheckPoint;
 use bip300301::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
+use either::Either;
 use miette::{diagnostic, Diagnostic};
 use serde::Deserialize;
 use thiserror::Error;
@@ -16,6 +18,14 @@ use crate::{
 )]
 #[error("electrum error `{code}`: `{message}`")]
 pub struct Electrum {
+    code: i32,
+    message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Diagnostic, Error)]
+#[diagnostic(code(esplora_error))]
+#[error("esplora error `{code}`: `{message}`")]
+pub struct Esplora {
     code: i32,
     message: String,
 }
@@ -89,6 +99,22 @@ pub enum WalletInitialization {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum WalletSignTransaction {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+
+    #[error(transparent)]
+    SignerError(#[from] bdk_wallet::signer::SignerError),
+
+    #[error(transparent)]
+    ExtractTx(#[from] bdk_wallet::bitcoin::psbt::ExtractTxError),
+
+    #[error("unable to sign transaction")]
+    #[diagnostic(code(unable_to_sign_transaction))]
+    UnableToSign,
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum WalletSync {
     #[error(transparent)]
     BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
@@ -100,6 +126,40 @@ pub enum WalletSync {
     EsploraSync(#[from] Box<bdk_esplora::esplora_client::Error>),
     #[error(transparent)]
     WalletNotUnlocked(#[from] NotUnlocked),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum FullScan {
+    #[error(transparent)]
+    WalletNotUnlocked(#[from] NotUnlocked),
+
+    #[error("failed to check for bitcoin address transactions")]
+    #[diagnostic(code(check_address_transactions))]
+    CheckAddressTransactions {
+        address: bitcoin::Address,
+        error: Either<bdk_electrum::electrum_client::Error, bdk_esplora::esplora_client::Error>,
+    },
+
+    #[error(transparent)]
+    ListHeaders(#[from] crate::validator::ListHeadersError),
+
+    #[error("unable to create checkpoint from headers{}", .last_successful_header.as_ref().map_or(String::new(), |cp| format!(", last successful header at height {}", cp.height())))]
+    #[diagnostic(code(create_checkpoint_from_headers))]
+    CreateCheckPointFromHeaders {
+        last_successful_header: Option<CheckPoint>,
+    },
+
+    #[error(transparent)]
+    EsploraSync(#[from] bdk_esplora::esplora_client::Error),
+
+    #[error(transparent)]
+    ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
+
+    #[error(transparent)]
+    CannotConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
+
+    #[error("unable to persist wallet post scan")]
+    PersistWallet(#[source] SqliteError),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -154,14 +214,18 @@ pub(in crate::wallet) enum GenerateSuffixTxs {
     MissingCtip { sidechain_id: SidechainNumber },
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Diagnostic, Error)]
 pub enum ConnectBlock {
-    #[error(transparent)]
+    #[error("failed connecting block to BDK chain")]
+    #[diagnostic(code(connect_block_error))]
     BdkConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
     #[error(transparent)]
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
     GetBlockInfo(#[from] validator::GetBlockInfoError),
+    #[error("unable to fetch missing block")]
+    #[diagnostic(code(fetch_block_error))]
+    FetchBlock(#[source] BitcoinCoreRPC),
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
     #[error(transparent)]

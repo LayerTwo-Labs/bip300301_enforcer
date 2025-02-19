@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     path::Path,
     str::FromStr,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, SystemTime},
 };
 
@@ -26,7 +26,7 @@ use bip300301::{
 use bitcoin::{
     hashes::{sha256, sha256d, Hash as _, HashEngine},
     script::PushBytesBuf,
-    Amount, Network, Transaction, Txid,
+    Amount, BlockHash, Network, Transaction, Txid,
 };
 use either::Either;
 use error::WalletInitialization;
@@ -777,6 +777,8 @@ pub struct WalletInfo {
 pub struct Wallet {
     inner: Arc<WalletInner>,
     task: Arc<Task>,
+
+    has_initial_synced: Arc<AtomicBool>,
 }
 
 impl Wallet {
@@ -793,6 +795,7 @@ impl Wallet {
         Ok(Self {
             inner,
             task: Arc::new(task),
+            has_initial_synced: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -814,7 +817,7 @@ impl Wallet {
         Ok(address)
     }
 
-    pub async fn full_scan(&self) -> miette::Result<()> {
+    pub async fn full_scan(&self) -> miette::Result<BlockHash, error::FullScan> {
         self.inner.full_scan().await
     }
 
@@ -1619,10 +1622,6 @@ impl Wallet {
     #[instrument(skip_all)]
     pub async fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>> {
         let start = Instant::now();
-        if self.inner.last_sync.read().await.is_none() {
-            return Err(error::WalletInitialization::NotSynced.into());
-        }
-
         let wallet_read = self.inner.read_wallet().await?;
         let utxos = wallet_read.list_unspent().collect::<Vec<_>>();
 
