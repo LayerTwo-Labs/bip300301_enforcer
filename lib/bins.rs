@@ -151,6 +151,8 @@ pub struct SignetMiner {
     pub block_interval: Option<Duration>,
     /// If None, pass `--min-nbits` to the mining script
     pub nbits: Option<[u8; 4]>,
+    // Address for block reward payment
+    pub coinbase_recipient: Option<bitcoin::Address>,
     pub getblocktemplate_command: Option<String>,
     /// Only used with custom mining script. Enables support for coinbasetxn
     pub coinbasetxn: bool,
@@ -181,6 +183,9 @@ impl SignetMiner {
                 command.arg(format!("--nbits={}", hex::encode(nbits)));
             } else {
                 command.arg("--min-nbits");
+            }
+            if let Some(coinbase_recipient) = &self.coinbase_recipient {
+                command.arg(format!("--address={}", coinbase_recipient));
             }
             if let Some(getblocktemplate_command) = &self.getblocktemplate_command {
                 command.arg(format!(

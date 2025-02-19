@@ -3,6 +3,7 @@ use std::{
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use clap::{Args, Parser, ValueEnum};
@@ -189,6 +190,16 @@ pub struct LoggerConfig {
     pub level: tracing::Level,
 }
 
+fn parse_bitcoin_address(s: &str) -> Result<bitcoin::Address, String> {
+    let unchecked =
+        bitcoin::Address::from_str(s).map_err(|_| "invalid bitcoin address".to_string())?;
+
+    let checked_addr = unchecked
+        .require_network(bitcoin::Network::Signet)
+        .map_err(|_| "bitcoin address is not for signet".to_string())?;
+    Ok(checked_addr)
+}
+
 #[derive(Clone, Args)]
 pub struct MiningConfig {
     /// Path to the Python mining script from Bitcoin Core. If not set,
@@ -207,6 +218,9 @@ pub struct MiningConfig {
     /// Path to the Bitcoin Core `bitcoin-cli` binary. Defaults to `bitcoin-cli`.
     #[arg(long = "signet-miner-bitcoin-cli-path", default_value = "bitcoin-cli")]
     pub bitcoin_cli_path: PathBuf,
+    /// Address for block reward payment
+    #[arg(long = "signet-miner-coinbase-recipient", value_parser = parse_bitcoin_address)]
+    pub coinbase_recipient: Option<bitcoin::Address>,
 }
 
 #[derive(Args, Clone)]

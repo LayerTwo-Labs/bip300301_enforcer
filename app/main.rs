@@ -415,7 +415,12 @@ async fn task(
                     tracing::error!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method.");
                     return;
                 }
-                let mining_reward_address = match wallet.get_new_address().await {
+                let mining_reward_address = match cli.mining_opts.coinbase_recipient {
+                    Some(mining_reward_address) => Ok(mining_reward_address),
+                    None => wallet.get_new_address().await,
+                };
+
+                let mining_reward_address = match mining_reward_address {
                     Ok(mining_reward_address) => mining_reward_address,
                     Err(err) => {
                         let err: miette::Report = err;
