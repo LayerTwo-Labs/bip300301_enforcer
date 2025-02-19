@@ -371,11 +371,13 @@ pub async fn setup(
             .parse::<Address<_>>()?
             .require_network(bitcoind.network)?
     };
+
     let mut signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner.clone(),
         bitcoin_cli: bitcoin_cli.clone(),
         bitcoin_util: bin_paths.bitcoin_util.clone(),
         block_interval: None,
+        coinbase_recipient: Some(mining_address.clone()),
         debug: false,
         nbits: None,
         getblocktemplate_command: None,

@@ -558,7 +558,10 @@ impl Wallet {
     // from Bitcoin Core. We assume that validation of this request has
     // happened elsewhere (i.e. that we're on signet, and have signing
     // capabilities).
-    async fn generate_signet_block(&self) -> miette::Result<BlockHash> {
+    async fn generate_signet_block(
+        &self,
+        coinbase_recipient: Option<bitcoin::Address>,
+    ) -> miette::Result<BlockHash> {
         let mining_script_path = self.get_signet_miner_path().await?;
         let miner = bins::SignetMiner {
             path: mining_script_path,
@@ -566,6 +569,7 @@ impl Wallet {
             bitcoin_util: self.inner.config.mining_opts.bitcoin_util_path.clone(),
             block_interval: Some(Duration::from_secs(60)),
             nbits: None,
+            coinbase_recipient,
             getblocktemplate_command: Some(format!(
                 "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
                 self.inner.config.serve_rpc_addr.ip(),
@@ -600,7 +604,9 @@ impl Wallet {
             return Err(miette!("Validator is not synced"));
         };
         if self.inner.validator.network() == Network::Signet {
-            return self.generate_signet_block().await;
+            return self
+                .generate_signet_block(self.inner.config.mining_opts.coinbase_recipient.clone())
+                .await;
         }
         let coinbase_outputs = self
             .generate_coinbase_txouts(ack_all_proposals, mainchain_tip)
