@@ -514,6 +514,24 @@ async fn task(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // We want to get panics properly logged, with request IDs and all that jazz.
+    //
+    // Save the original panic hook.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| l.to_string())
+            .unwrap_or("unknown".into());
+
+        let payload = match info.payload().downcast_ref::<&str>() {
+            Some(s) => s.to_string(),
+            None => format!("{:#?}", info.payload()).to_string(),
+        };
+        tracing::error!(location, "Panicked during execution: `{payload}`");
+        default_hook(info); // Panics are bad. re-throw!
+    }));
+
     let cli = cli::Config::parse();
     let log_file = cli.log_file();
     // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
