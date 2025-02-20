@@ -523,7 +523,7 @@ dependencies = [
  "tonic",
  "tonic-health",
  "tonic-reflection",
- "tower 0.5.2",
+ "tower 0.4.13",
  "tower-http",
  "tracing",
  "tracing-appender",

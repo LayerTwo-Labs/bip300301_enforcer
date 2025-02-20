@@ -7,6 +7,7 @@ use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
 use http::{header::HeaderName, Request};
 
+use jsonrpsee::server::RpcServiceBuilder;
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
@@ -161,16 +162,21 @@ impl MakeRequestId for RequestIdMaker {
     }
 }
 
-async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
-    const REQUEST_ID_HEADER: &str = "x-request-id";
+const REQUEST_ID_HEADER: &str = "x-request-id";
 
+fn set_request_id_layer() -> SetRequestIdLayer<RequestIdMaker> {
+    SetRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER), RequestIdMaker)
+}
+
+fn propagate_request_id_layer() -> PropagateRequestIdLayer {
+    PropagateRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER))
+}
+
+async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
     // Ordering here matters! Order here is from official docs on request IDs tracings
     // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
     let tracer = ServiceBuilder::new()
-        .layer(SetRequestIdLayer::new(
-            HeaderName::from_static(REQUEST_ID_HEADER),
-            RequestIdMaker,
-        ))
+        .layer(set_request_id_layer())
         .layer(
             TraceLayer::new_for_grpc()
                 .make_span_with(move |request: &Request<_>| {
@@ -182,7 +188,7 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
 
                     tracing::span!(
                         tracing::Level::DEBUG,
-                        "request",
+                        "grpc_server",
                         method = %request.method(),
                         uri = %request.uri(),
                         request_id , // this is needed for the record call below to work
@@ -193,9 +199,7 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
         )
-        .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
-            REQUEST_ID_HEADER,
-        )))
+        .layer(propagate_request_id_layer())
         .into_inner();
 
     let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
@@ -263,8 +267,40 @@ async fn spawn_gbt_server(
             .join(", ")
     );
 
+    // Ordering here matters! Order here is from official docs on request IDs tracings
+    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
+    let tracer = tower::ServiceBuilder::new()
+        .layer(set_request_id_layer())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(move |request: &http::Request<_>| {
+                    let request_id = request
+                        .headers()
+                        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
+                        .and_then(|h| h.to_str().ok())
+                        .filter(|s| !s.is_empty());
+
+                    tracing::span!(
+                        tracing::Level::DEBUG,
+                        "gbt_server",
+                        request_id, // this is needed for the record call below to work
+                    )
+                })
+                .on_request(())
+                .on_eos(())
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
+        )
+        .layer(propagate_request_id_layer())
+        .into_inner();
+
+    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
+    let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
+
     use cusf_enforcer_mempool::server::RpcServer;
     let handle = jsonrpsee::server::Server::builder()
+        .set_http_middleware(http_middleware)
+        .set_rpc_middleware(rpc_middleware)
         .build(serve_addr)
         .await
         .map_err(|err| miette!("initialize JSON-RPC server at `{serve_addr}`: {err:#}"))?
