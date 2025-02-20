@@ -1522,6 +1522,8 @@ impl Wallet {
 
                     if !params.required_utxos.is_empty() {
                         builder
+                            // TODO: this does not work at all for wallets past a certain scale....
+                            // 25s pr. UTXO for a wallet with 40k UTXOs in total
                             .add_utxos(&params.required_utxos)
                             .map_err(|err| match err {
                                 bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
@@ -1691,21 +1693,33 @@ impl Wallet {
         Ok(active)
     }
 
+    #[instrument(skip_all, err)]
     async fn sign_transaction(
         &self,
         mut psbt: bdk_wallet::bitcoin::psbt::Psbt,
-    ) -> Result<bdk_wallet::bitcoin::Transaction> {
+    ) -> Result<bdk_wallet::bitcoin::Transaction, error::WalletSignTransaction> {
+        let mut timestamp = Instant::now();
+
         if !self
             .inner
             .read_wallet()
-            .await?
+            .await
+            .map_err(error::WalletSignTransaction::NotUnlocked)?
             .sign(&mut psbt, bdk_wallet::signer::SignOptions::default())
-            .into_diagnostic()?
+            .map_err(error::WalletSignTransaction::SignerError)?
         {
-            return Err(miette!("failed to sign transaction"));
+            return Err(error::WalletSignTransaction::UnableToSign);
         }
 
-        psbt.extract_tx().into_diagnostic()
+        tracing::debug!("Signed transaction in {:?}", timestamp.elapsed());
+        timestamp = Instant::now();
+
+        let tx = psbt
+            .extract_tx()
+            .map_err(error::WalletSignTransaction::ExtractTx)?;
+
+        tracing::debug!("Extracted transaction in {:?}", timestamp.elapsed());
+        Ok(tx)
     }
 
     fn bmm_request_message(
