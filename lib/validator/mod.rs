@@ -1,7 +1,10 @@
 use std::{collections::HashMap, path::Path};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender};
-use bip300301::jsonrpsee;
+use bip300301::{
+    client::{GetBlockClient, U8Witness},
+    jsonrpsee,
+};
 use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
 use futures::{stream::FusedStream, StreamExt};
@@ -154,6 +157,14 @@ pub enum EventsStreamError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum GetCtipsError {
+    #[error(transparent)]
+    DbIter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetSidechainsError {
     #[error(transparent)]
     DbIter(#[from] db_error::Iter),
@@ -284,16 +295,16 @@ impl Validator {
     }
 
     /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
+        let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
             .ctip()
             .iter(&rotxn)
-            .into_diagnostic()?
+            .map_err(db_error::Iter::from)?
             .collect()
-            .into_diagnostic()?;
+            .map_err(db_error::Iter::from)?;
         Ok(res)
     }
 
@@ -380,10 +391,22 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns an error if not synced
-    pub fn get_mainchain_tip(&self) -> Result<BlockHash, GetMainchainTipError> {
+    pub fn get_mainchain_tip_hash(&self) -> Result<BlockHash, GetMainchainTipError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.get(&rotxn, &dbs::UnitKey)?;
         Ok(res)
+    }
+
+    pub async fn get_mainchain_tip(
+        &self,
+    ) -> Result<bip300301::client::Block<false>, miette::Report> {
+        let block_hash = self.get_mainchain_tip_hash()?;
+        let block = self
+            .mainchain_client
+            .get_block(block_hash, U8Witness::<1>)
+            .await
+            .into_diagnostic()?;
+        Ok(block)
     }
 
     /// Get the mainchain tip height. Returns `None` if not synced

@@ -297,7 +297,7 @@ impl Wallet {
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> miette::Result<Block> {
-        let best_block_hash = self.validator().get_mainchain_tip()?;
+        let best_block_hash = self.validator().get_mainchain_tip_hash()?;
         let best_block_height = self.validator().get_header_info(&best_block_hash)?.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
 
