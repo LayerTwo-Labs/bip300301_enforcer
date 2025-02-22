@@ -1,7 +1,10 @@
 use std::{collections::HashMap, path::Path};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender};
-use bip300301::jsonrpsee;
+use bip300301::{
+    client::{GetBlockClient, U8Witness},
+    jsonrpsee,
+};
 use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
 use futures::{stream::FusedStream, StreamExt};
@@ -388,10 +391,22 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns an error if not synced
-    pub fn get_mainchain_tip(&self) -> Result<BlockHash, GetMainchainTipError> {
+    pub fn get_mainchain_tip_hash(&self) -> Result<BlockHash, GetMainchainTipError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.get(&rotxn, &dbs::UnitKey)?;
         Ok(res)
+    }
+
+    pub async fn get_mainchain_tip(
+        &self,
+    ) -> Result<bip300301::client::Block<false>, miette::Report> {
+        let block_hash = self.get_mainchain_tip_hash()?;
+        let block = self
+            .mainchain_client
+            .get_block(block_hash, U8Witness::<1>)
+            .await
+            .into_diagnostic()?;
+        Ok(block)
     }
 
     /// Get the mainchain tip height. Returns `None` if not synced

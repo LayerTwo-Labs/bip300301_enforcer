@@ -161,7 +161,7 @@ impl CusfBlockProducer for Wallet {
                 template.coinbase_txouts
             );
 
-            let mainchain_tip = self.validator().get_mainchain_tip()?;
+            let mainchain_tip = self.validator().get_mainchain_tip_hash()?;
             let wit = wit.map(CoinbaseTxouts);
             let coinbase_txouts: &mut Vec<_> = wit.in_mut().to_right(&mut template.coinbase_txouts);
 

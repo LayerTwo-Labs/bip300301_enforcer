@@ -32,7 +32,8 @@ use crate::{
         },
         mainchain::{
             create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
-            get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
+            get_chain_info_response, get_ctip_response::Ctip,
+            get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
@@ -267,8 +268,22 @@ impl ValidatorService for Validator {
     ) -> Result<tonic::Response<GetChainInfoResponse>, tonic::Status> {
         let GetChainInfoRequest {} = request.into_inner();
         let network: Network = self.network().into();
+
+        let best_block = self.get_mainchain_tip().await.map_err(|err| {
+            tonic::Status::internal(format!("failed to get mainchain tip: {err:#}"))
+        })?;
+
+        let timestamp = prost_types::Timestamp {
+            seconds: best_block.time as i64,
+            nanos: 0,
+        };
         let resp = GetChainInfoResponse {
             network: network as i32,
+            best_block: Some(get_chain_info_response::BestBlock {
+                hash: Some(ReverseHex::encode(&best_block.hash)),
+                height: best_block.height,
+                timestamp: Some(timestamp),
+            }),
         };
         Ok(tonic::Response::new(resp))
     }
@@ -956,7 +971,7 @@ impl WalletService for crate::wallet::Wallet {
 
         let mainchain_tip = self
             .validator()
-            .get_mainchain_tip()
+            .get_mainchain_tip_hash()
             .map_err(|err| tonic::Status::from_error(err.into()))?;
 
         tracing::debug!(
