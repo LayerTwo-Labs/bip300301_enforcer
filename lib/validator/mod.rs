@@ -154,6 +154,14 @@ pub enum EventsStreamError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum GetCtipsError {
+    #[error(transparent)]
+    DbIter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetSidechainsError {
     #[error(transparent)]
     DbIter(#[from] db_error::Iter),
@@ -284,16 +292,16 @@ impl Validator {
     }
 
     /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
+        let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
             .ctip()
             .iter(&rotxn)
-            .into_diagnostic()?
+            .map_err(db_error::Iter::from)?
             .collect()
-            .into_diagnostic()?;
+            .map_err(db_error::Iter::from)?;
         Ok(res)
     }
 
