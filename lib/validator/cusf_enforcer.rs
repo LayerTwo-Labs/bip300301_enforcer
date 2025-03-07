@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
+use async_broadcast::TrySendError;
 use bitcoin::{hashes::Hash as _, Block, BlockHash, Transaction, Txid};
 use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer};
 use fallible_iterator::FallibleIterator;
@@ -16,7 +17,7 @@ use ouroboros::self_referencing;
 use thiserror::Error;
 
 use crate::{
-    types::{Ctip, SidechainNumber},
+    types::{Ctip, Event, SidechainNumber},
     validator::{
         db_error,
         dbs::{self, RwTxn},
@@ -131,6 +132,7 @@ enum RejectReason {
 /// Connect block action, with rwtxns that can be committed or aborted
 enum ConnectBlockRwTxnAction<'a> {
     Accept {
+        event: Event,
         remove_mempool_txs: HashSet<Txid>,
         rwtxns: ParentChildRwTxn<'a>,
     },
@@ -148,7 +150,6 @@ enum ConnectBlockRwTxnAction<'a> {
 fn connect_block_no_commit<'validator>(
     validator: &'validator Validator,
     block: &Block,
-    events_tx: &async_broadcast::Sender<crate::types::Event>,
 ) -> Result<ConnectBlockRwTxnAction<'validator>, ConnectBlockError> {
     let block_hash = block.block_hash();
     let parent = block.header.prev_blockhash;
@@ -189,15 +190,14 @@ fn connect_block_no_commit<'validator>(
     .try_build()?;
     tracing::debug!(%block_hash, "Connecting block");
     match parent_child_rwtxn
-        .with_child_mut(|child_rwtxn| {
-            task::connect_block(child_rwtxn, &validator.dbs, events_tx, block)
-        })
+        .with_child_mut(|child_rwtxn| task::connect_block(child_rwtxn, &validator.dbs, block))
         .into_nested()?
     {
-        Ok(()) => {
+        Ok(event) => {
             // FIXME: implement
             let remove_mempool_txs = HashSet::new();
             Ok(ConnectBlockRwTxnAction::Accept {
+                event,
                 remove_mempool_txs,
                 rwtxns: parent_child_rwtxn,
             })
@@ -236,14 +236,19 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
         block: &Block,
     ) -> Result<Self::Output, ConnectBlockError> {
         let block_hash = block.block_hash();
-        match connect_block_no_commit(validator, block, &validator.events_tx)? {
+        match connect_block_no_commit(validator, block)? {
             ConnectBlockRwTxnAction::Accept {
+                event,
                 remove_mempool_txs,
                 rwtxns,
             } => {
                 tracing::info!(%block_hash, "Accepted block");
                 let rwtxn = rwtxns.commit_child()?;
                 rwtxn.commit()?;
+                // Events should only ever be sent after committing DB txs, see
+                // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+                let _send_err: Result<Option<_>, TrySendError<_>> =
+                    validator.events_tx.try_broadcast(event);
                 Ok(ConnectBlockAction::Accept { remove_mempool_txs })
             }
             ConnectBlockRwTxnAction::Reject {
@@ -277,10 +282,9 @@ where
         validator: &'validator Validator,
         block: &Block,
     ) -> Result<Self::Output, ConnectBlockError> {
-        // Dummy events channel so that no event is emitted to subscribers
-        let (events_tx, _events_rx) = async_broadcast::broadcast(1);
-        let rwtxns = match connect_block_no_commit(validator, block, &events_tx)? {
+        let rwtxns = match connect_block_no_commit(validator, block)? {
             ConnectBlockRwTxnAction::Accept {
+                event: _,
                 rwtxns,
                 remove_mempool_txs: _,
             } => rwtxns,
