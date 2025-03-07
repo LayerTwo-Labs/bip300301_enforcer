@@ -8,7 +8,6 @@ version.workspace = true
 [dependencies]
 bdk_wallet = { workspace = true }
 bip300301 = { workspace = true }
-bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 clap = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
@@ -25,9 +24,14 @@ tonic-reflection = "0.12.3"
 tower = "0.4.13"
 tower-http = { version = "0.6.1", features = ["trace", "request-id"] }
 tracing = { workspace = true }
-tracing-appender = "0.2.3"
+tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = "1.12.1"
+
+[dependencies.bip300301_enforcer_lib]
+path = "../lib"
+default-features = false
+features = ["tracing-appender"]
 
 [features]
 default = ["rustls"]
