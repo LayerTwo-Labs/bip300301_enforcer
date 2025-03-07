@@ -590,9 +590,8 @@ pub fn validate_tx(
 pub(in crate::validator) fn connect_block(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
-    event_tx: &Sender<Event>,
     block: &Block,
-) -> Result<(), error::ConnectBlock> {
+) -> Result<Event, error::ConnectBlock> {
     let parent = block.header.prev_blockhash;
 
     // Check that current chain tip is block parent
@@ -749,8 +748,7 @@ pub(in crate::validator) fn connect_block(
             block_info,
         }
     };
-    let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
-    Ok(())
+    Ok(event)
 }
 
 // TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
@@ -855,9 +853,10 @@ where
         let mut rwtxn = dbs.write_txn()?;
         let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
         // FIXME: handle disconnects
-        let () = connect_block(&mut rwtxn, dbs, event_tx, &block)?;
+        let event = connect_block(&mut rwtxn, dbs, &block)?;
         tracing::debug!("connected block at height {height}: {missing_block}");
         let () = rwtxn.commit()?;
+        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
     Ok(())
 }
