@@ -620,6 +620,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "url",
  "uuid",
