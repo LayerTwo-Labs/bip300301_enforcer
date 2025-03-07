@@ -8,6 +8,7 @@ use std::{
 
 use clap::{Args, Parser, ValueEnum};
 use thiserror::Error;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format as tracing_format;
 
 const DEFAULT_NODE_RPC_ADDR: SocketAddr =
@@ -64,6 +65,10 @@ fn get_data_dir() -> Result<PathBuf, String> {
 // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
 const DEFAULT_LOG_FILENAME: &str = "bip300301_enforcer.log";
 
+// Sub-par location for the log dir.
+// https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
+const DEFAULT_LOG_DIRNAME: &str = "logs";
+
 /// Possible formats for log output.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum LogFormat {
@@ -76,6 +81,15 @@ enum LogFormat {
     Json,
     /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/fmt/format/struct.Pretty.html
     Pretty,
+}
+
+impl LogFormat {
+    fn default_log_suffix(&self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Compact | Self::Full | Self::Pretty => "log",
+        }
+    }
 }
 
 /// Log formatter, equivalent to [`tracing_subscriber::fmt::format::Format`]
@@ -168,13 +182,28 @@ impl<'writer> tracing_subscriber::fmt::FormatFields<'writer> for LogFormatter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum LogRotation {
+    Daily,
+    Hourly,
+    Minutely,
+    #[default]
+    Never,
+}
+
+impl From<LogRotation> for Rotation {
+    fn from(rotation: LogRotation) -> Self {
+        match rotation {
+            LogRotation::Daily => Self::DAILY,
+            LogRotation::Hourly => Self::HOURLY,
+            LogRotation::Minutely => Self::MINUTELY,
+            LogRotation::Never => Self::NEVER,
+        }
+    }
+}
+
 #[derive(Clone, Args)]
 pub struct LoggerConfig {
-    /// File path to write logs to, in addition to stdout.
-    /// If none is provided, logs are written to `bip300301_enforcer.log`
-    /// in the data directory.
-    #[arg(long = "log-file")]
-    file: Option<PathBuf>,
     /// Format for log output.
     #[arg(default_value_t, long = "log-format", value_enum)]
     format: LogFormat,
@@ -188,6 +217,22 @@ pub struct LoggerConfig {
     /// https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     #[arg(default_value_t = tracing::Level::DEBUG, long = "log-level")]
     pub level: tracing::Level,
+    /// Set a limit for the maximum number of log files that will be retained.
+    /// Older log files will be deleted if the maximum number of log files has
+    /// been reached.
+    #[arg(long = "max-log-files")]
+    pub max_log_files: Option<usize>,
+    /// Path to write logs to, in addition to stdout.
+    /// If the log rotation is set to `never`, logs are written to the
+    /// specified file. Otherwise, logs are written to the specified directory.
+    /// If no path is provided, logs are written to `bip300301_enforcer.log`
+    /// or `logs/` in the data directory.
+    #[arg(long = "log-path")]
+    path: Option<PathBuf>,
+    /// Log file rotation frequency.
+    /// If set, a new log file will be created at the specified interval.
+    #[arg(default_value_t, long = "log-rotation", value_enum)]
+    pub rotation: LogRotation,
 }
 
 fn parse_bitcoin_address(s: &str) -> Result<bitcoin::Address, String> {
@@ -299,6 +344,18 @@ pub struct WalletConfig {
     pub mnemonic_path: Option<PathBuf>,
 }
 
+#[derive(miette::Diagnostic, Debug, Error)]
+pub enum RollingLoggerError {
+    #[error(transparent)]
+    Init(#[from] tracing_appender::rolling::InitError),
+    #[error("Log file name must be valid UTF-8")]
+    InvalidFileName,
+    #[error("Log path has no file name")]
+    NoFileName,
+    #[error("Log file path has no parent")]
+    NoParent,
+}
+
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8122));
 const DEFAULT_SERVE_GRPC_ADDR: SocketAddr =
@@ -347,14 +404,74 @@ impl Config {
         }
     }
 
-    pub fn log_file(&self) -> Cow<'_, Path> {
-        match &self.logger_opts.file {
-            Some(log_file) => Cow::Borrowed(log_file),
-            None => Cow::Owned(self.data_dir.join(DEFAULT_LOG_FILENAME)),
+    pub fn log_formatter(&self) -> LogFormatter {
+        self.logger_opts.format.into()
+    }
+
+    /// File or dir path for logs
+    pub fn log_path(&self) -> Cow<'_, Path> {
+        if let Some(log_path) = self.logger_opts.path.as_ref() {
+            Cow::Borrowed(log_path)
+        } else {
+            match self.logger_opts.rotation {
+                LogRotation::Never => Cow::Owned(self.data_dir.join(DEFAULT_LOG_FILENAME)),
+                LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => {
+                    Cow::Owned(self.data_dir.join(DEFAULT_LOG_DIRNAME))
+                }
+            }
         }
     }
 
-    pub fn log_formatter(&self) -> LogFormatter {
-        self.logger_opts.format.into()
+    fn log_dir(&self) -> Result<Cow<'_, Path>, RollingLoggerError> {
+        match self.logger_opts.rotation {
+            LogRotation::Never => {
+                if let Some(log_dir) = self.log_path().parent() {
+                    Ok(Cow::Owned(log_dir.to_owned()))
+                } else {
+                    Err(RollingLoggerError::NoParent)
+                }
+            }
+            LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => Ok(self.log_path()),
+        }
+    }
+
+    fn log_filename_prefix(&self) -> Result<String, RollingLoggerError> {
+        match self.logger_opts.rotation {
+            LogRotation::Never => {
+                if let Some(log_filename) = self.log_path().file_name() {
+                    let prefix = log_filename
+                        .to_str()
+                        .ok_or(RollingLoggerError::InvalidFileName)?;
+                    Ok(prefix.to_owned())
+                } else {
+                    Err(RollingLoggerError::NoFileName)
+                }
+            }
+            LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => Ok(String::new()),
+        }
+    }
+
+    fn log_filename_suffix(&self) -> Option<&'static str> {
+        match self.logger_opts.rotation {
+            LogRotation::Never => None,
+            LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => {
+                Some(self.logger_opts.format.default_log_suffix())
+            }
+        }
+    }
+
+    pub fn rolling_log_appender(&self) -> Result<RollingFileAppender, RollingLoggerError> {
+        let mut builder = RollingFileAppender::builder()
+            .rotation(self.logger_opts.rotation.into())
+            .filename_prefix(self.log_filename_prefix()?);
+        if let Some(log_filename_suffix) = self.log_filename_suffix() {
+            builder = builder.filename_suffix(log_filename_suffix);
+        }
+        if let Some(max_log_files) = self.logger_opts.max_log_files {
+            builder = builder.max_log_files(max_log_files);
+        }
+        builder
+            .build(self.log_dir()?)
+            .map_err(RollingLoggerError::Init)
     }
 }

@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, path::Path, time::Duration};
+use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
@@ -67,9 +67,9 @@ where
 // Configure logger. The returned guard should be dropped when the program
 // exits.
 fn set_tracing_subscriber(
-    log_file: &Path,
     log_formatter: LogFormatter,
     log_level: tracing::Level,
+    rolling_log_appender: tracing_appender::rolling::RollingFileAppender,
 ) -> miette::Result<tracing_appender::non_blocking::WorkerGuard> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
@@ -95,15 +95,8 @@ fn set_tracing_subscriber(
     let is_terminal = std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
     stdout_layer.set_ansi(is_terminal);
 
-    let log_file_dir = log_file.parent().ok_or(miette!("log file has no parent"))?;
-    let log_file_name = log_file
-        .file_name()
-        .ok_or(miette!("log file has no name"))?;
-
-    let file_appender = tracing_appender::rolling::never(log_file_dir, log_file_name);
-
     // Ensure the appender is non-blocking!
-    let (file_appender, guard) = tracing_appender::non_blocking(file_appender);
+    let (file_appender, guard) = tracing_appender::non_blocking(rolling_log_appender);
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(file_appender)
@@ -533,13 +526,15 @@ async fn main() -> Result<()> {
     }));
 
     let cli = cli::Config::parse();
-    let log_file = cli.log_file();
     // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
-    let _tracing_guard =
-        set_tracing_subscriber(&log_file, cli.log_formatter(), cli.logger_opts.level)?;
+    let _tracing_guard = set_tracing_subscriber(
+        cli.log_formatter(),
+        cli.logger_opts.level,
+        cli.rolling_log_appender()?,
+    )?;
     tracing::info!(
         data_dir = %cli.data_dir.display(),
-        log_file = %log_file.display(),
+        log_path = %cli.log_path().display(),
         "Starting up bip300301_enforcer",
     );
 

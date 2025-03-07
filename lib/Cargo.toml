@@ -64,6 +64,7 @@ tokio-rusqlite = "0.5.1"
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
+tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 url = "2.5.4"
 uuid = "1.12.1"
