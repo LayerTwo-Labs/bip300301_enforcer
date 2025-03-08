@@ -1931,4 +1931,280 @@ impl Wallet {
     ) -> Result<(), miette::Report> {
         self.inner.create_new_wallet(mnemonic, password).await
     }
+
+    /// Create a multisig address requiring multiple signatures to spend from.
+    ///
+    /// # Arguments
+    /// * `required_signatures` - Number of signatures required (m in m-of-n)
+    /// * `public_keys` - List of public keys in hex format
+    /// * `address_type` - Type of address to create: "p2sh", "p2wsh", or "p2sh-p2wsh"
+    ///
+    /// # Returns
+    /// Returns a tuple containing:
+    /// * The multisig address
+    /// * The redeem script in hex
+    /// * The output descriptor
+    pub fn create_multisig_address(
+        &self,
+        required_signatures: u32,
+        public_keys: &[String],
+        address_type: Option<&str>,
+    ) -> Result<(bitcoin::Address, String, String)> {
+        // Validate parameters
+        if required_signatures == 0 {
+            return Err(miette!("required_signatures must be greater than 0"));
+        }
+
+        if required_signatures as usize > public_keys.len() {
+            return Err(miette!(
+                "required_signatures ({}) cannot be greater than the number of public keys ({})",
+                required_signatures,
+                public_keys.len()
+            ));
+        }
+
+        if public_keys.is_empty() {
+            return Err(miette!("public_keys cannot be empty"));
+        }
+
+        // Parse public keys
+        let mut parsed_keys = Vec::with_capacity(public_keys.len());
+        for key_hex in public_keys {
+            let key_bytes = hex::decode(key_hex.trim_start_matches("0x"))
+                .map_err(|_| miette!("invalid public key format: {}", key_hex))?;
+
+            let pubkey = bitcoin::key::PublicKey::from_slice(&key_bytes)
+                .map_err(|_| miette!("invalid public key: {}", key_hex))?;
+
+            parsed_keys.push(pubkey);
+        }
+
+        // Sort keys (BIP67)
+        parsed_keys.sort_by_key(|k| k.inner.serialize());
+
+        // Create a script with OP_m OP_PUSHBYTES(pubkey_1) ... OP_PUSHBYTES(pubkey_n) OP_n OP_CHECKMULTISIG
+        let mut builder = bitcoin::script::Builder::new();
+        builder = builder.push_int(required_signatures as i64);
+
+        for pubkey in &parsed_keys {
+            builder = builder.push_key(pubkey);
+        }
+
+        builder = builder.push_int(parsed_keys.len() as i64);
+        builder = builder.push_opcode(bitcoin::opcodes::all::OP_CHECKMULTISIG);
+
+        let script = builder.into_script();
+
+        // Get the network from the validator
+        let validator_network = self.inner.validator.network();
+        let network = bitcoin::Network::from_str(validator_network.to_string().as_str())
+            .map_err(|e| miette!("Failed to convert network: {}", e))?;
+
+        // Create the address based on the specified type
+        let address_type = address_type.unwrap_or("p2wsh");
+
+        let (address, descriptor) = match address_type {
+            "p2sh" => {
+                let redeem_script = script.clone();
+                // p2sh returns a Result<Address, P2shError>
+                let address = match bitcoin::Address::p2sh(&redeem_script, network) {
+                    Ok(addr) => addr,
+                    Err(_) => return Err(miette!("failed to create p2sh address")),
+                };
+
+                let descriptor = format!(
+                    "sh(multi({},{}))#multisig",
+                    required_signatures,
+                    parsed_keys
+                        .iter()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+
+                (address, descriptor)
+            }
+            "p2wsh" => {
+                let witness_script = script.clone();
+                // p2wsh returns an Address directly, not a Result
+                let address = bitcoin::Address::p2wsh(&witness_script, network);
+
+                let descriptor = format!(
+                    "wsh(multi({},{}))#multisig",
+                    required_signatures,
+                    parsed_keys
+                        .iter()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+
+                (address, descriptor)
+            }
+            "p2sh-p2wsh" => {
+                let witness_script = script.clone();
+                // Create a WScriptHash from the witness script
+                let script_hash = bitcoin::hashes::sha256::Hash::hash(witness_script.as_bytes());
+                let witness_program = bitcoin::WScriptHash::from_raw_hash(script_hash);
+
+                // Create a P2WSH script
+                let p2wsh = bitcoin::ScriptBuf::new_p2wsh(&witness_program);
+
+                // p2sh returns a Result<Address, P2shError>
+                let address = match bitcoin::Address::p2sh(&p2wsh, network) {
+                    Ok(addr) => addr,
+                    Err(_) => return Err(miette!("failed to create p2sh-p2wsh address")),
+                };
+
+                let descriptor = format!(
+                    "sh(wsh(multi({},{})))#multisig",
+                    required_signatures,
+                    parsed_keys
+                        .iter()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+
+                (address, descriptor)
+            }
+            _ => return Err(miette!("invalid address_type: {}", address_type)),
+        };
+
+        let redeem_script_hex = hex::encode(script.as_bytes());
+
+        Ok((address, redeem_script_hex, descriptor))
+    }
+
+    /// Creates a multisig transaction
+    ///
+    /// This method creates a transaction using UTXOs from a multisig address.
+    /// It returns a PSBT (Partially Signed Bitcoin Transaction) that will need to be signed
+    /// by the required number of keys before it can be broadcast.
+    ///
+    /// # Arguments
+    /// * `multisig_address` - The multisig address to spend from
+    /// * `redeem_script_hex` - The redeem script for the multisig address in hex format
+    /// * `destinations` - Map of destination addresses to amounts
+    /// * `utxos` - List of UTXOs to include in the transaction
+    /// * `fee_policy` - Optional fee policy to use
+    /// * `op_return_message` - Optional OP_RETURN message to include
+    ///
+    /// # Returns
+    /// A tuple containing the PSBT and transaction ID
+    pub fn create_multisig_transaction(
+        &self,
+        multisig_address: &str,
+        redeem_script_hex: &str,
+        destinations: HashMap<bitcoin::Address, Amount>,
+        utxos: Vec<(bitcoin::OutPoint, Amount)>,
+        fee_policy: Option<crate::types::FeePolicy>,
+        op_return_message: Option<Vec<u8>>,
+    ) -> Result<(bitcoin::psbt::Psbt, bitcoin::Txid)> {
+        // Parse the multisig address
+        let validator_network = self.validator().network();
+        let network = bitcoin::Network::from_str(validator_network.to_string().as_str())
+            .map_err(|e| miette!("Failed to convert network: {}", e))?;
+
+        let multisig_addr = bitcoin::Address::from_str(multisig_address)
+            .map_err(|_| miette!("invalid multisig address: {}", multisig_address))?;
+
+        // Verify the address is on the correct network
+        let address = multisig_addr
+            .require_network(network)
+            .map_err(|_| miette!("address network mismatch: expected {}", network))?;
+
+        // Parse the redeem script
+        let redeem_script_bytes = hex::decode(redeem_script_hex)
+            .map_err(|_| miette!("invalid redeem script hex: {}", redeem_script_hex))?;
+
+        let redeem_script = bitcoin::ScriptBuf::from_bytes(redeem_script_bytes);
+
+        // Create a new transaction
+        let mut tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: Vec::new(),
+            output: Vec::new(),
+        };
+
+        // Add inputs from the provided UTXOs
+        for (outpoint, _) in &utxos {
+            let txin = bitcoin::TxIn {
+                previous_output: *outpoint,
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            };
+            tx.input.push(txin);
+        }
+
+        // Add outputs for each destination address
+        for (address, value) in &destinations {
+            let txout = bitcoin::TxOut {
+                value: *value,
+                script_pubkey: address.script_pubkey(),
+            };
+            tx.output.push(txout);
+        }
+
+        // Add OP_RETURN output if specified
+        if let Some(op_return_data) = op_return_message {
+            let op_return_output = Self::create_op_return_output(op_return_data)
+                .map_err(|e| miette!("Failed to create OP_RETURN output: {}", e))?;
+
+            tx.output.push(op_return_output);
+        }
+
+        // Set the fee policy if specified
+        if let Some(fee_policy) = fee_policy {
+            match fee_policy {
+                crate::types::FeePolicy::Absolute(fee) => {
+                    // For absolute fee, we need to calculate the change amount
+                    let total_input: Amount = utxos.iter().map(|(_, amount)| *amount).sum();
+                    let total_output: Amount = destinations.values().copied().sum();
+
+                    // Ensure the fee doesn't exceed the available amount
+                    if total_input < total_output + fee {
+                        return Err(miette!(
+                            "insufficient funds: inputs ({}) < outputs ({}) + fee ({})",
+                            total_input,
+                            total_output,
+                            fee
+                        ));
+                    }
+                }
+                crate::types::FeePolicy::Rate(_) => {
+                    // For fee rate, we'll handle it later when signing
+                }
+            }
+        }
+
+        // Create a PSBT from the transaction
+        let mut psbt = bitcoin::psbt::Psbt::from_unsigned_tx(tx)
+            .map_err(|e| miette!("Failed to create PSBT: {}", e))?;
+
+        // Add the redeem script to each input
+        for i in 0..utxos.len() {
+            if let Some(input) = psbt.inputs.get_mut(i) {
+                input.redeem_script = Some(redeem_script.clone());
+
+                // If it's a witness program, also set the witness script
+                if address.script_pubkey().is_witness_program() {
+                    input.witness_script = Some(redeem_script.clone());
+                }
+
+                // Add the UTXO value for fee calculation
+                input.witness_utxo = Some(bitcoin::TxOut {
+                    value: utxos[i].1,
+                    script_pubkey: address.script_pubkey(),
+                });
+            }
+        }
+
+        // Compute the transaction ID
+        let txid = psbt.unsigned_tx.compute_txid();
+
+        Ok((psbt, txid))
+    }
 }

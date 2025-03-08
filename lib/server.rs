@@ -40,6 +40,8 @@ use crate::{
             BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
             CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
+            CreateMultisigAddressRequest, CreateMultisigAddressResponse,
+            CreateMultisigTransactionRequest, CreateMultisigTransactionResponse,
             CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
             CreateSidechainProposalResponse, CreateWalletRequest, CreateWalletResponse,
             GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
@@ -1416,6 +1418,156 @@ impl WalletService for crate::wallet::Wallet {
             .map_err(|err| err.into_status())?;
 
         Ok(tonic::Response::new(CreateWalletResponse {}))
+    }
+
+    async fn create_multisig_address(
+        &self,
+        request: tonic::Request<CreateMultisigAddressRequest>,
+    ) -> Result<tonic::Response<CreateMultisigAddressResponse>, tonic::Status> {
+        let CreateMultisigAddressRequest {
+            required_signatures,
+            public_keys,
+            address_type,
+        } = request.into_inner();
+
+        match (required_signatures, public_keys.len()) {
+            (0, _) => {
+                return Err(tonic::Status::invalid_argument(
+                    "required_signatures must be greater than 0",
+                ))
+            }
+            (_, 0) => {
+                return Err(tonic::Status::invalid_argument(
+                    "public_keys cannot be empty",
+                ))
+            }
+            (n, len) if n as usize > len => {
+                return Err(tonic::Status::invalid_argument(format!(
+                "required_signatures ({}) cannot be greater than the number of public keys ({})",
+                n, len
+            )))
+            }
+            _ => {}
+        }
+
+        let (address, redeem_script, descriptor) = self
+            .create_multisig_address(required_signatures, &public_keys, address_type.as_deref())
+            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+
+        Ok(tonic::Response::new(CreateMultisigAddressResponse {
+            address: address.to_string(),
+            redeem_script,
+            descriptor,
+        }))
+    }
+
+    async fn create_multisig_transaction(
+        &self,
+        request: tonic::Request<CreateMultisigTransactionRequest>,
+    ) -> Result<tonic::Response<CreateMultisigTransactionResponse>, tonic::Status> {
+        const MAX_FEE_RATE_SAT_PER_VBYTE: u64 = 10_000;
+
+        let CreateMultisigTransactionRequest {
+            multisig_address,
+            redeem_script,
+            destinations,
+            fee_rate,
+            op_return_message,
+            utxos,
+        } = request.into_inner();
+
+        if multisig_address.is_empty() || redeem_script.is_empty() {
+            return Err(tonic::Status::invalid_argument(
+                "multisig_address and redeem_script are required",
+            ));
+        }
+
+        let parsed_destinations = destinations
+            .into_iter()
+            .map(|(addr, amount)| {
+                Ok((self.parse_checked_address(&addr)?, Amount::from_sat(amount)))
+            })
+            .collect::<Result<HashMap<_, _>, tonic::Status>>()?;
+
+        // Parse fee rate if provided
+        let fee_policy = match fee_rate {
+            Some(rate) => match rate.fee {
+                Some(crate::proto::mainchain::create_multisig_transaction_request::fee_rate::Fee::SatPerVbyte(sats)) => {
+                    if sats > MAX_FEE_RATE_SAT_PER_VBYTE {
+                        return Err(tonic::Status::invalid_argument(
+                            format!("Fee rate too high: {} sat/vB exceeds maximum of {} sat/vB", sats, MAX_FEE_RATE_SAT_PER_VBYTE)
+                        ));
+                    }
+                    if sats < 1 {
+                        return Err(tonic::Status::invalid_argument("Fee rate too low: must be at least 1 sat/vB"));
+                    }
+                    bitcoin::FeeRate::from_sat_per_vb(sats)
+                        .map(crate::types::FeePolicy::Rate)
+                        .map(Some)
+                        .ok_or_else(|| tonic::Status::invalid_argument("Invalid fee rate"))?
+                }
+                Some(crate::proto::mainchain::create_multisig_transaction_request::fee_rate::Fee::Sats(sats)) => {
+                    if sats > 100_000_000 {
+                        return Err(tonic::Status::invalid_argument(
+                            format!("Absolute fee too high: {} sats exceeds maximum of 100,000,000 sats", sats)
+                        ));
+                    }
+                    if sats < 1000 {
+                        return Err(tonic::Status::invalid_argument("Absolute fee too low: must be at least 1000 sats"));
+                    }
+                    Some(crate::types::FeePolicy::Absolute(Amount::from_sat(sats)))
+                }
+                None => return Err(tonic::Status::invalid_argument("Fee rate must specify either sat_per_vbyte or sats")),
+            },
+            None => None,
+        };
+
+        // Parse UTXOs
+        let parsed_utxos = utxos
+            .into_iter()
+            .map(|utxo| {
+                let txid_str = utxo
+                    .txid
+                    .as_ref()
+                    .and_then(|tx| tx.hex.as_ref())
+                    .ok_or_else(|| tonic::Status::invalid_argument("missing or invalid txid"))?;
+
+                let txid = bitcoin::Txid::from_str(txid_str)
+                    .map_err(|_| tonic::Status::invalid_argument("invalid txid format"))?;
+
+                Ok((
+                    bitcoin::OutPoint {
+                        txid,
+                        vout: utxo.vout,
+                    },
+                    Amount::from_sat(utxo.amount),
+                ))
+            })
+            .collect::<Result<Vec<_>, tonic::Status>>()?;
+
+        // Extract OP_RETURN message if provided
+        let op_return_data = op_return_message
+            .and_then(|msg| msg.hex)
+            .map(|hex| hex.as_bytes().to_vec());
+
+        // Create and return transaction
+        let (psbt, txid) = self
+            .create_multisig_transaction(
+                &multisig_address,
+                &redeem_script,
+                parsed_destinations,
+                parsed_utxos,
+                fee_policy,
+                op_return_data,
+            )
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        Ok(tonic::Response::new(CreateMultisigTransactionResponse {
+            psbt: psbt.to_string(),
+            txid: Some(crate::proto::common::ReverseHex {
+                hex: Some(txid.to_string()),
+            }),
+        }))
     }
 }
 
