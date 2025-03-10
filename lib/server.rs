@@ -164,15 +164,30 @@ impl ValidatorService for Validator {
         &self,
         request: tonic::Request<GetBlockHeaderInfoRequest>,
     ) -> Result<tonic::Response<GetBlockHeaderInfoResponse>, tonic::Status> {
-        let GetBlockHeaderInfoRequest { block_hash } = request.into_inner();
+        let GetBlockHeaderInfoRequest {
+            block_hash,
+            max_ancestors,
+        } = request.into_inner();
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockHeaderInfoRequest>("block_hash"))?
             .decode_tonic::<GetBlockHeaderInfoRequest, _>("block_hash")?;
         let header_info = self
             .get_header_info(&block_hash)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
+        let ancestor_infos = if let Some(n_ancestors) =
+            max_ancestors.and_then(|n_ancestors| n_ancestors.checked_sub(1))
+        {
+            self.get_header_infos(&header_info.prev_block_hash, n_ancestors as usize)
+                .map_err(|err| tonic::Status::from_error(Box::new(err)))?
+                .into_iter()
+                .map(|header_info| header_info.into())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let resp = GetBlockHeaderInfoResponse {
             header_info: Some(header_info.into()),
+            ancestor_infos,
         };
         Ok(tonic::Response::new(resp))
     }

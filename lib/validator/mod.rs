@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender};
 use bip300301::jsonrpsee;
-use bitcoin::{self, Amount, BlockHash, OutPoint};
+use bitcoin::{self, hashes::Hash, Amount, BlockHash, OutPoint};
 use fallible_iterator::FallibleIterator;
 use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
@@ -69,6 +69,30 @@ pub struct GetHeaderInfoError(GetHeaderInfoErrorInner);
 impl<T> From<T> for GetHeaderInfoError
 where
     GetHeaderInfoErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum GetHeaderInfosErrorInner {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error(transparent)]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetHeaderInfosError(GetHeaderInfosErrorInner);
+
+impl<T> From<T> for GetHeaderInfosError
+where
+    GetHeaderInfosErrorInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -337,6 +361,35 @@ impl Validator {
     ) -> Result<HeaderInfo, GetHeaderInfoError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
+        Ok(res)
+    }
+
+    /// Get header infos for the specified block hash, and up to max_ancestors
+    /// ancestors.
+    /// Returns header infos newest-first.
+    pub fn get_header_infos(
+        &self,
+        block_hash: &BlockHash,
+        max_ancestors: usize,
+    ) -> Result<Vec<HeaderInfo>, GetHeaderInfosError> {
+        let rotxn = self.dbs.read_txn()?;
+        let mut ancestors = max_ancestors;
+        let mut res = Vec::new();
+        let header_info = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
+        let mut ancestor = header_info.prev_block_hash;
+        res.push(header_info);
+        while ancestors > 0 && ancestor != BlockHash::all_zeros() {
+            let Some(header_info) = self
+                .dbs
+                .block_hashes
+                .try_get_header_info(&rotxn, &ancestor)?
+            else {
+                break;
+            };
+            ancestor = header_info.prev_block_hash;
+            ancestors -= 1;
+            res.push(header_info);
+        }
         Ok(res)
     }
 
