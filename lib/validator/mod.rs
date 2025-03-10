@@ -2,10 +2,11 @@ use std::{collections::HashMap, path::Path};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender};
 use bip300301::jsonrpsee;
-use bitcoin::{self, Amount, BlockHash, OutPoint};
-use fallible_iterator::FallibleIterator;
+use bitcoin::{self, hashes::Hash, Amount, BlockHash, OutPoint};
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
+use nonempty::NonEmpty;
 use thiserror::Error;
 
 use crate::types::{
@@ -69,6 +70,30 @@ pub struct GetHeaderInfoError(GetHeaderInfoErrorInner);
 impl<T> From<T> for GetHeaderInfoError
 where
     GetHeaderInfoErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum GetHeaderInfosErrorInner {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error(transparent)]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetHeaderInfosError(GetHeaderInfosErrorInner);
+
+impl<T> From<T> for GetHeaderInfosError
+where
+    GetHeaderInfosErrorInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -340,6 +365,34 @@ impl Validator {
         Ok(res)
     }
 
+    /// Get header infos for the specified block hash, and up to max_ancestors
+    /// ancestors.
+    /// Returns header infos newest-first.
+    pub fn get_header_infos(
+        &self,
+        block_hash: &BlockHash,
+        max_ancestors: usize,
+    ) -> Result<NonEmpty<HeaderInfo>, GetHeaderInfosError> {
+        let rotxn = self.dbs.read_txn()?;
+        let mut ancestors = max_ancestors;
+        let header_info = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
+        let mut ancestor = header_info.prev_block_hash;
+        let mut res = NonEmpty::new(header_info);
+        while ancestors > 0 && ancestor != BlockHash::all_zeros() {
+            let Some(header_info) = self
+                .dbs
+                .block_hashes
+                .try_get_header_info(&rotxn, &ancestor)?
+            else {
+                break;
+            };
+            ancestor = header_info.prev_block_hash;
+            ancestors -= 1;
+            res.push(header_info);
+        }
+        Ok(res)
+    }
+
     // Lists known block heights and their corresponding header hashes in ascending order.
     pub fn list_headers(
         &self,
@@ -409,16 +462,36 @@ impl Validator {
         Ok(res)
     }
 
+    /// Get BMM commitments for the specified block hash, and up to
+    /// max_ancestors ancestors.
+    /// The returned vector will be empty if BMM commitments for the specified
+    /// block hash were not found.
+    /// Returns BMM commitments newest-first.
     pub fn try_get_bmm_commitments(
         &self,
         block_hash: &BlockHash,
-    ) -> Result<Option<BmmCommitments>, TryGetBmmCommitmentsError> {
+        max_ancestors: usize,
+    ) -> Result<Vec<BmmCommitments>, TryGetBmmCommitmentsError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .block_hashes
-            .bmm_commitments()
-            .try_get(&rotxn, block_hash)?;
+            .ancestor_headers(&rotxn, *block_hash)
+            .take(max_ancestors + 1)
+            .map(|(block_hash, _)| {
+                self.dbs
+                    .block_hashes
+                    .bmm_commitments()
+                    .try_get(&rotxn, &block_hash)
+            })
+            .take_while(|bmm_commitments| Ok(bmm_commitments.is_some()))
+            .flat_map(|bmm_commitments| {
+                Ok(bmm_commitments
+                    .into_iter()
+                    .map(Ok)
+                    .transpose_into_fallible())
+            })
+            .collect()?;
         Ok(res)
     }
 
