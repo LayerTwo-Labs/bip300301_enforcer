@@ -359,7 +359,7 @@ impl WalletInner {
             Either::Right(((), acquiring_read_lock)) => {
                 tracing::warn!(
                     "wallet: waiting over {} to acquire read lock",
-                    humantime::format_duration(Self::LOCK_WARN_DURATION)
+                    jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap(),
                 );
                 acquiring_read_lock.await
             }
@@ -384,7 +384,7 @@ impl WalletInner {
             Either::Right(((), acquiring_read_lock)) => {
                 tracing::warn!(
                     "waiting over {} to acquire read lock",
-                    humantime::format_duration(Self::LOCK_WARN_DURATION)
+                    jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap(),
                 );
                 acquiring_read_lock.await
             }
@@ -409,7 +409,7 @@ impl WalletInner {
             Either::Right(((), acquiring_write_lock)) => {
                 tracing::warn!(
                     "waiting over {} to acquire write lock",
-                    humantime::format_duration(Self::LOCK_WARN_DURATION)
+                    jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap()
                 );
                 acquiring_write_lock.await
             }
@@ -671,7 +671,7 @@ impl Task {
         use futures::future::{select, Either};
         const SYNC_INTERVAL: Duration = Duration::from_secs(15);
         tracing::debug!(
-            interval = %humantime::format_duration(SYNC_INTERVAL),
+            interval = %jiff::SignedDuration::try_from(SYNC_INTERVAL).unwrap(),
             "wallet sync task: starting"
         );
         // Wait for the start signal to be sent before starting the sync.
