@@ -633,8 +633,11 @@ pub(in crate::validator) fn connect_block(
             Err(err) => {
                 // Happens all the time. Would be nice to differentiate between "this isn't a BIP300 message"
                 // and "we failed real bad".
-                // TODO: format script as hex in error
-                tracing::trace!("Failed to parse coinbase script: {:?}", err);
+                tracing::trace!(
+                    script = hex::encode(output.script_pubkey.to_bytes()),
+                    "Failed to parse coinbase script: {:?}",
+                    err
+                );
                 continue;
             }
         };
@@ -720,7 +723,6 @@ pub(in crate::validator) fn connect_block(
         .put_block_info(rwtxn, &block_hash, &block_info)
         .map_err(error::ConnectBlock::PutBlockInfo)?;
     tracing::trace!("Stored block info");
-    // TODO: invalidate block
     let current_tip_cumulative_work: Option<Work> = 'work: {
         let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? else {
             break 'work None;
@@ -753,7 +755,6 @@ pub(in crate::validator) fn connect_block(
 
 // TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
 // operations.
-#[allow(unreachable_code, unused_variables)]
 pub(in crate::validator) fn disconnect_block(
     _rwtxn: &mut RwTxn,
     _dbs: &Dbs,
@@ -761,10 +762,9 @@ pub(in crate::validator) fn disconnect_block(
     block_hash: BlockHash,
 ) -> Result<(), error::DisconnectBlock> {
     // FIXME: implement
-    todo!();
     let event = Event::DisconnectBlock { block_hash };
     let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
-    Ok(())
+    todo!();
 }
 
 async fn sync_headers<MainClient>(
@@ -852,6 +852,9 @@ where
             .0;
         let mut rwtxn = dbs.write_txn()?;
         let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
+
+        // We should not call out to `invalidateblock` in case of failures here,
+        // as that is handled by the cusf-enforcer-mempool crate.
         // FIXME: handle disconnects
         let event = connect_block(&mut rwtxn, dbs, &block)?;
         tracing::debug!("connected block at height {height}: {missing_block}");

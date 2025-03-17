@@ -343,6 +343,9 @@ impl CusfEnforcer for Validator {
     where
         TxRef: Borrow<Transaction>,
     {
+        // A fatal error here isn't something that means we should
+        // call out to the `invalidateblock` RPC. It simply means
+        // the transaction will not be accepted into the mempool.
         let res = task::validate_tx(&self.dbs, tx)?;
         Ok(res)
     }
