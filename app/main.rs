@@ -219,7 +219,7 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
         }
     };
 
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
 
     // Set all services to have the "serving" status.
     // TODO: somehow expose the health reporter to the running services, and

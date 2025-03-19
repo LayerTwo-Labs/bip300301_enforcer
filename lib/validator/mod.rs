@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender as BroadcastSender};
 use bip300301::jsonrpsee;
-use bitcoin::{self, hashes::Hash, Amount, BlockHash, OutPoint};
+use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
@@ -34,28 +34,6 @@ pub enum InitError {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
-}
-
-#[derive(Debug, Error)]
-enum GetBlockInfoErrorInner {
-    #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
-    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct GetBlockInfoError(GetBlockInfoErrorInner);
-
-impl<T> From<T> for GetBlockInfoError
-where
-    GetBlockInfoErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -98,6 +76,54 @@ pub struct GetHeaderInfosError(GetHeaderInfosErrorInner);
 impl<T> From<T> for GetHeaderInfosError
 where
     GetHeaderInfosErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+enum GetBlockInfoErrorInner {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetBlockInfoError(GetBlockInfoErrorInner);
+
+impl<T> From<T> for GetBlockInfoError
+where
+    GetBlockInfoErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+enum GetBlockInfosErrorInner {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
+    #[error(transparent)]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error(transparent)]
+    TryGetBlockInfo(#[from] dbs::block_hash_dbs_error::TryGetBlockInfo),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GetBlockInfosError(GetBlockInfosErrorInner);
+
+impl<T> From<T> for GetBlockInfosError
+where
+    GetBlockInfosErrorInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -363,12 +389,6 @@ impl Validator {
             .into_diagnostic()
     }
 
-    pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, GetBlockInfoError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
-        Ok(res)
-    }
-
     pub fn get_header_info(
         &self,
         block_hash: &BlockHash,
@@ -385,23 +405,46 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<HeaderInfo>, GetHeaderInfosError> {
+    ) -> Result<NonEmpty<HeaderInfo>, GetHeaderInfoError> {
         let rotxn = self.dbs.read_txn()?;
-        let mut ancestors = max_ancestors;
-        let header_info = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
-        let mut ancestor = header_info.prev_block_hash;
-        let mut res = NonEmpty::new(header_info);
-        while ancestors > 0 && ancestor != BlockHash::all_zeros() {
-            let Some(header_info) = self
+        let res = self
+            .dbs
+            .block_hashes
+            .get_header_infos(&rotxn, block_hash, max_ancestors)?;
+        Ok(res)
+    }
+
+    pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, GetBlockInfoError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
+        Ok(res)
+    }
+
+    /// Get block infos for the specified block hash, and up to max_ancestors
+    /// ancestors.
+    /// Returns block infos newest-first.
+    pub fn get_block_infos(
+        &self,
+        block_hash: &BlockHash,
+        max_ancestors: usize,
+    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+        let rotxn = self.dbs.read_txn()?;
+        let header_infos =
+            self.dbs
+                .block_hashes
+                .get_header_infos(&rotxn, block_hash, max_ancestors)?;
+        let info = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
+        let mut res = NonEmpty::new((header_infos.head, info));
+        for header_info in header_infos.tail {
+            if let Some(info) = self
                 .dbs
                 .block_hashes
-                .try_get_header_info(&rotxn, &ancestor)?
-            else {
+                .try_get_block_info(&rotxn, &header_info.block_hash)?
+            {
+                res.push((header_info, info));
+            } else {
                 break;
-            };
-            ancestor = header_info.prev_block_hash;
-            ancestors -= 1;
-            res.push(header_info);
+            }
         }
         Ok(res)
     }
