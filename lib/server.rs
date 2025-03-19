@@ -31,8 +31,9 @@ use crate::{
             Secp256k1VerifyRequest, Secp256k1VerifyResponse,
         },
         mainchain::{
-            create_sidechain_proposal_response, get_bmm_h_star_commitment_response,
-            get_ctip_response::Ctip, get_sidechain_proposals_response::SidechainProposal,
+            create_sidechain_proposal_response, get_block_info_response,
+            get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
+            get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
@@ -171,22 +172,15 @@ impl ValidatorService for Validator {
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockHeaderInfoRequest>("block_hash"))?
             .decode_tonic::<GetBlockHeaderInfoRequest, _>("block_hash")?;
-        let header_info = self
-            .get_header_info(&block_hash)
-            .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
-        let ancestor_infos = if let Some(n_ancestors) =
-            max_ancestors.and_then(|n_ancestors| n_ancestors.checked_sub(1))
-        {
-            self.get_header_infos(&header_info.prev_block_hash, n_ancestors as usize)
-                .map_err(|err| tonic::Status::from_error(Box::new(err)))?
-                .into_iter()
-                .map(|header_info| header_info.into())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let nonempty::NonEmpty {
+            head: header_info,
+            tail: ancestor_infos,
+        } = self
+            .get_header_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
+            .map_err(|err| tonic::Status::from_error(Box::new(err)))?
+            .map(|header_info| header_info.into());
         let resp = GetBlockHeaderInfoResponse {
-            header_info: Some(header_info.into()),
+            header_info: Some(header_info),
             ancestor_infos,
         };
         Ok(tonic::Response::new(resp))
@@ -199,6 +193,7 @@ impl ValidatorService for Validator {
         let GetBlockInfoRequest {
             block_hash,
             sidechain_id,
+            max_ancestors,
         } = request.into_inner();
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockInfoRequest>("block_hash"))?
@@ -215,16 +210,19 @@ impl ValidatorService for Validator {
                 )
             })?
         };
-
-        let header_info = self
-            .get_header_info(&block_hash)
-            .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
-        let block_info = self
-            .get_block_info(&block_hash)
-            .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
+        let nonempty::NonEmpty {
+            head: info,
+            tail: ancestor_infos,
+        } = self
+            .get_block_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
+            .map_err(|err| tonic::Status::from_error(Box::new(err)))?
+            .map(|(header_info, block_info)| get_block_info_response::Info {
+                header_info: Some(header_info.into()),
+                block_info: Some(block_info.as_proto(sidechain_id)),
+            });
         let resp = GetBlockInfoResponse {
-            header_info: Some(header_info.into()),
-            block_info: Some(block_info.as_proto(sidechain_id)),
+            info: Some(info),
+            ancestor_infos,
         };
         Ok(tonic::Response::new(resp))
     }

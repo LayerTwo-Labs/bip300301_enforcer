@@ -1,6 +1,7 @@
 use bitcoin::{block::Header, hashes::Hash as _, BlockHash, Txid, Work};
 use fallible_iterator::FallibleIterator;
 use heed::{types::SerdeBincode, RoTxn};
+use nonempty::NonEmpty;
 
 use crate::{
     types::{BlockEvent, BlockInfo, BmmCommitments, HeaderInfo, TwoWayPegData},
@@ -320,6 +321,30 @@ impl BlockHashDbs {
             }
             .into()
         })
+    }
+
+    /// Get header infos for the specified block hash, and up to max_ancestors
+    /// ancestors.
+    /// Returns header infos newest-first.
+    pub fn get_header_infos(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: &BlockHash,
+        max_ancestors: usize,
+    ) -> Result<NonEmpty<HeaderInfo>, error::GetHeaderInfo> {
+        let header_info = self.get_header_info(rotxn, block_hash)?;
+        let mut ancestors = max_ancestors;
+        let mut ancestor = header_info.prev_block_hash;
+        let mut res = NonEmpty::new(header_info);
+        while ancestors > 0 && ancestor != BlockHash::all_zeros() {
+            let Some(header_info) = self.try_get_header_info(rotxn, &ancestor)? else {
+                break;
+            };
+            ancestor = header_info.prev_block_hash;
+            ancestors -= 1;
+            res.push(header_info);
+        }
+        Ok(res)
     }
 
     pub fn try_get_block_info(
