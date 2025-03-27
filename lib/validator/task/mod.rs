@@ -19,10 +19,10 @@ use crate::{
         M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept, M8BmmRequest,
     },
     types::{
-        BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
-        SidechainNumber, SidechainProposal, SidechainProposalId, SidechainProposalStatus,
-        WithdrawalBundleEvent, WithdrawalBundleEventKind, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD,
-        WITHDRAWAL_BUNDLE_MAX_AGE,
+        BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, HeaderSyncProgress,
+        M6id, Sidechain, SidechainNumber, SidechainProposal, SidechainProposalId,
+        SidechainProposalStatus, WithdrawalBundleEvent, WithdrawalBundleEventKind,
+        WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
 };
@@ -771,11 +771,23 @@ async fn sync_headers<MainClient>(
     dbs: &Dbs,
     main_client: &MainClient,
     main_tip: BlockHash,
+    header_sync_tx: &Sender<HeaderSyncProgress>,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
     let mut block_hash = main_tip;
+    
+    // Get target height from main tip
+    let target_height = main_client
+        .getblockheader(main_tip)
+        .map_err(|err| error::Sync::JsonRpc {
+            method: "getblockheader".to_owned(),
+            source: err,
+        })
+        .await?
+        .height as u64;
+
     while let Some((latest_missing_header, latest_missing_header_height)) =
         tokio::task::block_in_place(|| {
             let rotxn = dbs.read_txn()?;
@@ -795,6 +807,20 @@ where
             }
         })?
     {
+        let current_height = latest_missing_header_height.unwrap_or(0) as u64;
+        
+        // Emit progress update
+        let progress = HeaderSyncProgress {
+            current_height,
+            target_height,
+            progress_percentage: (current_height as f64 / target_height as f64) * 100.0,
+            timestamp: std::time::SystemTime::now(),
+        };
+        
+        if let Err(e) = header_sync_tx.try_broadcast(progress) {
+            tracing::warn!("Failed to broadcast header sync progress: {}", e);
+        }
+
         if let Some(latest_missing_header_height) = latest_missing_header_height {
             tracing::trace!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
         } else {
@@ -866,13 +892,14 @@ where
 pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
+    header_sync_tx: &Sender<HeaderSyncProgress>,
     main_client: &MainClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
-    let () = sync_headers(dbs, main_client, main_tip).await?;
+    let () = sync_headers(dbs, main_client, main_tip, header_sync_tx).await?;
     let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
     Ok(())
 }

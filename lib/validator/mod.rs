@@ -10,7 +10,7 @@ use nonempty::NonEmpty;
 use thiserror::Error;
 
 use crate::types::{
-    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
+    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, HeaderSyncProgress, Sidechain, SidechainNumber,
     SidechainProposalId, TreasuryUtxo, TwoWayPegData,
 };
 
@@ -179,6 +179,14 @@ pub enum EventsStreamError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum HeaderSyncStreamError {
+    #[error("Header sync stream closed due to overflow")]
+    Overflow,
+    #[error(transparent)]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetSidechainsError {
     #[error(transparent)]
     DbIter(#[from] db_error::Iter),
@@ -191,6 +199,8 @@ pub struct Validator {
     dbs: Dbs,
     events_rx: InactiveReceiver<Event>,
     events_tx: Sender<Event>,
+    header_sync_rx: InactiveReceiver<HeaderSyncProgress>,
+    header_sync_tx: Sender<HeaderSyncProgress>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
 }
@@ -201,15 +211,25 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
-        const EVENTS_CHANNEL_CAPACITY: usize = 256;
-        let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
+        const CHANNEL_CAPACITY: usize = 256;
+        
+        // Set up events channel
+        let (events_tx, mut events_rx) = broadcast(CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
+        
+        // Set up header sync channel
+        let (header_sync_tx, mut header_sync_rx) = broadcast(CHANNEL_CAPACITY);
+        header_sync_rx.set_await_active(false);
+        header_sync_rx.set_overflow(true);
+        
         let dbs = Dbs::new(data_dir, network)?;
         Ok(Self {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
+            header_sync_rx: header_sync_rx.deactivate(),
+            header_sync_tx,
             mainchain_client,
             network,
         })
@@ -225,6 +245,17 @@ impl Validator {
                 Ok(event) => Ok(Some((event, receiver))),
                 Err(async_broadcast::RecvError::Closed) => Ok(None),
                 Err(async_broadcast::RecvError::Overflowed(_)) => Err(EventsStreamError::Overflow),
+            }
+        })
+        .fuse()
+    }
+
+    pub fn subscribe_header_sync(&self) -> impl FusedStream<Item = Result<HeaderSyncProgress, HeaderSyncStreamError>> {
+        futures::stream::try_unfold(self.header_sync_rx.activate_cloned(), |mut receiver| async {
+            match receiver.recv_direct().await {
+                Ok(progress) => Ok(Some((progress, receiver))),
+                Err(async_broadcast::RecvError::Closed) => Ok(None),
+                Err(async_broadcast::RecvError::Overflowed(_)) => Err(HeaderSyncStreamError::Overflow),
             }
         })
         .fuse()

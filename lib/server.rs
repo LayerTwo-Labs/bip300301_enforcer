@@ -50,10 +50,11 @@ use crate::{
             GetInfoRequest, GetInfoResponse, GetSidechainProposalsRequest,
             GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
             GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
-            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
-            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
-            ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, UnlockWalletRequest,
+            HeaderSyncProgress, ListSidechainDepositTransactionsRequest,
+            ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
+            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
+            Network, SendTransactionRequest, SendTransactionResponse, SubscribeEventsRequest,
+            SubscribeEventsResponse, SubscribeHeaderSyncRequest, UnlockWalletRequest,
             UnlockWalletResponse, WalletTransaction,
         },
         IntoStatus,
@@ -160,6 +161,22 @@ impl IntoStatus for miette::Report {
 
 #[tonic::async_trait]
 impl ValidatorService for Validator {
+    type SubscribeHeaderSyncStream = BoxStream<'static, Result<HeaderSyncProgress, tonic::Status>>;
+
+    async fn subscribe_header_sync(
+        &self,
+        _request: tonic::Request<SubscribeHeaderSyncRequest>,
+    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncStream>, tonic::Status> {
+        let stream = self
+            .subscribe_header_sync()
+            .map(|res| match res {
+                Ok(progress) => Ok(progress.into()),
+                Err(err) => Err(tonic::Status::internal(err.to_string())),
+            })
+            .boxed();
+        Ok(tonic::Response::new(stream))
+    }
+
     async fn get_block_header_info(
         &self,
         request: tonic::Request<GetBlockHeaderInfoRequest>,

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::TryFromIntError, sync::Arc};
+use std::{borrow::Cow, num::TryFromIntError, sync::Arc, time::SystemTime};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
@@ -18,6 +18,14 @@ use nom::Finish;
 use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+#[derive(Clone, Debug)]
+pub struct HeaderSyncProgress {
+    pub current_height: u64,
+    pub target_height: u64,
+    pub progress_percentage: f64,
+    pub timestamp: SystemTime,
+}
 
 pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
 pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5

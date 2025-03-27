@@ -251,6 +251,20 @@ pub mod mainchain {
         self as server, ValidatorService as Service, ValidatorServiceServer as Server,
     };
 
+    impl From<crate::types::HeaderSyncProgress> for HeaderSyncProgress {
+        fn from(progress: crate::types::HeaderSyncProgress) -> Self {
+            Self {
+                current_height: progress.current_height,
+                target_height: progress.target_height,
+                progress_percentage: progress.progress_percentage,
+                timestamp: Some(prost_types::Timestamp {
+                    seconds: progress.timestamp.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64,
+                    nanos: 0,
+                }),
+            }
+        }
+    }
+
     impl From<&bitcoin::OutPoint> for OutPoint {
         fn from(outpoint: &bitcoin::OutPoint) -> Self {
             Self {
