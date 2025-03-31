@@ -307,9 +307,15 @@ impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
     async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
-        task::sync_to_tip(&self.dbs, &self.events_tx, &self.mainchain_client, tip)
-            .map_err(SyncError)
-            .await
+        task::sync_to_tip(
+            &self.dbs,
+            &self.events_tx,
+            &self.header_sync,
+            &self.mainchain_client,
+            tip,
+        )
+        .map_err(SyncError)
+        .await
     }
 
     type ConnectBlockError = ConnectBlockError;

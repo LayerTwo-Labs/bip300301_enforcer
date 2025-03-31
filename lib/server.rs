@@ -53,8 +53,9 @@ use crate::{
             ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
             ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
             ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, UnlockWalletRequest,
-            UnlockWalletResponse, WalletTransaction,
+            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncRequest,
+            SubscribeHeaderSyncResponse, UnlockWalletRequest, UnlockWalletResponse,
+            WalletTransaction,
         },
         IntoStatus,
     },
@@ -160,6 +161,39 @@ impl IntoStatus for miette::Report {
 
 #[tonic::async_trait]
 impl ValidatorService for Validator {
+    type SubscribeHeaderSyncStream =
+        BoxStream<'static, Result<SubscribeHeaderSyncResponse, tonic::Status>>;
+
+    async fn subscribe_header_sync(
+        &self,
+        _request: tonic::Request<SubscribeHeaderSyncRequest>,
+    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncStream>, tonic::Status> {
+        let rx = self.subscribe_header_sync();
+        let initial = rx.borrow().clone();
+        let stream = futures::stream::once(async { Ok(initial.into()) })
+            .chain(futures::stream::try_unfold(rx, |mut rx| async move {
+                match rx.changed().await {
+                    Ok(()) => {
+                        let progress = rx.borrow().clone();
+                        if let (Some(current), Some(target)) =
+                            (progress.current_height, progress.target_height)
+                        {
+                            tracing::debug!(
+                                "Sending header sync progress: {}/{} ({:.1}%)",
+                                current,
+                                target,
+                                (current as f64 / target as f64) * 100.0
+                            );
+                        }
+                        Ok(Some((progress.into(), rx)))
+                    }
+                    Err(_) => Ok(None),
+                }
+            }))
+            .boxed();
+        Ok(tonic::Response::new(stream))
+    }
+
     async fn get_block_header_info(
         &self,
         request: tonic::Request<GetBlockHeaderInfoRequest>,

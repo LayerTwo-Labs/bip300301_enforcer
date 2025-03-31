@@ -251,6 +251,15 @@ pub mod mainchain {
         self as server, ValidatorService as Service, ValidatorServiceServer as Server,
     };
 
+    impl From<crate::types::SubscribeHeaderSyncResponse> for SubscribeHeaderSyncResponse {
+        fn from(progress: crate::types::SubscribeHeaderSyncResponse) -> Self {
+            Self {
+                current_height: progress.current_height,
+                target_height: progress.target_height,
+            }
+        }
+    }
+
     impl From<&bitcoin::OutPoint> for OutPoint {
         fn from(outpoint: &bitcoin::OutPoint) -> Self {
             Self {

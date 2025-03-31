@@ -226,8 +226,14 @@ pub(in crate::validator) enum ConnectBlock {
 #[derive(Debug, Error)]
 pub(in crate::validator) enum DisconnectBlock {}
 
+#[derive(Debug, Error)]
+#[error("Header sync already in progress")]
+pub struct HeaderSyncInProgressError;
+
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
+    #[error("Header sync already in progress")]
+    HeaderSyncInProgress(#[from] HeaderSyncInProgressError),
     #[error(transparent)]
     #[fatal]
     CommitWriteTxn(#[from] dbs::CommitWriteTxnError),

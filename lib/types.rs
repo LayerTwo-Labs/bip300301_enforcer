@@ -19,6 +19,12 @@ use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[derive(Clone, Debug)]
+pub struct SubscribeHeaderSyncResponse {
+    pub current_height: Option<u32>,
+    pub target_height: Option<u32>,
+}
+
 pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
 pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
 

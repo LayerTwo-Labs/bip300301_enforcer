@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::Path};
 
-use async_broadcast::{broadcast, InactiveReceiver, Sender};
+use async_broadcast::{broadcast, InactiveReceiver, Sender as BroadcastSender};
 use bip300301::jsonrpsee;
 use bitcoin::{self, hashes::Hash, Amount, BlockHash, OutPoint};
 use fallible_iterator::{FallibleIterator, IteratorExt};
@@ -8,10 +8,11 @@ use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use thiserror::Error;
+use tokio::sync::watch::{self, Sender as WatchSender};
 
 use crate::types::{
     BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
-    SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+    SidechainProposalId, SubscribeHeaderSyncResponse, TreasuryUtxo, TwoWayPegData,
 };
 
 pub mod cusf_enforcer;
@@ -179,6 +180,14 @@ pub enum EventsStreamError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum HeaderSyncStreamError {
+    #[error("Header sync stream closed due to overflow")]
+    Overflow,
+    #[error(transparent)]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetSidechainsError {
     #[error(transparent)]
     DbIter(#[from] db_error::Iter),
@@ -190,7 +199,11 @@ pub enum GetSidechainsError {
 pub struct Validator {
     dbs: Dbs,
     events_rx: InactiveReceiver<Event>,
-    events_tx: Sender<Event>,
+    events_tx: BroadcastSender<Event>,
+    header_sync: Option<(
+        WatchSender<SubscribeHeaderSyncResponse>,
+        watch::Receiver<SubscribeHeaderSyncResponse>,
+    )>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
 }
@@ -201,15 +214,25 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
-        const EVENTS_CHANNEL_CAPACITY: usize = 256;
-        let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
+        const CHANNEL_CAPACITY: usize = 256;
+
+        // Set up events channel
+        let (events_tx, mut events_rx) = broadcast(CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
+
+        // Initialize header sync channel
+        let (header_sync_tx, header_sync_rx) = watch::channel(SubscribeHeaderSyncResponse {
+            current_height: Some(0),
+            target_height: Some(0),
+        });
+
         let dbs = Dbs::new(data_dir, network)?;
         Ok(Self {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
+            header_sync: Some((header_sync_tx, header_sync_rx)),
             mainchain_client,
             network,
         })
@@ -228,6 +251,20 @@ impl Validator {
             }
         })
         .fuse()
+    }
+
+    pub fn subscribe_header_sync(&self) -> watch::Receiver<SubscribeHeaderSyncResponse> {
+        match &self.header_sync {
+            Some((_, rx)) => rx.clone(),
+            None => {
+                // Return an empty receiver if no sync in progress
+                let (_, rx) = watch::channel(SubscribeHeaderSyncResponse {
+                    current_height: Some(0),
+                    target_height: Some(0),
+                });
+                rx
+            }
+        }
     }
 
     /// Get (possibly unactivated) sidechains
