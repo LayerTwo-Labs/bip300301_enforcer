@@ -209,10 +209,10 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
-        const CHANNEL_CAPACITY: usize = 256;
+        const EVENTS_CHANNEL_CAPACITY: usize = 256;
 
         // Set up events channel
-        let (events_tx, mut events_rx) = broadcast(CHANNEL_CAPACITY);
+        let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
 
