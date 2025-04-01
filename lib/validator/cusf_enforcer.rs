@@ -310,7 +310,7 @@ impl CusfEnforcer for Validator {
         task::sync_to_tip(
             &self.dbs,
             &self.events_tx,
-            &self.header_sync,
+            &self.header_sync_progress_channel,
             &self.mainchain_client,
             tip,
         )

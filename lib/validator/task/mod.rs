@@ -774,7 +774,7 @@ async fn sync_headers<MainClient>(
     dbs: &Dbs,
     main_client: &MainClient,
     main_tip: BlockHash,
-    header_sync_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
+    progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
@@ -797,7 +797,7 @@ where
         target_height: target_height as u32,
     };
 
-    if let Err(e) = header_sync_tx.send(progress) {
+    if let Err(e) = progress_tx.send(progress) {
         tracing::warn!("Failed to send initial header sync progress: {}", e);
     }
 
@@ -829,7 +829,7 @@ where
         };
 
         // Send progress through watch channel
-        if let Err(e) = header_sync_tx.send(progress.clone()) {
+        if let Err(e) = progress_tx.send(progress.clone()) {
             tracing::warn!("Failed to send header sync progress: {}", e);
         } else {
             // Only log if successfully sent through channel
@@ -870,7 +870,7 @@ async fn sync_blocks<MainClient>(
     event_tx: &Sender<Event>,
     main_client: &MainClient,
     main_tip: BlockHash,
-    _header_sync_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>, // Keep param but don't use it
+    _progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>, // Keep param but don't use it
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
@@ -914,7 +914,7 @@ where
 pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-    header_sync: &Option<(
+    header_sync_progress_channel: &Option<(
         tokio::sync::watch::Sender<HeaderSyncProgress>,
         tokio::sync::watch::Receiver<HeaderSyncProgress>,
     )>,
@@ -924,7 +924,7 @@ pub(in crate::validator) async fn sync_to_tip<MainClient>(
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
-    let Some((tx, _)) = header_sync else {
+    let Some((tx, _)) = header_sync_progress_channel else {
         return Err(error::Sync::HeaderSyncInProgress(HeaderSyncInProgressError));
     };
 

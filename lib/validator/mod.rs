@@ -183,14 +183,6 @@ pub enum EventsStreamError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum HeaderSyncStreamError {
-    #[error("Header sync stream closed due to overflow")]
-    Overflow,
-    #[error(transparent)]
-    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
-}
-
-#[derive(Debug, Diagnostic, Error)]
 pub enum GetSidechainsError {
     #[error(transparent)]
     DbIter(#[from] db_error::Iter),
@@ -203,7 +195,7 @@ pub struct Validator {
     dbs: Dbs,
     events_rx: InactiveReceiver<Event>,
     events_tx: BroadcastSender<Event>,
-    header_sync: Option<(
+    header_sync_progress_channel: Option<(
         WatchSender<HeaderSyncProgress>,
         watch::Receiver<HeaderSyncProgress>,
     )>,
@@ -225,7 +217,7 @@ impl Validator {
         events_rx.set_overflow(true);
 
         // Initialize header sync channel
-        let (header_sync_tx, header_sync_rx) = watch::channel(HeaderSyncProgress {
+        let (progress_tx, progress_rx) = watch::channel(HeaderSyncProgress {
             current_height: 0,
             target_height: 0,
         });
@@ -235,7 +227,7 @@ impl Validator {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
-            header_sync: Some((header_sync_tx, header_sync_rx)),
+            header_sync_progress_channel: Some((progress_tx, progress_rx)),
             mainchain_client,
             network,
         })
@@ -256,8 +248,8 @@ impl Validator {
         .fuse()
     }
 
-    pub fn subscribe_header_sync(&self) -> watch::Receiver<HeaderSyncProgress> {
-        match &self.header_sync {
+    pub fn subscribe_header_sync_progress(&self) -> watch::Receiver<HeaderSyncProgress> {
+        match &self.header_sync_progress_channel {
             Some((_, rx)) => rx.clone(),
             None => {
                 // Return an empty receiver if no sync in progress

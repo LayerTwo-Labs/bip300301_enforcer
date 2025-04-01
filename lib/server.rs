@@ -161,14 +161,14 @@ impl IntoStatus for miette::Report {
 
 #[tonic::async_trait]
 impl ValidatorService for Validator {
-    type SubscribeHeaderSyncStream =
+    type SubscribeHeaderSyncProgressStream =
         BoxStream<'static, Result<SubscribeHeaderSyncResponse, tonic::Status>>;
 
-    async fn subscribe_header_sync(
+    async fn subscribe_header_sync_progress(
         &self,
         _request: tonic::Request<SubscribeHeaderSyncRequest>,
-    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncStream>, tonic::Status> {
-        let rx = self.subscribe_header_sync();
+    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncProgressStream>, tonic::Status> {
+        let rx = self.subscribe_header_sync_progress();
         let initial = rx.borrow().clone();
         let stream = futures::stream::once(async { Ok(initial.into()) })
             .chain(futures::stream::try_unfold(rx, |mut rx| async move {
