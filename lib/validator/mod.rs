@@ -217,7 +217,7 @@ impl Validator {
         events_rx.set_overflow(true);
 
         // Initialize header sync channel
-        let (progress_tx, progress_rx) = watch::channel(HeaderSyncProgress {
+        let (header_sync_progress_tx, header_sync_progress_rx) = watch::channel(HeaderSyncProgress {
             current_height: 0,
             target_height: 0,
         });
@@ -227,7 +227,7 @@ impl Validator {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
-            header_sync_progress_channel: Some((progress_tx, progress_rx)),
+            header_sync_progress_channel: Some((header_sync_progress_tx, header_sync_progress_rx)),
             mainchain_client,
             network,
         })
