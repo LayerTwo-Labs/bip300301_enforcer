@@ -175,16 +175,6 @@ impl ValidatorService for Validator {
                 match rx.changed().await {
                     Ok(()) => {
                         let progress = rx.borrow().clone();
-                        if let (Some(current), Some(target)) =
-                            (progress.current_height, progress.target_height)
-                        {
-                            tracing::debug!(
-                                "Sending header sync progress: {}/{} ({:.1}%)",
-                                current,
-                                target,
-                                (current as f64 / target as f64) * 100.0
-                            );
-                        }
                         Ok(Some((progress.into(), rx)))
                     }
                     Err(_) => Ok(None),

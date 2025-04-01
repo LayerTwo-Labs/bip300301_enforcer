@@ -10,9 +10,12 @@ use nonempty::NonEmpty;
 use thiserror::Error;
 use tokio::sync::watch::{self, Sender as WatchSender};
 
-use crate::types::{
-    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
-    SidechainProposalId, SubscribeHeaderSyncResponse, TreasuryUtxo, TwoWayPegData,
+use crate::{
+    proto::mainchain::HeaderSyncProgress,
+    types::{
+        BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
+        SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+    },
 };
 
 pub mod cusf_enforcer;
@@ -201,8 +204,8 @@ pub struct Validator {
     events_rx: InactiveReceiver<Event>,
     events_tx: BroadcastSender<Event>,
     header_sync: Option<(
-        WatchSender<SubscribeHeaderSyncResponse>,
-        watch::Receiver<SubscribeHeaderSyncResponse>,
+        WatchSender<HeaderSyncProgress>,
+        watch::Receiver<HeaderSyncProgress>,
     )>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
@@ -222,9 +225,9 @@ impl Validator {
         events_rx.set_overflow(true);
 
         // Initialize header sync channel
-        let (header_sync_tx, header_sync_rx) = watch::channel(SubscribeHeaderSyncResponse {
-            current_height: Some(0),
-            target_height: Some(0),
+        let (header_sync_tx, header_sync_rx) = watch::channel(HeaderSyncProgress {
+            current_height: 0,
+            target_height: 0,
         });
 
         let dbs = Dbs::new(data_dir, network)?;
@@ -253,14 +256,14 @@ impl Validator {
         .fuse()
     }
 
-    pub fn subscribe_header_sync(&self) -> watch::Receiver<SubscribeHeaderSyncResponse> {
+    pub fn subscribe_header_sync(&self) -> watch::Receiver<HeaderSyncProgress> {
         match &self.header_sync {
             Some((_, rx)) => rx.clone(),
             None => {
                 // Return an empty receiver if no sync in progress
-                let (_, rx) = watch::channel(SubscribeHeaderSyncResponse {
-                    current_height: Some(0),
-                    target_height: Some(0),
+                let (_, rx) = watch::channel(HeaderSyncProgress {
+                    current_height: 0,
+                    target_height: 0,
                 });
                 rx
             }

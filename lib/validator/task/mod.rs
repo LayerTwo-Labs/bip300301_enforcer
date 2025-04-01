@@ -18,11 +18,12 @@ use crate::{
         compute_m6id, parse_op_drivechain, CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain,
         M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept, M8BmmRequest,
     },
+    proto::mainchain::HeaderSyncProgress,
     types::{
         BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
         SidechainNumber, SidechainProposal, SidechainProposalId, SidechainProposalStatus,
-        SubscribeHeaderSyncResponse, WithdrawalBundleEvent, WithdrawalBundleEventKind,
-        WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
+        WithdrawalBundleEvent, WithdrawalBundleEventKind, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD,
+        WITHDRAWAL_BUNDLE_MAX_AGE,
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
 };
@@ -773,7 +774,7 @@ async fn sync_headers<MainClient>(
     dbs: &Dbs,
     main_client: &MainClient,
     main_tip: BlockHash,
-    header_sync_tx: &tokio::sync::watch::Sender<SubscribeHeaderSyncResponse>,
+    header_sync_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
@@ -791,9 +792,9 @@ where
         .height as u64;
 
     // Send initial progress
-    let progress = SubscribeHeaderSyncResponse {
-        current_height: Some(0),
-        target_height: Some(target_height as u32),
+    let progress = HeaderSyncProgress {
+        current_height: 0,
+        target_height: target_height as u32,
     };
 
     if let Err(e) = header_sync_tx.send(progress) {
@@ -822,9 +823,9 @@ where
         let current_height = latest_missing_header_height.unwrap_or(0) as u64;
 
         // Create progress update
-        let progress = SubscribeHeaderSyncResponse {
-            current_height: Some(current_height as u32),
-            target_height: Some(target_height as u32),
+        let progress = HeaderSyncProgress {
+            current_height: current_height as u32,
+            target_height: target_height as u32,
         };
 
         // Send progress through watch channel
@@ -869,7 +870,7 @@ async fn sync_blocks<MainClient>(
     event_tx: &Sender<Event>,
     main_client: &MainClient,
     main_tip: BlockHash,
-    _header_sync_tx: &tokio::sync::watch::Sender<SubscribeHeaderSyncResponse>, // Keep param but don't use it
+    _header_sync_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>, // Keep param but don't use it
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
@@ -914,8 +915,8 @@ pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     header_sync: &Option<(
-        tokio::sync::watch::Sender<SubscribeHeaderSyncResponse>,
-        tokio::sync::watch::Receiver<SubscribeHeaderSyncResponse>,
+        tokio::sync::watch::Sender<HeaderSyncProgress>,
+        tokio::sync::watch::Receiver<HeaderSyncProgress>,
     )>,
     main_client: &MainClient,
     main_tip: BlockHash,

@@ -251,8 +251,23 @@ pub mod mainchain {
         self as server, ValidatorService as Service, ValidatorServiceServer as Server,
     };
 
-    impl From<crate::types::SubscribeHeaderSyncResponse> for SubscribeHeaderSyncResponse {
-        fn from(progress: crate::types::SubscribeHeaderSyncResponse) -> Self {
+    #[derive(Clone, Debug)]
+    pub struct HeaderSyncProgress {
+        pub current_height: u32,
+        pub target_height: u32,
+    }
+
+    impl From<HeaderSyncProgress> for SubscribeHeaderSyncResponse {
+        fn from(progress: HeaderSyncProgress) -> Self {
+            Self {
+                current_height: progress.current_height,
+                target_height: progress.target_height,
+            }
+        }
+    }
+
+    impl From<&HeaderSyncProgress> for SubscribeHeaderSyncResponse {
+        fn from(progress: &HeaderSyncProgress) -> Self {
             Self {
                 current_height: progress.current_height,
                 target_height: progress.target_height,
