@@ -42,6 +42,12 @@ impl CommandExt for tokio::process::Command {
                     Ok(err_msgs) => err_msgs,
                     Err(err) => hex::encode(err.into_bytes()),
                 };
+
+                // Check for some known error modes in stderr output
+                if stderr.contains("WARNING submitblock returned bad-diffbits") {
+                    let err_msg = "block rejected: bad-diffbits";
+                    return Err(CommandError::Stderr(err_msg.to_string().into_bytes()));
+                }
                 tracing::warn!("Command ran successfully, but stderr was not empty: `{stderr}`")
             }
             Ok(output.stdout)
