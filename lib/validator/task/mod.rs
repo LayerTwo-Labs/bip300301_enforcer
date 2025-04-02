@@ -768,8 +768,6 @@ pub(in crate::validator) fn disconnect_block(
     Ok(())
 }
 
-use crate::validator::task::error::HeaderSyncInProgressError;
-
 async fn sync_headers<MainClient>(
     dbs: &Dbs,
     main_client: &MainClient,
@@ -925,7 +923,7 @@ where
     MainClient: bip300301::client::MainClient + Sync,
 {
     let Some((tx, _)) = header_sync_progress_channel else {
-        return Err(error::Sync::HeaderSyncInProgress(HeaderSyncInProgressError));
+        return Err(error::Sync::HeaderSyncInProgress);
     };
 
     // Do sync work
