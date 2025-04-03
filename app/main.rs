@@ -519,7 +519,10 @@ async fn main() -> Result<()> {
 
         let payload = match info.payload().downcast_ref::<&str>() {
             Some(s) => s.to_string(),
-            None => format!("{:#?}", info.payload()).to_string(),
+            None => match info.payload().downcast_ref::<String>() {
+                Some(s) => s.clone(),
+                None => format!("{:#?}", info.payload()).to_string(),
+            },
         };
         tracing::error!(location, "Panicked during execution: `{payload}`");
         default_hook(info); // Panics are bad. re-throw!
