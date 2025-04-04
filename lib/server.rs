@@ -53,8 +53,8 @@ use crate::{
             ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
             ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
             ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncRequest,
-            SubscribeHeaderSyncResponse, UnlockWalletRequest, UnlockWalletResponse,
+            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncProgressRequest,
+            SubscribeHeaderSyncProgressResponse, UnlockWalletRequest, UnlockWalletResponse,
             WalletTransaction,
         },
         IntoStatus,
@@ -161,29 +161,6 @@ impl IntoStatus for miette::Report {
 
 #[tonic::async_trait]
 impl ValidatorService for Validator {
-    type SubscribeHeaderSyncProgressStream =
-        BoxStream<'static, Result<SubscribeHeaderSyncResponse, tonic::Status>>;
-
-    async fn subscribe_header_sync_progress(
-        &self,
-        _request: tonic::Request<SubscribeHeaderSyncRequest>,
-    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncProgressStream>, tonic::Status> {
-        let rx = self.subscribe_header_sync_progress();
-        let initial = rx.borrow().clone();
-        let stream = futures::stream::once(async { Ok(initial.into()) })
-            .chain(futures::stream::try_unfold(rx, |mut rx| async move {
-                match rx.changed().await {
-                    Ok(()) => {
-                        let progress = rx.borrow().clone();
-                        Ok(Some((progress.into(), rx)))
-                    }
-                    Err(_) => Ok(None),
-                }
-            }))
-            .boxed();
-        Ok(tonic::Response::new(stream))
-    }
-
     async fn get_block_header_info(
         &self,
         request: tonic::Request<GetBlockHeaderInfoRequest>,
@@ -610,6 +587,23 @@ impl ValidatorService for Validator {
                 }),
                 Err(err) => Err(err.into_status()),
             })
+            .boxed();
+        Ok(tonic::Response::new(stream))
+    }
+
+    type SubscribeHeaderSyncProgressStream =
+        BoxStream<'static, Result<SubscribeHeaderSyncProgressResponse, tonic::Status>>;
+
+    async fn subscribe_header_sync_progress(
+        &self,
+        request: tonic::Request<SubscribeHeaderSyncProgressRequest>,
+    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncProgressStream>, tonic::Status> {
+        let SubscribeHeaderSyncProgressRequest {} = request.into_inner();
+        let Some(rx) = self.subscribe_header_sync_progress() else {
+            return Err(tonic::Status::unavailable("No header sync in progress"));
+        };
+        let stream = tokio_stream::wrappers::WatchStream::new(rx.clone())
+            .map(|progress| Ok(progress.into()))
             .boxed();
         Ok(tonic::Response::new(stream))
     }

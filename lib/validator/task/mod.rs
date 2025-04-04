@@ -779,26 +779,6 @@ where
 {
     let mut block_hash = main_tip;
 
-    // Get target height from main tip
-    let target_height = main_client
-        .getblockheader(main_tip)
-        .map_err(|err| error::Sync::JsonRpc {
-            method: "getblockheader".to_owned(),
-            source: err,
-        })
-        .await?
-        .height as u64;
-
-    // Send initial progress
-    let progress = HeaderSyncProgress {
-        current_height: 0,
-        target_height: target_height as u32,
-    };
-
-    if let Err(e) = progress_tx.send(progress) {
-        tracing::warn!("Failed to send initial header sync progress: {}", e);
-    }
-
     while let Some((latest_missing_header, latest_missing_header_height)) =
         tokio::task::block_in_place(|| {
             let rotxn = dbs.read_txn()?;
@@ -818,29 +798,8 @@ where
             }
         })?
     {
-        let current_height = latest_missing_header_height.unwrap_or(0) as u64;
-
-        // Create progress update
-        let progress = HeaderSyncProgress {
-            current_height: current_height as u32,
-            target_height: target_height as u32,
-        };
-
-        // Send progress through watch channel
-        if let Err(e) = progress_tx.send(progress.clone()) {
-            tracing::warn!("Failed to send header sync progress: {}", e);
-        } else {
-            // Only log if successfully sent through channel
-            tracing::debug!(
-                "Header sync progress: {}/{} ({:.1}%)",
-                current_height,
-                target_height,
-                (current_height as f64 / target_height as f64) * 100.0
-            );
-        }
-
         if let Some(latest_missing_header_height) = latest_missing_header_height {
-            tracing::trace!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
+            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
         } else {
             tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
         }
@@ -858,6 +817,14 @@ where
             .put_header(&mut rwtxn, &header.into(), height)?;
         let () = rwtxn.commit()?;
         block_hash = latest_missing_header;
+        let progress = HeaderSyncProgress {
+            current_height: Some(height),
+            target_height: 0,
+        };
+        // Send progress through watch channel
+        if let Err(err) = progress_tx.send(progress) {
+            tracing::warn!("Failed to send header sync progress: {err:#}");
+        }
     }
     Ok(())
 }
@@ -868,7 +835,6 @@ async fn sync_blocks<MainClient>(
     event_tx: &Sender<Event>,
     main_client: &MainClient,
     main_tip: BlockHash,
-    _progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>, // Keep param but don't use it
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
@@ -885,7 +851,6 @@ where
     if missing_blocks.is_empty() {
         return Ok(());
     }
-
     for missing_block in missing_blocks.into_iter().rev() {
         tracing::debug!("Syncing block `{missing_block}` -> `{main_tip}`");
         let block = main_client
@@ -912,24 +877,14 @@ where
 pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-    header_sync_progress_channel: &Option<(
-        tokio::sync::watch::Sender<HeaderSyncProgress>,
-        tokio::sync::watch::Receiver<HeaderSyncProgress>,
-    )>,
+    header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_client: &MainClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
-    let Some((tx, _)) = header_sync_progress_channel else {
-        return Err(error::Sync::HeaderSyncInProgress);
-    };
-
-    // Do sync work
-    async {
-        sync_headers(dbs, main_client, main_tip, tx).await?;
-        sync_blocks(dbs, event_tx, main_client, main_tip, tx).await
-    }
-    .await
+    let () = sync_headers(dbs, main_client, main_tip, header_sync_progress_tx).await?;
+    let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
+    Ok(())
 }

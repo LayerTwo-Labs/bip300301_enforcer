@@ -8,7 +8,7 @@ use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use thiserror::Error;
-use tokio::sync::watch::{self, Sender as WatchSender};
+use tokio::sync::watch::Receiver as WatchReceiver;
 
 use crate::{
     proto::mainchain::HeaderSyncProgress,
@@ -195,10 +195,7 @@ pub struct Validator {
     dbs: Dbs,
     events_rx: InactiveReceiver<Event>,
     events_tx: BroadcastSender<Event>,
-    header_sync_progress_channel: Option<(
-        WatchSender<HeaderSyncProgress>,
-        watch::Receiver<HeaderSyncProgress>,
-    )>,
+    header_sync_progress_rx: Option<WatchReceiver<HeaderSyncProgress>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
 }
@@ -211,23 +208,16 @@ impl Validator {
     ) -> Result<Self, InitError> {
         const EVENTS_CHANNEL_CAPACITY: usize = 256;
 
-        // Set up events channel
         let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
-
-        // Initialize header sync channel
-        let (header_sync_progress_tx, header_sync_progress_rx) = watch::channel(HeaderSyncProgress {
-            current_height: 0,
-            target_height: 0,
-        });
 
         let dbs = Dbs::new(data_dir, network)?;
         Ok(Self {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
-            header_sync_progress_channel: Some((header_sync_progress_tx, header_sync_progress_rx)),
+            header_sync_progress_rx: None,
             mainchain_client,
             network,
         })
@@ -248,18 +238,9 @@ impl Validator {
         .fuse()
     }
 
-    pub fn subscribe_header_sync_progress(&self) -> watch::Receiver<HeaderSyncProgress> {
-        match &self.header_sync_progress_channel {
-            Some((_, rx)) => rx.clone(),
-            None => {
-                // Return an empty receiver if no sync in progress
-                let (_, rx) = watch::channel(HeaderSyncProgress {
-                    current_height: 0,
-                    target_height: 0,
-                });
-                rx
-            }
-        }
+    /// Returns `None` if there is not a header sync in progress
+    pub fn subscribe_header_sync_progress(&self) -> &Option<WatchReceiver<HeaderSyncProgress>> {
+        &self.header_sync_progress_rx
     }
 
     /// Get (possibly unactivated) sidechains

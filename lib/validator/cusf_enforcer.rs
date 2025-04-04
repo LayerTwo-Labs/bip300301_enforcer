@@ -17,6 +17,7 @@ use ouroboros::self_referencing;
 use thiserror::Error;
 
 use crate::{
+    proto::mainchain::HeaderSyncProgress,
     types::{Ctip, Event, SidechainNumber},
     validator::{
         db_error,
@@ -307,15 +308,26 @@ impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
     async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
-        task::sync_to_tip(
+        if self.header_sync_progress_rx.is_some() {
+            return Err(task::error::Sync::HeaderSyncInProgress.into());
+        }
+        let (header_sync_progress_tx, header_sync_progress_rx) =
+            tokio::sync::watch::channel(HeaderSyncProgress {
+                current_height: None,
+                target_height: 0,
+            });
+        self.header_sync_progress_rx = Some(header_sync_progress_rx);
+        let () = task::sync_to_tip(
             &self.dbs,
             &self.events_tx,
-            &self.header_sync_progress_channel,
+            &header_sync_progress_tx,
             &self.mainchain_client,
             tip,
         )
         .map_err(SyncError)
-        .await
+        .await?;
+        self.header_sync_progress_rx = None;
+        Ok(())
     }
 
     type ConnectBlockError = ConnectBlockError;
