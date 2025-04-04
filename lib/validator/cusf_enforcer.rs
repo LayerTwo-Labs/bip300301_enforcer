@@ -308,15 +308,19 @@ impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
     async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
-        if self.header_sync_progress_rx.is_some() {
-            return Err(task::error::Sync::HeaderSyncInProgress.into());
-        }
-        let (header_sync_progress_tx, header_sync_progress_rx) =
-            tokio::sync::watch::channel(HeaderSyncProgress {
-                current_height: None,
-                target_height: 0,
-            });
-        self.header_sync_progress_rx = Some(header_sync_progress_rx);
+        let header_sync_progress_tx = {
+            let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
+            if header_sync_progress_rx_write.is_some() {
+                return Err(task::error::Sync::HeaderSyncInProgress.into());
+            }
+            let (header_sync_progress_tx, header_sync_progress_rx) =
+                tokio::sync::watch::channel(HeaderSyncProgress {
+                    current_height: None,
+                    target_height: 0,
+                });
+            *header_sync_progress_rx_write = Some(header_sync_progress_rx);
+            header_sync_progress_tx
+        };
         let () = task::sync_to_tip(
             &self.dbs,
             &self.events_tx,
@@ -326,7 +330,7 @@ impl CusfEnforcer for Validator {
         )
         .map_err(SyncError)
         .await?;
-        self.header_sync_progress_rx = None;
+        *self.header_sync_progress_rx.write() = None;
         Ok(())
     }
 

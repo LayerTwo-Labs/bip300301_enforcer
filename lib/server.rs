@@ -602,7 +602,7 @@ impl ValidatorService for Validator {
         let Some(rx) = self.subscribe_header_sync_progress() else {
             return Err(tonic::Status::unavailable("No header sync in progress"));
         };
-        let stream = tokio_stream::wrappers::WatchStream::new(rx.clone())
+        let stream = tokio_stream::wrappers::WatchStream::new(rx)
             .map(|progress| Ok(progress.into()))
             .boxed();
         Ok(tonic::Response::new(stream))

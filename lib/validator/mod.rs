@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender as BroadcastSender};
 use bip300301::jsonrpsee;
@@ -195,7 +195,7 @@ pub struct Validator {
     dbs: Dbs,
     events_rx: InactiveReceiver<Event>,
     events_tx: BroadcastSender<Event>,
-    header_sync_progress_rx: Option<WatchReceiver<HeaderSyncProgress>>,
+    header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
 }
@@ -217,7 +217,7 @@ impl Validator {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
-            header_sync_progress_rx: None,
+            header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
             mainchain_client,
             network,
         })
@@ -239,8 +239,8 @@ impl Validator {
     }
 
     /// Returns `None` if there is not a header sync in progress
-    pub fn subscribe_header_sync_progress(&self) -> &Option<WatchReceiver<HeaderSyncProgress>> {
-        &self.header_sync_progress_rx
+    pub fn subscribe_header_sync_progress(&self) -> Option<WatchReceiver<HeaderSyncProgress>> {
+        self.header_sync_progress_rx.read().clone()
     }
 
     /// Get (possibly unactivated) sidechains
