@@ -819,7 +819,6 @@ where
         block_hash = latest_missing_header;
         let progress = HeaderSyncProgress {
             current_height: Some(height),
-            target_height: 0,
         };
         // Send progress through watch channel
         if let Err(err) = progress_tx.send(progress) {

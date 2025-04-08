@@ -316,7 +316,6 @@ impl CusfEnforcer for Validator {
             let (header_sync_progress_tx, header_sync_progress_rx) =
                 tokio::sync::watch::channel(HeaderSyncProgress {
                     current_height: None,
-                    target_height: 0,
                 });
             *header_sync_progress_rx_write = Some(header_sync_progress_rx);
             header_sync_progress_tx
