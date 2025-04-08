@@ -18,6 +18,7 @@ use crate::{
         compute_m6id, parse_op_drivechain, CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain,
         M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept, M8BmmRequest,
     },
+    proto::mainchain::HeaderSyncProgress,
     types::{
         BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id, Sidechain,
         SidechainNumber, SidechainProposal, SidechainProposalId, SidechainProposalStatus,
@@ -771,11 +772,13 @@ async fn sync_headers<MainClient>(
     dbs: &Dbs,
     main_client: &MainClient,
     main_tip: BlockHash,
+    progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
     let mut block_hash = main_tip;
+
     while let Some((latest_missing_header, latest_missing_header_height)) =
         tokio::task::block_in_place(|| {
             let rotxn = dbs.read_txn()?;
@@ -796,7 +799,7 @@ where
         })?
     {
         if let Some(latest_missing_header_height) = latest_missing_header_height {
-            tracing::trace!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
+            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
         } else {
             tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
         }
@@ -814,6 +817,13 @@ where
             .put_header(&mut rwtxn, &header.into(), height)?;
         let () = rwtxn.commit()?;
         block_hash = latest_missing_header;
+        let progress = HeaderSyncProgress {
+            current_height: Some(height),
+        };
+        // Send progress through watch channel
+        if let Err(err) = progress_tx.send(progress) {
+            tracing::warn!("Failed to send header sync progress: {err:#}");
+        }
     }
     Ok(())
 }
@@ -866,13 +876,14 @@ where
 pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
+    header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_client: &MainClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
-    let () = sync_headers(dbs, main_client, main_tip).await?;
+    let () = sync_headers(dbs, main_client, main_tip, header_sync_progress_tx).await?;
     let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
     Ok(())
 }

@@ -1,6 +1,6 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
-use async_broadcast::{broadcast, InactiveReceiver, Sender};
+use async_broadcast::{broadcast, InactiveReceiver, Sender as BroadcastSender};
 use bip300301::jsonrpsee;
 use bitcoin::{self, hashes::Hash, Amount, BlockHash, OutPoint};
 use fallible_iterator::{FallibleIterator, IteratorExt};
@@ -8,10 +8,14 @@ use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use thiserror::Error;
+use tokio::sync::watch::Receiver as WatchReceiver;
 
-use crate::types::{
-    BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
-    SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+use crate::{
+    proto::mainchain::HeaderSyncProgress,
+    types::{
+        BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
+        SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+    },
 };
 
 pub mod cusf_enforcer;
@@ -190,7 +194,8 @@ pub enum GetSidechainsError {
 pub struct Validator {
     dbs: Dbs,
     events_rx: InactiveReceiver<Event>,
-    events_tx: Sender<Event>,
+    events_tx: BroadcastSender<Event>,
+    header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
 }
@@ -202,14 +207,17 @@ impl Validator {
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
         const EVENTS_CHANNEL_CAPACITY: usize = 256;
+
         let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);
         events_rx.set_overflow(true);
+
         let dbs = Dbs::new(data_dir, network)?;
         Ok(Self {
             dbs,
             events_rx: events_rx.deactivate(),
             events_tx,
+            header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
             mainchain_client,
             network,
         })
@@ -228,6 +236,11 @@ impl Validator {
             }
         })
         .fuse()
+    }
+
+    /// Returns `None` if there is not a header sync in progress
+    pub fn subscribe_header_sync_progress(&self) -> Option<WatchReceiver<HeaderSyncProgress>> {
+        self.header_sync_progress_rx.read().clone()
     }
 
     /// Get (possibly unactivated) sidechains

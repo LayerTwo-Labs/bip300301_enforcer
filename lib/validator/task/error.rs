@@ -228,6 +228,8 @@ pub(in crate::validator) enum DisconnectBlock {}
 
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
+    #[error("Header sync already in progress")]
+    HeaderSyncInProgress,
     #[error(transparent)]
     #[fatal]
     CommitWriteTxn(#[from] dbs::CommitWriteTxnError),

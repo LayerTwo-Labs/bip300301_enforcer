@@ -843,6 +843,19 @@ pub mod mainchain {
                 })
         }
     }
+
+    #[derive(Copy, Clone, Debug)]
+    pub struct HeaderSyncProgress {
+        pub current_height: Option<u32>,
+    }
+
+    impl From<HeaderSyncProgress> for SubscribeHeaderSyncProgressResponse {
+        fn from(progress: HeaderSyncProgress) -> Self {
+            Self {
+                current_height: progress.current_height,
+            }
+        }
+    }
 }
 
 pub mod sidechain {

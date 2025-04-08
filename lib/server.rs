@@ -53,8 +53,9 @@ use crate::{
             ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
             ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
             ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, UnlockWalletRequest,
-            UnlockWalletResponse, WalletTransaction,
+            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncProgressRequest,
+            SubscribeHeaderSyncProgressResponse, UnlockWalletRequest, UnlockWalletResponse,
+            WalletTransaction,
         },
         IntoStatus,
     },
@@ -586,6 +587,23 @@ impl ValidatorService for Validator {
                 }),
                 Err(err) => Err(err.into_status()),
             })
+            .boxed();
+        Ok(tonic::Response::new(stream))
+    }
+
+    type SubscribeHeaderSyncProgressStream =
+        BoxStream<'static, Result<SubscribeHeaderSyncProgressResponse, tonic::Status>>;
+
+    async fn subscribe_header_sync_progress(
+        &self,
+        request: tonic::Request<SubscribeHeaderSyncProgressRequest>,
+    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncProgressStream>, tonic::Status> {
+        let SubscribeHeaderSyncProgressRequest {} = request.into_inner();
+        let Some(rx) = self.subscribe_header_sync_progress() else {
+            return Err(tonic::Status::unavailable("No header sync in progress"));
+        };
+        let stream = tokio_stream::wrappers::WatchStream::new(rx)
+            .map(|progress| Ok(progress.into()))
             .boxed();
         Ok(tonic::Response::new(stream))
     }
