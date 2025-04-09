@@ -606,7 +606,6 @@ impl WalletInner {
     }
 
     // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
     async fn delete_bundle_proposals<I>(&self, iter: I) -> Result<(), rusqlite::Error>
     where
         I: IntoIterator<Item = (SidechainNumber, M6id)>,
@@ -626,7 +625,6 @@ impl WalletInner {
     }
 
     // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
     async fn delete_pending_sidechain_proposals<I>(
         &self,
         proposals: I,
@@ -1026,7 +1024,6 @@ impl Wallet {
     }
 
     // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
     async fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
         self.inner
             .self_db
