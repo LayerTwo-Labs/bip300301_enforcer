@@ -36,7 +36,7 @@ $ cargo run -- --help
 # Adjust these parameters to match your local Bitcoin
 # Core instance
 $ cargo run -- \
-  --node-rpc-addr-=localhost:38332 \
+  --node-rpc-addr=localhost:38332 \
   --node-rpc-user=user \
   --node-rpc-pass=password \
   --node-zmq-addr-sequence=tcp://0.0.0.0:29000
