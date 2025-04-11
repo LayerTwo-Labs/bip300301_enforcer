@@ -179,3 +179,54 @@ Integration tests can be run using
 ```bash
 $ cargo run --example integration_tests -- <TEST ARGS>
 ```
+
+# JSON-RPC server
+
+The application provides a JSON-RPC server that runs on `127.0.0.1:8122` by default. The server supports the following methods:
+
+### Available Methods
+
+1. **ping**
+   - Description: A simple health check method that returns "pong"
+   - Parameters: None
+   - Returns: `"pong"`
+   - Example:
+     ```bash
+     curl -X POST -H "Content-Type: application/json" -d '{
+       "jsonrpc": "2.0",
+       "method": "ping",
+       "params": [],
+       "id": 1
+     }' http://127.0.0.1:8122
+     ```
+
+2. **list_sidechain_deposit_transactions**
+   - Description: Lists all sidechain deposit transactions from the wallet
+   - Parameters: None
+   - Returns: Array of deposit transactions with the following structure:
+     ```json
+     {
+       "sidechain_number": number,
+       "txid": string,
+       "fee_sats": number,
+       "received_sats": number,
+       "sent_sats": number,
+       "confirmation": {
+         "height": number,
+         "block_hash": string,
+         "timestamp": number
+       } | null
+     }
+     ```
+   - Example:
+     ```bash
+     curl -X POST -H "Content-Type: application/json" -d '{
+       "jsonrpc": "2.0",
+       "method": "list_sidechain_deposit_transactions",
+       "params": [],
+       "id": 1
+     }' http://127.0.0.1:8122
+     ```
+
+The server includes built-in request ID tracking, HTTP tracing, and RPC logging for debugging purposes.
+
