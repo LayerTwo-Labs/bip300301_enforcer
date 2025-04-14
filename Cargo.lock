@@ -517,6 +517,7 @@ dependencies = [
  "cusf-enforcer-mempool",
  "either",
  "futures",
+ "hex",
  "http 1.2.0",
  "jsonrpsee",
  "miette",

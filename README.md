@@ -228,5 +228,26 @@ The application provides a JSON-RPC server that runs on `127.0.0.1:8122` by defa
      }' http://127.0.0.1:8122
      ```
 
+3. **broadcast_withdrawal_bundle**
+   - Description: Broadcasts a withdrawal bundle transaction for a specific sidechain
+   - Parameters: 
+     1. `sidechain_number` (number): The sidechain number (u8)
+     2. `transaction_hex` (string): The hex-encoded withdrawal bundle transaction
+   - Returns: Object containing the M6ID of the broadcast withdrawal bundle
+     ```json
+     {
+       "m6id": string
+     }
+     ```
+   - Example:
+     ```bash
+     curl -X POST -H "Content-Type: application/json" -d '{
+       "jsonrpc": "2.0",
+       "method": "broadcast_withdrawal_bundle",
+       "params": [1, "0200000001abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789000000006a47304402..."],
+       "id": 1
+     }' http://127.0.0.1:8122
+     ```
+
 The server includes built-in request ID tracking, HTTP tracing, and RPC logging for debugging purposes.
 

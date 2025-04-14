@@ -571,6 +571,73 @@ async fn spawn_json_rpc_server(serve_addr: SocketAddr) -> miette::Result<jsonrps
         Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(deposit_transactions)
     }).map_err(|err| miette!("Failed to register list_sidechain_deposit_transactions method: {err:#}"))?;
 
+    // Add method to broadcast withdrawal bundle
+    rpc_server.register_async_method("broadcast_withdrawal_bundle", |params, _ctx, _extensions| async move {
+        // Get the wallet from the context
+        let wallet = _extensions.get::<Wallet>().ok_or_else(|| {
+            jsonrpsee::types::ErrorObject::owned(
+                jsonrpsee::types::ErrorCode::InternalError.code(),
+                "Wallet not found in context".to_string(),
+                None::<()>,
+            )
+        })?;
+
+        // Parse parameters
+        let params = params.parse::<(u8, String)>().map_err(|err| {
+            jsonrpsee::types::ErrorObject::owned(
+                jsonrpsee::types::ErrorCode::InvalidParams.code(),
+                format!("Invalid parameters: {}", err),
+                None::<()>,
+            )
+        })?;
+
+        let (sidechain_number, transaction_hex) = params;
+        let sidechain_id = bip300301_enforcer_lib::types::SidechainNumber(sidechain_number);
+
+        // Decode transaction from hex
+        let transaction_bytes = hex::decode(transaction_hex).map_err(|err| {
+            jsonrpsee::types::ErrorObject::owned(
+                jsonrpsee::types::ErrorCode::InvalidParams.code(),
+                format!("Invalid transaction hex: {}", err),
+                None::<()>,
+            )
+        })?;
+
+        // Deserialize transaction
+        let transaction: bitcoin::Transaction = bitcoin::consensus::deserialize(&transaction_bytes).map_err(|err| {
+            jsonrpsee::types::ErrorObject::owned(
+                jsonrpsee::types::ErrorCode::InvalidParams.code(),
+                format!("Invalid transaction format: {}", err),
+                None::<()>,
+            )
+        })?;
+
+        // Convert to BlindedM6
+        let transaction: bip300301_enforcer_lib::types::BlindedM6 = 
+            std::borrow::Cow::<bitcoin::Transaction>::Owned(transaction)
+                .try_into()
+                .map_err(|err| {
+                    jsonrpsee::types::ErrorObject::owned(
+                        jsonrpsee::types::ErrorCode::InvalidParams.code(),
+                        format!("Invalid withdrawal bundle format: {}", err),
+                        None::<()>,
+                    )
+                })?;
+
+        // Put withdrawal bundle
+        let m6id = wallet.put_withdrawal_bundle(sidechain_id, &transaction).await.map_err(|err| {
+            jsonrpsee::types::ErrorObject::owned(
+                jsonrpsee::types::ErrorCode::InternalError.code(),
+                format!("Failed to put withdrawal bundle: {}", err),
+                None::<()>,
+            )
+        })?;
+
+        Ok::<serde_json::Value, jsonrpsee::types::ErrorObject>(serde_json::json!({
+            "m6id": m6id.0.to_string()
+        }))
+    }).map_err(|err| miette!("Failed to register broadcast_withdrawal_bundle method: {err:#}"))?;
+
     tracing::info!("Listening for JSON-RPC on {}", serve_addr);
 
     // Ordering here matters! Order here is from official docs on request IDs tracings
