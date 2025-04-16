@@ -7,6 +7,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
+    cli::WalletSyncSource,
     types::SidechainNumber,
     validator::{self, Validator},
 };
@@ -160,6 +161,10 @@ pub enum FullScan {
 
     #[error("unable to persist wallet post scan")]
     PersistWallet(#[source] SqliteError),
+
+    #[error("chain sync source does not support full scan: {:?}", .sync_source)]
+    #[diagnostic(code(invalid_sync_source))]
+    InvalidSyncSource { sync_source: WalletSyncSource },
 }
 
 #[derive(Debug, Diagnostic, Error)]
