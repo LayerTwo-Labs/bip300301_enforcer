@@ -19,8 +19,8 @@ jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tonic = { workspace = true }
-tonic-health = "0.12.3"
-tonic-reflection = "0.12.3"
+tonic-health = "0.13.0"
+tonic-reflection = "0.13.0"
 # needs to line up with jsonrpsee tower version...
 tower = "0.4.13"
 tower-http = { version = "0.6.1", features = ["trace", "request-id"] }
