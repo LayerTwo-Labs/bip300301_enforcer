@@ -36,6 +36,7 @@ use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use sync::NoSyncClient;
 use tokio::{spawn, task::JoinHandle, time::Instant};
 use tracing::instrument;
 use util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome};
@@ -68,6 +69,7 @@ type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
+type ChainSource = Either<ElectrumClient, Either<EsploraClient, NoSyncClient>>;
 
 struct WalletInner {
     main_client: HttpClient,
@@ -80,7 +82,7 @@ struct WalletInner {
     bdk_db: tokio::sync::Mutex<Persistence>,
     // Persistence for things /we/ care about. Wallet seed, M* messages, ++.
     self_db: tokio::sync::Mutex<rusqlite::Connection>,
-    chain_source: Either<ElectrumClient, EsploraClient>,
+    chain_source: ChainSource,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
@@ -299,8 +301,9 @@ impl WalletInner {
             WalletSyncSource::Esplora => {
                 let esplora_client =
                     Self::init_esplora_client(&config.wallet_opts, network).await?;
-                Either::Right(esplora_client)
+                Either::Right(Either::Left(esplora_client))
             }
+            WalletSyncSource::Disabled => Either::Right(Either::Right(NoSyncClient {})),
         };
         let db_connection = Self::init_db_connection(data_dir)?;
 

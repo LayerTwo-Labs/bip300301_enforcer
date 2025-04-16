@@ -11,6 +11,7 @@ use cusf_enforcer_mempool::{
 use tracing::instrument;
 
 use crate::{
+    cli::WalletSyncSource,
     validator::Validator,
     wallet::{error, Wallet},
 };
@@ -67,7 +68,10 @@ impl CusfEnforcer for Wallet {
         // We previously ran a wallet sync here unconditionally within this function. The sync
         // takes a long time on big wallets (100k+ UTXOs), and therefore has to be omitted in
         // some cases.
-        if !self.inner.config.wallet_opts.skip_periodic_sync {
+        let sync_source_disabled =
+            self.inner.config.wallet_opts.sync_source == WalletSyncSource::Disabled;
+
+        if !self.inner.config.wallet_opts.skip_periodic_sync && !sync_source_disabled {
             tracing::debug!("Sending start signal to wallet task, kicking off periodic sync");
             let mut start_tx_lock = self.task.start_tx.lock();
             if let Some(start_tx) = start_tx_lock.take() {
