@@ -2,11 +2,7 @@
 
 [workspace]
 resolver = "2"
-members = [
-    "app",
-    "lib",
-    "integration_tests",
-]
+members = ["app", "lib", "integration_tests"]
 
 [workspace.package]
 authors = [
@@ -27,6 +23,9 @@ futures = "0.3.30"
 hex = "0.4.3"
 jsonrpsee = { version = "0.24.7" }
 miette = { version = "7.1.0", default-features = false }
+# Default features include TLS stuff, which on Linux requires OpenSSL. 
+# We only support Bitcoin Core over HTTP, so need for that. 
+reqwest = { version = "0.12.15", default-features = false, features = ["json"] }
 thiserror = "2.0.11"
 tokio = { version = "1.36.0", default-features = false }
 tokio-stream = "0.1.15"
@@ -36,13 +35,13 @@ tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.18"
 
 [workspace.dependencies.bip300301]
-git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
+git = "https://github.com/torkelrogstad/bip300301.git"
+rev = "b93320084a307c3f89d7999e2975ae7a769d0ba0"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 # https://github.com/LayerTwo-Labs/cusf-enforcer-mempool/pull/5
 git = "https://github.com/torkelrogstad/cusf-enforcer-mempool.git"
-rev = "26bb6bdeb6cb9a7d5222889f49bb1768ccc2e011"
+rev = "3c16fb3af0c75550bb79e519625df4e5aac5cef1"
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"

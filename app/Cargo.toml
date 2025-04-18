@@ -17,6 +17,7 @@ futures = { workspace = true }
 http = "1.2.0"
 jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy"] }
+reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tonic = { workspace = true }
 tonic-health = "0.13.0"

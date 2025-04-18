@@ -6,6 +6,7 @@ use clap::Parser;
 use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
 use http::{header::HeaderName, Request};
+use reqwest::Url;
 
 use jsonrpsee::core::client::Error;
 use jsonrpsee::server::RpcServiceBuilder;
@@ -29,7 +30,7 @@ use bip300301_enforcer_lib::{
         mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
     },
     rpc_client, server,
-    validator::Validator,
+    validator::{main_rest_client::MainRestClient, Validator},
     wallet,
 };
 
@@ -219,7 +220,7 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
         }
     };
 
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
 
     // Set all services to have the "serving" status.
     // TODO: somehow expose the health reporter to the running services, and
@@ -542,6 +543,10 @@ async fn main() -> Result<()> {
         "Starting up bip300301_enforcer",
     );
 
+    let mainchain_rest_client = MainRestClient::new(
+        Url::parse(&format!("http://{}", cli.node_rpc_opts.addr)).into_diagnostic()?,
+    );
+
     let mainchain_client =
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
 
@@ -611,8 +616,13 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let validator = Validator::new(mainchain_client.clone(), &validator_data_dir, info.chain)
-        .into_diagnostic()?;
+    let validator = Validator::new(
+        mainchain_client.clone(),
+        mainchain_rest_client,
+        &validator_data_dir,
+        info.chain,
+    )
+    .into_diagnostic()?;
 
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
         let block_template = get_block_template(&mainchain_client, info.chain).await?;

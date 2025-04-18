@@ -181,7 +181,7 @@ fn connect_block_no_commit<'validator>(
         validator
             .dbs
             .block_hashes
-            .put_header(&mut parent_rwtxn, &block.header, height)?;
+            .put_headers(&mut parent_rwtxn, &[(block.header, height)])?;
     }
     // Commit on block accept, abort on block reject
     let mut parent_child_rwtxn = ParentChildRwTxnTryBuilder {
@@ -325,6 +325,7 @@ impl CusfEnforcer for Validator {
             &self.events_tx,
             &header_sync_progress_tx,
             &self.mainchain_client,
+            &self.mainchain_rest_client,
             tip,
         )
         .map_err(SyncError)

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, collections::HashMap};
+use std::{borrow::Cow, cmp::Ordering, collections::HashMap, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
 use bip300301::client::{GetBlockClient, U8Witness};
@@ -27,6 +27,8 @@ use crate::{
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
 };
+
+use super::main_rest_client::MainRestClient;
 
 pub mod error;
 
@@ -768,91 +770,159 @@ pub(in crate::validator) fn disconnect_block(
     todo!();
 }
 
-async fn sync_headers<MainClient>(
+#[allow(clippy::result_large_err)]
+fn fetch_chain_tip(dbs: &Dbs) -> Result<Option<(BlockHash, u32)>, error::Sync> {
+    let rotxn = dbs.read_txn()?;
+    let current_enforcer_tip_opt = dbs.current_chain_tip.try_get(&rotxn, &UnitKey)?;
+
+    let Some(tip) = current_enforcer_tip_opt else {
+        return Ok(None);
+    };
+    let height = dbs.block_hashes.height().get(&rotxn, &tip)?;
+    Ok(Some((tip, height)))
+}
+
+#[tracing::instrument(skip_all)]
+async fn sync_headers<MainRpcClient>(
     dbs: &Dbs,
-    main_client: &MainClient,
+    main_rest_client: &MainRestClient,
+    main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bip300301::client::MainClient + Sync,
 {
-    let mut block_hash = main_tip;
+    let start = Instant::now();
 
-    while let Some((latest_missing_header, latest_missing_header_height)) =
-        tokio::task::block_in_place(|| {
-            let rotxn = dbs.read_txn()?;
-            match dbs
-                .block_hashes
-                .latest_missing_ancestor_header(&rotxn, block_hash)
-                .map_err(error::Sync::DbTryGet)?
-            {
-                Some(latest_missing_header) => {
-                    let height = dbs
-                        .block_hashes
-                        .height()
-                        .try_get(&rotxn, &latest_missing_header)?;
-                    Ok::<_, error::Sync>(Some((latest_missing_header, height)))
-                }
-                None => Ok(None),
-            }
-        })?
-    {
-        if let Some(latest_missing_header_height) = latest_missing_header_height {
-            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
-        } else {
-            tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
+    let (current_enforcer_tip, current_enforcer_tip_height) = match fetch_chain_tip(dbs)? {
+        Some(tip) => tip,
+        None => {
+            let genesis_hash =
+                main_rpc_client
+                    .getblockhash(0)
+                    .await
+                    .map_err(|err| error::Sync::JsonRpc {
+                        method: "getblockhash".to_owned(),
+                        source: err,
+                    })?;
+            (genesis_hash, 0)
         }
-        let header = main_client
-            .getblockheader(latest_missing_header)
-            .map_err(|err| error::Sync::JsonRpc {
-                method: "getblockheader".to_owned(),
-                source: err,
-            })
+    };
+
+    let mut current_block_hash = current_enforcer_tip;
+    let mut current_height = current_enforcer_tip_height;
+
+    // Fetch headers in batches for efficiency
+    // 2000 is max allowed by Bitcoin Core
+    const HEADER_FETCH_BATCH_SIZE: usize = 2000;
+
+    tracing::debug!(
+            "Syncing headers starting from #{current_enforcer_tip_height} `{current_enforcer_tip}` up to `{main_tip}`"
+        );
+
+    // The requested block header is the /first/ header in the batch. This means we
+    // need to loop from our current tip, until we find the requested main tip.
+    loop {
+        tracing::debug!(
+            "Fetching batch of headers starting from #{current_height} `{current_block_hash}`"
+        );
+
+        // Fetch a batch of headers
+        let headers = main_rest_client
+            .get_block_headers(&current_block_hash, HEADER_FETCH_BATCH_SIZE)
+            .map_err(error::Sync::Rest)
             .await?;
-        latest_missing_header_height.inspect(|height| assert_eq!(*height, header.height));
-        let height = header.height;
+
+        if headers.is_empty() {
+            tracing::warn!("get_block_headers returned empty list unexpectedly for #{current_height} `{current_block_hash}`");
+            break; // Avoid potential infinite loop
+        }
+
+        // Update the block_hash to the oldest header fetched in this batch to continue the loop
+        let (_, last_block_hash, last_block_height) = headers.last().unwrap();
+        current_block_hash = *last_block_hash;
+        current_height = *last_block_height;
+
+        // Store the fetched headers
         let mut rwtxn = dbs.write_txn()?;
-        dbs.block_hashes
-            .put_header(&mut rwtxn, &header.into(), height)?;
+        dbs.block_hashes.put_headers(
+            &mut rwtxn,
+            &headers
+                .iter()
+                .map(|(header, _, height)| (*header, *height))
+                .collect::<Vec<_>>(),
+        )?;
         let () = rwtxn.commit()?;
-        block_hash = latest_missing_header;
+
+        // Important: break out here /after/ storing the last header.
+        if current_block_hash == main_tip {
+            tracing::info!("Reached main tip at height {current_height}!");
+            break;
+        }
+
+        // Send progress update
         let progress = HeaderSyncProgress {
-            current_height: Some(height),
+            current_height: Some(current_height),
         };
-        // Send progress through watch channel
         if let Err(err) = progress_tx.send(progress) {
             tracing::warn!("Failed to send header sync progress: {err:#}");
         }
     }
+
+    tracing::info!(
+        main_tip = ?main_tip,
+        "Synced {} headers in {:?}",
+        current_height - current_enforcer_tip_height, start.elapsed()
+    );
     Ok(())
 }
 
 // MUST be called after `sync_headers`.
-async fn sync_blocks<MainClient>(
+#[tracing::instrument(skip_all)]
+async fn sync_blocks<MainRpcClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-    main_client: &MainClient,
+    main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bip300301::client::MainClient + Sync,
 {
+    let start = Instant::now();
     let missing_blocks: Vec<BlockHash> = tokio::task::block_in_place(|| {
         let rotxn = dbs.read_txn()?;
-        dbs.block_hashes
+        let ancestor_headers = dbs
+            .block_hashes
             .ancestor_headers(&rotxn, main_tip)
-            .map(|(block_hash, _header)| Ok(block_hash))
-            .take_while(|block_hash| Ok(!dbs.block_hashes.contains_block(&rotxn, block_hash)?))
-            .collect()
-            .map_err(error::Sync::from)
+            .collect::<Vec<_>>()?;
+
+        tracing::info!(
+            main_tip = ?main_tip,
+            "Found {} ancestor headers",
+            ancestor_headers.len()
+        );
+
+        Ok::<_, error::Sync>(
+            ancestor_headers
+                .iter()
+                .map(|(block_hash, _header)| *block_hash)
+                .take_while(|block_hash| {
+                    !dbs.block_hashes
+                        .contains_block(&rotxn, block_hash)
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>(),
+        )
     })?;
     if missing_blocks.is_empty() {
+        tracing::info!("No missing blocks, skipping sync");
         return Ok(());
     }
+    let mut total_blocks_fetched = 0;
     for missing_block in missing_blocks.into_iter().rev() {
         tracing::debug!("Syncing block `{missing_block}` -> `{main_tip}`");
-        let block = main_client
+        let block = main_rpc_client
             .get_block(missing_block, U8Witness::<0>)
             .map_err(|err| error::Sync::JsonRpc {
                 method: "getblock".to_owned(),
@@ -860,6 +930,7 @@ where
             })
             .await?
             .0;
+        total_blocks_fetched += 1;
         let mut rwtxn = dbs.write_txn()?;
         let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
 
@@ -873,6 +944,10 @@ where
         // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
         let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
+    tracing::info!(
+        "Synced {total_blocks_fetched} blocks in {:?}",
+        start.elapsed()
+    );
     Ok(())
 }
 
@@ -880,13 +955,21 @@ pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
-    main_client: &MainClient,
+    main_rpc_client: &MainClient,
+    main_rest_client: &MainRestClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
-    let () = sync_headers(dbs, main_client, main_tip, header_sync_progress_tx).await?;
-    let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
+    let () = sync_headers(
+        dbs,
+        main_rest_client,
+        main_rpc_client,
+        main_tip,
+        header_sync_progress_tx,
+    )
+    .await?;
+    let () = sync_blocks(dbs, event_tx, main_rpc_client, main_tip).await?;
     Ok(())
 }
