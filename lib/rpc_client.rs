@@ -2,7 +2,7 @@ use bip300301::{
     jsonrpsee::{core::ClientError, http_client::HttpClient},
     MainClient,
 };
-use miette::{miette, IntoDiagnostic};
+use miette::miette;
 
 use crate::cli::NodeRpcConfig;
 
@@ -59,7 +59,8 @@ pub fn create_client(
         None
     };
 
-    bip300301::client(conf.addr, client_builder, &conf_pass, &conf_user).into_diagnostic()
+    bip300301::client(conf.addr, client_builder, &conf_pass, &conf_user)
+        .map_err(|err| miette!("failed to create mainchain RPC client: {err:#}"))
 }
 
 /// Broadcasts a transaction to the Bitcoin network.

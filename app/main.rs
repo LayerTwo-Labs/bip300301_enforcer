@@ -6,6 +6,7 @@ use clap::Parser;
 use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
 use http::{header::HeaderName, Request};
+use reqwest::Url;
 
 use jsonrpsee::core::client::Error;
 use jsonrpsee::server::RpcServiceBuilder;
@@ -29,7 +30,7 @@ use bip300301_enforcer_lib::{
         mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
     },
     rpc_client, server,
-    validator::Validator,
+    validator::{main_rest_client::MainRestClient, Validator},
     wallet,
 };
 
@@ -374,6 +375,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
         Ok(res) => res,
         Err(err) => {
+            tracing::error!("mempool: initial sync error: {err:#?}");
             let err = miette::miette!("mempool: initial sync error: {err:#}");
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
@@ -542,6 +544,12 @@ async fn main() -> Result<()> {
         "Starting up bip300301_enforcer",
     );
 
+    let raw_url = format!("http://{}", cli.node_rpc_opts.addr);
+    let mainchain_rest_client = MainRestClient::new(
+        Url::parse(&raw_url)
+            .map_err(|err| miette!("invalid mainchain REST URL `{raw_url}`: {err:#}"))?,
+    );
+
     let mainchain_client =
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
 
@@ -582,7 +590,8 @@ async fn main() -> Result<()> {
                 method: "getblockchaininfo".to_string(),
                 error: err,
             }),
-        }?;
+        }
+        .map_err(|err| miette!("failed to get blockchain info: {err:#}"))?;
 
         let delay = tokio::time::Duration::from_millis(250);
         tokio::time::sleep(delay).await;
@@ -611,8 +620,13 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let validator = Validator::new(mainchain_client.clone(), &validator_data_dir, info.chain)
-        .into_diagnostic()?;
+    let validator = Validator::new(
+        mainchain_client.clone(),
+        mainchain_rest_client,
+        &validator_data_dir,
+        info.chain,
+    )
+    .into_diagnostic()?;
 
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
         let block_template = get_block_template(&mainchain_client, info.chain).await?;
@@ -673,7 +687,7 @@ async fn main() -> Result<()> {
         enforcer_task_err = err_rxs.enforcer_task => {
             match enforcer_task_err {
                 Ok(err) => {
-                    tracing::error!("Received enforcer task error: {err:}");
+                    tracing::error!("Received enforcer task error: {err:#}");
                     Err(miette!(err))
                 }
                 Err(err) => {

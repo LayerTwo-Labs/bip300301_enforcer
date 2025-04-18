@@ -5,6 +5,7 @@ use bip300301::jsonrpsee;
 use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream::FusedStream, StreamExt};
+use main_rest_client::MainRestClient;
 use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use thiserror::Error;
@@ -20,6 +21,7 @@ use crate::{
 
 pub mod cusf_enforcer;
 mod dbs;
+pub mod main_rest_client;
 mod task;
 
 use dbs::{db_error, CreateDbsError, Dbs, PendingM6ids};
@@ -223,12 +225,14 @@ pub struct Validator {
     events_tx: BroadcastSender<Event>,
     header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
+    mainchain_rest_client: MainRestClient,
     network: bitcoin::Network,
 }
 
 impl Validator {
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
+        mainchain_rest_client: MainRestClient,
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
@@ -245,6 +249,7 @@ impl Validator {
             events_tx,
             header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
             mainchain_client,
+            mainchain_rest_client,
             network,
         })
     }

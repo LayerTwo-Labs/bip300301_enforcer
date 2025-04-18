@@ -6,7 +6,10 @@ use thiserror::Error;
 use crate::{
     messages::CoinbaseMessagesError,
     types::SidechainNumber,
-    validator::dbs::{self, db_error},
+    validator::{
+        dbs::{self, db_error},
+        main_rest_client::MainRestClientError,
+    },
 };
 
 #[fatality(splitable)]
@@ -234,8 +237,17 @@ pub(in crate::validator) enum Sync {
     #[fatal]
     CommitWriteTxn(#[from] dbs::CommitWriteTxnError),
     #[error(transparent)]
+    #[fatal]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+    #[error(transparent)]
+    #[fatal]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error(transparent)]
     #[fatal(forward)]
     ConnectBlock(#[from] ConnectBlock),
+    #[error("Block not in active chain: `{block_hash}`")]
+    #[fatal]
+    BlockNotInActiveChain { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
     #[fatal]
     DbGet(#[from] db_error::Get),
@@ -251,6 +263,9 @@ pub(in crate::validator) enum Sync {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
+    #[error(transparent)]
+    #[fatal]
+    Rest(#[from] MainRestClientError),
     #[error(transparent)]
     #[fatal]
     ReadTxn(#[from] dbs::ReadTxnError),

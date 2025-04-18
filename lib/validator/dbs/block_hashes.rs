@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use bitcoin::{block::Header, hashes::Hash as _, BlockHash, Txid, Work};
 use fallible_iterator::FallibleIterator;
 use heed::{types::SerdeBincode, RoTxn};
 use nonempty::NonEmpty;
+use tracing::instrument;
 
 use crate::{
     types::{BlockEvent, BlockInfo, BmmCommitments, HeaderInfo, TwoWayPegData},
@@ -191,20 +194,30 @@ impl BlockHashDbs {
     }
 
     /// Store info for a single header
-    pub fn put_header(
+    #[instrument(skip_all)]
+    pub fn put_headers(
         &self,
         rwtxn: &mut RwTxn,
-        header: &Header,
-        height: u32,
+        headers: &[(Header, u32)],
     ) -> Result<(), db_error::Put> {
-        let block_hash = header.block_hash();
-        let () = self.header.put(rwtxn, &block_hash, header)?;
-        let () = self.height.put(rwtxn, &block_hash, &height)?;
-        if header.prev_blockhash != BlockHash::all_zeros() {
-            let () = self
-                .height
-                .put(rwtxn, &header.prev_blockhash, &(height - 1))?;
+        let start = Instant::now();
+
+        for (header, height) in headers {
+            let block_hash = header.block_hash();
+            let () = self.header.put(rwtxn, &block_hash, header)?;
+            let () = self.height.put(rwtxn, &block_hash, height)?;
+            if header.prev_blockhash != BlockHash::all_zeros() {
+                let () = self
+                    .height
+                    .put(rwtxn, &header.prev_blockhash, &(height - 1))?;
+            }
         }
+
+        tracing::debug!(
+            "Stored {} block header(s) in {:?}",
+            headers.len(),
+            start.elapsed(),
+        );
         Ok(())
     }
 
@@ -266,26 +279,6 @@ impl BlockHashDbs {
                 Ok(None)
             }
         })
-    }
-
-    /// Find the latest missing ancestor header, if any are missing.
-    /// This may take a long time to run, and should be considered blocking in
-    /// async contexts.
-    pub fn latest_missing_ancestor_header(
-        &self,
-        rotxn: &RoTxn,
-        block_hash: BlockHash,
-    ) -> Result<Option<BlockHash>, db_error::TryGet> {
-        let mut res = block_hash;
-        let mut ancestor_headers = self.ancestor_headers(rotxn, block_hash);
-        while let Some((_, header)) = ancestor_headers.next()? {
-            res = header.prev_blockhash;
-        }
-        if res == BlockHash::all_zeros() {
-            Ok(None)
-        } else {
-            Ok(Some(res))
-        }
     }
 
     pub fn try_get_header_info(

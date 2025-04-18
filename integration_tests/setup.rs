@@ -1,6 +1,9 @@
 //! Setup for an integration test
 
+use std::net::SocketAddr;
 use std::{collections::HashMap, future::Future};
+
+use anyhow::anyhow;
 
 use bip300301_enforcer_lib::{
     bins::{self, CommandExt as _},
@@ -19,7 +22,8 @@ use futures::{channel::mpsc, future, FutureExt as _, StreamExt};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
-use tokio::time::sleep;
+use tokio::net::TcpStream;
+use tokio::time::{sleep, timeout, Duration};
 
 use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer};
 
@@ -276,6 +280,50 @@ pub struct PostSetup {
     pub reserved_ports: ReservedPorts,
 }
 
+/// Waits for a TCP port to become available by attempting to connect periodically.
+async fn wait_for_port(host: &str, port: u16, timeout_duration: Duration) -> anyhow::Result<()> {
+    let target_addr_str = format!("{host}:{port}");
+    let target_addr: SocketAddr = target_addr_str
+        .parse()
+        .map_err(|_| anyhow!("Invalid address format {host}:{port}"))?;
+    let check_interval = Duration::from_millis(100);
+
+    let task = async {
+        loop {
+            match TcpStream::connect(target_addr).await {
+                Ok(_) => {
+                    tracing::debug!("Port {port} on {host} is open.");
+                    return Ok(());
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::ConnectionRefused
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    // Port not open yet, wait and retry
+                    tracing::trace!("Port {port} on {host} not open yet ({e}), waiting...");
+                    sleep(check_interval).await;
+                }
+                Err(e) => {
+                    // Other IO error occurred
+                    tracing::warn!(
+                        "Error connecting to {host}:{port} while waiting: {e}. Retrying..."
+                    );
+                    // Still retry, maybe it's a transient issue
+                    sleep(check_interval).await;
+                }
+            }
+        }
+    };
+
+    match timeout(timeout_duration, task).await {
+        Ok(Ok(())) => Ok(()), // Inner Ok(()) means success
+        Ok(Err(e)) => Err(e), // Propagate inner error (though our loop logic makes this unlikely)
+        Err(_) => Err(anyhow!(
+            "Timeout waiting for port {host}:{port} to open after {timeout_duration:?}"
+        )),
+    }
+}
+
 pub async fn setup(
     bin_paths: &BinPaths,
     network: Network,
@@ -464,19 +512,29 @@ pub async fn setup(
         _electrs: electrs_task,
         _bitcoind: bitcoind_task,
     };
-    // wait for enforcer to start
-    sleep(std::time::Duration::from_secs(1)).await;
+    // Wait for enforcer gRPC port to open
+    wait_for_port(
+        "127.0.0.1",
+        enforcer.serve_grpc_port,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+
     let gbt_client = jsonrpsee::http_client::HttpClient::builder()
-        .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))?;
+        .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
+        .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
     if signet_setup.is_some() {
         let () = SignetSetup::configure_miner(&mut signet_miner, &out_dir, &enforcer)?;
     }
     let validator_service_client =
         ValidatorServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await?;
+            .await
+            .map_err(|err| anyhow!("failed to create validator service client: {err:#}"))?;
     let wallet_service_client =
         WalletServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await?;
+            .await
+            .map_err(|err| anyhow!("failed to create wallet service client: {err:#}"))?;
     Ok(PostSetup {
         network,
         mode,
