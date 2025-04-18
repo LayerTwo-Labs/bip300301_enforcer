@@ -6,7 +6,10 @@ use thiserror::Error;
 use crate::{
     messages::CoinbaseMessagesError,
     types::SidechainNumber,
-    validator::dbs::{self, db_error},
+    validator::{
+        dbs::{self, db_error},
+        main_rest_client::MainRestClientError,
+    },
 };
 
 #[fatality(splitable)]
@@ -251,6 +254,9 @@ pub(in crate::validator) enum Sync {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
+    #[error(transparent)]
+    #[fatal]
+    Rest(#[from] MainRestClientError),
     #[error(transparent)]
     #[fatal]
     ReadTxn(#[from] dbs::ReadTxnError),
