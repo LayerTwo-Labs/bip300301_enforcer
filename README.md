@@ -14,6 +14,7 @@
    # as you set the CLI arg for bip300301_enforcer
    zmqpubsequence=tcp://0.0.0.0:29000
    txindex=1
+   rest=1
    ```
 
 1. Rustc & Cargo, version 1.78.0 or higher. Installing via Rustup is

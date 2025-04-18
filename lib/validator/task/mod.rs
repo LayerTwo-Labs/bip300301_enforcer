@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, collections::HashMap};
+use std::{borrow::Cow, cmp::Ordering, collections::HashMap, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
 use bip300301::client::{GetBlockClient, U8Witness};
@@ -27,6 +27,8 @@ use crate::{
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
 };
+
+use super::main_rest_client::MainRestClient;
 
 pub mod error;
 
@@ -151,7 +153,9 @@ fn handle_failed_sidechain_proposals(
         .map_err(db_error::Iter::from)?
         .map_err(|err| error::HandleFailedSidechainProposals::DbIter(err.into()))
         .filter_map(|(proposal_id, sidechain)| {
-            let sidechain_proposal_age = height - sidechain.status.proposal_height;
+            // doing `height - sidechain.status.proposal_height` can panic if the enforcer has data
+            // from a previous sync that is not in the active chain.
+            let sidechain_proposal_age = height.saturating_sub(sidechain.status.proposal_height);
             let sidechain_slot_is_used = dbs
                 .active_sidechains
                 .sidechain()
@@ -599,15 +603,21 @@ pub(in crate::validator) fn connect_block(
     match dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? {
         Some(tip) if parent == tip => (),
         Some(tip) => {
+            let tip_height = dbs
+                .block_hashes
+                .height()
+                .get(rwtxn, &tip)
+                .unwrap_or_default();
+            tracing::error!(
+                chain_tip = %tip,
+                incoming_block_parent = %parent,
+                "unable to connect block: chain tip is not parent of incoming block"
+            );
             return Err(error::ConnectBlock::BlockParent {
                 parent,
                 tip,
-                tip_height: dbs
-                    .block_hashes
-                    .height()
-                    .get(rwtxn, &tip)
-                    .unwrap_or_default(),
-            })
+                tip_height,
+            });
         }
         None if block.header.prev_blockhash == BlockHash::all_zeros() => (),
         None => {
@@ -768,91 +778,405 @@ pub(in crate::validator) fn disconnect_block(
     todo!();
 }
 
-async fn sync_headers<MainClient>(
+fn fetch_chain_tip_enforcer_db(dbs: &Dbs) -> Result<Option<(BlockHash, u32)>, Box<error::Sync>> {
+    let rotxn = dbs
+        .read_txn()
+        .map_err(|err| Box::new(error::Sync::from(err)))?;
+
+    let current_enforcer_tip_opt = dbs
+        .current_chain_tip
+        .try_get(&rotxn, &UnitKey)
+        .map_err(|err| Box::new(error::Sync::from(err)))?;
+
+    let tip = match current_enforcer_tip_opt {
+        Some(tip) => tip,
+        None => {
+            return Ok(None);
+        }
+    };
+
+    let tip_height = dbs
+        .block_hashes
+        .height()
+        .get(&rotxn, &tip)
+        .map_err(|err| Box::new(error::Sync::from(err)))?;
+
+    Ok(Some((tip, tip_height)))
+}
+
+// Find the latest chain point both in the enforcer chain and the active chain.
+// Returns hash and height of the best common block.
+// This returns a boxed error to satisfy a Clippy complaint.
+async fn fetch_common_chain_point<MainRpcClient>(
     dbs: &Dbs,
-    main_client: &MainClient,
+    mainchain: &MainRpcClient,
+    chain_tip_enforcer_db: Option<(BlockHash, u32)>, // The currently stored enforcer tip
+) -> Result<(BlockHash, u32), Box<error::Sync>>
+where
+    MainRpcClient: bip300301::client::MainClient + Sync,
+{
+    let mut max_height = mainchain
+        .getblockcount()
+        .await
+        .map(|count| count as u32)
+        .map_err(|err| {
+            Box::new(error::Sync::JsonRpc {
+                method: "getblockcount".to_owned(),
+                source: err,
+            })
+        })?;
+
+    let (enforcer_tip, mut tip_height) = match chain_tip_enforcer_db {
+        Some((tip, tip_height)) => (tip, tip_height),
+        None => {
+            let genesis_hash =
+                mainchain
+                    .getblockhash(0)
+                    .await
+                    .map_err(|err| error::Sync::JsonRpc {
+                        method: "getblockhash".to_owned(),
+                        source: err,
+                    })?;
+
+            // Break out early, we're at genesis!
+            return Ok((genesis_hash, 0));
+        }
+    };
+
+    // The earliest point where we know that the enforcer tip is in the active chain.
+    let mut known_good_height = 0; // Always good at genesis!
+
+    let increase_tip_height =
+        |tip_height: u32, max_height: u32| std::cmp::min(tip_height * 2, max_height);
+
+    let decrease_tip_height = |tip_height: u32, known_good_height: u32| {
+        let diff = tip_height - known_good_height;
+        tip_height - diff / 2
+    };
+
+    // When now need to verify that the enforcer tip is actually in
+    // the active chain. If this is not the case, we do a binary search
+    // to find the latest enforcer block that is in the active chain, and
+    // return that.
+
+    tracing::debug!(
+        enforcer_tip = ?enforcer_tip,
+        enforcer_tip_height = tip_height,
+        "Verifying enforcer tip is in active chain"
+    );
+    loop {
+        let mut best_common_tip = enforcer_tip;
+        let mut best_common_tip_height = tip_height;
+        (best_common_tip, best_common_tip_height) = match mainchain
+            .getblockhash(tip_height as usize)
+            .await
+        {
+            Ok(active_chain) => {
+                let header_info = {
+                    let rotxn = dbs
+                        .read_txn()
+                        .map_err(|err| Box::new(error::Sync::from(err)))?;
+
+                    dbs.block_hashes
+                        .try_get_header_info(&rotxn, &active_chain)
+                        .map_err(|err| Box::new(error::Sync::from(err)))
+                };
+
+                let enforcer_header = match header_info {
+                    Ok(Some(header)) => header,
+                    Ok(None) => {
+                        if tip_height == known_good_height + 1 {
+                            tracing::debug!(
+                                enforcer_chain = ?enforcer_tip,
+                                block_height = best_common_tip_height,
+                                "Missing header known_good_height + 1, returning"
+                            );
+                            return Ok((best_common_tip, best_common_tip_height));
+                        } else {
+                            tracing::debug!(
+                                active_chain = ?active_chain,
+                                "Enforcer does not have header at height {tip_height}, decreasing"
+                            );
+                            if tip_height == max_height {
+                                tracing::trace!(
+                                    "Decreasing max_height {max_height} -> {}",
+                                    max_height - 1
+                                );
+                                max_height -= 1;
+                            }
+                            tip_height = decrease_tip_height(tip_height, known_good_height);
+                            continue;
+                        }
+                    }
+                    Err(err) => return Err(err),
+                };
+
+                // We've reached the end of our search!
+                if enforcer_header.block_hash == active_chain
+                    && (tip_height == known_good_height || tip_height == max_height)
+                {
+                    tracing::debug!(
+                        enforcer_chain = ?enforcer_tip,
+                        "Enforcer and active chain agree at height {tip_height}, returning"
+                    );
+                    Ok((enforcer_header.block_hash, enforcer_header.height))
+                // The enforcer and the active chain are in agreement,
+                // at least at this point.
+                } else if enforcer_header.block_hash == active_chain {
+                    tracing::debug!(
+                        active_chain = ?active_chain,
+                        enforcer_chain = ?enforcer_header.block_hash,
+                        "Enforcer and active chain agree at height {tip_height}, increasing"
+                    );
+
+                    known_good_height = tip_height;
+                    tip_height = increase_tip_height(tip_height, max_height);
+                    continue;
+                } else {
+                    tracing::debug!(
+                        active_chain = ?active_chain,
+                        enforcer_chain = ?enforcer_tip,
+                        "Enforcer and active chain disagree at height {tip_height}, decreasing"
+                    );
+                    if tip_height == max_height {
+                        tracing::trace!("Decreasing max_height {max_height} -> {}", max_height - 1);
+                        max_height -= 1;
+                    }
+                    tip_height = decrease_tip_height(tip_height, known_good_height);
+                    continue;
+                }
+            }
+            // https://github.com/bitcoin/bitcoin/blob/9a4c92eb9ac29204df3d826f5ae526ab16b8ad65/src/rpc/protocol.h#L44
+            // -8 is the error code for an invalid argument, i.e. an out of range block hash
+            Err(jsonrpsee::core::ClientError::Call(err))
+                if err.code() == -8 &&
+                // Take care to only hit this branch if we're actually able to go lower. Edge case, 
+                // but if mainchain is on a freshly wiped regtest network while the enforcer is on
+                // a network with blocks, we'll end up looping at block height 1 without this check 
+                tip_height > known_good_height + 1 =>
+            {
+                tracing::debug!(
+                    known_good_height = known_good_height,
+                    tip_height = tip_height,
+                    "Block hash out of range at height {tip_height}, decreasing"
+                );
+                if tip_height == max_height {
+                    tracing::trace!("Decreasing max_height {max_height} -> {}", max_height - 1);
+                    max_height -= 1;
+                }
+                tip_height = decrease_tip_height(tip_height, known_good_height);
+                continue;
+            }
+            Err(err) => Err(Box::new(error::Sync::JsonRpc {
+                method: "getblockhash".to_owned(),
+                source: err,
+            })),
+        }?;
+
+        return Ok((best_common_tip, best_common_tip_height));
+    }
+}
+
+#[tracing::instrument(skip_all)]
+async fn sync_headers<MainRpcClient>(
+    dbs: &Dbs,
+    main_rest_client: &MainRestClient,
+    main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bip300301::client::MainClient + Sync,
 {
-    let mut block_hash = main_tip;
+    let start = Instant::now();
 
-    while let Some((latest_missing_header, latest_missing_header_height)) =
-        tokio::task::block_in_place(|| {
-            let rotxn = dbs.read_txn()?;
-            match dbs
+    let chain_tip_enforcer_db = fetch_chain_tip_enforcer_db(dbs).map_err(|boxed| *boxed)?;
+
+    let (common_chain_tip, common_chain_tip_height) =
+        fetch_common_chain_point(dbs, main_rpc_client, chain_tip_enforcer_db)
+            .await
+            .map_err(|boxed| *boxed)?;
+
+    // If the enforcer tip is /ahead/ of the active chain, we need to move the enforcer tip back
+    // to the common chain tip.
+    match chain_tip_enforcer_db {
+        Some((block_hash, height)) => {
+            let mut rwtxn = dbs.write_txn()?;
+
+            let mut header = dbs.block_hashes.get_header_info(&rwtxn, &block_hash)?;
+
+            // Figure out which header we should move the enforcer tip back
+            // to (if any).
+
+            while !dbs
                 .block_hashes
-                .latest_missing_ancestor_header(&rotxn, block_hash)
-                .map_err(error::Sync::DbTryGet)?
+                .contains_block(&rwtxn, &header.block_hash)?
+                || (header.height > common_chain_tip_height + 1)
+                // If we're at the same height we can still be on the wrong chain
+                || (header.height == common_chain_tip_height && header.block_hash != common_chain_tip)
             {
-                Some(latest_missing_header) => {
-                    let height = dbs
-                        .block_hashes
-                        .height()
-                        .try_get(&rotxn, &latest_missing_header)?;
-                    Ok::<_, error::Sync>(Some((latest_missing_header, height)))
-                }
-                None => Ok(None),
+                header = dbs
+                    .block_hashes
+                    .get_header_info(&rwtxn, &header.prev_block_hash)?;
             }
-        })?
-    {
-        if let Some(latest_missing_header_height) = latest_missing_header_height {
-            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
-        } else {
-            tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
+
+            // The tip should be updated if:
+            // 1. We went through at least one iteration of the loop, this means the tip
+            // 2. The enforcer tip is ahead of the active chain.
+            if header.block_hash != block_hash || height > common_chain_tip_height {
+                tracing::warn!(
+                    "Enforcer tip (#{height}) is ahead of the active chain (#{common_chain_tip_height}), moving back to #{} `{}`",
+                    header.height-   1, header.prev_block_hash
+                );
+                let () =
+                    dbs.current_chain_tip
+                        .put(&mut rwtxn, &UnitKey, &header.prev_block_hash)?;
+                let () = rwtxn.commit()?;
+            } else {
+                tracing::trace!(
+                    "Enforcer tip (#{height}) is already at the common chain tip (#{common_chain_tip_height}), nothing to do"
+                );
+            }
         }
-        let header = main_client
-            .getblockheader(latest_missing_header)
-            .map_err(|err| error::Sync::JsonRpc {
-                method: "getblockheader".to_owned(),
-                source: err,
-            })
+        None => {
+            tracing::trace!("no enforcer tip stored");
+        }
+    }
+
+    if common_chain_tip == main_tip {
+        tracing::debug!(main_tip = %main_tip, "already have all headers up to #{common_chain_tip_height}!");
+        return Ok(());
+    }
+
+    let mut current_block_hash = common_chain_tip;
+    let mut current_height = common_chain_tip_height;
+
+    // Fetch headers in batches for efficiency
+    // 2000 is max allowed by Bitcoin Core
+    const HEADER_FETCH_BATCH_SIZE: usize = 2000;
+
+    tracing::debug!(
+        "Syncing headers starting from #{current_height} `{current_block_hash}` up to `{main_tip}`"
+    );
+
+    // The requested block header is the /first/ header in the batch. This means we
+    // need to loop from our current tip, until we find the requested main tip.
+    loop {
+        tracing::debug!(
+            "Fetching batch of headers starting from #{current_height} `{current_block_hash}`"
+        );
+
+        // Fetch a batch of headers
+        let headers = main_rest_client
+            .get_block_headers(&current_block_hash, HEADER_FETCH_BATCH_SIZE)
+            .map_err(error::Sync::Rest)
             .await?;
-        latest_missing_header_height.inspect(|height| assert_eq!(*height, header.height));
-        let height = header.height;
+
+        // This will be empty if the requested block hash is not in the current active chain,
+        // i.e. if we're dealing with a reorg (or was given an invalid block hash to begin with).
+        if headers.is_empty() {
+            // Syncing headers is a reasonably quick operation. We therefore deal with it by erroring out
+            // here, and then retrying the sync from further out in the call stack.
+            //
+            // This branch only hits if we're dealing with a reorg /while/ we're syncing headers.
+            // If we've reorged before starting the sync, it is picked up at the beginning. It is
+            // such an edge case that we don't bother implementing it (for now, at least)
+            return Err(error::Sync::BlockNotInActiveChain {
+                block_hash: current_block_hash,
+            });
+        }
+
+        // Update the block_hash to the oldest header fetched in this batch to continue the loop
+        let (_, last_block_hash, last_block_height) = headers.last().unwrap();
+        current_block_hash = *last_block_hash;
+        current_height = *last_block_height;
+
+        // Store the fetched headers
         let mut rwtxn = dbs.write_txn()?;
-        dbs.block_hashes
-            .put_header(&mut rwtxn, &header.into(), height)?;
+        dbs.block_hashes.put_headers(
+            &mut rwtxn,
+            &headers
+                .iter()
+                .map(|(header, _, height)| (*header, *height))
+                .collect::<Vec<_>>(),
+        )?;
         let () = rwtxn.commit()?;
-        block_hash = latest_missing_header;
+
+        // Send progress update
         let progress = HeaderSyncProgress {
-            current_height: Some(height),
+            current_height: Some(current_height),
         };
-        // Send progress through watch channel
         if let Err(err) = progress_tx.send(progress) {
             tracing::warn!("Failed to send header sync progress: {err:#}");
         }
+
+        // Important: break out here /after/ storing the last header.
+        if current_block_hash == main_tip {
+            tracing::info!(main_tip = %main_tip, "Reached main tip at height {current_height}!");
+            break;
+        }
     }
+
+    // After finishing the loop, current_height is the height of the active chain.
+    // If the active chain /regressed/ (i.e. `invalidateblock`), we can end up
+    // in a situation where the current enforcer tip is /ahead/ of the active chain,
+    // on an invalid fork.
+    let mut rwtxn = dbs.write_txn()?;
+    let current_enforcer_tip_height = dbs.block_hashes.height().get(&rwtxn, &common_chain_tip)?;
+
+    if current_enforcer_tip_height > current_height {
+        tracing::warn!("Enforcer tip (#{current_enforcer_tip_height}) is ahead of the active chain (#{current_height}), moving back to `{current_block_hash}`");
+        let () = dbs
+            .current_chain_tip
+            .put(&mut rwtxn, &UnitKey, &current_block_hash)?;
+        let () = rwtxn.commit()?;
+    }
+
+    tracing::info!(
+        main_tip = ?main_tip,
+        "Synced {} headers in {:?}",
+        current_height - current_enforcer_tip_height, start.elapsed()
+    );
     Ok(())
 }
 
 // MUST be called after `sync_headers`.
-async fn sync_blocks<MainClient>(
+#[tracing::instrument(skip_all)]
+async fn sync_blocks<MainRpcClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-    main_client: &MainClient,
+    main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bip300301::client::MainClient + Sync,
 {
-    let missing_blocks: Vec<BlockHash> = tokio::task::block_in_place(|| {
+    let start = Instant::now();
+    let missing_blocks = tokio::task::block_in_place(|| {
         let rotxn = dbs.read_txn()?;
+
         dbs.block_hashes
             .ancestor_headers(&rotxn, main_tip)
-            .map(|(block_hash, _header)| Ok(block_hash))
+            .map(|(block_hash, _)| Ok(block_hash))
             .take_while(|block_hash| Ok(!dbs.block_hashes.contains_block(&rotxn, block_hash)?))
-            .collect()
+            .collect::<Vec<_>>()
             .map_err(error::Sync::from)
     })?;
+
     if missing_blocks.is_empty() {
+        tracing::info!("No missing blocks, skipping sync");
         return Ok(());
     }
+
+    tracing::info!(
+        "identified {} missing blocks in {:?}, starting sync",
+        missing_blocks.len(),
+        start.elapsed()
+    );
+
+    let mut total_blocks_fetched = 0;
     for missing_block in missing_blocks.into_iter().rev() {
-        tracing::debug!("Syncing block `{missing_block}` -> `{main_tip}`");
-        let block = main_client
+        let block = main_rpc_client
             .get_block(missing_block, U8Witness::<0>)
             .map_err(|err| error::Sync::JsonRpc {
                 method: "getblock".to_owned(),
@@ -860,19 +1184,28 @@ where
             })
             .await?
             .0;
+        total_blocks_fetched += 1;
+
         let mut rwtxn = dbs.write_txn()?;
+
         let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
+
+        tracing::debug!("Syncing block #{height} `{missing_block}` -> `{main_tip}`",);
 
         // We should not call out to `invalidateblock` in case of failures here,
         // as that is handled by the cusf-enforcer-mempool crate.
         // FIXME: handle disconnects
         let event = connect_block(&mut rwtxn, dbs, &block)?;
-        tracing::debug!("connected block at height {height}: {missing_block}");
+        tracing::trace!("connected block at height {height}: {missing_block}");
         let () = rwtxn.commit()?;
         // Events should only ever be sent after committing DB txs, see
         // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
         let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
+    tracing::info!(
+        "Synced {total_blocks_fetched} blocks in {:?}",
+        start.elapsed()
+    );
     Ok(())
 }
 
@@ -880,13 +1213,21 @@ pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
-    main_client: &MainClient,
+    main_rpc_client: &MainClient,
+    main_rest_client: &MainRestClient,
     main_tip: BlockHash,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
 {
-    let () = sync_headers(dbs, main_client, main_tip, header_sync_progress_tx).await?;
-    let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
+    let () = sync_headers(
+        dbs,
+        main_rest_client,
+        main_rpc_client,
+        main_tip,
+        header_sync_progress_tx,
+    )
+    .await?;
+    let () = sync_blocks(dbs, event_tx, main_rpc_client, main_tip).await?;
     Ok(())
 }
