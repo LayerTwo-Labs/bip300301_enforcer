@@ -124,7 +124,7 @@ impl WalletInner {
             missing_blocks.reverse();
 
             for (height, block) in missing_blocks {
-                tracing::debug!(
+                tracing::trace!(
                     height = height,
                     hash = %block.block_hash(),
                     "applying missing block"
