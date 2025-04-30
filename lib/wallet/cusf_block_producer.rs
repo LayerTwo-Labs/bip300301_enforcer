@@ -86,22 +86,33 @@ impl CusfEnforcer for Wallet {
 
     type ConnectBlockError = error::ConnectBlock;
 
+    #[instrument(skip_all, fields(block_hash = %block.block_hash()))]
     async fn connect_block(
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
+        tracing::trace!("starting block processing");
+
         let block_hash = block.block_hash();
-        tracing::info!(
-            %block_hash,
-            "CUSF block producer: connecting block"
-        );
+
+        // First, connect the block to the validator.
         let res = self.inner.validator.clone().connect_block(block).await?;
+        tracing::trace!("validator finished processing block");
+
+        // Important: calling this /before/ the validator has connected the block will fail,
+        // as the block header is not yet stored in the validator's database.
         let block_height = self.inner.validator.get_header_info(&block_hash)?.height;
+        tracing::trace!("determined block height: {}", block_height);
+
         let block_info = self.inner.validator.get_block_info(&block.block_hash())?;
+
+        // After the validator has accepted the block, we can handle it in the wallet.
         let () = self
             .inner
             .handle_connect_block(block, block_height, block_info)
             .await?;
+
+        tracing::trace!("wallet finished processing block");
 
         self.inner.set_last_synced_now().await;
 

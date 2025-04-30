@@ -591,7 +591,7 @@ pub fn validate_tx(
 }
 
 /// Block header should be stored before calling this.
-#[tracing::instrument(skip_all, fields(block_hash = %block.block_hash()))]
+#[tracing::instrument(skip_all)]
 pub(in crate::validator) fn connect_block(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
@@ -599,6 +599,7 @@ pub(in crate::validator) fn connect_block(
 ) -> Result<Event, error::ConnectBlock> {
     let parent = block.header.prev_blockhash;
 
+    tracing::trace!("verifying chain tip is block parent");
     // Check that current chain tip is block parent
     match dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? {
         Some(tip) if parent == tip => (),
@@ -628,6 +629,8 @@ pub(in crate::validator) fn connect_block(
             })
         }
     }
+
+    tracing::trace!("starting block processing");
     let height = dbs.block_hashes.height().get(rwtxn, &block.block_hash())?;
     let coinbase = &block.txdata[0];
     let mut coinbase_messages = CoinbaseMessages::new();

@@ -177,7 +177,7 @@ fn connect_block_no_commit<'validator>(
                 reason: reject_reason,
             });
         };
-        tracing::debug!(%block_hash, "Storing header");
+        tracing::trace!("Storing header");
         validator
             .dbs
             .block_hashes
@@ -189,7 +189,6 @@ fn connect_block_no_commit<'validator>(
         child_builder: |parent: &mut RwTxn| validator.dbs.nested_write_txn(parent),
     }
     .try_build()?;
-    tracing::debug!(%block_hash, "Connecting block");
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| task::connect_block(child_rwtxn, &validator.dbs, block))
         .into_nested()?
@@ -236,14 +235,13 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
         validator: &'validator Validator,
         block: &Block,
     ) -> Result<Self::Output, ConnectBlockError> {
-        let block_hash = block.block_hash();
         match connect_block_no_commit(validator, block)? {
             ConnectBlockRwTxnAction::Accept {
                 event,
                 remove_mempool_txs,
                 rwtxns,
             } => {
-                tracing::info!(%block_hash, "Accepted block");
+                tracing::info!("accepted block");
                 let rwtxn = rwtxns.commit_child()?;
                 rwtxn.commit()?;
                 // Events should only ever be sent after committing DB txs, see
@@ -256,7 +254,7 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
                 header_rwtxn,
                 reason,
             } => {
-                tracing::info!(%block_hash, "rejecting block: {reason:#}");
+                tracing::info!("rejecting block: {reason:#}");
                 header_rwtxn.commit()?;
                 Ok(ConnectBlockAction::Reject)
             }
@@ -320,6 +318,7 @@ impl CusfEnforcer for Validator {
             *header_sync_progress_rx_write = Some(header_sync_progress_rx);
             header_sync_progress_tx
         };
+        tracing::debug!(block_hash = %tip, "Syncing to tip");
         let () = task::sync_to_tip(
             &self.dbs,
             &self.events_tx,
