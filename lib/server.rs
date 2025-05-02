@@ -5,7 +5,7 @@ use bitcoin::{
     absolute::Height,
     hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
     key::Secp256k1,
-    Amount, BlockHash, OutPoint, Transaction, TxOut,
+    Address, Amount, BlockHash, OutPoint, Transaction, TxOut,
 };
 use fallible_iterator::{FallibleIterator as _, IteratorExt};
 use futures::{
@@ -1185,6 +1185,12 @@ impl WalletService for crate::wallet::Wallet {
                         .and_then(|(_, transitively)| transitively)
                         .map(|transitively| ReverseHex::encode(&transitively)),
                     unconfirmed_last_seen,
+                    address: Address::from_script(
+                        utxo.txout.script_pubkey.as_script(),
+                        self.validator().network(),
+                    )
+                    .map(|addr| addr.to_string())
+                    .ok(),
                 }
             })
             .filter(|output| output.is_confirmed)
