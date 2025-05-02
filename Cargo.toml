@@ -2,11 +2,7 @@
 
 [workspace]
 resolver = "2"
-members = [
-    "app",
-    "lib",
-    "integration_tests",
-]
+members = ["app", "lib", "integration_tests"]
 
 [workspace.package]
 authors = [
@@ -37,7 +33,7 @@ tracing-subscriber = "0.3.18"
 
 [workspace.dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
+rev = "8603b40520e432ccff27164a484647aa4a0be250"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 # https://github.com/LayerTwo-Labs/cusf-enforcer-mempool/pull/5

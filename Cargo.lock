@@ -482,11 +482,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "bip300301"
+version = "0.1.1"
+source = "git+https://github.com/Ash-L2L/bip300301.git?rev=8603b40520e432ccff27164a484647aa4a0be250#8603b40520e432ccff27164a484647aa4a0be250"
+dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
+ "educe",
+ "hashlink 0.10.0",
+ "hex",
+ "http 1.2.0",
+ "jsonrpsee",
+ "monostate",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.12",
+ "tokio",
+]
+
+[[package]]
 name = "bip300301_enforcer"
 version = "0.3.2"
 dependencies = [
  "bdk_wallet",
- "bip300301",
+ "bip300301 0.1.1 (git+https://github.com/Ash-L2L/bip300301.git?rev=8603b40520e432ccff27164a484647aa4a0be250)",
  "bip300301_enforcer_lib",
  "bitcoin",
  "clap",
@@ -514,7 +534,7 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "bdk_wallet",
- "bip300301",
+ "bip300301 0.1.1 (git+https://github.com/Ash-L2L/bip300301.git?rev=8603b40520e432ccff27164a484647aa4a0be250)",
  "bip300301_enforcer_lib",
  "bitcoin",
  "cfg-if",
@@ -554,7 +574,7 @@ dependencies = [
  "bdk_esplora",
  "bdk_wallet",
  "bincode",
- "bip300301",
+ "bip300301 0.1.1 (git+https://github.com/Ash-L2L/bip300301.git?rev=8603b40520e432ccff27164a484647aa4a0be250)",
  "bitcoin",
  "bitcoin-send-tx-p2p",
  "blake3",
@@ -1053,7 +1073,7 @@ source = "git+https://github.com/torkelrogstad/cusf-enforcer-mempool.git?rev=26b
 dependencies = [
  "anyhow",
  "async-trait",
- "bip300301",
+ "bip300301 0.1.1 (git+https://github.com/Ash-L2L/bip300301.git?rev=45f74e37b8295207d29ddbbce10d563ec9f67151)",
  "bitcoin",
  "blake3",
  "borsh",
