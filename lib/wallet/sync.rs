@@ -11,13 +11,16 @@ use tokio::time::Instant;
 use tracing::instrument;
 
 use crate::{
+    cli::WalletSyncSource,
     types::WithdrawalBundleEventKind,
     wallet::{
         error,
         util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
-        BdkWallet, Persistence, PersistenceError, WalletInner,
+        BdkWallet, Persistence, WalletInner,
     },
 };
+
+use super::{ElectrumClient, EsploraClient};
 
 /// Write-locked last_sync, wallet, and database
 #[must_use]
@@ -29,10 +32,16 @@ pub(in crate::wallet) struct SyncWriteGuard<'a> {
 
 impl SyncWriteGuard<'_> {
     /// Persist changes from the sync
-    pub(in crate::wallet) async fn commit(mut self) -> Result<(), PersistenceError> {
+    #[instrument(skip_all, fields(file = %self.database.file_path.display()))]
+    pub(in crate::wallet) async fn commit(mut self) -> Result<(), error::BdkWalletPersist> {
+        tracing::trace!("committing wallet DB to file");
         self.wallet
             .with_mut(|wallet| wallet.persist_async(&mut self.database))
-            .await?;
+            .await
+            .map_err(|err| error::BdkWalletPersist {
+                file_path: self.database.file_path.clone(),
+                source: err,
+            })?;
         *self.last_sync = Some(SystemTime::now());
         Ok(())
     }
@@ -161,7 +170,7 @@ impl WalletInner {
                 }
             }
         };
-        tracing::trace!("Acquired upgradable read lock on wallet");
+        tracing::trace!("acquired upgradable read lock on wallet");
         let last_sync_write = self.last_sync.write().await;
         let request = wallet_read.start_sync_with_revealed_spks().build();
 
@@ -181,12 +190,18 @@ impl WalletInner {
                 )
             }
 
-            Either::Right(esplora_client) => (
+            Either::Right(Either::Left(esplora_client)) => (
                 "esplora",
                 esplora_client
                     .sync(request, ESPLORA_PARALLEL_REQUESTS)
                     .await?,
             ),
+            // This should be checked above, so we never get into this branch. However, handle
+            // it gracefully.
+            Either::Right(Either::Right(_)) => {
+                tracing::info!("`no-sync` sync source aborting",);
+                return Ok(None);
+            }
         };
         tracing::trace!("Fetched update from {source}, applying update");
         // Upgrade wallet lock
@@ -205,9 +220,10 @@ impl WalletInner {
 
     async fn address_has_txs(
         &self,
+        chain_source: Either<&ElectrumClient, &EsploraClient>,
         address: &bitcoin::Address,
     ) -> miette::Result<bool, error::FullScan> {
-        let res = match &self.chain_source {
+        let res = match &chain_source {
             Either::Left(electrum_client) => electrum_client
                 .inner
                 .script_get_history(&address.script_pubkey())
@@ -271,6 +287,18 @@ impl WalletInner {
     ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
         tracing::info!("starting wallet full scan");
 
+        let chain_source = match &self.chain_source {
+            Either::Left(electrum) => Either::Left(electrum),
+            Either::Right(Either::Left(esplora)) => Either::Right(esplora),
+            // This should be picked up earlier, by never invoking `full_scan` with
+            // a disabled sync source
+            Either::Right(Either::Right(_disabled)) => {
+                return Err(error::FullScan::InvalidSyncSource {
+                    sync_source: WalletSyncSource::Disabled,
+                })
+            }
+        };
+
         let mut start = SystemTime::now();
 
         let wallet_read = self
@@ -286,7 +314,7 @@ impl WalletInner {
             // First find upper bound by incrementing by 1000 until we find unused
             loop {
                 let address = wallet_read.peek_address(keychain, last_used_index);
-                let has_txs = self.address_has_txs(&address).await?;
+                let has_txs = self.address_has_txs(chain_source, &address).await?;
 
                 if !has_txs {
                     break;
@@ -301,7 +329,7 @@ impl WalletInner {
             while low < high {
                 let mid = low + (high - low) / 2;
                 let address = wallet_read.peek_address(keychain, mid);
-                let has_txs = self.address_has_txs(&address).await?;
+                let has_txs = self.address_has_txs(chain_source, &address).await?;
 
                 if !has_txs {
                     high = mid;
@@ -337,7 +365,7 @@ impl WalletInner {
             .start_sync_with_revealed_spks()
             .chain_tip(checkpoint);
 
-        let update = match &self.chain_source {
+        let update = match chain_source {
             Either::Left(electrum_client) => {
                 const BATCH_SIZE: usize = 100;
                 const FETCH_PREV_TXOUTS: bool = true;
@@ -401,3 +429,5 @@ impl WalletInner {
         }
     }
 }
+
+pub struct NoSyncClient {}

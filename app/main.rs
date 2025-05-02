@@ -7,6 +7,7 @@ use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
 use http::{header::HeaderName, Request};
 
+use jsonrpsee::core::client::Error;
 use jsonrpsee::server::RpcServiceBuilder;
 use miette::{miette, IntoDiagnostic, Result};
 use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
@@ -218,7 +219,7 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
         }
     };
 
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
 
     // Set all services to have the "serving" status.
     // TODO: somehow expose the health reporter to the running services, and
@@ -733,13 +734,44 @@ async fn main() -> Result<()> {
         cli.node_rpc_opts.addr,
     );
 
-    let info = mainchain_client
-        .get_blockchain_info()
-        .await
-        .map_err(|err| wallet::error::BitcoinCoreRPC {
-            method: "getblockchaininfo".to_string(),
-            error: err,
-        })?;
+    let mut info = None;
+    while info.is_none() {
+        // From Bitcoin Core src/rpc/protocol.h
+        const RPC_IN_WARMUP: i32 = -28;
+
+        // If Bitcoin Core is booting up, we don't want to fail hard.
+        // Check for errors that should go away after a little while,
+        // and tolerate those.
+        match mainchain_client.get_blockchain_info().await {
+            Ok(inner_info) => {
+                info = Some(inner_info);
+                Ok(())
+            }
+
+            Err(Error::Call(err)) if err.code() == RPC_IN_WARMUP => {
+                tracing::debug!(
+                    err = format!("{}: {}", err.code(), err.message()),
+                    "Transient Bitcoin Core error, retrying...",
+                );
+                Ok(())
+            }
+
+            Err(err) => Err(wallet::error::BitcoinCoreRPC {
+                method: "getblockchaininfo".to_string(),
+                error: err,
+            }),
+        }?;
+
+        let delay = tokio::time::Duration::from_millis(250);
+        tokio::time::sleep(delay).await;
+    }
+
+    let Some(info) = info else {
+        return Err(miette!(
+            "was never able to query bitcoin core blockchain info"
+        ));
+    };
+
     tracing::info!(
         network = %info.chain,
         blocks = %info.blocks,
@@ -819,7 +851,7 @@ async fn main() -> Result<()> {
         enforcer_task_err = err_rxs.enforcer_task => {
             match enforcer_task_err {
                 Ok(err) => {
-                    tracing::error!("Received error: {err:#}");
+                    tracing::error!("Received enforcer task error: {err:}");
                     Err(miette!(err))
                 }
                 Err(err) => {
@@ -832,7 +864,7 @@ async fn main() -> Result<()> {
         grpc_server_err = err_rxs.grpc_server => {
             match grpc_server_err {
                 Ok(err) => {
-                    tracing::error!("Received error: {err:#}");
+                    tracing::error!("Received gRPC server error: {err:#}");
                     Err(miette!(err))
                 }
                 Err(err) => {

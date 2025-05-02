@@ -36,6 +36,7 @@ use miette::{miette, IntoDiagnostic, Report, Result};
 use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use sync::NoSyncClient;
 use tokio::{spawn, task::JoinHandle, time::Instant};
 use tracing::instrument;
 use util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome};
@@ -63,11 +64,11 @@ mod util;
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
 pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
-pub(crate) type PersistenceError = tokio_rusqlite::Error;
 type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
+type ChainSource = Either<ElectrumClient, Either<EsploraClient, NoSyncClient>>;
 
 struct WalletInner {
     main_client: HttpClient,
@@ -80,7 +81,7 @@ struct WalletInner {
     bdk_db: tokio::sync::Mutex<Persistence>,
     // Persistence for things /we/ care about. Wallet seed, M* messages, ++.
     self_db: tokio::sync::Mutex<rusqlite::Connection>,
-    chain_source: Either<ElectrumClient, EsploraClient>,
+    chain_source: ChainSource,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
@@ -299,8 +300,9 @@ impl WalletInner {
             WalletSyncSource::Esplora => {
                 let esplora_client =
                     Self::init_esplora_client(&config.wallet_opts, network).await?;
-                Either::Right(esplora_client)
+                Either::Right(Either::Left(esplora_client))
             }
+            WalletSyncSource::Disabled => Either::Right(Either::Right(NoSyncClient {})),
         };
         let db_connection = Self::init_db_connection(data_dir)?;
 
@@ -606,7 +608,6 @@ impl WalletInner {
     }
 
     // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
     async fn delete_bundle_proposals<I>(&self, iter: I) -> Result<(), rusqlite::Error>
     where
         I: IntoIterator<Item = (SidechainNumber, M6id)>,
@@ -626,7 +627,6 @@ impl WalletInner {
     }
 
     // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
     async fn delete_pending_sidechain_proposals<I>(
         &self,
         proposals: I,
@@ -713,7 +713,7 @@ impl Task {
                     );
                     let guard = span.enter();
                     if let Err(err) = wallet.sync().await {
-                        tracing::error!("wallet sync error: {err:#}");
+                        tracing::error!("wallet sync error: {:#}", miette::Report::new(err));
                     }
                     drop(guard);
                     sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
@@ -1026,7 +1026,6 @@ impl Wallet {
     }
 
     // Gets wiped upon generating a new block.
-    // TODO: how will this work for non-regtest?
     async fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
         self.inner
             .self_db
