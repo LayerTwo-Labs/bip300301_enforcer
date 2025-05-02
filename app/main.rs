@@ -629,6 +629,21 @@ async fn main() -> Result<()> {
     .into_diagnostic()?;
 
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
+        // The wallet needs the txindex in order to operate. Will lead to obscure errors later
+        // if we fail RPC requests due to the index not being there.
+        //
+        // TODO: should actually move away from needed txindex, but that's for another day.
+        // TODO: we could check if the index is synced here. not necessary?
+        let index_info = mainchain_client.get_index_info().await.map_err(|err| {
+            wallet::error::BitcoinCoreRPC {
+                method: "getindexinfo".to_string(),
+                error: err,
+            }
+        })?;
+        if !index_info.contains_key("txindex") {
+            return Err(miette!("`txindex` is not enabled on the mainchain client"));
+        }
+
         let block_template = get_block_template(&mainchain_client, info.chain).await?;
         let magic = block_template
             .signet_challenge

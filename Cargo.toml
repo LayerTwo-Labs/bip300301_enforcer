@@ -34,11 +34,12 @@ tracing-subscriber = "0.3.18"
 
 [workspace.dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "543681a65f8f9b44b298482a7f39dd688829a2de"
+rev = "8603b40520e432ccff27164a484647aa4a0be250"
 
 [workspace.dependencies.cusf-enforcer-mempool]
-git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "e041fd65a92f64baddb98689f3b9da3b1c28c61b"
+# https://github.com/LayerTwo-Labs/cusf-enforcer-mempool/pull/8
+git = "https://github.com/torkelrogstad/cusf-enforcer-mempool.git"
+rev = "58227511cc63f9ac448a5ecfbb38b743dad5367a"
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"
