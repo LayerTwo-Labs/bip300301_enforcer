@@ -5,7 +5,6 @@ use bip300301::jsonrpsee;
 use bitcoin::{self, Amount, BlockHash, OutPoint};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream::FusedStream, StreamExt};
-use main_rest_client::MainRestClient;
 use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use thiserror::Error;
@@ -17,6 +16,7 @@ use crate::{
         BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
         SidechainProposalId, TreasuryUtxo, TwoWayPegData,
     },
+    validator::main_rest_client::MainRestClient,
 };
 
 pub mod cusf_enforcer;
@@ -24,8 +24,7 @@ mod dbs;
 pub mod main_rest_client;
 mod task;
 
-use dbs::{db_error, CreateDbsError, Dbs, PendingM6ids};
-pub use task::error::ValidateTransaction as ValidateTransactionError;
+use self::dbs::{db_error, CreateDbsError, Dbs, PendingM6ids};
 
 #[derive(Debug, Error)]
 pub enum InitError {

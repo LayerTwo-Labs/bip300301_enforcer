@@ -15,10 +15,12 @@ use crate::types::{
 mod block_hashes;
 mod util;
 
-pub use block_hashes::{error as block_hash_dbs_error, BlockHashDbs};
-pub use util::{
-    db_error, CommitWriteTxnError, Database, Env, NestedWriteTxnError, ReadTxnError, RoDatabase,
-    RwTxn, UnitKey, WriteTxnError,
+pub use self::{
+    block_hashes::{error as block_hash_dbs_error, BlockHashDbs},
+    util::{
+        db_error, CommitWriteTxnError, Database, Env, NestedWriteTxnError, ReadTxnError,
+        RoDatabase, RwTxn, UnitKey, WriteTxnError,
+    },
 };
 
 #[derive(Debug, Diagnostic, Error)]

@@ -179,6 +179,17 @@ the repo:
 $ prettier --write .
 ```
 
+# Linting Rust code
+
+Rust code is linted with Clippy. We use a specific Clippy lint that's only
+available on the nightly release channel. Running Clippy therefore looks like
+this:
+
+```bash
+$ cargo clippy --all-targets
+$ cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
+```
+
 # Integration tests
 
 Integration tests can be run using

@@ -245,10 +245,12 @@ pub mod mainchain {
 
     tonic::include_proto!("cusf.mainchain.v1");
 
-    use subscribe_events_response::event::{ConnectBlock, DisconnectBlock};
     #[allow(unused_imports)]
-    pub use validator_service_server::{
-        self as server, ValidatorService as Service, ValidatorServiceServer as Server,
+    pub use self::{
+        subscribe_events_response::event::{ConnectBlock, DisconnectBlock},
+        validator_service_server::{
+            self as server, ValidatorService as Service, ValidatorServiceServer as Server,
+        },
     };
 
     impl From<&bitcoin::OutPoint> for OutPoint {
