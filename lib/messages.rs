@@ -1,14 +1,13 @@
 use std::collections::{hash_map, HashMap};
 
-use bitcoin::amount::CheckedSum;
-use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{
+    amount::CheckedSum,
     hashes::{sha256d, Hash},
     opcodes::{
         all::{OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
     },
-    script::PushBytesBuf,
+    script::{Instruction, Instructions, PushBytesBuf},
     Amount, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
@@ -786,9 +785,8 @@ pub fn create_sidechain_proposal(
 #[cfg(test)]
 mod tests {
 
-    use crate::types::SidechainProposal;
-
     use super::*;
+    use crate::types::SidechainProposal;
 
     #[test]
     fn test_parse_m8_bmm_request() {

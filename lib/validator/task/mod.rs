@@ -13,6 +13,7 @@ use fatality::Split as _;
 use futures::TryFutureExt as _;
 use hashlink::LinkedHashSet;
 
+use super::main_rest_client::MainRestClient;
 use crate::{
     messages::{
         compute_m6id, parse_op_drivechain, CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain,
@@ -27,8 +28,6 @@ use crate::{
     },
     validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
 };
-
-use super::main_rest_client::MainRestClient;
 
 pub mod error;
 

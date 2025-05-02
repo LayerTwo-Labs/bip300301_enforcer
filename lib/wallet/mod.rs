@@ -1094,8 +1094,9 @@ impl Wallet {
     fn deposit_txordering(
         sidechain_addrs: HashMap<Vec<u8>, SidechainNumber>,
     ) -> bdk_wallet::TxOrdering {
-        use bitcoin::hashes::{Hash, Hmac, HmacEngine};
         use std::cmp::Ordering;
+
+        use bitcoin::hashes::{Hash, Hmac, HmacEngine};
         let hmac_engine = || {
             let key = {
                 use rand::RngCore;

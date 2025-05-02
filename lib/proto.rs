@@ -599,8 +599,9 @@ pub mod mainchain {
 
     impl From<&crate::types::WithdrawalBundleEventKind> for withdrawal_bundle_event::event::Event {
         fn from(event_kind: &crate::types::WithdrawalBundleEventKind) -> Self {
-            use crate::types::WithdrawalBundleEventKind;
             use withdrawal_bundle_event::event::{Failed, Submitted, Succeeded};
+
+            use crate::types::WithdrawalBundleEventKind;
             match event_kind {
                 WithdrawalBundleEventKind::Failed => Self::from(Failed {}),
                 WithdrawalBundleEventKind::Submitted => Self::from(Submitted {}),

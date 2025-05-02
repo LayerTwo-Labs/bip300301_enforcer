@@ -19,10 +19,17 @@ jobs:
         with:
           submodules: "recursive"
 
+      # Needed for `cargo fmt` checks
+      - name: Install latest nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -35,7 +42,8 @@ jobs:
           args: --check .
 
       - name: Check Rust formatting
-        run: cargo fmt --all -- --check
+        # import formatting is nightly only
+        run: cargo +nightly fmt --all -- --check
 
       - name: Cargo check
         run: cargo check --all-targets

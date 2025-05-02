@@ -1,10 +1,8 @@
 //! Setup for an integration test
 
-use std::net::SocketAddr;
-use std::{collections::HashMap, future::Future};
+use std::{collections::HashMap, future::Future, net::SocketAddr};
 
 use anyhow::anyhow;
-
 use bip300301_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
@@ -22,8 +20,10 @@ use futures::{channel::mpsc, future, FutureExt as _, StreamExt};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
-use tokio::net::TcpStream;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::{
+    net::TcpStream,
+    time::{sleep, timeout, Duration},
+};
 
 use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer};
 

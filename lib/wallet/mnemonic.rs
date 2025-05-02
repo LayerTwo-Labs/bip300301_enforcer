@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
@@ -9,7 +11,6 @@ use bdk_wallet::{
     miniscript::miniscript,
 };
 use miette::{miette, IntoDiagnostic, Result};
-use std::str::FromStr;
 
 /// Create a cryptographically secure mnemonic.
 pub(crate) fn new_mnemonic() -> Result<Mnemonic, miette::Report> {

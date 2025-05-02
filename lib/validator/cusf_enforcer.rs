@@ -22,11 +22,11 @@ use crate::{
     validator::{
         db_error,
         dbs::{self, RwTxn},
-        task, Validator,
+        task,
+        task::error::ValidateTransaction as ValidateTransactionError,
+        Validator,
     },
 };
-
-pub use task::error::ValidateTransaction as ValidateTransactionError;
 
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]

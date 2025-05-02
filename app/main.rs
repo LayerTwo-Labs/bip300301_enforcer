@@ -2,25 +2,6 @@ use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
-use clap::Parser;
-use either::Either;
-use futures::{channel::oneshot, TryFutureExt as _};
-use http::{header::HeaderName, Request};
-use reqwest::Url;
-
-use jsonrpsee::core::client::Error;
-use jsonrpsee::server::RpcServiceBuilder;
-use miette::{miette, IntoDiagnostic, Result};
-use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
-use tonic::{server::NamedService, transport::Server};
-use tower::ServiceBuilder;
-use tower_http::{
-    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
-};
-use tracing::Instrument;
-use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
-
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
     p2p::compute_signet_magic,
@@ -33,7 +14,22 @@ use bip300301_enforcer_lib::{
     validator::{main_rest_client::MainRestClient, Validator},
     wallet,
 };
-
+use clap::Parser;
+use either::Either;
+use futures::{channel::oneshot, TryFutureExt as _};
+use http::{header::HeaderName, Request};
+use jsonrpsee::{core::client::Error, server::RpcServiceBuilder};
+use miette::{miette, IntoDiagnostic, Result};
+use reqwest::Url;
+use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
+use tonic::{server::NamedService, transport::Server};
+use tower::ServiceBuilder;
+use tower_http::{
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
+};
+use tracing::Instrument;
+use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 use wallet::Wallet;
 
 /// Saturating predecessor of a log level
