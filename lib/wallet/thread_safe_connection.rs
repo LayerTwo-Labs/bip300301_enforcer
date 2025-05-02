@@ -1,18 +1,24 @@
-use std::future::Future;
-use std::path::Path;
-use std::pin::Pin;
+use std::{future::Future, path::PathBuf, pin::Pin};
 
 use bdk_wallet::{AsyncWalletPersister, ChangeSet};
 
 /// A simple thread‑safe wrapper around a rusqlite::Connection that implements AsyncWalletPersister.
 #[derive(Debug)]
-pub struct ThreadSafeConnection(tokio_rusqlite::Connection);
+pub struct ThreadSafeConnection {
+    /// File path to the database. Not used for anything within the thread
+    /// safe connection, but can be useful for diagnostic purposes.
+    pub file_path: PathBuf,
+    conn: tokio_rusqlite::Connection,
+}
 
 impl ThreadSafeConnection {
     /// Opens a new connection at the given path and returns a new ThreadSafeConnection.
-    pub async fn open<P: AsRef<Path>>(path: P) -> tokio_rusqlite::Result<Self> {
-        let conn = tokio_rusqlite::Connection::open(path).await?;
-        Ok(ThreadSafeConnection(conn))
+    pub async fn open(path: PathBuf) -> tokio_rusqlite::Result<Self> {
+        let conn = tokio_rusqlite::Connection::open(path.clone()).await?;
+        Ok(ThreadSafeConnection {
+            file_path: path,
+            conn,
+        })
     }
 }
 
@@ -32,7 +38,7 @@ impl AsyncWalletPersister for ThreadSafeConnection {
     {
         Box::pin(async move {
             persister
-                .0
+                .conn
                 .call(move |conn| {
                     let tx = conn.transaction()?;
                     ChangeSet::init_sqlite_tables(&tx)?;
@@ -55,7 +61,7 @@ impl AsyncWalletPersister for ThreadSafeConnection {
         let changeset = changeset.clone();
         Box::pin(async move {
             persister
-                .0
+                .conn
                 .call(move |conn| {
                     let tx = conn.transaction()?;
                     changeset.persist_to_sqlite(&tx)?;

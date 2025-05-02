@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use bdk_chain::CheckPoint;
 use bip300301::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
@@ -116,16 +118,29 @@ pub enum WalletSignTransaction {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+#[diagnostic(code(bdk_wallet_persist))]
+#[error("unable to persist BDK wallet DB `{file_path}`")]
+pub struct BdkWalletPersist {
+    pub file_path: PathBuf,
+    pub source: tokio_rusqlite::Error,
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum WalletSync {
     #[error(transparent)]
+    #[diagnostic(code(bdk_wallet_connect))]
     BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
     #[error(transparent)]
-    BdkWalletPersist(#[from] super::PersistenceError),
+    #[diagnostic(transparent)]
+    BdkWalletPersist(#[from] BdkWalletPersist),
     #[error(transparent)]
+    #[diagnostic(code(electrum_sync))]
     ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
     #[error(transparent)]
+    #[diagnostic(code(esplora_sync))]
     EsploraSync(#[from] Box<bdk_esplora::esplora_client::Error>),
     #[error(transparent)]
+    #[diagnostic(code(wallet_not_unlocked))]
     WalletNotUnlocked(#[from] NotUnlocked),
 }
 

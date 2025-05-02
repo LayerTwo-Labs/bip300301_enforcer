@@ -64,7 +64,6 @@ mod util;
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
 pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
-pub(crate) type PersistenceError = tokio_rusqlite::Error;
 type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
@@ -714,7 +713,7 @@ impl Task {
                     );
                     let guard = span.enter();
                     if let Err(err) = wallet.sync().await {
-                        tracing::error!("wallet sync error: {err:#}");
+                        tracing::error!("wallet sync error: {:#}", miette::Report::new(err));
                     }
                     drop(guard);
                     sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();

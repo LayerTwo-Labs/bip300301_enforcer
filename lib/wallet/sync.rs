@@ -16,7 +16,7 @@ use crate::{
     wallet::{
         error,
         util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
-        BdkWallet, Persistence, PersistenceError, WalletInner,
+        BdkWallet, Persistence, WalletInner,
     },
 };
 
@@ -32,10 +32,16 @@ pub(in crate::wallet) struct SyncWriteGuard<'a> {
 
 impl SyncWriteGuard<'_> {
     /// Persist changes from the sync
-    pub(in crate::wallet) async fn commit(mut self) -> Result<(), PersistenceError> {
+    #[instrument(skip_all, fields(file = %self.database.file_path.display()))]
+    pub(in crate::wallet) async fn commit(mut self) -> Result<(), error::BdkWalletPersist> {
+        tracing::trace!("committing wallet DB to file");
         self.wallet
             .with_mut(|wallet| wallet.persist_async(&mut self.database))
-            .await?;
+            .await
+            .map_err(|err| error::BdkWalletPersist {
+                file_path: self.database.file_path.clone(),
+                source: err,
+            })?;
         *self.last_sync = Some(SystemTime::now());
         Ok(())
     }
@@ -164,7 +170,7 @@ impl WalletInner {
                 }
             }
         };
-        tracing::trace!("Acquired upgradable read lock on wallet");
+        tracing::trace!("acquired upgradable read lock on wallet");
         let last_sync_write = self.last_sync.write().await;
         let request = wallet_read.start_sync_with_revealed_spks().build();
 
