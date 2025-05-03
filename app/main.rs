@@ -375,8 +375,8 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
         Ok(res) => res,
         Err(err) => {
-            tracing::error!("mempool: initial sync error: {err:#?}");
-            let err = miette::miette!("mempool: initial sync error: {err:#}");
+            let err = miette::Report::from_err(err);
+            tracing::error!("mempool: initial sync error: {err:#}");
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
