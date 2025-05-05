@@ -1,5 +1,6 @@
-use std::{collections::HashMap, sync::atomic::Ordering};
+use std::{borrow::Cow, collections::HashMap, sync::atomic::Ordering};
 
+use bip300301::client::{GetBlockClient, U8Witness};
 use bitcoin::{hashes::Hash as _, BlockHash, Transaction, Txid};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
@@ -91,9 +92,9 @@ impl CusfEnforcer for Wallet {
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
-        tracing::trace!("starting block processing");
+        let start = std::time::Instant::now();
 
-        let block_hash = block.block_hash();
+        tracing::trace!("starting block processing");
 
         // First, connect the block to the validator.
         let res = self.inner.validator.clone().connect_block(block).await?;
@@ -101,18 +102,126 @@ impl CusfEnforcer for Wallet {
 
         // Important: calling this /before/ the validator has connected the block will fail,
         // as the block header is not yet stored in the validator's database.
-        let block_height = self.inner.validator.get_header_info(&block_hash)?.height;
+        let block_height = self
+            .inner
+            .validator
+            .get_header_info(&block.block_hash())?
+            .height;
         tracing::trace!("determined block height: {}", block_height);
 
-        let block_info = self.inner.validator.get_block_info(&block.block_hash())?;
-
         // After the validator has accepted the block, we can handle it in the wallet.
-        let () = self
-            .inner
-            .handle_connect_block(block, block_height, block_info)
-            .await?;
+        //
+        // A few checks that need to happen:
+        // 1. Is the wallet tip part of the active chain?
+        // 2. Does the wallet have all the blocks up until the block we're trying to connect?
+        //    If not, we have to iterate over the missing blocks and connect them first.
 
-        tracing::trace!("wallet finished processing block");
+        let wallet_tip = self.inner.get_tip().await?;
+
+        let initial_block_param = block; // Keep the original reference
+
+        // If the wallet tip is higher than the block height we need to connect the missing blocks.
+        // We have logic for that below. We therefore use max() here to ensure that the loop
+        // will run at least once (thereby triggering the logic for missing blocks).
+        let expected_blocks =
+            std::cmp::max(1, block_height.saturating_sub(wallet_tip.height)) as usize;
+
+        tracing::trace!(
+            wallet_tip_height = wallet_tip.height,
+            "wallet is about to start processing {expected_blocks} block(s)"
+        );
+
+        let block_info = self.inner.validator.get_block_infos(
+            &initial_block_param.block_hash(),
+            expected_blocks.saturating_sub(1),
+        )?;
+
+        // Have to keep track of the index manually, because we need to be able to retry the current
+        // operation if we get a 'try_include_height' error from BDK.
+        let mut processed_blocks = 0;
+
+        while processed_blocks < block_info.len() {
+            let (header_info, block_info) = &block_info[processed_blocks];
+            let block_hash = header_info.block_hash;
+            let block_height = header_info.height;
+
+            tracing::trace!(
+                block_hash = %block_hash,
+                block_height = %block_height,
+                "wallet is about to process block"
+            );
+
+            // Use Cow to manage the block for this iteration
+            let block_for_this_iteration: Cow<'_, bitcoin::Block> =
+                if block_hash == initial_block_param.block_hash() {
+                    Cow::Borrowed(initial_block_param)
+                } else {
+                    // Fetch the ancestor block if needed
+                    let fetched_block = self
+                        .inner
+                        .main_client
+                        .get_block(block_hash, U8Witness::<0>)
+                        .await
+                        .map_err(|err| {
+                            let error = error::BitcoinCoreRPC {
+                                method: "getblock".to_string(),
+                                error: err,
+                            };
+                            error::ConnectBlock::GetBlock(error)
+                        })?;
+                    Cow::Owned(fetched_block.0) // Cow now owns the fetched block
+                };
+
+            // The BDK wallet explicitly does NOT allow disconnecting blocks. Instead we're
+            // supposed to just connect whatever comes in, and the current tip will be
+            // automatically set to the best seen tip. I.e. if a block is invalidated,
+            // it will be considered the best tip in the BDK wallet until it is overtaken
+            // by another.
+            // https://github.com/bitcoindevkit/bdk_wallet/issues/116
+            //
+            // We're therefore not checking here if the block is connect to the current active
+            // chain.
+
+            let () = match self
+                .inner
+                .handle_connect_block(&block_for_this_iteration, block_height, block_info)
+                .await
+            {
+                Ok(_) => Ok(()),
+
+                // Try the recommended fixup - and then go back to the start of the loop
+                Err(error::ConnectBlock::BdkConnect(
+                    bdk_chain::local_chain::CannotConnectError { try_include_height },
+                )) => {
+                    // If we just pass in the recommended include height we iterate forever.
+                    // BDK uses a different indexing scheme than we/Core does?
+                    let try_include_height = try_include_height + 1;
+
+                    tracing::warn!(
+                        "unable to connect block to bdk_chain, trying recommended include height {}",
+                        try_include_height
+                    );
+
+                    self.connect_missing_block(try_include_height).await?;
+
+                    continue;
+                }
+                err => err,
+            }?;
+
+            processed_blocks += 1;
+
+            // If the wallet tip is equal to the incoming block - 1, we've applied all 'em all
+            if processed_blocks == expected_blocks {
+                tracing::debug!(
+                    block_hash = %block_hash,
+                    block_height = %block_height,
+                    "wallet finished processing {processed_blocks} block(s) in {:?}",
+                    start.elapsed()
+                );
+                break;
+            }
+        }
 
         self.inner.set_last_synced_now().await;
 
