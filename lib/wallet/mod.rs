@@ -1919,6 +1919,88 @@ impl Wallet {
         Ok(m6id)
     }
 
+    /// Connect a missing block to the BDK chain. This is a recursive function that will
+    /// retry if we get a 'nested' alert from BDK, about further missing ancestors.
+    async fn connect_missing_block(
+        &mut self,
+        try_include_height: u32,
+    ) -> std::result::Result<(), error::ConnectBlock> {
+        use bip300301::{
+            client::{GetBlockClient as _, U8Witness},
+            MainClient as _,
+        };
+
+        let try_include_hash = self
+            .inner
+            .main_client
+            .getblockhash(try_include_height as usize)
+            .await
+            .map_err(|err| {
+                error::ConnectBlock::GetBlockHash(error::BitcoinCoreRPC {
+                    method: "getblockhash".to_string(),
+                    error: err,
+                })
+            })?;
+
+        let try_include_block = self
+            .inner
+            .main_client
+            .get_block(try_include_hash, U8Witness::<0>)
+            .await
+            .map_err(|err| {
+                error::ConnectBlock::GetBlock(error::BitcoinCoreRPC {
+                    method: "getblock".to_string(),
+                    error: err,
+                })
+            })?;
+
+        let infos = self
+            .inner
+            .validator
+            .get_block_infos(&try_include_block.0.block_hash(), 0)?;
+
+        assert_eq!(infos.len(), 1);
+
+        let (header_info, block_info) = infos.head;
+
+        tracing::debug!(
+            "connecting missing block {} at height {}",
+            try_include_block.0.block_hash(),
+            header_info.height
+        );
+
+        match self
+            .inner
+            .handle_connect_block(&try_include_block.0, header_info.height, &block_info)
+            .await
+        {
+            Ok(_) => Ok(()),
+            // We can receive 'nested' alerts from BDK, about further missing ancestors. We therefore
+            // recurse, but make sure to only do so if the recommended try_include_height is /below/
+            // what we just tried. Otherwise we'll just loop forever.
+            Err(error::ConnectBlock::BdkConnect(bdk_chain::local_chain::CannotConnectError {
+                try_include_height,
+            })) if try_include_height < header_info.height => {
+                tracing::info!(
+                    "recursing to connect missing block at height {}",
+                    try_include_height
+                );
+
+                // Need to box the recursive call to satisfy the compiler
+                Box::pin(self.connect_missing_block(try_include_height)).await
+            }
+            err => err,
+        }?;
+
+        tracing::debug!(
+            "connected missing block {} at height {}",
+            try_include_block.0.block_hash(),
+            header_info.height
+        );
+
+        Ok(())
+    }
+
     pub async fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
         self.inner.unlock_existing_wallet(password).await
     }

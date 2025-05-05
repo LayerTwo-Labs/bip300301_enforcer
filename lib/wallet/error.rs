@@ -243,6 +243,14 @@ pub enum ConnectBlock {
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
     GetBlockInfo(#[from] validator::GetBlockInfoError),
+    #[error(transparent)]
+    GetBlockInfos(#[from] validator::GetBlockInfosError),
+    #[error("unable to fetch block from mainchain")]
+    #[diagnostic(code(fetch_block_error))]
+    GetBlock(#[source] BitcoinCoreRPC),
+    #[error("unable to fetch block hash from mainchain")]
+    #[diagnostic(code(fetch_block_hash_error))]
+    GetBlockHash(#[source] BitcoinCoreRPC),
     #[error("unable to fetch missing block")]
     #[diagnostic(code(fetch_block_error))]
     FetchBlock(#[source] BitcoinCoreRPC),
