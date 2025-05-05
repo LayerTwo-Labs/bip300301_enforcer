@@ -32,7 +32,7 @@ use crate::{
         },
         mainchain::{
             create_sidechain_proposal_response, get_block_info_response,
-            get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
+            get_bmm_h_star_commitment_response, get_ctip_response::Ctip, get_info_response,
             get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
@@ -765,6 +765,10 @@ impl WalletService for crate::wallet::Wallet {
                     )
                 })
                 .collect(),
+            tip: Some(get_info_response::Tip {
+                height: info.tip.1,
+                hash: Some(ReverseHex::encode(&info.tip.0)),
+            }),
         };
         Ok(tonic::Response::new(response))
     }

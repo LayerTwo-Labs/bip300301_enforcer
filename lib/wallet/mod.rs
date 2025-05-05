@@ -772,6 +772,7 @@ pub struct WalletInfo {
     pub network: bdk_wallet::bitcoin::Network,
     pub transaction_count: usize,
     pub unspent_output_count: usize,
+    pub tip: (BlockHash, u32),
 }
 
 /// Cheap to clone, since it uses Arc internally
@@ -1869,11 +1870,14 @@ impl Wallet {
             keychain_descriptors.insert(kind, w.public_descriptor(kind).clone());
         }
 
+        let tip = w.local_chain().tip();
+
         Ok(WalletInfo {
             keychain_descriptors,
             network: w.network(),
             transaction_count: w.transactions().count(),
             unspent_output_count: w.list_unspent().count(),
+            tip: (tip.hash(), tip.height()),
         })
     }
 
