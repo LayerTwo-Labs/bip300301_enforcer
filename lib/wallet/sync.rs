@@ -10,6 +10,7 @@ use either::Either::{self, Left, Right};
 use tokio::time::Instant;
 use tracing::instrument;
 
+use super::{ElectrumClient, EsploraClient};
 use crate::{
     cli::WalletSyncSource,
     types::WithdrawalBundleEventKind,
@@ -19,8 +20,6 @@ use crate::{
         BdkWallet, Persistence, WalletInner,
     },
 };
-
-use super::{ElectrumClient, EsploraClient};
 
 /// Write-locked last_sync, wallet, and database
 #[must_use]

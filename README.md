@@ -159,7 +159,13 @@ $ protolint lint --fix proto/validator/v1/validator.proto
 
 # Code formatting
 
-Rust code is formatted with [rustfmt](https://github.com/rust-lang/rustfmt).
+Rust code is formatted with [rustfmt](https://github.com/rust-lang/rustfmt). You
+need to ensure you have a nightly version of Rust installed on your system. To
+format the project files from the command line:
+
+```bash
+$ cargo +nightly fmt --all
+```
 
 Markdown and YAML files are formatted with [Prettier](https://prettier.io/). The
 easiest way to run it is to install the
@@ -171,6 +177,17 @@ the repo:
 
 ```bash
 $ prettier --write .
+```
+
+# Linting Rust code
+
+Rust code is linted with Clippy. We use a specific Clippy lint that's only
+available on the nightly release channel. Running Clippy therefore looks like
+this:
+
+```bash
+$ cargo clippy --all-targets
+$ cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
 ```
 
 # Integration tests

@@ -6,12 +6,11 @@ use heed::{types::SerdeBincode, RoTxn};
 use nonempty::NonEmpty;
 use tracing::instrument;
 
+use super::util::RoDatabase;
 use crate::{
     types::{BlockEvent, BlockInfo, BmmCommitments, HeaderInfo, TwoWayPegData},
     validator::dbs::util::{db_error, CreateDbError, Database, Env, RwTxn},
 };
-
-use super::util::RoDatabase;
 
 pub mod error {
     use bitcoin::BlockHash;

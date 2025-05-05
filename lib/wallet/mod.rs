@@ -29,17 +29,13 @@ use bitcoin::{
     Amount, BlockHash, Network, Transaction, Txid,
 };
 use either::Either;
-use error::WalletInitialization;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{channel::oneshot, FutureExt, TryFutureExt};
 use miette::{miette, IntoDiagnostic, Report, Result};
-use mnemonic::{new_mnemonic, EncryptedMnemonic};
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use sync::NoSyncClient;
 use tokio::{spawn, task::JoinHandle, time::Instant};
 use tracing::instrument;
-use util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome};
 use uuid::Uuid;
 
 use crate::{
@@ -51,6 +47,12 @@ use crate::{
         SidechainNumber, SidechainProposal, SidechainProposalId,
     },
     validator::Validator,
+    wallet::{
+        error::WalletInitialization,
+        mnemonic::{new_mnemonic, EncryptedMnemonic},
+        sync::NoSyncClient,
+        util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
+    },
 };
 
 mod cusf_block_producer;
@@ -1094,8 +1096,9 @@ impl Wallet {
     fn deposit_txordering(
         sidechain_addrs: HashMap<Vec<u8>, SidechainNumber>,
     ) -> bdk_wallet::TxOrdering {
-        use bitcoin::hashes::{Hash, Hmac, HmacEngine};
         use std::cmp::Ordering;
+
+        use bitcoin::hashes::{Hash, Hmac, HmacEngine};
         let hmac_engine = || {
             let key = {
                 use rand::RngCore;

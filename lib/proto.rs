@@ -245,10 +245,12 @@ pub mod mainchain {
 
     tonic::include_proto!("cusf.mainchain.v1");
 
-    use subscribe_events_response::event::{ConnectBlock, DisconnectBlock};
     #[allow(unused_imports)]
-    pub use validator_service_server::{
-        self as server, ValidatorService as Service, ValidatorServiceServer as Server,
+    pub use self::{
+        subscribe_events_response::event::{ConnectBlock, DisconnectBlock},
+        validator_service_server::{
+            self as server, ValidatorService as Service, ValidatorServiceServer as Server,
+        },
     };
 
     impl From<&bitcoin::OutPoint> for OutPoint {
@@ -599,8 +601,9 @@ pub mod mainchain {
 
     impl From<&crate::types::WithdrawalBundleEventKind> for withdrawal_bundle_event::event::Event {
         fn from(event_kind: &crate::types::WithdrawalBundleEventKind) -> Self {
-            use crate::types::WithdrawalBundleEventKind;
             use withdrawal_bundle_event::event::{Failed, Submitted, Succeeded};
+
+            use crate::types::WithdrawalBundleEventKind;
             match event_kind {
                 WithdrawalBundleEventKind::Failed => Self::from(Failed {}),
                 WithdrawalBundleEventKind::Submitted => Self::from(Submitted {}),
