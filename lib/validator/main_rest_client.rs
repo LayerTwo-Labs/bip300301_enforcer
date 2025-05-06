@@ -1,12 +1,13 @@
 use std::time::Instant;
 
 use bitcoin::{block::Header, hashes::Hash, BlockHash, CompactTarget, TxMerkleNode};
+use miette::Diagnostic;
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use thiserror::Error;
 use tracing::instrument;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Diagnostic, Error)]
 pub enum MainRestClientError {
     #[error("URL parse error: {0}")]
     URL(#[from] url::ParseError),
@@ -16,12 +17,28 @@ pub enum MainRestClientError {
     InvalidBlockHash,
     #[error("Invalid block header format")]
     InvalidBlockHeader,
+    #[error("Bitcoin Core REST server is not enabled")]
+    RestServerNotEnabled,
+    #[error("Bitcoin Core REST server at `{url}` is not reachable")]
+    RestServerNotReachable {
+        #[source]
+        err: reqwest::Error,
+        url: Url,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct MainRestClient {
     client: Client,
     base_url: Url,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChainInfo {
+    pub chain: String,
+    pub blocks: u64,
+    pub headers: u64,
+    pub bestblockhash: BlockHash,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +61,50 @@ impl MainRestClient {
         }
     }
 
+    async fn do_request<T: DeserializeOwned>(&self, url: Url) -> Result<T, MainRestClientError> {
+        let response = match self.client.get(url).send().await {
+            Ok(response) => response,
+            Err(err) => {
+                // To make it easier for the caller of this function to debug what's going wrong,
+                // we indicate this with an extra clear error message.
+                if err.is_connect() {
+                    return Err(MainRestClientError::RestServerNotReachable {
+                        err,
+                        url: self.base_url.clone(),
+                    });
+                }
+                return Err(MainRestClientError::Http(err));
+            }
+        };
+
+        // Strictly speaking we cannot know if a 404 indicates us messing up the path,
+        // or the server not being enabled. However, we're not exposing any method for
+        // calling a particular path to the user, so we can assume that a 404 here means
+        // the server is not enabled.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(MainRestClientError::RestServerNotEnabled);
+        }
+
+        if !response.status().is_success() {
+            return Err(MainRestClientError::Http(
+                response.error_for_status().unwrap_err(),
+            ));
+        }
+
+        response
+            .json::<T>()
+            .await
+            .inspect_err(|err| {
+                tracing::warn!("failed to parse response: {err:#?}");
+            })
+            .map_err(MainRestClientError::Http)
+    }
+
+    pub async fn get_chain_info(&self) -> Result<ChainInfo, MainRestClientError> {
+        let url = self.base_url.join("rest/chaininfo.json")?;
+        self.do_request(url).await
+    }
+
     /// Fetches a block header from Bitcoin Core's REST API
     /// https://github.com/bitcoin/bitcoin/blob/master/doc/REST-interface.md#blockheaders
     #[instrument(skip(self))]
@@ -59,20 +120,7 @@ impl MainRestClient {
             block_hash, descendants
         ))?;
 
-        let response = self.client.get(url).send().await?;
-
-        if !response.status().is_success() {
-            return Err(MainRestClientError::Http(
-                response.error_for_status().unwrap_err(),
-            ));
-        }
-
-        let headers = response
-            .json::<Vec<RestHeader>>()
-            .await
-            .inspect_err(|err| {
-                tracing::warn!("Failed to parse block headers: {err:#?}");
-            })?;
+        let headers = self.do_request::<Vec<RestHeader>>(url).await?;
 
         tracing::debug!(
             "Fetched {} block header(s) in {:?}: {} -> {}",
