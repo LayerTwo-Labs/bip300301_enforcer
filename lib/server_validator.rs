@@ -28,8 +28,19 @@ use crate::{
     validator::Validator,
 };
 
+#[derive(Clone)]
+pub struct Server {
+    validator: Validator,
+}
+
+impl Server {
+    pub fn new(validator: Validator) -> Self {
+        Self { validator }
+    }
+}
+
 #[tonic::async_trait]
-impl ValidatorService for Validator {
+impl ValidatorService for Server {
     async fn get_block_header_info(
         &self,
         request: tonic::Request<GetBlockHeaderInfoRequest>,
@@ -45,6 +56,7 @@ impl ValidatorService for Validator {
             head: header_info,
             tail: ancestor_infos,
         } = self
+            .validator
             .get_header_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?
             .map(|header_info| header_info.into());
@@ -83,6 +95,7 @@ impl ValidatorService for Validator {
             head: info,
             tail: ancestor_infos,
         } = self
+            .validator
             .get_block_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?
             .map(|(header_info, block_info)| get_block_info_response::Info {
@@ -122,6 +135,7 @@ impl ValidatorService for Validator {
             })?
         };
         let bmm_commitments = self
+            .validator
             .try_get_bmm_commitments(&block_hash, max_ancestors.unwrap_or(0) as usize)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
         let res = match nonempty::NonEmpty::from_vec(bmm_commitments) {
@@ -158,7 +172,7 @@ impl ValidatorService for Validator {
         request: tonic::Request<GetChainInfoRequest>,
     ) -> Result<tonic::Response<GetChainInfoResponse>, tonic::Status> {
         let GetChainInfoRequest {} = request.into_inner();
-        let network: Network = self.network().into();
+        let network: Network = self.validator.network().into();
         let resp = GetChainInfoResponse {
             network: network as i32,
         };
@@ -171,12 +185,14 @@ impl ValidatorService for Validator {
     ) -> Result<tonic::Response<GetChainTipResponse>, tonic::Status> {
         let GetChainTipRequest {} = request.into_inner();
         let Some(tip_hash) = self
+            .validator
             .try_get_mainchain_tip()
             .map_err(|err| err.builder().to_status())?
         else {
             return Err(tonic::Status::unavailable("Validator is not synced"));
         };
         let header_info = self
+            .validator
             .get_header_info(&tip_hash)
             .map_err(|err| tonic::Status::from_error(err.into()))?;
         let resp = GetChainTipResponse {
@@ -259,10 +275,12 @@ impl ValidatorService for Validator {
         };
 
         let ctip = self
+            .validator
             .try_get_ctip(sidechain_number)
             .map_err(|err| err.builder().to_status())?;
         if let Some(ctip) = ctip {
             let sequence_number = self
+                .validator
                 .get_ctip_sequence_number(sidechain_number)
                 .map_err(|err| err.builder().to_status())?;
             // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
@@ -288,6 +306,7 @@ impl ValidatorService for Validator {
     ) -> Result<tonic::Response<GetSidechainProposalsResponse>, tonic::Status> {
         let GetSidechainProposalsRequest {} = request.into_inner();
         let Some(mainchain_tip) = self
+            .validator
             .try_get_mainchain_tip()
             .map_err(|err| err.builder().to_status())?
         else {
@@ -297,10 +316,12 @@ impl ValidatorService for Validator {
             return Ok(Response::new(response));
         };
         let mainchain_tip_height = self
+            .validator
             .get_header_info(&mainchain_tip)
             .map_err(|err| err.builder().to_status())?
             .height;
         let sidechain_proposals = self
+            .validator
             .get_sidechains()
             .map_err(|err| err.builder().to_status())?;
         let sidechain_proposals = sidechain_proposals
@@ -336,6 +357,7 @@ impl ValidatorService for Validator {
     ) -> Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
         let GetSidechainsRequest {} = request.into_inner();
         let sidechains = self
+            .validator
             .get_active_sidechains()
             .map_err(|err| err.builder().to_status())?;
         let sidechains = sidechains.into_iter().map(SidechainInfo::from).collect();
@@ -383,7 +405,10 @@ impl ValidatorService for Validator {
             .map(bdk_wallet::bitcoin::BlockHash::from_byte_array)
             .map(convert::bdk_block_hash_to_bitcoin_block_hash)?;
 
-        match self.get_two_way_peg_data(start_block_hash, end_block_hash) {
+        match self
+            .validator
+            .get_two_way_peg_data(start_block_hash, end_block_hash)
+        {
             Err(err) => Err(tonic::Status::from_error(Box::new(err))),
             Ok(two_way_peg_data) => {
                 let two_way_peg_data = two_way_peg_data
@@ -420,6 +445,7 @@ impl ValidatorService for Validator {
         };
 
         let stream = self
+            .validator
             .subscribe_events()
             .map(move |res| match res {
                 Ok(event) => Ok(SubscribeEventsResponse {
@@ -439,7 +465,7 @@ impl ValidatorService for Validator {
         request: tonic::Request<SubscribeHeaderSyncProgressRequest>,
     ) -> Result<tonic::Response<Self::SubscribeHeaderSyncProgressStream>, tonic::Status> {
         let SubscribeHeaderSyncProgressRequest {} = request.into_inner();
-        let Some(rx) = self.subscribe_header_sync_progress() else {
+        let Some(rx) = self.validator.subscribe_header_sync_progress() else {
             return Err(tonic::Status::unavailable("No header sync in progress"));
         };
         let stream = tokio_stream::wrappers::WatchStream::new(rx)

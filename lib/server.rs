@@ -13,6 +13,8 @@ use futures::{
 };
 use thiserror::Error;
 
+// Re-export this with names that work better externally.
+pub use crate::server_validator::Server as Validator;
 use crate::{
     convert,
     display::ErrorChain,
@@ -44,7 +46,6 @@ use crate::{
         StatusBuilder, ToStatus,
     },
     types::{BlindedM6, Event, SidechainNumber},
-    validator::Validator,
     wallet::{error::WalletInitialization, CreateTransactionParams},
 };
 
@@ -69,7 +70,7 @@ where
 
 /// Stream (non-)confirmations for a sidechain proposal
 fn stream_proposal_confirmations(
-    validator: &Validator,
+    validator: &crate::validator::Validator,
     sidechain_proposal: crate::types::SidechainProposal,
 ) -> impl FusedStream<Item = Result<CreateSidechainProposalResponse, tonic::Status>> {
     fn connect_block_event(
