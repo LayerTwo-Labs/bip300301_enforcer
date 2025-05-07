@@ -11,7 +11,10 @@ use bip300301_enforcer_lib::{
         mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
     },
     rpc_client, server,
-    validator::{main_rest_client::MainRestClient, Validator},
+    validator::{
+        main_rest_client::{MainRestClient, MainRestClientError},
+        Validator,
+    },
     wallet,
 };
 use clap::Parser;
@@ -546,17 +549,29 @@ async fn main() -> Result<()> {
             .map_err(|err| miette!("invalid mainchain REST URL `{raw_url}`: {err:#}"))?,
     );
 
+    let ts = tokio::time::Instant::now();
+    match mainchain_rest_client.get_chain_info().await {
+        Ok(_) => {
+            tracing::info!(
+                "verified mainchain REST server is enabled in {:?}",
+                ts.elapsed()
+            );
+        }
+        Err(MainRestClientError::RestServerNotEnabled) => {
+            return Err(miette!(
+                "Mainchain REST server at `{raw_url}` is not enabled! Do this with the `-rest` flag or `rest=1` in your Bitcoin Core configuration file"
+            ));
+        }
+        Err(err) => {
+            return Err(miette::Report::from_err(err));
+        }
+    }
     let mainchain_client =
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
 
     tracing::info!(
-        "Created mainchain client from options: {}:{}@{}",
+        "created mainchain JSON-RPC client from options: {}:*****@{}",
         cli.node_rpc_opts.user.as_deref().unwrap_or("cookie"),
-        cli.node_rpc_opts
-            .pass
-            .as_deref()
-            .map(|_| "*****")
-            .unwrap_or("cookie"),
         cli.node_rpc_opts.addr,
     );
 
