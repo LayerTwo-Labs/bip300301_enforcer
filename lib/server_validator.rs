@@ -286,27 +286,6 @@ impl ValidatorService for Validator {
         }
     }
 
-    /*
-    async fn get_deposits(
-        &self,
-        request: Request<GetDepositsRequest>,
-    ) -> Result<Response<GetDepositsResponse>, Status> {
-        let request = request.into_inner();
-        let sidechain_number = request.sidechain_number as u8;
-        let deposits = self.get_deposits(sidechain_number).unwrap();
-        let mut response = GetDepositsResponse { deposits: vec![] };
-        for deposit in deposits {
-            let deposit = Deposit {
-                address: deposit.address,
-                value: deposit.value,
-                sequence_number: deposit.sequence_number,
-            };
-            response.deposits.push(deposit);
-        }
-        Ok(Response::new(response))
-    }
-    */
-
     async fn get_sidechain_proposals(
         &self,
         request: tonic::Request<GetSidechainProposalsRequest>,
@@ -479,52 +458,4 @@ impl ValidatorService for Validator {
     ) -> Result<tonic::Response<StopResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("Not implemented"))
     }
-
-    /*
-    async fn get_main_block_height(
-        &self,
-        _request: tonic::Request<GetMainBlockHeightRequest>,
-    ) -> std::result::Result<tonic::Response<GetMainBlockHeightResponse>, tonic::Status> {
-        let height = self.get_main_block_height().unwrap();
-        let response = GetMainBlockHeightResponse { height };
-        Ok(Response::new(response))
-    }
-
-    async fn get_main_chain_tip(
-        &self,
-        _request: tonic::Request<GetMainChainTipRequest>,
-    ) -> std::result::Result<tonic::Response<GetMainChainTipResponse>, tonic::Status> {
-        let block_hash = self.get_main_chain_tip().unwrap();
-        let response = GetMainChainTipResponse {
-            block_hash: block_hash.to_vec(),
-        };
-        Ok(Response::new(response))
-    }
-    */
-
-    // This is commented out for now, because it references Protobuf messages that
-    // does not exist.
-    // async fn get_accepted_bmm_hashes(
-    //     &self,
-    //     _request: Request<GetAcceptedBmmHashesRequest>,
-    // ) -> std::result::Result<tonic::Response<GetAcceptedBmmHashesResponse>, tonic::Status> {
-    //     let accepted_bmm_hashes = self.get_accepted_bmm_hashes().unwrap();
-    //     let accepted_bmm_hashes = accepted_bmm_hashes
-    //         .into_iter()
-    //         .map(|(block_height, bmm_hashes)| {
-    //             let bmm_hashes = bmm_hashes
-    //                 .into_iter()
-    //                 .map(|bmm_hash| bmm_hash.to_vec())
-    //                 .collect();
-    //             BlockHeightBmmHashes {
-    //                 block_height,
-    //                 bmm_hashes,
-    //             }
-    //         })
-    //         .collect();
-    //     let response = GetAcceptedBmmHashesResponse {
-    //         accepted_bmm_hashes,
-    //     };
-    //     Ok(Response::new(response))
-    // }
 }
