@@ -9,7 +9,10 @@ use bip300301_enforcer_lib::{
     proto::{
         self,
         crypto::crypto_service_server::CryptoServiceServer,
-        mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
+        mainchain::{
+            validator_service_server::ValidatorServiceServer,
+            wallet_service_server::WalletServiceServer,
+        },
     },
     rpc_client, server,
     validator::{
@@ -226,27 +229,29 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
         .into_inner();
 
     let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
-    let mut builder = Server::builder().layer(tracer).add_service(crypto_service);
+    let mut builder = Server::builder()
+        .layer(tracer)
+        .add_service(crypto_service)
+        .add_service(ValidatorServiceServer::new({
+            let validator = match validator {
+                Either::Left(ref validator) => validator,
+                Either::Right(ref wallet) => wallet.validator(),
+            };
+            server::Validator::new(validator.clone())
+        }));
 
     let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
         .with_service_name(CryptoServiceServer::<server::CryptoServiceServer>::NAME)
         .with_service_name(ValidatorServiceServer::<Validator>::NAME)
         .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
 
-    match validator {
-        Either::Left(validator) => {
-            builder = builder.add_service(ValidatorServiceServer::new(validator));
-        }
-        Either::Right(wallet) => {
-            let validator = wallet.validator().clone();
-            builder = builder.add_service(ValidatorServiceServer::new(validator));
-            tracing::info!("gRPC: enabling wallet service");
-            let wallet_service = WalletServiceServer::new(wallet);
-            builder = builder.add_service(wallet_service);
-            reflection_service_builder =
-                reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
-        }
-    };
+    if let Either::Right(wallet) = validator.clone() {
+        tracing::info!("gRPC: enabling wallet service");
+        let wallet_service = WalletServiceServer::new(wallet);
+        builder = builder.add_service(wallet_service);
+        reflection_service_builder =
+            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
+    }
 
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
 
