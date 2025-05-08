@@ -12,8 +12,8 @@ protox = "0.7.1"
 tonic-build = "0.13.0"
 
 [dependencies]
-aes-gcm = "0.10.3"
-argon2 = "0.5.3"
+aes-gcm = { version = "0.10.3", features = ["std"] }
+argon2 = { version = "0.5.3", features = ["std"] }
 async-broadcast = "0.7.1"
 async-lock = "3.4.0"
 bdk_chain = "0.21.1"
@@ -33,6 +33,7 @@ clap = { workspace = true, features = ["derive"] }
 cusf-enforcer-mempool = { workspace = true }
 derive_more = { version = "1.0.0", features = ["debug", "display"] }
 ed25519-dalek-bip32 = "0.3.0"
+educe = { workspace = true }
 either = { workspace = true }
 fallible-iterator = "0.3.0"
 fatality = "0.1.1"
@@ -71,11 +72,6 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 url = "2.5.4"
 uuid = "1.12.1"
 zeromq = "0.4.1"
-
-[dependencies.educe]
-version = "0.6.0"
-default-features = false
-features = ["Clone", "Debug"]
 
 [features]
 default = ["rustls"]

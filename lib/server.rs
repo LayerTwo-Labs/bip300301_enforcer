@@ -12,13 +12,13 @@ use futures::{
     stream::{BoxStream, FusedStream},
     StreamExt as _,
 };
-use jsonrpsee::core as jsonrpsee;
 use miette::IntoDiagnostic as _;
 use thiserror::Error;
 use tonic::{Request, Response, Status};
 
 use crate::{
     convert,
+    display::ErrorChain,
     messages::{
         parse_op_drivechain, CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
     },
@@ -58,7 +58,7 @@ use crate::{
             SubscribeHeaderSyncProgressResponse, UnlockWalletRequest, UnlockWalletResponse,
             WalletTransaction,
         },
-        IntoStatus,
+        StatusBuilder, ToStatus,
     },
     types::{BlindedM6, Event, SidechainNumber},
     validator::Validator,
@@ -82,82 +82,6 @@ where
     Message: prost::Name,
 {
     crate::proto::Error::missing_field::<Message>(field_name).into()
-}
-
-// The idea here is to centralize conversion of lower layer errors into something meaningful
-// out from the API.
-//
-// Lower layer errors that return `miette::Report` can be easily turned into a meaningful
-// API response by just doing `into_status()`. We also get the additional benefit of a singular
-// place to add logs for unexpected errors.
-impl IntoStatus for miette::Report {
-    fn into_status(self) -> tonic::Status {
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::Electrum>() {
-            return source.clone().into();
-        }
-
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::SendTransaction>() {
-            match source {
-                err @ crate::wallet::error::SendTransaction::UnknownUTXO(_) => {
-                    return tonic::Status::invalid_argument(err.to_string());
-                }
-            }
-        }
-
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::WalletInitialization>() {
-            let code = match source {
-                crate::wallet::error::WalletInitialization::NotSynced => {
-                    tonic::Code::FailedPrecondition
-                }
-                crate::wallet::error::WalletInitialization::InvalidPassword => {
-                    tonic::Code::InvalidArgument
-                }
-                crate::wallet::error::WalletInitialization::DataMismatch => tonic::Code::Internal,
-                crate::wallet::error::WalletInitialization::NotFound => tonic::Code::NotFound,
-                crate::wallet::error::WalletInitialization::AlreadyExists => {
-                    tonic::Code::AlreadyExists
-                }
-                crate::wallet::error::WalletInitialization::AlreadyUnlocked => {
-                    tonic::Code::AlreadyExists
-                }
-            };
-            return tonic::Status::new(code, format!("{self:#}"));
-        }
-
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::TonicStatus>() {
-            return source.into_status();
-        }
-
-        if let Some(source) = self.downcast_ref::<crate::wallet::error::BitcoinCoreRPC>() {
-            // https://github.com/bitcoin/bitcoin/blob/4036ee3f2bf587775e6f388a9bfd2bcdb8fecf1d/src/rpc/protocol.h#L80
-            const BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND: i32 = -18;
-            match &source.error {
-                jsonrpsee::client::Error::Call(err)
-                    if err.code() == BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND
-                        && err.message().contains("No wallet is loaded") =>
-                {
-                    // Try being super precise here. Easy to confuse the /enforcer/ wallet not being
-                    // loaded with the /bitcoin core/ wallet not being loaded.
-                    return tonic::Status::failed_precondition(
-                        "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet WALLET_NAME`)",
-                    );
-                }
-                _ => {
-                    tracing::error!("unexpected bitcoin core RPC error: {source:#}");
-                }
-            }
-        }
-
-        if let Some(source) = self.downcast_ref::<tonic::Status>() {
-            return source.clone();
-        }
-
-        tracing::warn!(
-            "Unable to convert miette::Report of type {} to a meaningful tonic::Status: {self:?}",
-            std::any::type_name_of_val(&*self)
-        );
-        tonic::Status::new(tonic::Code::Unknown, format!("{self:#}"))
-    }
 }
 
 #[tonic::async_trait]
@@ -304,8 +228,7 @@ impl ValidatorService for Validator {
         let GetChainTipRequest {} = request.into_inner();
         let Some(tip_hash) = self
             .try_get_mainchain_tip()
-            .into_diagnostic()
-            .map_err(|err| err.into_status())?
+            .map_err(|err| err.builder().to_status())?
         else {
             return Err(tonic::Status::unavailable("Validator is not synced"));
         };
@@ -327,19 +250,19 @@ impl ValidatorService for Validator {
         for propose_sidechain in request.propose_sidechains {
             let m1: M1ProposeSidechain = propose_sidechain
                 .try_into()
-                .map_err(|err: crate::proto::Error| err.into_status())?;
+                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
             messages.push(m1.into());
         }
         for ack_sidechain in request.ack_sidechains {
             let m2: M2AckSidechain = ack_sidechain
                 .try_into()
-                .map_err(|err: crate::proto::Error| err.into_status())?;
+                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
             messages.push(m2.into());
         }
         for propose_bundle in request.propose_bundles {
             let m3: M3ProposeBundle = propose_bundle
                 .try_into()
-                .map_err(|err: crate::proto::Error| err.into_status())?;
+                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
             messages.push(m3.into());
         }
         let ack_bundles = request
@@ -348,7 +271,7 @@ impl ValidatorService for Validator {
         {
             let message = ack_bundles
                 .try_into()
-                .map_err(|err: crate::proto::Error| err.into_status())?;
+                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
             messages.push(message);
         }
         let output = messages
@@ -393,11 +316,11 @@ impl ValidatorService for Validator {
 
         let ctip = self
             .try_get_ctip(sidechain_number)
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
         if let Some(ctip) = ctip {
             let sequence_number = self
                 .get_ctip_sequence_number(sidechain_number)
-                .map_err(|err| err.into_status())?;
+                .map_err(|err| err.builder().to_status())?;
             // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
             // return Some, so we just unwrap it.
             let sequence_number = sequence_number.unwrap();
@@ -443,8 +366,7 @@ impl ValidatorService for Validator {
         let GetSidechainProposalsRequest {} = request.into_inner();
         let Some(mainchain_tip) = self
             .try_get_mainchain_tip()
-            .into_diagnostic()
-            .map_err(|err| err.into_status())?
+            .map_err(|err| err.builder().to_status())?
         else {
             let response = GetSidechainProposalsResponse {
                 sidechain_proposals: Vec::new(),
@@ -453,13 +375,11 @@ impl ValidatorService for Validator {
         };
         let mainchain_tip_height = self
             .get_header_info(&mainchain_tip)
-            .into_diagnostic()
-            .map_err(|err| err.into_status())?
+            .map_err(|err| err.builder().to_status())?
             .height;
         let sidechain_proposals = self
             .get_sidechains()
-            .into_diagnostic()
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
         let sidechain_proposals = sidechain_proposals
             .into_iter()
             .map(|(proposal_id, sidechain)| {
@@ -494,8 +414,7 @@ impl ValidatorService for Validator {
         let GetSidechainsRequest {} = request.into_inner();
         let sidechains = self
             .get_active_sidechains()
-            .into_diagnostic()
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
         let sidechains = sidechains.into_iter().map(SidechainInfo::from).collect();
         let response = GetSidechainsResponse { sidechains };
         Ok(Response::new(response))
@@ -579,11 +498,11 @@ impl ValidatorService for Validator {
 
         let stream = self
             .subscribe_events()
-            .map(move |res| match res.into_diagnostic() {
+            .map(move |res| match res {
                 Ok(event) => Ok(SubscribeEventsResponse {
                     event: Some(event.into_proto(sidechain_id).into()),
                 }),
-                Err(err) => Err(err.into_status()),
+                Err(err) => Err(err.builder().to_status()),
             })
             .boxed();
         Ok(tonic::Response::new(stream))
@@ -710,7 +629,7 @@ fn stream_proposal_confirmations(
 
     let mut confirmations = HashMap::<BlockHash, (u32, Arc<bitcoin::OutPoint>)>::new();
     validator.subscribe_events().filter_map(move |res| {
-        let resp = match res.into_diagnostic() {
+        let resp = match res {
             Ok(event) => match event {
                 Event::ConnectBlock {
                     header_info,
@@ -726,7 +645,7 @@ fn stream_proposal_confirmations(
                 }
                 Event::DisconnectBlock { .. } => None,
             },
-            Err(err) => Some(Err(err.into_status())),
+            Err(err) => Some(Err(err.builder().to_status())),
         };
         futures::future::ready(resp)
     })
@@ -746,7 +665,7 @@ impl WalletService for crate::wallet::Wallet {
         let info = self
             .get_wallet_info()
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         let response = GetInfoResponse {
             network: info.network.to_string(),
@@ -795,11 +714,11 @@ impl WalletService for crate::wallet::Wallet {
         let declaration = declaration
             .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("declaration"))?
             .try_into()
-            .map_err(|err: crate::proto::Error| err.into_status())?;
+            .map_err(|err: crate::proto::Error| err.builder().to_status())?;
         let (proposal_txout, description) =
-            crate::messages::create_sidechain_proposal(sidechain_id, &declaration)
-                .into_diagnostic()
-                .map_err(|err| err.into_status())?;
+            crate::messages::create_sidechain_proposal(sidechain_id, &declaration).map_err(
+                |err: bitcoin::script::PushBytesError| tonic::Status::unknown(format!("{err:#}")),
+            )?;
 
         tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
         let sidechain_proposal = crate::types::SidechainProposal {
@@ -811,7 +730,7 @@ impl WalletService for crate::wallet::Wallet {
             .await
             .map_err(|err| {
                 if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
-                    tracing::error!("SQLite error: {:?}", sqlite_err);
+                    tracing::error!("SQLite error: {:#}", ErrorChain::new(&sqlite_err));
 
                     if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
                         return tonic::Status::already_exists("Sidechain proposal already exists");
@@ -835,7 +754,7 @@ impl WalletService for crate::wallet::Wallet {
         let address = self
             .get_new_address()
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         let response = CreateNewAddressResponse {
             address: address.to_string(),
@@ -851,11 +770,13 @@ impl WalletService for crate::wallet::Wallet {
             blocks,
             ack_all_proposals,
         } = request.into_inner();
-        let count = blocks.unwrap_or(1);
+        let count = std::num::NonZeroU32::new(blocks.unwrap_or(1)).ok_or_else(|| {
+            tonic::Status::invalid_argument("must provide a positive number of blocks")
+        })?;
 
         self.verify_can_mine(count)
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         tracing::info!("generate blocks: verified ability to mine");
 
@@ -865,8 +786,8 @@ impl WalletService for crate::wallet::Wallet {
                     block_hash: Some(ReverseHex::encode(&block_hash)),
                 }),
                 Err(err) => {
-                    tracing::error!("{err:#}");
-                    Err(err.into_status())
+                    tracing::error!("{:#}", ErrorChain::new(&err));
+                    Err(err.builder().to_status())
                 }
             })
             .boxed();
@@ -916,11 +837,11 @@ impl WalletService for crate::wallet::Wallet {
         let _m6id = self
             .put_withdrawal_bundle(sidechain_id, &transaction)
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| StatusBuilder::new(&err).to_status())?;
         /*
         self.broadcast_transaction(transaction.tx().into_owned())
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
         */
         let response = BroadcastWithdrawalBundleResponse {};
         Ok(tonic::Response::new(response))
@@ -1029,7 +950,7 @@ impl WalletService for crate::wallet::Wallet {
                 locktime,
             )
             .await
-            .map_err(|err| err.into_status())
+            .map_err(|err| err.builder().to_status())
             .and_then(|tx| {
                 tx.ok_or_else(|| {
                     tonic::Status::new(
@@ -1039,7 +960,10 @@ impl WalletService for crate::wallet::Wallet {
                 })
             })
             .inspect_err(|err| {
-                tracing::error!("Error creating BMM critical data transaction: {}", err);
+                tracing::error!(
+                    "Error creating BMM critical data transaction: {:#}",
+                    ErrorChain::new(err)
+                );
             })?;
 
         let txid = tx.compute_txid();
@@ -1103,7 +1027,7 @@ impl WalletService for crate::wallet::Wallet {
 
         if !self
             .is_sidechain_active(sidechain_number)
-            .map_err(|err| err.into_status())?
+            .map_err(|err| err.builder().to_status())?
         {
             return Err(tonic::Status::new(
                 tonic::Code::FailedPrecondition,
@@ -1114,7 +1038,7 @@ impl WalletService for crate::wallet::Wallet {
         let txid = self
             .create_deposit(sidechain_number, address, value, Some(fee))
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         let txid = ReverseHex::encode(&txid);
         let response = CreateDepositTransactionResponse { txid: Some(txid) };
@@ -1133,7 +1057,7 @@ impl WalletService for crate::wallet::Wallet {
         let balance = self
             .get_wallet_balance()
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         tracing::trace!("get_balance: fetched balance: {:?}", balance);
 
@@ -1150,7 +1074,10 @@ impl WalletService for crate::wallet::Wallet {
         request: tonic::Request<ListUnspentOutputsRequest>,
     ) -> Result<tonic::Response<ListUnspentOutputsResponse>, tonic::Status> {
         let ListUnspentOutputsRequest {} = request.into_inner();
-        let bdk_utxos = self.get_utxos().await.map_err(|err| err.into_status())?;
+        let bdk_utxos = self
+            .get_utxos()
+            .await
+            .map_err(|err| err.builder().to_status())?;
 
         let outputs = bdk_utxos
             .into_iter()
@@ -1211,9 +1138,9 @@ impl WalletService for crate::wallet::Wallet {
         let transactions = self
             .list_wallet_transactions()
             .await
-            .map_err(|err| err.into_status())?
+            .map_err(|err| err.builder().to_status())?
             .into_iter()
-            .map(Ok::<_, miette::Error>)
+            .map(Ok::<_, tonic::Status>)
             .transpose_into_fallible()
             .filter_map(|bdk_wallet_tx| {
                 let Some(treasury_output) = bdk_wallet_tx.tx.output.first() else {
@@ -1230,12 +1157,14 @@ impl WalletService for crate::wallet::Wallet {
                 };
                 let spent_ctip = match self
                     .validator()
-                    .try_get_ctip_value_seq(&treasury_outpoint)?
+                    .try_get_ctip_value_seq(&treasury_outpoint)
+                    .map_err(|err| err.builder().to_status())?
                 {
                     Some((_, _, seq)) => {
                         let spent_treasury_utxo = self
                             .validator()
-                            .get_treasury_utxo(sidechain_number, seq - 1)?;
+                            .get_treasury_utxo(sidechain_number, seq - 1)
+                            .map_err(|err| err.builder().to_status())?;
                         Some(crate::types::Ctip {
                             outpoint: spent_treasury_utxo.outpoint,
                             value: spent_treasury_utxo.total_value,
@@ -1244,7 +1173,11 @@ impl WalletService for crate::wallet::Wallet {
                     None => {
                         // May be unconfirmed
                         // check if current ctip in inputs
-                        match self.validator().try_get_ctip(sidechain_number)? {
+                        match self
+                            .validator()
+                            .try_get_ctip(sidechain_number)
+                            .map_err(|err| err.builder().to_status())?
+                        {
                             Some(ctip) => {
                                 if bdk_wallet_tx.tx.input.iter().any(|txin: &bitcoin::TxIn| {
                                     txin.previous_output == ctip.outpoint
@@ -1268,8 +1201,7 @@ impl WalletService for crate::wallet::Wallet {
                     tx: Some(WalletTransaction::from(&bdk_wallet_tx)),
                 }))
             })
-            .collect()
-            .map_err(|err| err.into_status())?;
+            .collect()?;
         let response = ListSidechainDepositTransactionsResponse { transactions };
         Ok(tonic::Response::new(response))
     }
@@ -1282,7 +1214,7 @@ impl WalletService for crate::wallet::Wallet {
         let transactions = self
             .list_wallet_transactions()
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         let response = ListTransactionsResponse {
             transactions: transactions.iter().map(WalletTransaction::from).collect(),
@@ -1361,7 +1293,7 @@ impl WalletService for crate::wallet::Wallet {
         let fee_policy = fee_rate
             .map(|fee_rate| fee_rate.try_into())
             .transpose()
-            .map_err(|err: crate::proto::Error| err.into_status())?;
+            .map_err(|err: crate::proto::Error| err.builder().to_status())?;
 
         let op_return_message = op_return_message
             .map(|op_return_message| {
@@ -1380,7 +1312,7 @@ impl WalletService for crate::wallet::Wallet {
                 },
             )
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         let txid = ReverseHex::encode(&txid);
         let response = SendTransactionResponse { txid: Some(txid) };
@@ -1394,7 +1326,7 @@ impl WalletService for crate::wallet::Wallet {
         let UnlockWalletRequest { password } = request.into_inner();
         self.unlock_existing_wallet(password.as_str())
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         Ok(tonic::Response::new(UnlockWalletResponse {}))
     }
@@ -1464,7 +1396,7 @@ impl WalletService for crate::wallet::Wallet {
 
         self.create_wallet(parsed, password)
             .await
-            .map_err(|err| err.into_status())?;
+            .map_err(|err| err.builder().to_status())?;
 
         Ok(tonic::Response::new(CreateWalletResponse {}))
     }

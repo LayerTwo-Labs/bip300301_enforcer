@@ -1,6 +1,7 @@
 pub mod bins;
 pub mod cli;
 mod convert;
+pub mod display;
 pub mod messages;
 pub mod p2p;
 pub mod proto;

@@ -4,6 +4,7 @@ use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
+    display::ErrorChain,
     p2p::compute_signet_magic,
     proto::{
         self,
@@ -18,12 +19,14 @@ use bip300301_enforcer_lib::{
     wallet,
 };
 use clap::Parser;
+use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
 use http::{header::HeaderName, Request};
 use jsonrpsee::{core::client::Error, server::RpcServiceBuilder};
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{miette, Diagnostic, IntoDiagnostic, Result};
 use reqwest::Url;
+use thiserror::Error;
 use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
@@ -323,21 +326,52 @@ async fn run_gbt_server(
     Ok(())
 }
 
-async fn is_address_port_open(addr: &str) -> Result<bool> {
+async fn is_address_port_open(addr: &str) -> Result<bool, std::io::Error> {
     let addr = addr.strip_prefix("tcp://").unwrap_or_default();
     match tokio::time::timeout(Duration::from_millis(250), TcpStream::connect(&addr)).await {
         Ok(Ok(_)) => Ok(true),
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Ok(false),
-        Ok(Err(e)) => Err(miette!("failed to connect to {addr}: {e:#}")),
+        Ok(Err(e)) => Err(e),
         Err(_) => Ok(false),
     }
+}
+
+#[derive(educe::Educe, Diagnostic, Error)]
+#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
+enum MempoolTaskError<Enforcer>
+where
+    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
+{
+    #[error("mempool initial sync error")]
+    InitialSync(#[source] InitialSyncMempoolError<Enforcer>),
+    #[error("mempool task sync error")]
+    SyncTask(#[source] SyncTaskError<Enforcer>),
+    #[error("failed to check if ZMQ address is reachable: failed to connect to {addr}")]
+    ZmqCheck {
+        addr: String,
+        source: std::io::Error,
+    },
+    #[error("ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}")]
+    ZmqNotReachable { zmq_addr_sequence: String },
+}
+
+#[derive(educe::Educe, Diagnostic, Error)]
+#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
+enum TaskError<Enforcer>
+where
+    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
+{
+    #[error("CUSF enforcer task w/mempool error")]
+    Mempool(#[from] MempoolTaskError<Enforcer>),
+    #[error("CUSF enforcer task w/o mempool error")]
+    NoMempool(#[from] cusf_enforcer_mempool::cusf_enforcer::TaskError<Enforcer>),
 }
 
 async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
-    err_tx: oneshot::Sender<miette::Report>,
+    err_tx: oneshot::Sender<MempoolTaskError<Enforcer>>,
     on_mempool_synced: F,
 ) where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
@@ -350,14 +384,17 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     match is_address_port_open(zmq_addr_sequence).await {
         Ok(true) => (),
         Ok(false) => {
-            let err = miette::miette!(
-                "ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}"
-            );
+            let err = MempoolTaskError::ZmqNotReachable {
+                zmq_addr_sequence: zmq_addr_sequence.to_owned(),
+            };
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
         Err(err) => {
-            let err = miette::miette!("failed to check if ZMQ address is reachable: {err:#}");
+            let err = MempoolTaskError::ZmqCheck {
+                addr: zmq_addr_sequence.to_owned(),
+                source: err,
+            };
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
@@ -374,8 +411,8 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
         Ok(res) => res,
         Err(err) => {
-            let err = miette::Report::from_err(err);
-            tracing::error!("mempool: initial sync error: {err:#}");
+            let err = MempoolTaskError::InitialSync(err);
+            tracing::error!("{:#}", ErrorChain::new(&err));
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
@@ -387,17 +424,42 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         rpc_client,
         sequence_stream,
         |err| async move {
-            let err = miette::Report::from_err(err);
-            let err = miette::miette!("mempool: task sync error: {err:#}");
+            let err = MempoolTaskError::SyncTask(err);
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     );
     on_mempool_synced(mempool).await
 }
 
+#[derive(Debug, Diagnostic, Error)]
+enum EnforcerTaskErr {
+    #[error(transparent)]
+    MempoolValidator(#[from] MempoolTaskError<Validator>),
+    #[error(transparent)]
+    MempoolWallet(#[from] MempoolTaskError<Wallet>),
+    #[error(transparent)]
+    NoMempool(#[from] TaskError<Either<Validator, Wallet>>),
+}
+
+enum EnforcerTaskErrRx {
+    MempoolValidator(oneshot::Receiver<MempoolTaskError<Validator>>),
+    MempoolWallet(oneshot::Receiver<MempoolTaskError<Wallet>>),
+    NoMempool(oneshot::Receiver<TaskError<Either<Validator, Wallet>>>),
+}
+
+impl EnforcerTaskErrRx {
+    async fn receive(self) -> Result<EnforcerTaskErr, oneshot::Canceled> {
+        match self {
+            Self::MempoolValidator(err_rx) => err_rx.await.map(EnforcerTaskErr::MempoolValidator),
+            Self::MempoolWallet(err_rx) => err_rx.await.map(EnforcerTaskErr::MempoolWallet),
+            Self::NoMempool(err_rx) => err_rx.await.map(EnforcerTaskErr::NoMempool),
+        }
+    }
+}
+
 /// Error receivers for main task
 struct ErrRxs {
-    enforcer_task: oneshot::Receiver<miette::Report>,
+    enforcer_task: EnforcerTaskErrRx,
     grpc_server: oneshot::Receiver<miette::Report>,
 }
 
@@ -414,31 +476,45 @@ async fn task(
         }),
     );
 
-    let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
-    let res = match (cli.enable_mempool, enforcer) {
-        (false, enforcer) => cusf_enforcer_mempool::cusf_enforcer::spawn_task(
-            enforcer,
-            mainchain_client,
-            cli.node_zmq_addr_sequence,
-            |err| async move {
-                let err = miette::miette!("CUSF enforcer task w/o mempool: {err:#}");
-                let _send_err: Result<(), _> = enforcer_task_err_tx.send(err);
-            },
-        ),
-        (true, Either::Left(validator)) => spawn(async move {
-            tracing::info!("mempool sync task w/validator: starting");
-            mempool_task(
-                validator,
+    let (task_handle, enforcer_task_err_rx) = match (cli.enable_mempool, enforcer) {
+        (false, enforcer) => {
+            let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
+            let task_handle = cusf_enforcer_mempool::cusf_enforcer::spawn_task(
+                enforcer,
                 mainchain_client,
-                &cli.node_zmq_addr_sequence,
-                enforcer_task_err_tx,
-                |_mempool| futures::future::pending(),
+                cli.node_zmq_addr_sequence,
+                |err| async move {
+                    let err = TaskError::NoMempool(err);
+                    let _send_err: Result<(), _> = enforcer_task_err_tx.send(err);
+                },
+            );
+            (
+                task_handle,
+                EnforcerTaskErrRx::NoMempool(enforcer_task_err_rx),
             )
-            .await
-        }),
+        }
+        (true, Either::Left(validator)) => {
+            let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
+            let task_handle = spawn(async move {
+                tracing::info!("mempool sync task w/validator: starting");
+                mempool_task(
+                    validator,
+                    mainchain_client,
+                    &cli.node_zmq_addr_sequence,
+                    enforcer_task_err_tx,
+                    |_mempool| futures::future::pending(),
+                )
+                .await
+            });
+            (
+                task_handle,
+                EnforcerTaskErrRx::MempoolValidator(enforcer_task_err_rx),
+            )
+        }
         (true, Either::Right(wallet)) => {
             tracing::info!("mempool sync task w/wallet: starting");
-            spawn(async move {
+            let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
+            let task_handle = spawn(async move {
                 // A pre-requisite for the mempool sync task is that the wallet is
                 // initialized and unlocked. Give a nice error message if this is not
                 // the case!
@@ -454,7 +530,7 @@ async fn task(
                 let mining_reward_address = match mining_reward_address {
                     Ok(mining_reward_address) => mining_reward_address,
                     Err(err) => {
-                        let err: miette::Report = err;
+                        let err = miette::Report::from(err);
                         tracing::error!("failed to get mining reward address: {err:#}");
                         return;
                     }
@@ -497,14 +573,18 @@ async fn task(
                     },
                 )
                 .await
-            })
+            });
+            (
+                task_handle,
+                EnforcerTaskErrRx::MempoolWallet(enforcer_task_err_rx),
+            )
         }
     };
     let err_rxs = ErrRxs {
         enforcer_task: enforcer_task_err_rx,
         grpc_server: grpc_server_err_rx,
     };
-    Ok((res, err_rxs))
+    Ok((task_handle, err_rxs))
 }
 
 #[tokio::main]
@@ -710,7 +790,7 @@ async fn main() -> Result<()> {
     let (_task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain).await?;
 
     tokio::select! {
-        enforcer_task_err = err_rxs.enforcer_task => {
+        enforcer_task_err = err_rxs.enforcer_task.receive() => {
             match enforcer_task_err {
                 Ok(err) => {
                     tracing::error!("Received enforcer task error: {err:#}");

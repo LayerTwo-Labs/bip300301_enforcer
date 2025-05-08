@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    num::NonZeroU32,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -26,15 +27,14 @@ use futures::{
     stream::{self, FusedStream},
     StreamExt as _,
 };
-use miette::{miette, IntoDiagnostic as _, Result};
 
 use crate::{
-    bins,
-    bins::CommandExt as _,
+    bins::{self, CommandExt as _},
+    display::ErrorChain,
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{Ctip, SidechainAck, SidechainNumber, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
     wallet::{
-        error::{self, BitcoinCoreRPC, TonicStatusExt},
+        error::{self, BitcoinCoreRPC},
         Wallet,
     },
 };
@@ -75,7 +75,10 @@ impl Wallet {
             .get_our_sidechain_proposals()
             .await
             .inspect_err(|err| {
-                tracing::error!("Failed to get sidechain proposals: {err:?}");
+                tracing::error!(
+                    "Failed to get sidechain proposals: {:#}",
+                    ErrorChain::new(err)
+                );
             })?;
 
         // Sidechain proposals that already exist in the chain
@@ -220,7 +223,7 @@ impl Wallet {
     }
 
     /// select non-coinbase txs for a new block
-    async fn select_block_txs(&self) -> miette::Result<Vec<Transaction>> {
+    async fn select_block_txs(&self) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
         let ctips = self.inner.validator.get_ctips()?;
         let mut res = self.generate_suffix_txs(&ctips).await?;
 
@@ -254,7 +257,7 @@ impl Wallet {
         &self,
         best_block_height: u32,
         coinbase_outputs: &[TxOut],
-    ) -> miette::Result<Transaction> {
+    ) -> Result<Transaction, error::GetNewAddress> {
         let coinbase_addr = self.get_new_address().await?;
         tracing::trace!(%coinbase_addr, "Fetched address");
         let coinbase_spk = coinbase_addr.script_pubkey();
@@ -296,7 +299,7 @@ impl Wallet {
         &self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
-    ) -> miette::Result<Block> {
+    ) -> Result<Block, error::FinalizeBlock> {
         let best_block_hash = self.validator().get_mainchain_tip()?;
         let best_block_height = self.validator().get_header_info(&best_block_hash)?.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
@@ -305,10 +308,7 @@ impl Wallet {
             .finalize_coinbase(best_block_height, coinbase_outputs)
             .await?;
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .into_diagnostic()?
-            .as_secs() as u32;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
         let genesis_block = genesis_block(bitcoin::Network::Regtest);
         let bits = genesis_block.header.bits;
         let header = bitcoin::block::Header {
@@ -329,9 +329,7 @@ impl Wallet {
         const WITNESS_COMMITMENT_HEADER: [u8; 4] = [0xaa, 0x21, 0xa9, 0xed];
         let witness_commitment_spk = {
             let mut push_bytes = PushBytesBuf::from(WITNESS_COMMITMENT_HEADER);
-            let () = push_bytes
-                .extend_from_slice(witness_commitment.as_byte_array())
-                .into_diagnostic()?;
+            let () = push_bytes.extend_from_slice(witness_commitment.as_byte_array())?;
             ScriptBuf::new_op_return(push_bytes)
         };
         block.txdata[0].output.push(TxOut {
@@ -351,7 +349,7 @@ impl Wallet {
         &self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
-    ) -> miette::Result<BlockHash> {
+    ) -> Result<BlockHash, error::Mine> {
         let transaction_count = transactions.len();
 
         let mut block = self.finalize_block(coinbase_outputs, transactions).await?;
@@ -380,33 +378,29 @@ impl Wallet {
         Ok(block_hash)
     }
 
-    fn check_has_binary(&self, binary: &Path) -> Result<(), tonic::Status> {
-        let binary = &binary.to_string_lossy().to_string();
+    fn check_has_binary(&self, binary: &Path) -> Result<(), error::MissingBinary> {
+        let binary = binary.to_string_lossy().to_string();
 
         // Python is needed for executing the signet miner script.
         let check = std::process::Command::new("which")
-            .arg(binary)
+            .arg(&binary)
             .output()
-            .map_err(|err| {
-                tonic::Status::internal(format!("{binary} is required for mining on signet: {err}"))
+            .map_err(|err| error::MissingBinary {
+                name: binary.clone(),
+                source: Some(err),
             })?;
 
         if !check.status.success() {
-            Err(tonic::Status::failed_precondition(format!(
-                "{} is required for mining on signet",
-                binary
-            )))
+            Err(error::MissingBinary {
+                name: binary,
+                source: None,
+            })
         } else {
             Ok(())
         }
     }
 
-    pub async fn verify_can_mine(&self, blocks: u32) -> Result<()> {
-        if blocks == 0 {
-            return tonic::Status::invalid_argument("must provide a positive number of blocks")
-                .into_diagnostic();
-        }
-
+    pub async fn verify_can_mine(&self, blocks: NonZeroU32) -> Result<(), error::VerifyCanMine> {
         match self.validator().network() {
             // Mining on regtest always works.
             bitcoin::Network::Regtest => return Ok(()),
@@ -419,20 +413,13 @@ impl Wallet {
             // We make a qualified guess here that the signet challenge is just a script pubkey,
             // and verify that the corresponding address is in the mainchain wallet.
             bitcoin::Network::Signet => (),
-            _ => {
-                return tonic::Status::failed_precondition(format!(
-                    "cannot generate blocks on {}",
-                    self.validator().network(),
-                ))
-                .into_diagnostic();
+            network => {
+                return Err(error::VerifyCanMine::Network(network));
             }
         }
 
-        if blocks > 1 {
-            return tonic::Status::invalid_argument(
-                "cannot generate more than one block on signet",
-            )
-            .into_diagnostic();
+        if blocks.get() > 1 {
+            return Err(error::VerifyCanMine::MultipleBlocksOnSignet);
         }
 
         let template = self
@@ -449,12 +436,11 @@ impl Wallet {
             })?;
 
         let Some(signet_challenge) = template.signet_challenge else {
-            return Err(miette!("no signet challenge found"));
+            return Err(error::VerifyCanMine::NoSignetChallengeFound);
         };
 
         let address =
-            bitcoin::Address::from_script(&signet_challenge, bitcoin::params::Params::SIGNET)
-                .map_err(|err| miette!("unable to parse signet challenge: {err}"))?;
+            bitcoin::Address::from_script(&signet_challenge, bitcoin::params::Params::SIGNET)?;
 
         let address_info = self
             .inner
@@ -467,31 +453,24 @@ impl Wallet {
             })?;
 
         if !address_info.is_mine {
-            return tonic::Status::failed_precondition(format!(
-                "signet challenge address {} is not in mainchain wallet",
-                address,
-            ))
-            .into_diagnostic();
+            return Err(error::VerifyCanMine::SignetChallengeAddressMissing(address));
         }
 
         tracing::debug!("verified ability to solve signet challenge");
 
-        self.check_has_binary(&PathBuf::from("python3"))
-            .into_diagnostic()?;
+        let () = self.check_has_binary(&PathBuf::from("python3"))?;
         tracing::debug!("verified existence of `python3`");
 
-        self.check_has_binary(&self.inner.config.mining_opts.bitcoin_cli_path)
-            .into_diagnostic()?;
+        let () = self.check_has_binary(&self.inner.config.mining_opts.bitcoin_cli_path)?;
         tracing::debug!("verified existence of `bitcoin-cli`");
 
-        self.check_has_binary(&self.inner.config.mining_opts.bitcoin_util_path)
-            .into_diagnostic()?;
+        let () = self.check_has_binary(&self.inner.config.mining_opts.bitcoin_util_path)?;
         tracing::debug!("verified existence of `bitcoin-util`");
 
         Ok(())
     }
 
-    async fn get_signet_miner_path(&self) -> Result<PathBuf, miette::Error> {
+    async fn get_signet_miner_path(&self) -> Result<PathBuf, error::GetSignetMinerPath> {
         if let Some(signet_mining_script_path) = self
             .inner
             .config
@@ -522,7 +501,7 @@ impl Wallet {
                 command
                     .run_utf8()
                     .await
-                    .map_err(|err| miette!("Failed to create signet miner directory: {err:#}"))?;
+                    .map_err(error::GetSignetMinerPath::CreateSignetMinerDir)?;
 
                 // Execute the download script
                 let mut command = Command::new("bash");
@@ -542,9 +521,7 @@ impl Wallet {
                 let _output = command
                     .run_utf8()
                     .await
-                    .into_diagnostic()
-                    .map_err(|err| miette!("Failed to download signet miner: {err:#}"))?;
-
+                    .map_err(error::GetSignetMinerPath::DownloadSignetMiner)?;
                 tracing::info!("Successfully downloaded signet miner");
             } else {
                 tracing::info!("Signet miner already exists");
@@ -561,7 +538,7 @@ impl Wallet {
     async fn generate_signet_block(
         &self,
         coinbase_recipient: Option<bitcoin::Address>,
-    ) -> miette::Result<BlockHash> {
+    ) -> Result<BlockHash, error::GenerateSignetBlock> {
         let current_height = self
             .validator()
             .get_header_info(&self.validator().get_mainchain_tip()?)?
@@ -607,7 +584,7 @@ impl Wallet {
         let mut command = miner.command("generate", vec![]);
         tracing::debug!("Running signet miner: {:?}", command);
 
-        command.run_utf8().await.into_diagnostic()?;
+        let _stdout: String = command.run_utf8().await?;
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
@@ -616,7 +593,13 @@ impl Wallet {
             .main_client
             .getbestblockhash()
             .await
-            .map_err(|err| miette!("Failed to fetch most recent block hash: {err}"))?;
+            .map_err(|err| {
+                let err = error::BitcoinCoreRPC {
+                    method: "getbestblockhash".to_owned(),
+                    error: err,
+                };
+                error::GenerateSignetBlock::FetchMostRecentBlockHash(err)
+            })?;
 
         tracing::info!("Generated signet block: {}", block_hash);
 
@@ -624,14 +607,18 @@ impl Wallet {
     }
 
     /// Build and mine a single block
-    async fn generate_block(&self, ack_all_proposals: bool) -> miette::Result<BlockHash> {
+    async fn generate_block(
+        &self,
+        ack_all_proposals: bool,
+    ) -> Result<BlockHash, error::GenerateBlock> {
         let Some(mainchain_tip) = self.inner.validator.try_get_mainchain_tip()? else {
-            return Err(miette!("Validator is not synced"));
+            return Err(error::GenerateBlock::ValidatorNotSynced);
         };
         if self.inner.validator.network() == Network::Signet {
             return self
                 .generate_signet_block(self.inner.config.mining_opts.coinbase_recipient.clone())
-                .await;
+                .await
+                .map_err(error::GenerateBlock::GenerateSignetBlock);
         }
         let coinbase_outputs = self
             .generate_coinbase_txouts(ack_all_proposals, mainchain_tip)
@@ -645,20 +632,22 @@ impl Wallet {
         );
 
         let block_hash = self.mine(&coinbase_outputs, transactions).await?;
-        self.delete_bmm_requests(&mainchain_tip).await?;
+        self.delete_bmm_requests(&mainchain_tip)
+            .await
+            .map_err(error::GenerateBlock::DeleteBmmRequests)?;
         Ok(block_hash)
     }
 
     pub fn generate_blocks<Ref>(
         this: Ref,
-        count: u32,
+        count: NonZeroU32,
         ack_all_proposals: bool,
-    ) -> impl FusedStream<Item = miette::Result<BlockHash>>
+    ) -> impl FusedStream<Item = Result<BlockHash, error::GenerateBlock>>
     where
         Ref: std::borrow::Borrow<Self>,
     {
         tracing::info!("Generate: creating {} block(s)", count);
-        stream::try_unfold((this, count), move |(this, remaining)| async move {
+        stream::try_unfold((this, count.get()), move |(this, remaining)| async move {
             if remaining == 0 {
                 Ok(None)
             } else {

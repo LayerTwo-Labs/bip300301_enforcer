@@ -9,7 +9,7 @@ use bip300301_enforcer_lib::{
             GenerateBlocksResponse, SubscribeEventsRequest,
         },
         sidechain::{subscribe_events_response, SubscribeEventsResponse},
-        IntoStatus,
+        ToStatus,
     },
 };
 use bitcoin::Address;
@@ -173,20 +173,20 @@ where
         let resp_event = resp
             .event
             .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))
-            .map_err(|err| Either::Left(err.into_status().into()))?
+            .map_err(|err| Either::Left(err.builder().to_status().into()))?
             .event
             .ok_or_else(|| proto::Error::missing_field::<subscribe_events_response::Event>("event"))
-            .map_err(|err| Either::Left(err.into_status().into()))?;
+            .map_err(|err| Either::Left(err.builder().to_status().into()))?;
         match resp_event {
             Event::ConnectBlock(connect_block) => {
                 let header_info = connect_block
                     .header_info
                     .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))
-                    .map_err(|err| Either::Left(err.into_status().into()))?;
+                    .map_err(|err| Either::Left(err.builder().to_status().into()))?;
                 let block_hash = header_info
                     .block_hash
                     .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))
-                    .map_err(|err| Either::Left(err.into_status().into()))?
+                    .map_err(|err| Either::Left(err.builder().to_status().into()))?
                     .decode_tonic::<BlockHeaderInfo, _>("block_hash")
                     .map_err(|err| Either::Left(err.into()))?;
                 check(block_hash).map_err(Either::Right)?
@@ -230,20 +230,20 @@ where
         let resp_event = resp
             .event
             .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))
-            .map_err(|err| Either::Left(err.into_status().into()))?
+            .map_err(|err| Either::Left(err.builder().to_status().into()))?
             .event
             .ok_or_else(|| proto::Error::missing_field::<subscribe_events_response::Event>("event"))
-            .map_err(|err| Either::Left(err.into_status().into()))?;
+            .map_err(|err| Either::Left(err.builder().to_status().into()))?;
         match resp_event {
             Event::ConnectBlock(connect_block) => {
                 let header_info = connect_block
                     .header_info
                     .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))
-                    .map_err(|err| Either::Left(err.into_status().into()))?;
+                    .map_err(|err| Either::Left(err.builder().to_status().into()))?;
                 let block_hash = header_info
                     .block_hash
                     .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))
-                    .map_err(|err| Either::Left(err.into_status().into()))?
+                    .map_err(|err| Either::Left(err.builder().to_status().into()))?
                     .decode_tonic::<BlockHeaderInfo, _>("block_hash")
                     .map_err(|err| Either::Left(err.into()))?;
                 check(block_hash).map_err(Either::Right)?
