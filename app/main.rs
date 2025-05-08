@@ -196,7 +196,23 @@ impl tower_http::trace::OnFailure<GrpcFailureClass> for FailureHandler {
     }
 }
 
-async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
+#[derive(Debug, Diagnostic, Error)]
+enum GrpcServerError {
+    #[error("unable to serve gRPC at `{addr}`")]
+    #[diagnostic(code(grpc_server::serve))]
+    Serve {
+        addr: SocketAddr,
+        source: tonic::transport::Error,
+    },
+    #[error("unable to build reflection service")]
+    #[diagnostic(code(grpc_server::reflection))]
+    Reflection(#[from] tonic_reflection::server::Error),
+}
+
+async fn run_grpc_server(
+    validator: Either<Validator, Wallet>,
+    addr: SocketAddr,
+) -> Result<(), GrpcServerError> {
     // Ordering here matters! Order here is from official docs on request IDs tracings
     // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
     let tracer = ServiceBuilder::new()
@@ -272,10 +288,14 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
     builder
-        .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
+        .add_service(
+            reflection_service_builder
+                .build_v1()
+                .map_err(GrpcServerError::Reflection)?,
+        )
         .add_service(health_service)
         .serve(addr)
-        .map_err(|err| miette!("serve gRPC at `{addr}`: {err:#}"))
+        .map_err(|err| GrpcServerError::Serve { addr, source: err })
         .await
 }
 
@@ -491,7 +511,7 @@ impl EnforcerTaskErrRx {
 /// Error receivers for main task
 struct ErrRxs {
     enforcer_task: EnforcerTaskErrRx,
-    grpc_server: oneshot::Receiver<miette::Report>,
+    grpc_server: oneshot::Receiver<GrpcServerError>,
 }
 
 async fn task(
@@ -880,12 +900,11 @@ async fn main() -> Result<()> {
         grpc_server_err = err_rxs.grpc_server => {
             match grpc_server_err {
                 Ok(err) => {
-                    tracing::error!("Received gRPC server error: {err:#}");
-                    Err(miette!(err))
+                    let err = miette::Report::from_err(err);
+                    Err(err.wrap_err("gRPC server error"))
                 }
                 Err(err) => {
-                    let err = miette!("Unable to receive error from grpc server: {err:#}");
-                    tracing::error!("{err:#}");
+                    let err = miette!("Unable to receive error from gRPC server: {err:#}");
                     Err(err)
                 }
             }
