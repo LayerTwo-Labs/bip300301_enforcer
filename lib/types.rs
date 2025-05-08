@@ -19,6 +19,8 @@ use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::proto::{StatusBuilder, ToStatus};
+
 pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
 pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
 
@@ -437,9 +439,21 @@ pub fn op_drivechain_script(sidechain_number: SidechainNumber) -> ScriptBuf {
 #[error("Amount overflow")]
 pub struct AmountOverflowError;
 
+impl ToStatus for AmountOverflowError {
+    fn builder(&self) -> StatusBuilder {
+        StatusBuilder::new(self)
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 #[error("Amount underflow")]
 pub struct AmountUnderflowError;
+
+impl ToStatus for AmountUnderflowError {
+    fn builder(&self) -> StatusBuilder {
+        StatusBuilder::new(self)
+    }
+}
 
 #[derive(Debug, Diagnostic, Error)]
 enum BlindedM6FeeOutputError {
@@ -449,6 +463,16 @@ enum BlindedM6FeeOutputError {
     NonZeroValue,
     #[error("Failed to parse script")]
     Script(#[from] bitcoin::script::Error),
+}
+
+impl ToStatus for BlindedM6FeeOutputError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::InvalidSpk { .. } | Self::NonZeroValue | Self::Script(_) => {
+                StatusBuilder::new(self)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -465,6 +489,18 @@ enum BlindedM6ErrorInner {
     ZeroPayout,
 }
 
+impl ToStatus for BlindedM6ErrorInner {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::InvalidFeeOutput(err) => StatusBuilder::with_code(self, err.builder()),
+            Self::OutputAmountOverflow(err) => StatusBuilder::new(err),
+            Self::MissingFeeOutput | Self::NonEmptyInputs | Self::ZeroPayout => {
+                StatusBuilder::new(self)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 #[error("Blinded M6 error")]
 pub struct BlindedM6Error(#[from] BlindedM6ErrorInner);
@@ -478,6 +514,12 @@ impl From<AmountOverflowError> for BlindedM6Error {
 impl From<BlindedM6FeeOutputError> for BlindedM6Error {
     fn from(err: BlindedM6FeeOutputError) -> Self {
         BlindedM6ErrorInner::from(err).into()
+    }
+}
+
+impl ToStatus for BlindedM6Error {
+    fn builder(&self) -> StatusBuilder {
+        self.0.builder()
     }
 }
 

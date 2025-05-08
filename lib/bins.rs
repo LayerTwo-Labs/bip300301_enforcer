@@ -2,6 +2,8 @@ use std::{ffi::OsStr, future::Future, path::PathBuf, time::Duration};
 
 use thiserror::Error;
 
+use crate::proto::{StatusBuilder, ToStatus};
+
 #[derive(Debug, Error)]
 pub enum CommandError {
     #[error(transparent)]
@@ -16,6 +18,16 @@ pub enum CommandError {
     Stderr(Vec<u8>),
     #[error(transparent)]
     Unknown(#[from] std::io::Error),
+}
+
+impl ToStatus for CommandError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::FromUtf8(err) => StatusBuilder::new(err),
+            Self::Stderr(_) => StatusBuilder::new(self),
+            Self::Unknown(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 pub trait CommandExt {

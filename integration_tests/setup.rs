@@ -655,10 +655,11 @@ impl DummySidechain {
     fn extract_withdrawal_bundle_event(
         block_event: proto::mainchain::block_info::Event,
     ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, tonic::Status> {
-        use proto::{mainchain::block_info::event::Event, IntoStatus};
+        use proto::{mainchain::block_info::event::Event, ToStatus};
         let event = block_event.event.ok_or_else(|| {
             proto::Error::missing_field::<proto::mainchain::block_info::Event>("event")
-                .into_status()
+                .builder()
+                .to_status()
         })?;
         match event {
             Event::Deposit(_) => Ok(None),
@@ -677,7 +678,7 @@ impl DummySidechain {
                 },
                 withdrawal_bundle_event, SubscribeEventsResponse, WithdrawalBundleEvent,
             },
-            IntoStatus,
+            ToStatus,
         };
         let Some(events_stream) = self.event_stream.take() else {
             return Err(DummySidechainError::EventStreamCancelled);
@@ -701,16 +702,21 @@ impl DummySidechain {
                 }
             };
             let subscribe_events_response::Event { event } = event.ok_or_else(|| {
-                proto::Error::missing_field::<SubscribeEventsResponse>("event").into_status()
+                proto::Error::missing_field::<SubscribeEventsResponse>("event")
+                    .builder()
+                    .to_status()
             })?;
             let event: subscribe_events_response::event::Event = event.ok_or_else(|| {
                 proto::Error::missing_field::<subscribe_events_response::Event>("event")
-                    .into_status()
+                    .builder()
+                    .to_status()
             })?;
             match event {
                 Event::ConnectBlock(connect_block_event) => {
                     let block_info = connect_block_event.block_info.ok_or_else(|| {
-                        proto::Error::missing_field::<ConnectBlock>("block_info").into_status()
+                        proto::Error::missing_field::<ConnectBlock>("block_info")
+                            .builder()
+                            .to_status()
                     })?;
                     'inner: for event in block_info.events {
                         let Some(withdrawal_bundle_event) =
@@ -722,7 +728,8 @@ impl DummySidechain {
                             .m6id
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<WithdrawalBundleEvent>("m6id")
-                                    .into_status()
+                                    .builder()
+                                    .to_status()
                             })?
                             .decode_tonic::<WithdrawalBundleEvent, Txid>("m6id")
                             .map(M6id)?;
@@ -730,14 +737,16 @@ impl DummySidechain {
                             .event
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<WithdrawalBundleEvent>("event")
-                                    .into_status()
+                                    .builder()
+                                    .to_status()
                             })?
                             .event
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<withdrawal_bundle_event::Event>(
                                     "event",
                                 )
-                                .into_status()
+                                .builder()
+                                .to_status()
                             })?;
                         match withdrawal_bundle_event {
                             withdrawal_bundle_event::event::Event::Failed(_) => {

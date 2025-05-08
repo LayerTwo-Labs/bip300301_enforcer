@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::sync::watch::Receiver as WatchReceiver;
 
 use crate::{
-    proto::mainchain::HeaderSyncProgress,
+    proto::{mainchain::HeaderSyncProgress, StatusBuilder, ToStatus},
     types::{
         BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
         SidechainProposalId, TreasuryUtxo, TwoWayPegData,
@@ -38,11 +38,105 @@ pub enum InitError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-enum GetHeaderInfoErrorInner {
+pub enum GetCtipSequenceNumberError {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
+    TryGet(#[from] db_error::TryGet),
+}
+
+impl ToStatus for GetCtipSequenceNumberError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+            Self::TryGet(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum TryGetCtipError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    TryGet(#[from] db_error::TryGet),
+}
+
+impl ToStatus for TryGetCtipError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+            Self::TryGet(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum GetCtipsError {
+    #[error(transparent)]
+    DbIter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetCtipsError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbIter(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum TryGetCtipValueSeqError {
+    #[error(transparent)]
+    DbTryGet(#[from] db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for TryGetCtipValueSeqError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum GetTreasuryUtxoError {
+    #[error(transparent)]
+    DbGet(#[from] db_error::Get),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetTreasuryUtxoError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum GetHeaderInfoErrorInner {
+    #[error(transparent)]
     GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetHeaderInfoErrorInner {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::GetHeaderInfo(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -56,6 +150,12 @@ where
 {
     fn from(err: T) -> Self {
         Self(err.into())
+    }
+}
+
+impl ToStatus for GetHeaderInfoError {
+    fn builder(&self) -> StatusBuilder {
+        self.0.builder()
     }
 }
 
@@ -156,51 +256,88 @@ where
 #[derive(Debug, Error)]
 pub enum ListHeadersError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     Iter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum TryGetMainchainTipError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for TryGetMainchainTipError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum GetMainchainTipError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbGet(#[from] dbs::db_error::Get),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetMainchainTipError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum TryGetMainchainTipHeightError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbGet(#[from] dbs::db_error::Get),
     #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for TryGetMainchainTipHeightError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum TryGetBmmCommitmentsError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum GetPendingWithdrawalsError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbGet(#[from] dbs::db_error::Get),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetPendingWithdrawalsError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -209,12 +346,29 @@ pub enum EventsStreamError {
     Overflow,
 }
 
+impl ToStatus for EventsStreamError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::Overflow => StatusBuilder::new(self),
+        }
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum GetSidechainsError {
     #[error(transparent)]
     DbIter(#[from] db_error::Iter),
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetSidechainsError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbIter(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -308,14 +462,13 @@ impl Validator {
     pub fn get_ctip_sequence_number(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<u64>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    ) -> Result<Option<u64>, GetCtipSequenceNumberError> {
+        let rotxn = self.dbs.read_txn()?;
         let treasury_utxo_count = self
             .dbs
             .active_sidechains
             .treasury_utxo_count
-            .try_get(&rotxn, &sidechain_number)
-            .into_diagnostic()?;
+            .try_get(&rotxn, &sidechain_number)?;
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
         // In order to get the current sequence number we decrement it by one.
@@ -329,14 +482,13 @@ impl Validator {
     pub fn try_get_ctip(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<Ctip>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    ) -> Result<Option<Ctip>, TryGetCtipError> {
+        let rotxn = self.dbs.read_txn()?;
         let ctip = self
             .dbs
             .active_sidechains
             .ctip()
-            .try_get(&rotxn, &sidechain_number)
-            .into_diagnostic()?;
+            .try_get(&rotxn, &sidechain_number)?;
         Ok(ctip)
     }
 
@@ -352,16 +504,16 @@ impl Validator {
     }
 
     /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
+        let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
             .ctip()
             .iter(&rotxn)
-            .into_diagnostic()?
-            .collect()
-            .into_diagnostic()?;
+            .map_err(db_error::Iter::from)?
+            .map_err(db_error::Iter::from)
+            .collect()?;
         Ok(res)
     }
 
@@ -370,13 +522,14 @@ impl Validator {
     pub fn try_get_ctip_value_seq(
         &self,
         outpoint: &OutPoint,
-    ) -> Result<Option<(SidechainNumber, Amount, u64)>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, TryGetCtipValueSeqError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
             .active_sidechains
             .ctip_outpoint_to_value_seq()
-            .try_get(&rotxn, outpoint)
-            .into_diagnostic()
+            .try_get(&rotxn, outpoint)?;
+        Ok(res)
     }
 
     /// Get treasury UTXO by sequence number
@@ -384,13 +537,14 @@ impl Validator {
         &self,
         sidechain_number: SidechainNumber,
         sequence: u64,
-    ) -> Result<TreasuryUtxo, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
+    ) -> Result<TreasuryUtxo, GetTreasuryUtxoError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
             .active_sidechains
             .slot_sequence_to_treasury_utxo()
-            .get(&rotxn, &(sidechain_number, sequence))
-            .into_diagnostic()
+            .get(&rotxn, &(sidechain_number, sequence))?;
+        Ok(res)
     }
 
     pub fn get_header_info(

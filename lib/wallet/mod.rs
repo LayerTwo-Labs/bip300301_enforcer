@@ -31,7 +31,6 @@ use bitcoin::{
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{channel::oneshot, FutureExt, TryFutureExt};
-use miette::{miette, IntoDiagnostic, Report, Result};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use tokio::{spawn, task::JoinHandle, time::Instant};
@@ -41,12 +40,13 @@ use uuid::Uuid;
 use crate::{
     cli::{Config, WalletConfig, WalletSyncSource},
     convert,
+    display::ErrorChain,
     messages::{self, M8BmmRequest},
     types::{
         BDKWalletTransaction, BlindedM6, Ctip, M6id, PendingM6idInfo, SidechainAck,
         SidechainNumber, SidechainProposal, SidechainProposalId,
     },
-    validator::Validator,
+    validator::{self, Validator},
     wallet::{
         error::WalletInitialization,
         mnemonic::{new_mnemonic, EncryptedMnemonic},
@@ -89,13 +89,16 @@ struct WalletInner {
 }
 
 impl WalletInner {
-    async fn init_esplora_client(config: &WalletConfig, network: Network) -> Result<EsploraClient> {
+    async fn init_esplora_client(
+        config: &WalletConfig,
+        network: Network,
+    ) -> Result<EsploraClient, error::InitEsploraClient> {
         let default_url = match network {
             Network::Signet => "http://172.105.148.135:3000",
             Network::Regtest => "http://localhost:3003",
-            _ => return Err(miette!("esplora: unsupported network: {network}")),
+            network => return Err(error::UnsupportedNetwork(network).into()),
         };
-        let default_url = url::Url::parse(default_url).into_diagnostic()?;
+        let default_url = url::Url::parse(default_url)?;
 
         let esplora_url = config.esplora_url.clone().unwrap_or(default_url);
 
@@ -105,23 +108,26 @@ impl WalletInner {
         // some reason. The Esplora library doesn't like that! Remove it.
         let client = esplora_client::Builder::new(esplora_url.as_str().trim_end_matches("/"))
             .build_async()
-            .into_diagnostic()?;
+            .map_err(error::InitEsploraClient::BuildEsploraClient)?;
 
         let height = client
             .get_height()
             .await
-            .map_err(|err| miette!("failed to get esplora height: {err:#}"))?;
+            .map_err(error::InitEsploraClient::EsploraClientHeight)?;
 
         tracing::info!(height = height, "esplora client initialized");
         Ok(client)
     }
 
     /// Initialize electrum client
-    fn init_electrum_client(config: &WalletConfig, network: Network) -> Result<ElectrumClient> {
+    fn init_electrum_client(
+        config: &WalletConfig,
+        network: Network,
+    ) -> Result<ElectrumClient, error::InitElectrumClient> {
         let (default_host, default_port) = match network {
             Network::Signet => ("drivechain.live", 50001),
             Network::Regtest => ("127.0.0.1", 60401), // Default for mempool/electrs
-            default => return Err(miette!("unsupported network: {default}")),
+            network => return Err(error::UnsupportedNetwork(network).into()),
         };
         let electrum_host = config
             .electrum_host
@@ -136,20 +142,23 @@ impl WalletInner {
             .timeout(Some(timeout))
             .build();
         let electrum_client = electrum_client::Client::from_config(&electrum_url, config)
-            .map_err(|err| miette!("failed to create electrum client: {err:#}"))?;
-        let header = electrum_client.block_header(0).into_diagnostic()?;
+            .map_err(error::InitElectrumClient::CreateElectrumClient)?;
+        let header = electrum_client
+            .block_header(0)
+            .map_err(error::InitElectrumClient::GetInitialBlockHeader)?;
         // Verify the Electrum server is on the same chain as we are.
         if header.block_hash().as_byte_array() != network.chain_hash().as_bytes() {
-            return Err(miette!(
-                "Electrum server ({}) is not on the same chain as the wallet ({})",
-                header.block_hash(),
-                network.chain_hash(),
-            ));
+            return Err(error::InitElectrumClient::ChainMismatch {
+                electrum_block_hash: header.block_hash(),
+                wallet_chain_hash: network.chain_hash(),
+            });
         }
         Ok(BdkElectrumClient::new(electrum_client))
     }
 
-    fn init_db_connection(data_dir: &Path) -> Result<rusqlite::Connection> {
+    fn init_db_connection(
+        data_dir: &Path,
+    ) -> Result<rusqlite::Connection, error::InitDbConnection> {
         use rusqlite_migration::{Migrations, M};
         // 1️⃣ Define migrations
         let migrations = Migrations::new(vec![
@@ -208,9 +217,9 @@ impl WalletInner {
 
         let db_name = "db.sqlite";
         let path = data_dir.join(db_name);
-        let mut db_connection = Connection::open(path.clone()).into_diagnostic()?;
+        let mut db_connection = Connection::open(path.clone())?;
         tracing::info!("Created database connection to {}", path.display());
-        migrations.to_latest(&mut db_connection).into_diagnostic()?;
+        migrations.to_latest(&mut db_connection)?;
         tracing::debug!("Ran migrations on {}", path.display());
         Ok(db_connection)
     }
@@ -219,12 +228,12 @@ impl WalletInner {
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
         wallet_database: &mut Persistence,
-    ) -> Result<BdkWallet, miette::Report> {
-        let extended_key: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
+    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
+        let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
 
         let xpriv = extended_key
             .into_xprv(network)
-            .ok_or(miette!("unable to derive xpriv from extended key"))?;
+            .ok_or(error::InitWalletFromMnemonic::DeriveXpriv)?;
 
         // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
         let external_desc = format!("wpkh({xpriv}/84'/1'/0'/0/*)");
@@ -237,16 +246,7 @@ impl WalletInner {
             .extract_keys()
             .check_network(network)
             .load_wallet_async(wallet_database)
-            .await
-            .map_err(|err| match err {
-                e if e.to_string().contains("data mismatch") => {
-                    tracing::error!(
-                        "Wallet data mismatch! Wipe your data directory and try again."
-                    );
-                    WalletInitialization::DataMismatch.into()
-                }
-                err => miette!("failed to load wallet: {err:#}"),
-            })?;
+            .await?;
 
         let bitcoin_wallet = match bitcoin_wallet {
             Some(wallet) => {
@@ -260,8 +260,7 @@ impl WalletInner {
                 bdk_wallet::Wallet::create(external_desc, internal_desc)
                     .network(network)
                     .create_wallet_async(wallet_database)
-                    .await
-                    .map_err(|err| miette!("failed to create wallet: {err:#}"))?
+                    .await?
             }
         };
 
@@ -274,11 +273,10 @@ impl WalletInner {
         main_client: HttpClient,
         validator: Validator,
         magic: bitcoin::p2p::Magic,
-    ) -> Result<Self, miette::Report> {
+    ) -> Result<Self, error::InitWallet> {
         let network = {
             let validator_network = validator.network();
-            bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())
-                .into_diagnostic()?
+            bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())?
         };
 
         let database_path = data_dir.join("wallet.sqlite.db");
@@ -292,7 +290,7 @@ impl WalletInner {
 
         let mut wallet_database = thread_safe_connection::ThreadSafeConnection::open(database_path)
             .await
-            .into_diagnostic()?;
+            .map_err(error::InitWallet::OpenConnection)?;
 
         let chain_source = match config.wallet_opts.sync_source {
             WalletSyncSource::Electrum => {
@@ -425,11 +423,64 @@ impl WalletInner {
         RwLockWriteGuardSome::new(write_guard).ok_or(error::NotUnlocked)
     }
 
+    fn read_db_mnemonic(
+        connection: &Connection,
+    ) -> Result<Option<Either<Mnemonic, EncryptedMnemonic>>, error::ReadDbMnemonic> {
+        let mut statement = connection
+            .prepare(
+                "SELECT plaintext_mnemonic, initialization_vector, 
+                            ciphertext_mnemonic, key_salt FROM wallet_seeds",
+            )
+            .map_err(error::ReadDbMnemonicInner::Rusqlite)?;
+
+        let statement_result = statement.query_row([], |row| {
+            let plaintext_mnemonic: Option<String> = row.get("plaintext_mnemonic")?;
+            let iv: Option<Vec<u8>> = row.get("initialization_vector")?;
+            let ciphertext: Option<Vec<u8>> = row.get("ciphertext_mnemonic")?;
+            let key_salt: Option<Vec<u8>> = row.get("key_salt")?;
+            Ok((plaintext_mnemonic, iv, ciphertext, key_salt))
+        });
+        let res = match statement_result {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(err) => return Err(error::ReadDbMnemonicInner::ReadMnemonic(err).into()),
+        };
+
+        match res {
+            (Some(plaintext_mnemonic), None, None, None) => {
+                let mnemonic =
+                    Mnemonic::parse_in_normalized(Language::English, plaintext_mnemonic.as_str())
+                        .map_err(error::ParseMnemonic::from)?;
+
+                Ok(Some(Either::Left(mnemonic)))
+            }
+            (None, Some(iv), Some(ciphertext), Some(key_salt)) => {
+                Ok(Some(Either::Right(EncryptedMnemonic {
+                    initialization_vector: iv,
+                    ciphertext_mnemonic: ciphertext,
+                    key_salt,
+                })))
+            }
+
+            // This is a sanity check, and should never really happen.
+            // Don't print out the actual contents, just indicate which values are set/not set.
+            (plaintext_mnemonic, iv, ciphertext, key_salt) => {
+                Err(error::ReadDbMnemonicInner::InvalidDbState {
+                    plaintext_mnemonic_is_some: plaintext_mnemonic.is_some(),
+                    iv_is_some: iv.is_some(),
+                    ciphertext_is_some: ciphertext.is_some(),
+                    key_salt_is_some: key_salt.is_some(),
+                }
+                .into())
+            }
+        }
+    }
+
     pub async fn create_new_wallet(
         &self,
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
-    ) -> Result<(), miette::Report> {
+    ) -> Result<(), error::CreateNewWallet> {
         let connection = self.self_db.lock().await;
         if WalletInner::read_db_mnemonic(&connection)?.is_some() {
             return Err(WalletInitialization::AlreadyExists.into());
@@ -451,21 +502,17 @@ impl WalletInner {
                 let encrypted = EncryptedMnemonic::encrypt(&mnemonic, password)?;
 
                 // Satisfy clippy with a single function call per lock
-                let with_connection = |connection: &Connection| -> Result<_, miette::Report> {
-                    let mut statement = connection
-                        .prepare(
-                            "INSERT INTO wallet_seeds (initialization_vector, 
+                let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+                    let mut statement = connection.prepare(
+                        "INSERT INTO wallet_seeds (initialization_vector, 
                             ciphertext_mnemonic, key_salt) VALUES (?, ?, ?)",
-                        )
-                        .into_diagnostic()?;
+                    )?;
 
-                    statement
-                        .execute((
-                            encrypted.initialization_vector,
-                            encrypted.ciphertext_mnemonic,
-                            encrypted.key_salt,
-                        ))
-                        .into_diagnostic()?;
+                    statement.execute((
+                        encrypted.initialization_vector,
+                        encrypted.ciphertext_mnemonic,
+                        encrypted.key_salt,
+                    ))?;
 
                     Ok(())
                 };
@@ -479,14 +526,11 @@ impl WalletInner {
                 );
 
                 // Satisfy clippy with a single function call per lock
-                let with_connection = |connection: &Connection| -> Result<_, miette::Report> {
+                let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
                     let mut statement = connection
-                        .prepare("INSERT INTO wallet_seeds (plaintext_mnemonic) VALUES (?)")
-                        .into_diagnostic()?;
+                        .prepare("INSERT INTO wallet_seeds (plaintext_mnemonic) VALUES (?)")?;
 
-                    statement
-                        .execute([mnemonic.to_string()])
-                        .into_diagnostic()?;
+                    statement.execute([mnemonic.to_string()])?;
                     Ok(())
                 };
 
@@ -507,7 +551,10 @@ impl WalletInner {
         Ok(())
     }
 
-    pub async fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
+    pub async fn unlock_existing_wallet(
+        &self,
+        password: &str,
+    ) -> Result<(), error::UnlockExistingWallet> {
         if self.bitcoin_wallet.read().await.is_some() {
             return Err(WalletInitialization::AlreadyUnlocked.into());
         }
@@ -526,7 +573,7 @@ impl WalletInner {
             }
             // Plaintext!
             Some(Either::Left(_)) => {
-                return Err(miette!("wallet is not encrypted"));
+                return Err(error::UnlockExistingWallet::NotEncrypted);
             }
             Some(Either::Right(encrypted)) => encrypted,
         };
@@ -534,7 +581,7 @@ impl WalletInner {
         tracing::debug!("unlock wallet: decrypting mnemonic");
 
         let mnemonic = encrypted.decrypt(password).map_err(|err| {
-            tracing::error!("failed to decrypt mnemonic: {err:#}");
+            tracing::error!("failed to decrypt mnemonic: {:#}", ErrorChain::new(&err));
             WalletInitialization::InvalidPassword
         })?;
 
@@ -552,61 +599,6 @@ impl WalletInner {
 
         tracing::info!("unlock wallet: initialized wallet");
         Ok(())
-    }
-
-    fn read_db_mnemonic(
-        connection: &Connection,
-    ) -> Result<Option<Either<Mnemonic, EncryptedMnemonic>>, miette::Report> {
-        let mut statement = connection
-            .prepare(
-                "SELECT plaintext_mnemonic, initialization_vector, 
-                            ciphertext_mnemonic, key_salt FROM wallet_seeds",
-            )
-            .into_diagnostic()?;
-
-        let statement_result = statement.query_row([], |row| {
-            let plaintext_mnemonic: Option<String> = row.get("plaintext_mnemonic")?;
-            let iv: Option<Vec<u8>> = row.get("initialization_vector")?;
-            let ciphertext: Option<Vec<u8>> = row.get("ciphertext_mnemonic")?;
-            let key_salt: Option<Vec<u8>> = row.get("key_salt")?;
-            Ok((plaintext_mnemonic, iv, ciphertext, key_salt))
-        });
-        let res = match statement_result {
-            Ok(row) => row,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(err) => return Err(miette!("failed to read mnemonic from DB: {err:#}")),
-        };
-
-        match res {
-            (Some(plaintext_mnemonic), None, None, None) => {
-                let mnemonic =
-                    Mnemonic::parse_in_normalized(Language::English, plaintext_mnemonic.as_str())
-                        .into_diagnostic()?;
-
-                Ok(Some(Either::Left(mnemonic)))
-            }
-            (None, Some(iv), Some(ciphertext), Some(key_salt)) => {
-                Ok(Some(Either::Right(EncryptedMnemonic {
-                    initialization_vector: iv,
-                    ciphertext_mnemonic: ciphertext,
-                    key_salt,
-                })))
-            }
-
-            // This is a sanity check, and should never really happen.
-            // Don't print out the actual contents, just indicate which values are set/not set.
-            (plaintext_mnemonic, iv, ciphertext, key_salt) => {
-                let plaintext_mnemonic = if plaintext_mnemonic.is_some() {
-                    "Some"
-                } else {
-                    "None"
-                };
-                let iv = if iv.is_some() { "Some" } else { "None" };
-                let ciphertext = if ciphertext.is_some() { "Some" } else { "None" };
-                let key_salt = if key_salt.is_some() { "Some" } else { "None" };
-                Err(miette!("invalid mnemonic DB state: plaintext_mnemonic={plaintext_mnemonic} iv={iv} ciphertext={ciphertext} key_salt={key_salt}"))
-            }
-        }
     }
 
     // Gets wiped upon generating a new block.
@@ -715,7 +707,7 @@ impl Task {
                     );
                     let guard = span.enter();
                     if let Err(err) = wallet.sync().await {
-                        tracing::error!("wallet sync error: {:#}", miette::Report::new(err));
+                        tracing::error!("wallet sync error: {:#}", ErrorChain::new(&err));
                     }
                     drop(guard);
                     sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
@@ -791,7 +783,7 @@ impl Wallet {
         main_client: HttpClient,
         validator: Validator,
         magic: bitcoin::p2p::Magic,
-    ) -> Result<Self> {
+    ) -> Result<Self, error::InitWallet> {
         let inner =
             Arc::new(WalletInner::new(data_dir, config, main_client, validator, magic).await?);
         let task = Task::new(inner.clone());
@@ -1029,16 +1021,14 @@ impl Wallet {
     }
 
     // Gets wiped upon generating a new block.
-    async fn delete_bmm_requests(&self, prev_blockhash: &bitcoin::BlockHash) -> Result<()> {
-        self.inner
-            .self_db
-            .lock()
-            .await
-            .execute(
-                "DELETE FROM bmm_requests where prev_block_hash = ?;",
-                [prev_blockhash.as_byte_array()],
-            )
-            .into_diagnostic()?;
+    async fn delete_bmm_requests(
+        &self,
+        prev_blockhash: &bitcoin::BlockHash,
+    ) -> Result<(), rusqlite::Error> {
+        self.inner.self_db.lock().await.execute(
+            "DELETE FROM bmm_requests where prev_block_hash = ?;",
+            [prev_blockhash.as_byte_array()],
+        )?;
         Ok(())
     }
 
@@ -1073,7 +1063,10 @@ impl Wallet {
         })
     }
 
-    async fn fetch_transaction(&self, txid: Txid) -> Result<bdk_wallet::bitcoin::Transaction> {
+    async fn fetch_transaction(
+        &self,
+        txid: Txid,
+    ) -> Result<bdk_wallet::bitcoin::Transaction, error::FetchTransaction> {
         let block_hash = None;
 
         let transaction_hex = self
@@ -1087,10 +1080,9 @@ impl Wallet {
             })?;
 
         let transaction =
-            bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)
-                .into_diagnostic()?;
+            bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)?;
 
-        convert::bitcoin_tx_to_bdk_tx(transaction).into_diagnostic()
+        convert::bitcoin_tx_to_bdk_tx(transaction).map_err(error::FetchTransaction::Convert)
     }
 
     /// [`bdk_wallet::TxOrdering`] for deposit txs
@@ -1208,12 +1200,12 @@ impl Wallet {
         sidechain_address_data: bdk_wallet::bitcoin::script::PushBytesBuf,
         sidechain_ctip: Option<&Ctip>,
         fee: Option<Amount>,
-    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateDepositPsbt> {
         let sidechain_number = match crate::messages::parse_op_drivechain(
             op_drivechain_output.script_pubkey.as_bytes(),
         ) {
             Ok((_, sidechain_number)) => sidechain_number,
-            Err(_) => return Err(miette::miette!("Failed to parse sidechain number")),
+            Err(_) => return Err(error::CreateDepositPsbt::ParseSidechainNumber),
         };
         // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
         // Ctip.
@@ -1224,7 +1216,13 @@ impl Wallet {
                     vout: sidechain_ctip.outpoint.vout,
                 };
 
-                let ctip_transaction = self.fetch_transaction(sidechain_ctip.outpoint.txid).await?;
+                let ctip_transaction =
+                    self.fetch_transaction(sidechain_ctip.outpoint.txid)
+                        .await
+                        .map_err(|err| error::CreateDepositPsbt::FetchTransaction {
+                            txid: sidechain_ctip.outpoint.txid,
+                            source: err,
+                        })?;
 
                 let psbt_input = bdk_wallet::bitcoin::psbt::Input {
                     non_witness_utxo: Some(ctip_transaction),
@@ -1258,9 +1256,7 @@ impl Wallet {
                         // This might be wrong. Seems to work!
                         let satisfaction_weight = bdk_wallet::bitcoin::Weight::ZERO;
 
-                        builder
-                            .add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)
-                            .into_diagnostic()?;
+                        builder.add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)?;
                     }
 
                     builder.ordering(Self::deposit_txordering(
@@ -1272,7 +1268,7 @@ impl Wallet {
                         .collect(),
                     ));
 
-                    builder.finish().into_diagnostic()
+                    builder.finish().map_err(error::CreateDepositPsbt::CreateTx)
                 })
             })?
         };
@@ -1289,7 +1285,7 @@ impl Wallet {
         sidechain_address: String,
         value: Amount,
         fee: Option<Amount>,
-    ) -> Result<bitcoin::Txid> {
+    ) -> Result<bitcoin::Txid, error::CreateDeposit> {
         let block_height = self
             .inner
             .validator
@@ -1313,9 +1309,7 @@ impl Wallet {
         );
         let sidechain_address_data =
             bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address.into_bytes())
-                .map_err(|err| {
-                    miette!("failed to convert sidechain address to PushBytesBuf: {err:#}")
-                })?;
+                .map_err(error::CreateDeposit::ConvertSidechainAddress)?;
         let psbt = self
             .create_deposit_psbt(
                 op_drivechain_output,
@@ -1336,7 +1330,7 @@ impl Wallet {
         let mut broadcast_successfully: bool =
             crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
                 .await
-                .into_diagnostic()?
+                .map_err(error::CreateDeposit::BroadcastTx)?
                 .is_some();
         if self.inner.validator.network() == Network::Signet
             && self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES
@@ -1348,22 +1342,20 @@ impl Wallet {
                 tx,
             )
             .await
-            .into_diagnostic()?;
+            .map_err(error::CreateDeposit::BroadcastNonstandardTx)?;
         }
         if broadcast_successfully {
             tracing::info!(%txid, "Broadcast deposit transaction successfully");
             Ok(convert::bdk_txid_to_bitcoin_txid(txid))
         } else {
-            Err(miette::miette!(
-                "Broadcast deposit transaction failed: {txid}"
-            ))
+            Err(error::CreateDeposit::BroadcastUnsuccessful { txid })
         }
     }
 
     #[instrument(skip_all)]
-    pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance> {
+    pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance, error::GetWalletBalance> {
         if self.inner.last_sync.read().await.is_none() {
-            return Err(miette!("get balance: wallet not synced"));
+            return Err(error::NotSynced.into());
         }
 
         let balance = self.inner.read_wallet().await?.balance();
@@ -1376,7 +1368,9 @@ impl Wallet {
         reason = "false positive for `bitcoin_wallet`"
     )]
     #[instrument(skip_all)]
-    pub async fn list_wallet_transactions(&self) -> Result<Vec<BDKWalletTransaction>> {
+    pub async fn list_wallet_transactions(
+        &self,
+    ) -> Result<Vec<BDKWalletTransaction>, error::ListWalletTransactions> {
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
             let wallet_read = self.inner.read_wallet().await?;
@@ -1441,8 +1435,7 @@ impl Wallet {
                     })?;
 
                 let prev_output =
-                    bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)
-                        .into_diagnostic()?;
+                    bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)?;
 
                 let value = prev_output.output[input.previous_output.vout as usize].value;
                 if self.inner.read_wallet().await?.is_mine(
@@ -1484,7 +1477,7 @@ impl Wallet {
         &self,
         destinations: HashMap<bitcoin::Address, Amount>,
         params: CreateTransactionParams,
-    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateSendPsbt> {
         let mut timestamp = Instant::now();
         let psbt = {
             let mut wallet_write = self.inner.write_wallet().await?;
@@ -1493,8 +1486,7 @@ impl Wallet {
                     let mut builder = wallet.build_tx();
 
                     if let Some(op_return_message) = params.op_return_message {
-                        let op_return_output =
-                            Self::create_op_return_output(op_return_message).into_diagnostic()?;
+                        let op_return_output = Self::create_op_return_output(op_return_message)?;
                         builder
                             .add_recipient(op_return_output.script_pubkey, op_return_output.value);
 
@@ -1530,7 +1522,7 @@ impl Wallet {
                             .add_utxos(&params.required_utxos)
                             .map_err(|err| match err {
                                 bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
-                                    error::SendTransaction::UnknownUTXO(outpoint)
+                                    error::CreateSendPsbt::UnknownUTXO(outpoint)
                                 }
                             })?;
 
@@ -1565,7 +1557,7 @@ impl Wallet {
                                 timestamp.elapsed()
                             );
                         })
-                        .into_diagnostic()
+                        .map_err(error::CreateSendPsbt::CreateTx)
                 })
             })?
         };
@@ -1578,7 +1570,7 @@ impl Wallet {
         &self,
         destinations: HashMap<bdk_wallet::bitcoin::Address, Amount>,
         params: CreateTransactionParams,
-    ) -> Result<bitcoin::Txid> {
+    ) -> Result<bitcoin::Txid, error::SendWalletTransaction> {
         tracing::debug!(
             "destinations" = destinations.len(),
             "required_utxos" = params.required_utxos.len(),
@@ -1607,16 +1599,15 @@ impl Wallet {
 
         if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
             .await
-            .into_diagnostic()?
+            .map_err(error::SendWalletTransaction::BroadcastTx)?
             .is_some()
         {
             tracing::info!(%txid, "Broadcast send transaction in {:?}", timestamp.elapsed());
             Ok(convert::bdk_txid_to_bitcoin_txid(txid))
         } else {
-            const ERR_MSG: &str =
-                "Failed to broadcast send transaction (OP_DRIVECHAIN not supported by node)";
-            tracing::error!(%txid, ERR_MSG);
-            Err(miette!(ERR_MSG))
+            let err = error::SendWalletTransaction::OpDrivechainNotSupported;
+            tracing::error!(%txid, "{:#}", ErrorChain::new(&err));
+            Err(err)
         }
     }
 
@@ -1625,7 +1616,7 @@ impl Wallet {
         reason = "false positive for `bitcoin_wallet`"
     )]
     #[instrument(skip_all)]
-    pub async fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>> {
+    pub async fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>, error::NotUnlocked> {
         let start = Instant::now();
         let wallet_read = self.inner.read_wallet().await?;
         let utxos = wallet_read.list_unspent().collect::<Vec<_>>();
@@ -1653,16 +1644,15 @@ impl Wallet {
         Ok(())
     }
 
-    pub async fn nack_sidechain(&self, sidechain_number: u8, data_hash: &[u8; 32]) -> Result<()> {
-        self.inner
-            .self_db
-            .lock()
-            .await
-            .execute(
-                "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
-                (sidechain_number, data_hash),
-            )
-            .into_diagnostic()?;
+    pub async fn nack_sidechain(
+        &self,
+        sidechain_number: u8,
+        data_hash: &[u8; 32],
+    ) -> Result<(), rusqlite::Error> {
+        self.inner.self_db.lock().await.execute(
+            "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
+            (sidechain_number, data_hash),
+        )?;
         Ok(())
     }
 
@@ -1670,7 +1660,7 @@ impl Wallet {
     async fn get_sidechain_ctip(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>> {
+    ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>, miette::Report> {
         let ctip = self.inner.validator.try_get_ctip(sidechain_number)?;
 
         let sequence_number = self
@@ -1687,7 +1677,10 @@ impl Wallet {
         }
     }
 
-    pub fn is_sidechain_active(&self, sidechain_number: SidechainNumber) -> Result<bool> {
+    pub fn is_sidechain_active(
+        &self,
+        sidechain_number: SidechainNumber,
+    ) -> Result<bool, validator::GetSidechainsError> {
         let sidechains = self.inner.validator.get_active_sidechains()?;
         let active = sidechains
             .iter()
@@ -1729,7 +1722,7 @@ impl Wallet {
         sidechain_number: SidechainNumber,
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
         sidechain_block_hash: [u8; 32],
-    ) -> Result<bdk_wallet::bitcoin::ScriptBuf> {
+    ) -> Result<bdk_wallet::bitcoin::ScriptBuf, bitcoin::script::PushBytesError> {
         let message = [
             &M8BmmRequest::TAG[..],
             &[sidechain_number.into()],
@@ -1737,8 +1730,7 @@ impl Wallet {
             &prev_mainchain_block_hash.to_byte_array(),
         ]
         .concat();
-        let bytes =
-            bdk_wallet::bitcoin::script::PushBytesBuf::try_from(message).into_diagnostic()?;
+        let bytes = bdk_wallet::bitcoin::script::PushBytesBuf::try_from(message)?;
         Ok(bdk_wallet::bitcoin::ScriptBuf::new_op_return(&bytes))
     }
 
@@ -1753,7 +1745,7 @@ impl Wallet {
         sidechain_block_hash: [u8; 32],
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
-    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt> {
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmTx> {
         tracing::trace!("build_bmm_tx: constructing request message");
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
         let message = Self::bmm_request_message(
@@ -1783,8 +1775,7 @@ impl Wallet {
 
                     res
                 })
-            })
-            .into_diagnostic()?
+            })?
         };
 
         Ok(psbt)
@@ -1797,7 +1788,7 @@ impl Wallet {
         sidechain_number: SidechainNumber,
         prev_blockhash: bdk_wallet::bitcoin::BlockHash,
         side_block_hash: [u8; 32],
-    ) -> Result<bool> {
+    ) -> Result<bool, rusqlite::Error> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<bool, rusqlite::Error> {
             connection
@@ -1819,7 +1810,7 @@ impl Wallet {
                 )
         };
         let connection = self.inner.self_db.lock().await;
-        with_connection(&connection).into_diagnostic()
+        with_connection(&connection)
     }
 
     /// Creates a BMM request transaction. Does NOT broadcast.
@@ -1833,7 +1824,7 @@ impl Wallet {
         sidechain_block_hash: [u8; 32],
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
-    ) -> Result<Option<bdk_wallet::bitcoin::Transaction>> {
+    ) -> Result<Option<bdk_wallet::bitcoin::Transaction>, error::CreateBmmRequest> {
         tracing::debug!("create_bmm_request: building transaction");
 
         let psbt = self
@@ -1863,7 +1854,7 @@ impl Wallet {
         }
     }
 
-    pub async fn get_wallet_info(&self) -> Result<WalletInfo> {
+    pub async fn get_wallet_info(&self) -> Result<WalletInfo, error::NotUnlocked> {
         let w = self.inner.read_wallet().await?;
         let mut keychain_descriptors = std::collections::HashMap::new();
         for (kind, _) in w.keychains() {
@@ -1882,15 +1873,13 @@ impl Wallet {
     }
 
     #[allow(clippy::significant_drop_tightening)]
-    pub async fn get_new_address(&self) -> Result<bdk_wallet::bitcoin::Address> {
+    pub async fn get_new_address(
+        &self,
+    ) -> Result<bdk_wallet::bitcoin::Address, error::GetNewAddress> {
         // Using next_unused_address here means that we get a new address
         // when funds are received. Without this we'd need to take care not
         // to cross the wallet scan gap.
-        let mut wallet_write = self
-            .inner
-            .write_wallet()
-            .await
-            .map_err(|err| Report::wrap_err(err.into(), "get new address"))?;
+        let mut wallet_write = self.inner.write_wallet().await?;
 
         let mut bdk_db_lock = self.inner.bdk_db.lock().await;
         let address = wallet_write
@@ -1900,8 +1889,7 @@ impl Wallet {
                     .persist_async(&mut bdk_db_lock)
                     .map_ok(|_: bool| info.address)
             })
-            .await
-            .into_diagnostic()?;
+            .await?;
         Ok(address)
     }
 
@@ -1909,7 +1897,7 @@ impl Wallet {
         &self,
         sidechain_number: SidechainNumber,
         blinded_m6: &BlindedM6<'static>,
-    ) -> Result<M6id> {
+    ) -> Result<M6id, rusqlite::Error> {
         let m6id = blinded_m6.compute_m6id();
         let tx_bytes = bitcoin::consensus::serialize(blinded_m6.as_ref());
         self.inner.self_db
@@ -1918,8 +1906,7 @@ impl Wallet {
             .execute(
                 "INSERT OR IGNORE INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
                 (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),
-            )
-            .into_diagnostic()?;
+            )?;
         Ok(m6id)
     }
 
@@ -2005,7 +1992,10 @@ impl Wallet {
         Ok(())
     }
 
-    pub async fn unlock_existing_wallet(&self, password: &str) -> Result<(), miette::Report> {
+    pub async fn unlock_existing_wallet(
+        &self,
+        password: &str,
+    ) -> Result<(), error::UnlockExistingWallet> {
         self.inner.unlock_existing_wallet(password).await
     }
 
@@ -2016,7 +2006,7 @@ impl Wallet {
         &self,
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
-    ) -> Result<(), miette::Report> {
+    ) -> Result<(), error::CreateNewWallet> {
         self.inner.create_new_wallet(mnemonic, password).await
     }
 }

@@ -4,7 +4,7 @@ use bip300301::{
 };
 use miette::miette;
 
-use crate::cli::NodeRpcConfig;
+use crate::{cli::NodeRpcConfig, display::ErrorChain};
 
 pub fn create_client(
     conf: &NodeRpcConfig,
@@ -95,7 +95,7 @@ where
         Err(err) => {
             const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
                 "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
-            tracing::error!("failed to broadcast tx: {err:#}");
+            tracing::error!("failed to broadcast tx: {:#}", ErrorChain::new(&err));
             match err {
                 ClientError::Call(err) if err.message() == OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG => {
                     Ok(None)

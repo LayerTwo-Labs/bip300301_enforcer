@@ -41,6 +41,11 @@ rev = "8603b40520e432ccff27164a484647aa4a0be250"
 git = "https://github.com/torkelrogstad/cusf-enforcer-mempool.git"
 rev = "58227511cc63f9ac448a5ecfbb38b743dad5367a"
 
+[workspace.dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug"]
+
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"
 rev = "ea82b33947f60c511dac6eb3815b6af3f6c3f555"
