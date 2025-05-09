@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, sync::atomic::Ordering};
+use std::{borrow::Cow, collections::HashMap, future::Future, sync::atomic::Ordering};
 
 use bip300301::client::{GetBlockClient, U8Witness};
 use bitcoin::{hashes::Hash as _, BlockHash, Transaction, Txid};
@@ -46,11 +46,17 @@ impl CusfEnforcer for Wallet {
     // way to run a initial full scan after the validator has synced to the tip.
     // It seems to me (Torkel)that the CUSF enforcer mempool library exposes hooks for
     // this in a sub-optimal way.
-    async fn sync_to_tip(
+    async fn sync_to_tip<Signal: Future<Output = ()> + Send>(
         &mut self,
+        shutdown_signal: Signal,
         tip_hash: BlockHash,
     ) -> std::result::Result<(), Self::SyncError> {
-        let () = self.inner.validator.clone().sync_to_tip(tip_hash).await?;
+        let () = self
+            .inner
+            .validator
+            .clone()
+            .sync_to_tip(shutdown_signal, tip_hash)
+            .await?;
         tracing::debug!(%tip_hash, "Synced validator, syncing wallet..");
 
         // If this branch hits, it means we we're just finishing up the initial sync.
