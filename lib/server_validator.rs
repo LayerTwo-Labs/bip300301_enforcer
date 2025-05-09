@@ -18,8 +18,8 @@ use crate::{
             GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
             GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
             GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
-            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncProgressRequest,
-            SubscribeHeaderSyncProgressResponse,
+            StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
+            SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
         },
         ToStatus as _,
     },
@@ -31,11 +31,15 @@ use crate::{
 #[derive(Clone)]
 pub struct Server {
     validator: Validator,
+    shutdown_tx: futures::channel::mpsc::Sender<()>,
 }
 
 impl Server {
-    pub fn new(validator: Validator) -> Self {
-        Self { validator }
+    pub fn new(validator: Validator, shutdown_tx: futures::channel::mpsc::Sender<()>) -> Self {
+        Self {
+            validator,
+            shutdown_tx,
+        }
     }
 }
 
@@ -472,5 +476,25 @@ impl ValidatorService for Server {
             .map(|progress| Ok(progress.into()))
             .boxed();
         Ok(tonic::Response::new(stream))
+    }
+
+    async fn stop(
+        &self,
+        _: tonic::Request<StopRequest>,
+    ) -> Result<tonic::Response<StopResponse>, tonic::Status> {
+        let mut shutdown_tx = self.shutdown_tx.clone();
+        if shutdown_tx.is_closed() {
+            return Err(tonic::Status::unavailable("Shutdown channel is closed"));
+        }
+
+        tracing::info!("received stop request, sending on shutdown channel");
+
+        match shutdown_tx.try_send(()) {
+            Ok(_) => Ok(tonic::Response::new(StopResponse {})),
+            Err(err) => {
+                let msg = format!("Failed to send shutdown signal: {}", err);
+                Err(tonic::Status::unavailable(msg))
+            }
+        }
     }
 }
