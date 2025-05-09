@@ -231,6 +231,8 @@ pub(in crate::validator) enum DisconnectBlock {}
 
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
+    #[error("Shutdown signal received")]
+    Shutdown,
     #[error("Header sync already in progress")]
     HeaderSyncInProgress,
     #[error(transparent)]

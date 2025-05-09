@@ -37,9 +37,9 @@ git = "https://github.com/Ash-L2L/bip300301.git"
 rev = "8603b40520e432ccff27164a484647aa4a0be250"
 
 [workspace.dependencies.cusf-enforcer-mempool]
-# https://github.com/LayerTwo-Labs/cusf-enforcer-mempool/pull/8
+# https://github.com/LayerTwo-Labs/cusf-enforcer-mempool/pull/9
 git = "https://github.com/torkelrogstad/cusf-enforcer-mempool.git"
-rev = "58227511cc63f9ac448a5ecfbb38b743dad5367a"
+rev = "3000ece3aa3e65d9198387d9e5757c83aa412883"
 
 [workspace.dependencies.educe]
 version = "0.6.0"
