@@ -318,13 +318,15 @@ impl BlockHashDbs {
     /// Get header infos for the specified block hash, and up to max_ancestors
     /// ancestors.
     /// Returns header infos newest-first.
-    pub fn get_header_infos(
+    pub fn try_get_header_infos(
         &self,
         rotxn: &RoTxn,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<HeaderInfo>, error::GetHeaderInfo> {
-        let header_info = self.get_header_info(rotxn, block_hash)?;
+    ) -> Result<Option<NonEmpty<HeaderInfo>>, error::TryGetHeaderInfo> {
+        let Some(header_info) = self.try_get_header_info(rotxn, block_hash)? else {
+            return Ok(None);
+        };
         let mut ancestors = max_ancestors;
         let mut ancestor = header_info.prev_block_hash;
         let mut res = NonEmpty::new(header_info);
@@ -336,7 +338,7 @@ impl BlockHashDbs {
             ancestors -= 1;
             res.push(header_info);
         }
-        Ok(res)
+        Ok(Some(res))
     }
 
     pub fn try_get_block_info(

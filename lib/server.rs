@@ -54,9 +54,9 @@ use crate::{
             ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
             ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
             ListUnspentOutputsResponse, Network, SendTransactionRequest, SendTransactionResponse,
-            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncProgressRequest,
-            SubscribeHeaderSyncProgressResponse, UnlockWalletRequest, UnlockWalletResponse,
-            WalletTransaction,
+            StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
+            SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
+            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
         },
         StatusBuilder, ToStatus,
     },
@@ -97,16 +97,19 @@ impl ValidatorService for Validator {
         let block_hash = block_hash
             .ok_or_else(|| missing_field::<GetBlockHeaderInfoRequest>("block_hash"))?
             .decode_tonic::<GetBlockHeaderInfoRequest, _>("block_hash")?;
-        let nonempty::NonEmpty {
-            head: header_info,
-            tail: ancestor_infos,
-        } = self
-            .get_header_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
+        let resp = match self
+            .try_get_header_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?
-            .map(|header_info| header_info.into());
-        let resp = GetBlockHeaderInfoResponse {
-            header_info: Some(header_info),
-            ancestor_infos,
+        {
+            Some(header_infos) => GetBlockHeaderInfoResponse {
+                header_infos: header_infos
+                    .into_iter()
+                    .map(|header_info| header_info.into())
+                    .collect(),
+            },
+            None => GetBlockHeaderInfoResponse {
+                header_infos: Vec::new(),
+            },
         };
         Ok(tonic::Response::new(resp))
     }
@@ -135,19 +138,20 @@ impl ValidatorService for Validator {
                 )
             })?
         };
-        let nonempty::NonEmpty {
-            head: info,
-            tail: ancestor_infos,
-        } = self
-            .get_block_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
+        let resp = match self
+            .try_get_block_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
             .map_err(|err| tonic::Status::from_error(Box::new(err)))?
-            .map(|(header_info, block_info)| get_block_info_response::Info {
-                header_info: Some(header_info.into()),
-                block_info: Some(block_info.as_proto(sidechain_id)),
-            });
-        let resp = GetBlockInfoResponse {
-            info: Some(info),
-            ancestor_infos,
+        {
+            None => GetBlockInfoResponse { infos: Vec::new() },
+            Some(block_infos) => GetBlockInfoResponse {
+                infos: block_infos
+                    .into_iter()
+                    .map(|(header_info, block_info)| get_block_info_response::Info {
+                        header_info: Some(header_info.into()),
+                        block_info: Some(block_info.as_proto(sidechain_id)),
+                    })
+                    .collect(),
+            },
         };
         Ok(tonic::Response::new(resp))
     }
@@ -523,6 +527,13 @@ impl ValidatorService for Validator {
             .map(|progress| Ok(progress.into()))
             .boxed();
         Ok(tonic::Response::new(stream))
+    }
+
+    async fn stop(
+        &self,
+        _request: tonic::Request<StopRequest>,
+    ) -> Result<tonic::Response<StopResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("Not implemented"))
     }
 
     /*

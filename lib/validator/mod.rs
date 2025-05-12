@@ -160,11 +160,9 @@ impl ToStatus for GetHeaderInfoError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-enum GetHeaderInfosErrorInner {
+enum TryGetHeaderInfosErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
     #[error(transparent)]
     TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
 }
@@ -172,11 +170,11 @@ enum GetHeaderInfosErrorInner {
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct GetHeaderInfosError(GetHeaderInfosErrorInner);
+pub struct TryGetHeaderInfosError(TryGetHeaderInfosErrorInner);
 
-impl<T> From<T> for GetHeaderInfosError
+impl<T> From<T> for TryGetHeaderInfosError
 where
-    GetHeaderInfosErrorInner: From<T>,
+    TryGetHeaderInfosErrorInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -206,15 +204,35 @@ where
 }
 
 #[derive(Debug, Error)]
-enum GetBlockInfosErrorInner {
+enum TryGetBlockInfosErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
-    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
-    #[error(transparent)]
     TryGetBlockInfo(#[from] dbs::block_hash_dbs_error::TryGetBlockInfo),
+    #[error(transparent)]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct TryGetBlockInfosError(TryGetBlockInfosErrorInner);
+
+impl<T> From<T> for TryGetBlockInfosError
+where
+    TryGetBlockInfosErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+enum GetBlockInfosErrorInner {
+    #[error("Missing header or block: {0}")]
+    MissingHeaderBlock(BlockHash),
+    #[error(transparent)]
+    TryGetBlockInfos(#[from] TryGetBlockInfosError),
 }
 
 #[derive(Debug, Error)]
@@ -559,16 +577,16 @@ impl Validator {
     /// Get header infos for the specified block hash, and up to max_ancestors
     /// ancestors.
     /// Returns header infos newest-first.
-    pub fn get_header_infos(
+    pub fn try_get_header_infos(
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<HeaderInfo>, GetHeaderInfoError> {
+    ) -> Result<Option<NonEmpty<HeaderInfo>>, TryGetHeaderInfosError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .block_hashes
-            .get_header_infos(&rotxn, block_hash, max_ancestors)?;
+            .try_get_header_infos(&rotxn, block_hash, max_ancestors)?;
         Ok(res)
     }
 
@@ -581,17 +599,26 @@ impl Validator {
     /// Get block infos for the specified block hash, and up to max_ancestors
     /// ancestors.
     /// Returns block infos newest-first.
-    pub fn get_block_infos(
+    pub fn try_get_block_infos(
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+    ) -> Result<Option<NonEmpty<(HeaderInfo, BlockInfo)>>, TryGetBlockInfosError> {
         let rotxn = self.dbs.read_txn()?;
-        let header_infos =
+        let Some(header_infos) =
             self.dbs
                 .block_hashes
-                .get_header_infos(&rotxn, block_hash, max_ancestors)?;
-        let info = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
+                .try_get_header_infos(&rotxn, block_hash, max_ancestors)?
+        else {
+            return Ok(None);
+        };
+        let Some(info) = self
+            .dbs
+            .block_hashes
+            .try_get_block_info(&rotxn, block_hash)?
+        else {
+            return Ok(None);
+        };
         let mut res = NonEmpty::new((header_infos.head, info));
         for header_info in header_infos.tail {
             if let Some(info) = self
@@ -604,7 +631,18 @@ impl Validator {
                 break;
             }
         }
-        Ok(res)
+        Ok(Some(res))
+    }
+
+    pub fn get_block_infos(
+        &self,
+        block_hash: &BlockHash,
+        max_ancestors: usize,
+    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+        match self.try_get_block_infos(block_hash, max_ancestors)? {
+            Some(res) => Ok(res),
+            None => Err(GetBlockInfosErrorInner::MissingHeaderBlock(*block_hash).into()),
+        }
     }
 
     // Lists known block heights and their corresponding header hashes in ascending order.
