@@ -793,8 +793,9 @@ async fn main() -> Result<()> {
         enforcer_task_err = err_rxs.enforcer_task.receive() => {
             match enforcer_task_err {
                 Ok(err) => {
+                    let err = miette::Error::from(err);
                     tracing::error!("Received enforcer task error: {err:#}");
-                    Err(miette!(err))
+                    Err(err)
                 }
                 Err(err) => {
                     let err = miette!("Unable to receive error from enforcer task: {err:#}");
