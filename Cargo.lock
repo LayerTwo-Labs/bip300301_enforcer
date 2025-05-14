@@ -1062,7 +1062,7 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.2.0"
-source = "git+https://github.com/torkelrogstad/cusf-enforcer-mempool.git?rev=58227511cc63f9ac448a5ecfbb38b743dad5367a#58227511cc63f9ac448a5ecfbb38b743dad5367a"
+source = "git+https://github.com/torkelrogstad/cusf-enforcer-mempool.git?rev=3000ece3aa3e65d9198387d9e5757c83aa412883#3000ece3aa3e65d9198387d9e5757c83aa412883"
 dependencies = [
  "anyhow",
  "async-trait",
