@@ -25,7 +25,7 @@ use bitcoin::ScriptBuf;
 use clap::Parser;
 use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
-use futures::{channel::oneshot, FutureExt, StreamExt, TryFutureExt as _};
+use futures::{channel::oneshot, FutureExt, SinkExt, StreamExt, TryFutureExt as _};
 use http::{header::HeaderName, Request};
 use jsonrpsee::{core::client::Error, server::RpcServiceBuilder};
 use miette::{miette, Diagnostic, IntoDiagnostic, Result};
@@ -519,6 +519,7 @@ struct ErrRxs {
     enforcer_task: EnforcerTaskErrRx,
     grpc_server: oneshot::Receiver<GrpcServerError>,
     shutdown_signal: oneshot::Receiver<()>,
+    shutdown_tx: futures::channel::mpsc::Sender<()>,
 }
 
 async fn task(
@@ -536,7 +537,14 @@ async fn task(
         shutdown_rx
             .next()
             .await
-            .and_then(|_| shutdown_signal_tx.send(()).ok())
+            .and_then(|_| {
+                tracing::debug!("received on shutdown channel, sending signal");
+                shutdown_signal_tx
+                    .send(())
+                    .inspect(|_| tracing::trace!("sent shutdown signal"))
+                    .inspect_err(|_| tracing::error!("unable to send shutdown signal"))
+                    .ok()
+            })
             .unwrap_or(())
     }
     .shared();
@@ -661,6 +669,7 @@ async fn task(
     let (grpc_server_err_tx, grpc_server_err_rx) = oneshot::channel();
     let _grpc_server_task: JoinHandle<()> = {
         let shutdown_signal = shutdown_signal.clone();
+        let shutdown_tx = shutdown_tx.clone();
         tokio::task::spawn(
             run_grpc_server(enforcer, shutdown_tx, shutdown_signal, cli.serve_grpc_addr)
                 .inspect(|_| tracing::info!("gRPC server finished"))
@@ -674,6 +683,7 @@ async fn task(
         enforcer_task: enforcer_task_err_rx,
         grpc_server: grpc_server_err_rx,
         shutdown_signal: shutdown_signal_rx,
+        shutdown_tx: shutdown_tx.clone(),
     };
     (task_handle, err_rxs)
 }
@@ -909,29 +919,69 @@ async fn main() -> Result<()> {
         Either::Left(validator)
     };
 
-    let (task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain).await;
+    let (task_handle, mut err_rxs) =
+        task(enforcer.clone(), cli, mainchain_client, info.chain).await;
+
+    struct TaskHandles {
+        main_task: JoinHandle<Result<(), miette::Report>>,
+    }
+
+    impl TaskHandles {
+        async fn join_all(self) -> Result<(), miette::Report> {
+            let Self { main_task } = self;
+            main_task.await.unwrap_or_else(|join_err| {
+                Err(miette!("main task panicked or was cancelled: {join_err:#}"))
+            })
+        }
+    }
+
+    // If other tasks also need to be gracefully waited for on shutdown,
+    // add them here.
+    let mut handles = TaskHandles {
+        main_task: task_handle,
+    };
+
+    async fn graceful_shutdown(
+        shutdown_tx: &mut futures::channel::mpsc::Sender<()>,
+        handles: TaskHandles,
+    ) {
+        // If we've not yet sent the shutdown signal, do so now. In the case of an interrupt signal,
+        // this branch will hit
+        if (shutdown_tx.send(()).await).is_ok() {
+            tracing::debug!("sent shutdown signal");
+        }
+
+        if let Err(err) = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            // Wait for all handles to finish
+            handles.join_all(),
+        )
+        .await
+        .map_err(|err| miette!("shutdown: error while waiting for tasks to finish: {err:#}"))
+        {
+            tracing::error!("{:#}", err);
+        };
+    }
 
     tokio::select! {
 
         _ = err_rxs.shutdown_signal => {
             tracing::info!("Shutting down due to shutdown signal");
+            graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
             Ok(())
         }
 
-        task_err = task => {
+        task_err = &mut handles.main_task => {
             match task_err {
                 Ok(Ok(())) => {
                     tracing::info!("Task completed, exiting with zero exit code ");
                     Ok(())
                 }
-
-                Ok(Err(err)) => {
-                    Err(err.wrap_err("task error"))
-                }
-
-                Err(err) => {
-                    let err = miette::Report::from_err(err);
-                    Err(err.wrap_err("unable to receive error from task"))
+                Ok(Err(err)) => Err(err),
+                Err(join_error) => {
+                    Err(miette!(
+                        "main task panicked or was cancelled: {join_error:#}"
+                    ))
                 }
             }
         }
@@ -975,6 +1025,7 @@ async fn main() -> Result<()> {
             match signal {
                 Ok(()) => {
                     tracing::info!("Shutting down due to process interruption");
+                    graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
                     Ok(())
                 }
                 Err(err) => {
