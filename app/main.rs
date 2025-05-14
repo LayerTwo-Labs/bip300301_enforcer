@@ -862,21 +862,8 @@ async fn main() -> Result<()> {
         Either::Left(validator)
     };
 
-    let (original_task_handle, mut err_rxs) =
+    let (mut task_handle, mut err_rxs) =
         task(enforcer.clone(), cli, mainchain_client, info.chain).await;
-
-    // TODO: make this a shared future. ErrReport is not cloneable?
-    let shared_task_handle = original_task_handle.map(|res| {
-        // The JoinHandle itself resolves to Result<InnerResult, JoinError>
-        // We need to flatten this for the shared future.
-        match res {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(err),
-            Err(join_error) => Err(miette!(
-                "main task panicked or was cancelled: {join_error:#}"
-            )),
-        }
-    });
 
     let mut handles = Vec::<JoinHandle<Result<(), miette::Report>>>::new();
 
@@ -915,14 +902,17 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        task_err = shared_task_handle => {
+        task_err = &mut task_handle => {
             match task_err {
-                Ok(()) => {
+                Ok(Ok(())) => {
                     tracing::info!("Task completed, exiting with zero exit code ");
                     Ok(())
                 }
-                Err(err) => {
-                    Err(err)
+                Ok(Err(err)) => Err(err),
+                Err(join_error) => {
+                    Err(miette!(
+                        "main task panicked or was cancelled: {join_error:#}"
+                    ))
                 }
             }
         }
