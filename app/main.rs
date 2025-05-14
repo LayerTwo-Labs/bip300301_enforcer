@@ -862,14 +862,29 @@ async fn main() -> Result<()> {
         Either::Left(validator)
     };
 
-    let (mut task_handle, mut err_rxs) =
+    let (task_handle, mut err_rxs) =
         task(enforcer.clone(), cli, mainchain_client, info.chain).await;
 
-    let mut handles = Vec::<JoinHandle<Result<(), miette::Report>>>::new();
+    struct TaskHandles {
+        main_task: JoinHandle<Result<(), miette::Report>>,
+    }
+
+    impl TaskHandles {
+        async fn join_all(self) -> Result<(), miette::Report> {
+            let Self { main_task } = self;
+            main_task.await.unwrap_or_else(|join_err| {
+                Err(miette!("main task panicked or was cancelled: {join_err:#}"))
+            })
+        }
+    }
+
+    let mut handles = TaskHandles {
+        main_task: task_handle,
+    };
 
     async fn graceful_shutdown(
         shutdown_tx: &mut futures::channel::mpsc::Sender<()>,
-        handles: &mut Vec<JoinHandle<Result<(), miette::Report>>>,
+        handles: TaskHandles,
     ) {
         // If we've not yet sent the shutdown signal, do so now. In the case of an interrupt signal,
         // this branch will hit
@@ -877,15 +892,10 @@ async fn main() -> Result<()> {
             tracing::debug!("sent shutdown signal");
         }
 
-        // Wait at least 250ms
-        handles.push(tokio::spawn(
-            tokio::time::sleep(tokio::time::Duration::from_millis(250)).map(|_| Ok(())),
-        ));
-
         if let Err(err) = tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
             // Wait for all handles to finish
-            futures::future::join_all(handles),
+            handles.join_all(),
         )
         .await
         .map_err(|err| miette!("shutdown: error while waiting for tasks to finish: {err:#}"))
@@ -898,11 +908,11 @@ async fn main() -> Result<()> {
 
         _ = err_rxs.shutdown_signal => {
             tracing::info!("Shutting down due to shutdown signal");
-            graceful_shutdown(&mut err_rxs.shutdown_tx, &mut handles).await;
+            graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
             Ok(())
         }
 
-        task_err = &mut task_handle => {
+        task_err = &mut handles.main_task => {
             match task_err {
                 Ok(Ok(())) => {
                     tracing::info!("Task completed, exiting with zero exit code ");
@@ -944,7 +954,7 @@ async fn main() -> Result<()> {
             match signal {
                 Ok(()) => {
                     tracing::info!("Shutting down due to process interruption");
-                    graceful_shutdown(&mut err_rxs.shutdown_tx, &mut handles).await;
+                    graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
                     Ok(())
                 }
                 Err(err) => {
