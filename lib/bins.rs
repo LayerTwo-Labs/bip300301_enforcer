@@ -203,7 +203,7 @@ impl SignetMiner {
                 command.arg("--min-nbits");
             }
             if let Some(coinbase_recipient) = &self.coinbase_recipient {
-                command.arg(format!("--address={}", coinbase_recipient));
+                command.arg(format!("--address={coinbase_recipient}"));
             }
             if let Some(getblocktemplate_command) = &self.getblocktemplate_command {
                 command.arg(format!(

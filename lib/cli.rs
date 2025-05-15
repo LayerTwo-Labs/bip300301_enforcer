@@ -55,7 +55,7 @@ fn get_data_dir() -> Result<PathBuf, String> {
                 .map_err(|_| "APPDATA environment variable not set".to_string())?;
             Path::new(&app_data).join(APP_NAME)
         }
-        os => return Err(format!("Unsupported OS: {}", os)),
+        os => return Err(format!("Unsupported OS: {os}")),
     };
 
     Ok(dir)

@@ -1,5 +1,6 @@
 //! Miscellaneous utility functions and types
 
+#[allow(clippy::mut_from_ref, reason = "False positive")]
 #[allow(clippy::significant_drop_tightening, reason = "False positive")]
 mod rwlock_write_guard_some {
     /// Write guard over values of `Option<T>` that are guaranteed to be `Some`

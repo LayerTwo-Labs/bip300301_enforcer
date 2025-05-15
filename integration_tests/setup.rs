@@ -602,11 +602,17 @@ pub enum DummySidechainError {
     #[error(transparent)]
     BlindedM6(#[from] BlindedM6Error),
     #[error(transparent)]
-    Grpc(#[from] tonic::Status),
+    Grpc(Box<tonic::Status>),
     #[error("Event stream was cancelled due to earlier error")]
     EventStreamCancelled,
     #[error("Event stream was closed unexpectedly")]
     EventStreamClosed,
+}
+
+impl From<tonic::Status> for DummySidechainError {
+    fn from(err: tonic::Status) -> Self {
+        Self::Grpc(Box::new(err))
+    }
 }
 
 /// Dummy implementation of `Sidechain`
@@ -652,6 +658,7 @@ impl DummySidechain {
     }
 
     /// Extract withdrawal bundle events from block info events
+    #[allow(clippy::result_large_err)]
     fn extract_withdrawal_bundle_event(
         block_event: proto::mainchain::block_info::Event,
     ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, tonic::Status> {

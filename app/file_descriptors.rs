@@ -13,10 +13,7 @@ pub(crate) fn list_open_descriptors_macos() -> std::io::Result<Vec<String>> {
         .output()?;
 
     if !output.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "lsof command failed",
-        ));
+        return Err(std::io::Error::other("lsof command failed"));
     }
 
     // Convert output to string

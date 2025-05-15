@@ -228,6 +228,7 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
+        #[allow(clippy::result_large_err)]
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
             Message: prost::Name,
@@ -266,6 +267,7 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
+        #[allow(clippy::result_large_err)]
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
             Message: prost::Name,
@@ -308,6 +310,7 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
+        #[allow(clippy::result_large_err)]
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
             Message: prost::Name,

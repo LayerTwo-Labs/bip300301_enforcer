@@ -944,10 +944,7 @@ impl WalletService for crate::wallet::Wallet {
         // If the mainchain tip has progressed beyond this, the request is already
         // expired.
         if mainchain_tip != convert::bdk_block_hash_to_bitcoin_block_hash(prev_bytes) {
-            let message = format!(
-                "invalid prev_bytes {}: expected {}",
-                prev_bytes, mainchain_tip
-            );
+            let message = format!("invalid prev_bytes {prev_bytes}: expected {mainchain_tip}",);
 
             return Err(tonic::Status::invalid_argument(message));
         }
@@ -1273,8 +1270,7 @@ impl WalletService for crate::wallet::Wallet {
                 let amount = Amount::from_sat(*amount);
                 if amount.is_dust(&address.script_pubkey()) {
                     return Err(tonic::Status::invalid_argument(format!(
-                        "amount is below dust limit: {} to {}",
-                        amount, address
+                        "amount is below dust limit: {amount} to {address}",
                     )));
                 }
 
@@ -1372,7 +1368,7 @@ impl WalletService for crate::wallet::Wallet {
             let read = std::fs::read_to_string(&mnemonic_path).map_err(|err| {
                 tonic::Status::new(
                     tonic::Code::InvalidArgument,
-                    format!("failed to read mnemonic from {}: {}", mnemonic_path, err),
+                    format!("failed to read mnemonic from {mnemonic_path}: {err:#}"),
                 )
             })?;
 

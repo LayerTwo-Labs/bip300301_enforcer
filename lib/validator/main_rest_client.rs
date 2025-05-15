@@ -116,8 +116,7 @@ impl MainRestClient {
         let start = Instant::now();
 
         let url = self.base_url.join(&format!(
-            "rest/headers/{}.json?count={}",
-            block_hash, descendants
+            "rest/headers/{block_hash}.json?count={descendants}",
         ))?;
 
         let headers = self.do_request::<Vec<RestHeader>>(url).await?;

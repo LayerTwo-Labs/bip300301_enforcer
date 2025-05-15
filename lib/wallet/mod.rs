@@ -134,7 +134,7 @@ impl WalletInner {
             .clone()
             .unwrap_or(default_host.to_string());
         let electrum_port = config.electrum_port.unwrap_or(default_port);
-        let electrum_url = format!("{}:{}", electrum_host, electrum_port);
+        let electrum_url = format!("{electrum_host}:{electrum_port}");
         tracing::debug!(%electrum_url, "creating electrum client");
         // Apply a reasonably short timeout to prevent the wallet from hanging
         let timeout = 5;
@@ -794,13 +794,14 @@ impl Wallet {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) fn parse_checked_address(
         &self,
         address: &str,
     ) -> Result<bitcoin::Address, tonic::Status> {
         let network = self.validator().network();
-        let address = bdk_wallet::bitcoin::Address::from_str(address).map_err(|e| {
-            tonic::Status::invalid_argument(format!("invalid bitcoin address: {}", e))
+        let address = bdk_wallet::bitcoin::Address::from_str(address).map_err(|err| {
+            tonic::Status::invalid_argument(format!("invalid bitcoin address: {err:#}"))
         })?;
 
         let address = address.require_network(network).map_err(|_| {

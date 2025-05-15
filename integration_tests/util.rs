@@ -191,11 +191,11 @@ where
             stderr_file = stderr_fp.to_string_lossy().to_string(),
         );
 
-        let mut msg = format!("Command `{command}` finished: `{}`", exit_status);
+        let mut msg = format!("Command `{command}` finished: `{exit_status}`");
 
         if let Ok(stderr) = std::fs::read_to_string(stderr_fp).map(|s| s.trim().to_owned()) {
             if !stderr.is_empty() {
-                msg.push_str(&format!("\nStderr:\n{}", stderr));
+                msg.push_str(&format!("\nStderr:\n{stderr}"));
             }
         }
         anyhow::anyhow!(msg)

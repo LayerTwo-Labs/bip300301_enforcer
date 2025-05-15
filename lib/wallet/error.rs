@@ -310,13 +310,19 @@ pub enum DecryptMnemonic {
 #[derive(Debug, Diagnostic, Error)]
 pub enum UnlockExistingWallet {
     #[error(transparent)]
-    InitWalletFromMnemonic(#[from] InitWalletFromMnemonic),
+    InitWalletFromMnemonic(Box<InitWalletFromMnemonic>),
     #[error("wallet is not encrypted")]
     NotEncrypted,
     #[error(transparent)]
     ReadDbMnemonic(#[from] ReadDbMnemonic),
     #[error(transparent)]
     WalletInitialization(#[from] WalletInitialization),
+}
+
+impl From<InitWalletFromMnemonic> for UnlockExistingWallet {
+    fn from(err: InitWalletFromMnemonic) -> Self {
+        Self::InitWalletFromMnemonic(Box::new(err))
+    }
 }
 
 impl ToStatus for UnlockExistingWallet {
@@ -419,13 +425,19 @@ pub enum CreateNewWallet {
     #[error("failed to generate mnemonic")]
     GenerateMnemonic(#[from] bdk_wallet::bip39::Error),
     #[error(transparent)]
-    InitFromMnemonic(#[from] InitWalletFromMnemonic),
+    InitFromMnemonic(Box<InitWalletFromMnemonic>),
     #[error(transparent)]
     ReadDbMnemonic(#[from] ReadDbMnemonic),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     WalletInitialization(#[from] WalletInitialization),
+}
+
+impl From<InitWalletFromMnemonic> for CreateNewWallet {
+    fn from(err: InitWalletFromMnemonic) -> Self {
+        Self::InitFromMnemonic(Box::new(err))
+    }
 }
 
 impl ToStatus for CreateNewWallet {
@@ -450,13 +462,19 @@ pub enum InitWallet {
     #[error("failed to initialize esplora client")]
     InitEsploraClient(#[from] InitEsploraClient),
     #[error("failed to initialize wallet from mnemonic")]
-    InitFromMnemonic(#[from] InitWalletFromMnemonic),
+    InitFromMnemonic(Box<InitWalletFromMnemonic>),
     #[error("failed to open connection to wallet DB")]
     OpenConnection(#[source] tokio_rusqlite::Error),
     #[error(transparent)]
     ParseNetwork(#[from] bitcoin::network::ParseNetworkError),
     #[error(transparent)]
     ReadDbMnemonic(#[from] ReadDbMnemonic),
+}
+
+impl From<InitWalletFromMnemonic> for InitWallet {
+    fn from(err: InitWalletFromMnemonic) -> Self {
+        Self::InitFromMnemonic(Box::new(err))
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
