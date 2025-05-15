@@ -38,6 +38,8 @@ use tracing::Instrument;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 use wallet::Wallet;
 
+mod file_descriptors;
+
 /// Saturating predecessor of a log level
 fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
     match log_level {
@@ -800,6 +802,18 @@ async fn main() -> Result<()> {
                 Err(err) => {
                     let err = miette!("Unable to receive error from enforcer task: {err:#}");
                     tracing::error!("{err:#}");
+
+                    if cfg!(target_os = "macos") && format!("{err:#}").contains("too many open files") {
+                        tracing::error!(err = %err, "too many open files, dumping all open file descriptors");
+                        match file_descriptors::list_open_descriptors_macos() {
+                            Ok(open_fds) => {
+                                tracing::error!("open file descriptors: {:#?}", open_fds);
+                            }
+                            Err(err) => {
+                                tracing::error!(err = %err, "failed to list open file descriptors");
+                            }
+                        }
+                    }
                     Err(err)
                 }
             }
