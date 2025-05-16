@@ -797,12 +797,6 @@ async fn main() -> Result<()> {
                 Ok(err) => {
                     let err = miette::Error::from(err);
                     tracing::error!("Received enforcer task error: {err:#}");
-                    Err(err)
-                }
-                Err(err) => {
-                    let err = miette!("Unable to receive error from enforcer task: {err:#}");
-                    tracing::error!("{err:#}");
-
                     if cfg!(target_os = "macos") && format!("{err:#}").contains("Too many open files") {
                         tracing::error!(err = %err, "too many open files, dumping all open file descriptors");
                         match file_descriptors::list_open_descriptors_macos() {
@@ -814,6 +808,11 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                    Err(err)
+                }
+                Err(err) => {
+                    let err = miette!("Unable to receive error from enforcer task: {err:#}");
+                    tracing::error!("{err:#}");
                     Err(err)
                 }
             }
