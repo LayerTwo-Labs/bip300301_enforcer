@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, time::Duration};
+use std::{fmt, future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301::MainClient;
@@ -171,6 +171,27 @@ fn propagate_request_id_layer() -> PropagateRequestIdLayer {
     PropagateRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER))
 }
 
+#[derive(Debug, Clone)]
+struct FailureHandler;
+use tower_http::classify::GrpcFailureClass;
+
+impl tower_http::trace::OnFailure<GrpcFailureClass> for FailureHandler {
+    fn on_failure(&mut self, failure: GrpcFailureClass, latency: Duration, _span: &tracing::Span) {
+        let code = match failure {
+            GrpcFailureClass::Code(code) => tonic::Code::from_i32(code.into()),
+            GrpcFailureClass::Error(err) => {
+                tracing::warn!("unexpected gRPC failure class: {err}");
+                tonic::Code::Internal
+            }
+        };
+        tracing::error!(
+            latency = ?latency,
+            code = ?code,
+            "gRPC server responding with error",
+        );
+    }
+}
+
 async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
     // Ordering here matters! Order here is from official docs on request IDs tracings
     // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
@@ -195,8 +216,10 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
                 })
                 .on_request(())
                 .on_eos(())
-                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
+                // Set this to a low log level. Quickly leads to enormous log files, as our GUI
+                // implementations are sending a lof of requests /all/ the time.
+                .on_response(DefaultOnResponse::new().level(tracing::Level::TRACE))
+                .on_failure(FailureHandler),
         )
         .layer(propagate_request_id_layer())
         .into_inner();
