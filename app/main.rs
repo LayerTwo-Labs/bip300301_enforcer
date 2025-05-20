@@ -18,7 +18,8 @@ use bip300301_enforcer_lib::{
     },
     wallet,
 };
-use clap::Parser;
+use bitcoin::ScriptBuf;
+use clap::{builder::Str, Parser};
 use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
 use futures::{channel::oneshot, TryFutureExt as _};
@@ -721,6 +722,39 @@ async fn main() -> Result<()> {
     )
     .into_diagnostic()?;
 
+    let signet_challenge = if info.chain == bitcoin::Network::Signet {
+        let block_template = get_block_template(&mainchain_client, info.chain).await?;
+        let Some(signet_challenge) = block_template.signet_challenge else {
+            return Err(miette!("signet challenge not found in block template"));
+        };
+
+        // We cannot verify that there's one specific signet challenge being used here,
+        // because the user might want to run their own signet. However, if they're on
+        // the standard signet, they're doing something wrong.
+        let standard_signet_challenge = {
+            const STANDARD_SIGNET_CHALLENGE_HEX : &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae";
+            ScriptBuf::from_hex(STANDARD_SIGNET_CHALLENGE_HEX)
+                .expect("standard signet challenge is invalid")
+        };
+
+        if signet_challenge == standard_signet_challenge {
+            #[derive(Debug, Diagnostic, Error)]
+            #[error("You're trying to run the enforcer against the standard signet chain! This is not what you want.")]
+            #[diagnostic(
+                help("either run against the L2L signet, or your own custom signet"),
+                code(bip300301_enforcer::standard_signet),
+                url("https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements")
+            )]
+            struct StandardSignetError;
+
+            return Err(StandardSignetError.into());
+        }
+
+        Some(signet_challenge)
+    } else {
+        None
+    };
+
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
         // The wallet needs the txindex in order to operate. Will lead to obscure errors later
         // if we fail RPC requests due to the index not being there.
@@ -737,9 +771,7 @@ async fn main() -> Result<()> {
             return Err(miette!("`txindex` is not enabled on the mainchain client"));
         }
 
-        let block_template = get_block_template(&mainchain_client, info.chain).await?;
-        let magic = block_template
-            .signet_challenge
+        let magic = signet_challenge
             .map(|signet_challenge| compute_signet_magic(&signet_challenge))
             .unwrap_or_else(|| info.chain.magic());
         let wallet = Wallet::new(
