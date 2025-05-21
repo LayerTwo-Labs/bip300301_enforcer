@@ -1,5 +1,5 @@
-use bip300301::jsonrpsee;
 use bitcoin::hashes::sha256d;
+use bitcoin_jsonrpsee::jsonrpsee;
 use fatality::fatality;
 use thiserror::Error;
 

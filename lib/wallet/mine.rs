@@ -5,10 +5,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bip300301::{
-    client::{BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _},
-    MainClient as _,
-};
 use bitcoin::{
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
@@ -22,6 +18,10 @@ use bitcoin::{
     transaction::Version as TxVersion,
     Amount, Block, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
     Txid, Witness,
+};
+use bitcoin_jsonrpsee::{
+    client::{BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _},
+    MainClient as _,
 };
 use futures::{
     stream::{self, FusedStream},

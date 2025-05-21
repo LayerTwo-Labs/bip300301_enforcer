@@ -24,8 +24,8 @@ bdk_esplora = { version = "0.20.1", default-features = false, features = [
 ] }
 bdk_wallet = { workspace = true, features = ["keys-bip39", "rusqlite"] }
 bincode = "1.3.3"
-bip300301 = { workspace = true }
 bitcoin = { workspace = true }
+bitcoin-jsonrpsee = { workspace = true }
 bitcoin-send-tx-p2p = "0.3.0"
 blake3 = "1.5.4"
 byteorder = "1.5.0"

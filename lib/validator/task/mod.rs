@@ -1,12 +1,11 @@
 use std::{borrow::Cow, cmp::Ordering, collections::HashMap, future::Future, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
-use bip300301::client::{GetBlockClient, U8Witness};
 use bitcoin::{
-    self,
     hashes::{sha256d, Hash as _},
     Amount, Block, BlockHash, OutPoint, Transaction, Work,
 };
+use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use either::Either;
 use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
@@ -815,7 +814,7 @@ async fn fetch_common_chain_point<MainRpcClient>(
     chain_tip_enforcer_db: Option<(BlockHash, u32)>, // The currently stored enforcer tip
 ) -> Result<(BlockHash, u32), Box<error::Sync>>
 where
-    MainRpcClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
 {
     let mut max_height = mainchain
         .getblockcount()
@@ -989,7 +988,7 @@ async fn sync_headers<MainRpcClient, Signal>(
     shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
-    MainRpcClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
@@ -1165,7 +1164,7 @@ async fn sync_blocks<MainRpcClient, Signal>(
     shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
-    MainRpcClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
@@ -1247,7 +1246,7 @@ pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     Signal: Future<Output = ()> + Send,
 {
     use futures::FutureExt as _;

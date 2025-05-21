@@ -19,14 +19,14 @@ use bdk_wallet::{
     },
     KeychainKind,
 };
-use bip300301::{
-    client::{GetRawTransactionClient, GetRawTransactionVerbose},
-    jsonrpsee::http_client::HttpClient,
-};
 use bitcoin::{
     hashes::{sha256, sha256d, Hash as _, HashEngine},
     script::PushBytesBuf,
     Amount, BlockHash, Network, Transaction, Txid,
+};
+use bitcoin_jsonrpsee::{
+    client::{GetRawTransactionClient, GetRawTransactionVerbose},
+    jsonrpsee::http_client::HttpClient,
 };
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
@@ -1917,7 +1917,7 @@ impl Wallet {
         &mut self,
         try_include_height: u32,
     ) -> std::result::Result<(), error::ConnectBlock> {
-        use bip300301::{
+        use bitcoin_jsonrpsee::{
             client::{GetBlockClient as _, U8Witness},
             MainClient as _,
         };
