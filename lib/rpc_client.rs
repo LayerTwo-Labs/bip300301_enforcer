@@ -1,4 +1,4 @@
-use bip300301::{
+use bitcoin_jsonrpsee::{
     jsonrpsee::{core::ClientError, http_client::HttpClient},
     MainClient,
 };
@@ -50,16 +50,17 @@ pub fn create_client(
         // Default mempool size is 300MB, so 1GiB should be enough
         const MAX_RESPONSE_SIZE: u32 = 1 << 30;
         const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-        let client_builder = bip300301::jsonrpsee::http_client::HttpClientBuilder::default()
-            .max_request_size(MAX_REQUEST_SIZE)
-            .max_response_size(MAX_RESPONSE_SIZE)
-            .request_timeout(REQUEST_TIMEOUT);
+        let client_builder =
+            bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
+                .max_request_size(MAX_REQUEST_SIZE)
+                .max_response_size(MAX_RESPONSE_SIZE)
+                .request_timeout(REQUEST_TIMEOUT);
         Some(client_builder)
     } else {
         None
     };
 
-    bip300301::client(conf.addr, client_builder, &conf_pass, &conf_user)
+    bitcoin_jsonrpsee::client(conf.addr, client_builder, &conf_pass, &conf_user)
         .map_err(|err| miette!("failed to create mainchain RPC client: {err:#}"))
 }
 

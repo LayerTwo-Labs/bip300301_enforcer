@@ -8,8 +8,8 @@ version.workspace = true
 [dependencies]
 anyhow = "1.0.89"
 bdk_wallet = { workspace = true }
-bip300301 = { workspace = true }
 bip300301_enforcer_lib = { path = "../lib", default-features = false }
+bitcoin-jsonrpsee = { workspace = true }
 bitcoin = { workspace = true }
 cfg-if = "1.0.0"
 cusf-enforcer-mempool = { workspace = true }

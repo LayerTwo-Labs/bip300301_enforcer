@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, future::Future, sync::atomic::Ordering};
 
-use bip300301::client::{GetBlockClient, U8Witness};
 use bitcoin::{hashes::Hash as _, BlockHash, Transaction, Txid};
+use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
         typewit::const_marker::{Bool, BoolWit},

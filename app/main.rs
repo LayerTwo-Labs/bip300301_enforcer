@@ -1,7 +1,6 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
-use bip300301::MainClient;
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
     display::ErrorChain,
@@ -22,6 +21,7 @@ use bip300301_enforcer_lib::{
     wallet,
 };
 use bitcoin::ScriptBuf;
+use bitcoin_jsonrpsee::MainClient;
 use clap::Parser;
 use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
@@ -128,11 +128,11 @@ fn set_tracing_subscriber(
 async fn get_block_template<RpcClient>(
     rpc_client: &RpcClient,
     network: bitcoin::Network,
-) -> Result<bip300301::client::BlockTemplate, wallet::error::BitcoinCoreRPC>
+) -> Result<bitcoin_jsonrpsee::client::BlockTemplate, wallet::error::BitcoinCoreRPC>
 where
     RpcClient: MainClient + Sync,
 {
-    let mut request = bip300301::client::BlockTemplateRequest::default();
+    let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
     if network == bitcoin::Network::Signet {
         request.rules.push("signet".to_owned())
     }
@@ -363,8 +363,8 @@ async fn spawn_gbt_server(
 async fn run_gbt_server(
     mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
-    network_info: bip300301::client::NetworkInfo,
-    sample_block_template: bip300301::client::BlockTemplate,
+    network_info: bitcoin_jsonrpsee::client::NetworkInfo,
+    sample_block_template: bitcoin_jsonrpsee::client::BlockTemplate,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
     serve_addr: SocketAddr,
 ) -> miette::Result<()> {
@@ -431,7 +431,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
     shutdown_signal: Signal,
 ) where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
-    RpcClient: bip300301::client::MainClient + Send + Sync + 'static,
+    RpcClient: bitcoin_jsonrpsee::client::MainClient + Send + Sync + 'static,
     F: FnOnce(cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>) -> Fut,
     Fut: Future<Output = ()>,
     Signal: Future<Output = ()> + Send,
@@ -526,7 +526,7 @@ struct ErrRxs {
 async fn task(
     enforcer: Either<Validator, Wallet>,
     cli: cli::Config,
-    mainchain_client: bip300301::jsonrpsee::http_client::HttpClient,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
 ) -> (JoinHandle<Result<()>>, ErrRxs) {
     let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
