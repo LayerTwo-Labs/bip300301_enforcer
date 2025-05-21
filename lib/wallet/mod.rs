@@ -282,8 +282,8 @@ impl WalletInner {
         let database_path = data_dir.join("wallet.sqlite.db");
 
         tracing::info!(
-            "data_dir" = %data_dir.display(),
-            "database_path" = %database_path.display(),
+            data_dir = %data_dir.display(),
+            database_path = %database_path.display(),
             "Instantiating {} wallet",
             network,
         );
@@ -1573,9 +1573,9 @@ impl Wallet {
         params: CreateTransactionParams,
     ) -> Result<bitcoin::Txid, error::SendWalletTransaction> {
         tracing::debug!(
-            "destinations" = destinations.len(),
-            "required_utxos" = params.required_utxos.len(),
-            "drain_wallet" = params.drain_wallet_to.is_some(),
+            destinations = destinations.len(),
+            required_utxos = params.required_utxos.len(),
+            drain_wallet = params.drain_wallet_to.is_some(),
             "Sending wallet transaction",
         );
         let mut timestamp = Instant::now();
