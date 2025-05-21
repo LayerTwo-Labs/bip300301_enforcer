@@ -40,7 +40,7 @@ use uuid::Uuid;
 use crate::{
     cli::{Config, WalletConfig, WalletSyncSource},
     convert,
-    display::ErrorChain,
+    errors::ErrorChain,
     messages::{self, M8BmmRequest},
     types::{
         BDKWalletTransaction, BlindedM6, Ctip, M6id, PendingM6idInfo, SidechainAck,

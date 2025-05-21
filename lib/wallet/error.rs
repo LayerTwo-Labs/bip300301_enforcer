@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::{
     cli::WalletSyncSource,
-    display::ErrorChain,
+    errors::ErrorChain,
     proto::{StatusBuilder, ToStatus},
     types::SidechainNumber,
     validator::{self, Validator},

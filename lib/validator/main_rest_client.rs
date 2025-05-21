@@ -7,6 +7,8 @@ use serde::{de::DeserializeOwned, Deserialize};
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::errors::ErrorChain;
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum MainRestClientError {
     #[error("URL parse error: {0}")]
@@ -95,7 +97,7 @@ impl MainRestClient {
             .json::<T>()
             .await
             .inspect_err(|err| {
-                tracing::warn!("failed to parse response: {err:#?}");
+                tracing::warn!("failed to parse response: {:#}", ErrorChain::new(err))
             })
             .map_err(MainRestClientError::Http)
     }
@@ -122,9 +124,9 @@ impl MainRestClient {
         let headers = self.do_request::<Vec<RestHeader>>(url).await?;
 
         tracing::debug!(
-            "Fetched {} block header(s) in {:?}: {} -> {}",
+            "Fetched {} block header(s) in {}: {} -> {}",
             headers.len(),
-            start.elapsed(),
+            jiff::SignedDuration::try_from(start.elapsed()).unwrap(),
             headers.first().map(|h| h.height).unwrap_or(0),
             headers.last().map(|h| h.height).unwrap_or(0),
         );

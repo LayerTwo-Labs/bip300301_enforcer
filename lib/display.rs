@@ -24,30 +24,3 @@ where
         (self.0)(f)
     }
 }
-
-/// Display an error with causes.
-/// This is useful for displaying errors without converting to
-/// `miette::Report` or `anyhow::Error` first
-pub struct ErrorChain<'a>(&'a (dyn std::error::Error));
-
-impl<'a> ErrorChain<'a> {
-    pub fn new<E>(err: &'a E) -> Self
-    where
-        E: std::error::Error,
-    {
-        Self(err)
-    }
-}
-
-impl std::fmt::Display for ErrorChain<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)?;
-        let mut source: Option<&dyn std::error::Error> = self.0.source();
-        while let Some(cause) = source {
-            std::fmt::Display::fmt(": ", f)?;
-            std::fmt::Display::fmt(cause, f)?;
-            source = cause.source();
-        }
-        Ok(())
-    }
-}

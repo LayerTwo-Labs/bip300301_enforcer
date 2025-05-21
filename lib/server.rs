@@ -17,7 +17,7 @@ use thiserror::Error;
 pub use crate::server_validator::Server as Validator;
 use crate::{
     convert,
-    display::ErrorChain,
+    errors::ErrorChain,
     messages::parse_op_drivechain,
     proto::{
         common::{ConsensusHex, Hex, ReverseHex},
