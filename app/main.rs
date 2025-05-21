@@ -3,7 +3,7 @@ use std::{future::Future, net::SocketAddr, time::Duration};
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
-    display::ErrorChain,
+    errors::ErrorChain,
     p2p::compute_signet_magic,
     proto::{
         self,

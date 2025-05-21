@@ -779,40 +779,25 @@ pub(in crate::validator) fn disconnect_block(
     todo!();
 }
 
-fn fetch_chain_tip_enforcer_db(dbs: &Dbs) -> Result<Option<(BlockHash, u32)>, Box<error::Sync>> {
-    let rotxn = dbs
-        .read_txn()
-        .map_err(|err| Box::new(error::Sync::from(err)))?;
-
-    let current_enforcer_tip_opt = dbs
-        .current_chain_tip
-        .try_get(&rotxn, &UnitKey)
-        .map_err(|err| Box::new(error::Sync::from(err)))?;
-
-    let tip = match current_enforcer_tip_opt {
-        Some(tip) => tip,
-        None => {
-            return Ok(None);
-        }
+fn fetch_chain_tip_enforcer_db(dbs: &Dbs) -> Result<Option<(BlockHash, u32)>, error::Sync> {
+    let rotxn = dbs.read_txn()?;
+    let Some(current_enforcer_tip) = dbs.current_chain_tip.try_get(&rotxn, &UnitKey)? else {
+        return Ok(None);
     };
-
     let tip_height = dbs
         .block_hashes
         .height()
-        .get(&rotxn, &tip)
-        .map_err(|err| Box::new(error::Sync::from(err)))?;
-
-    Ok(Some((tip, tip_height)))
+        .get(&rotxn, &current_enforcer_tip)?;
+    Ok(Some((current_enforcer_tip, tip_height)))
 }
 
 // Find the latest chain point both in the enforcer chain and the active chain.
 // Returns hash and height of the best common block.
-// This returns a boxed error to satisfy a Clippy complaint.
 async fn fetch_common_chain_point<MainRpcClient>(
     dbs: &Dbs,
     mainchain: &MainRpcClient,
     chain_tip_enforcer_db: Option<(BlockHash, u32)>, // The currently stored enforcer tip
-) -> Result<(BlockHash, u32), Box<error::Sync>>
+) -> Result<(BlockHash, u32), error::Sync>
 where
     MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
 {
@@ -820,11 +805,9 @@ where
         .getblockcount()
         .await
         .map(|count| count as u32)
-        .map_err(|err| {
-            Box::new(error::Sync::JsonRpc {
-                method: "getblockcount".to_owned(),
-                source: err,
-            })
+        .map_err(|err| error::Sync::JsonRpc {
+            method: "getblockcount".to_owned(),
+            source: err,
         })?;
 
     let (enforcer_tip, mut tip_height) = match chain_tip_enforcer_db {
@@ -874,18 +857,14 @@ where
         {
             Ok(active_chain) => {
                 let header_info = {
-                    let rotxn = dbs
-                        .read_txn()
-                        .map_err(|err| Box::new(error::Sync::from(err)))?;
-
+                    let rotxn = dbs.read_txn()?;
                     dbs.block_hashes
-                        .try_get_header_info(&rotxn, &active_chain)
-                        .map_err(|err| Box::new(error::Sync::from(err)))
+                        .try_get_header_info(&rotxn, &active_chain)?
                 };
 
                 let enforcer_header = match header_info {
-                    Ok(Some(header)) => header,
-                    Ok(None) => {
+                    Some(header) => header,
+                    None => {
                         if tip_height == known_good_height + 1 {
                             tracing::debug!(
                                 enforcer_chain = ?enforcer_tip,
@@ -909,7 +888,6 @@ where
                             continue;
                         }
                     }
-                    Err(err) => return Err(err),
                 };
 
                 // We've reached the end of our search!
@@ -968,10 +946,10 @@ where
                 tip_height = decrease_tip_height(tip_height, known_good_height);
                 continue;
             }
-            Err(err) => Err(Box::new(error::Sync::JsonRpc {
+            Err(err) => Err(error::Sync::JsonRpc {
                 method: "getblockhash".to_owned(),
                 source: err,
-            })),
+            }),
         }?;
 
         return Ok((best_common_tip, best_common_tip_height));
@@ -993,12 +971,10 @@ where
 {
     let start = Instant::now();
 
-    let chain_tip_enforcer_db = fetch_chain_tip_enforcer_db(dbs).map_err(|boxed| *boxed)?;
+    let chain_tip_enforcer_db = fetch_chain_tip_enforcer_db(dbs)?;
 
     let (common_chain_tip, common_chain_tip_height) =
-        fetch_common_chain_point(dbs, main_rpc_client, chain_tip_enforcer_db)
-            .await
-            .map_err(|boxed| *boxed)?;
+        fetch_common_chain_point(dbs, main_rpc_client, chain_tip_enforcer_db).await?;
 
     // If the enforcer tip is /ahead/ of the active chain, we need to move the enforcer tip back
     // to the common chain tip.

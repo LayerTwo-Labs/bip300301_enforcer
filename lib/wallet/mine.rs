@@ -30,7 +30,7 @@ use futures::{
 
 use crate::{
     bins::{self, CommandExt as _},
-    display::ErrorChain,
+    errors::ErrorChain,
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{Ctip, SidechainAck, SidechainNumber, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
     wallet::{

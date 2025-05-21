@@ -4,6 +4,7 @@ use fatality::fatality;
 use thiserror::Error;
 
 use crate::{
+    errors::Splittable,
     messages::CoinbaseMessagesError,
     types::SidechainNumber,
     validator::{
@@ -231,26 +232,15 @@ pub(in crate::validator) enum DisconnectBlock {}
 
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
-    #[error("Shutdown signal received")]
+    #[error("Block not in active chain: `{block_hash}`")]
     #[fatal]
-    Shutdown,
-    #[error("Header sync already in progress")]
-    HeaderSyncInProgress,
+    BlockNotInActiveChain { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
     #[fatal]
     CommitWriteTxn(#[from] dbs::CommitWriteTxnError),
     #[error(transparent)]
-    #[fatal]
-    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
-    #[error(transparent)]
-    #[fatal]
-    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
-    #[error(transparent)]
     #[fatal(forward)]
-    ConnectBlock(#[from] ConnectBlock),
-    #[error("Block not in active chain: `{block_hash}`")]
-    #[fatal]
-    BlockNotInActiveChain { block_hash: bitcoin::BlockHash },
+    ConnectBlock(Box<Splittable<ConnectBlock>>),
     #[error(transparent)]
     #[fatal]
     DbGet(#[from] db_error::Get),
@@ -260,6 +250,11 @@ pub(in crate::validator) enum Sync {
     #[error(transparent)]
     #[fatal]
     DbTryGet(#[from] db_error::TryGet),
+    #[error(transparent)]
+    #[fatal]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error("Header sync already in progress")]
+    HeaderSyncInProgress,
     #[error("JSON RPC error (`{method}`)")]
     #[fatal]
     JsonRpc {
@@ -268,13 +263,25 @@ pub(in crate::validator) enum Sync {
     },
     #[error(transparent)]
     #[fatal]
-    Rest(#[from] MainRestClientError),
-    #[error(transparent)]
-    #[fatal]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
     #[fatal]
+    Rest(#[from] MainRestClientError),
+    #[error("Shutdown signal received")]
+    #[fatal]
+    Shutdown,
+    #[error(transparent)]
+    #[fatal]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+    #[error(transparent)]
+    #[fatal]
     WriteTxn(#[from] dbs::WriteTxnError),
+}
+
+impl From<ConnectBlock> for Sync {
+    fn from(err: ConnectBlock) -> Self {
+        Self::ConnectBlock(Box::new(Splittable(err)))
+    }
 }
 
 #[derive(Debug, Error)]
