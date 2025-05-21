@@ -393,8 +393,6 @@ impl Enforcer {
             self.node_rpc_user.clone(),
             "--node-rpc-pass".to_owned(),
             self.node_rpc_pass.clone(),
-            "--node-zmq-addr-sequence".to_owned(),
-            format!("tcp://127.0.0.1:{}", self.node_zmq_sequence_port),
             "--enable-wallet".to_owned(),
             "--log-level".to_owned(),
             "trace".to_owned(),

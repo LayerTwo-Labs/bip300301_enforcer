@@ -18,7 +18,7 @@ use bip300301_enforcer_lib::{
         main_rest_client::{MainRestClient, MainRestClientError},
         Validator,
     },
-    wallet,
+    wallet::{self, error::BitcoinCoreRPC},
 };
 use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::MainClient;
@@ -523,16 +523,53 @@ struct ErrRxs {
     shutdown_tx: futures::channel::mpsc::Sender<()>,
 }
 
+async fn get_zmq_addr_sequence(
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+) -> Result<String> {
+    let notifications = mainchain_client
+        .get_zmq_notifications()
+        .await
+        .map_err(|err| BitcoinCoreRPC {
+            method: "getzmqnotifications".to_string(),
+            error: err,
+        })?;
+
+    let Some(address) = notifications
+        .iter()
+        .find(|n| n.notification_type == "pubsequence")
+        .map(|n| n.address.clone())
+    else {
+        #[derive(Debug, Diagnostic, Error)]
+        #[error(
+            "unable to find ZMQ notification for `pubsequence` in `getzmqnotifications` response"
+        )]
+        #[diagnostic(
+                help("Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"),
+                code(bip300301_enforcer::zmq_pubsequence_notification_missing),
+                url("https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements")
+            )]
+        struct ZmqNotificationMissing;
+
+        return Err(ZmqNotificationMissing.into());
+    };
+    Ok(address)
+}
+
 async fn task(
     enforcer: Either<Validator, Wallet>,
     cli: cli::Config,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
-) -> (JoinHandle<Result<()>>, ErrRxs) {
+) -> Result<(JoinHandle<Result<()>>, ErrRxs)> {
     let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
 
     let (shutdown_signal_tx, shutdown_signal_rx) = oneshot::channel();
     let (shutdown_tx, mut shutdown_rx) = futures::channel::mpsc::channel(1);
+
+    let node_zmq_addr_sequence = match cli.node_zmq_addr_sequence {
+        Some(node_zmq_addr_sequence) => node_zmq_addr_sequence,
+        None => get_zmq_addr_sequence(mainchain_client.clone()).await?,
+    };
 
     let shutdown_signal = async move {
         shutdown_rx
@@ -560,7 +597,7 @@ async fn task(
                 let task = cusf_enforcer_mempool::cusf_enforcer::task(
                     &mut enforcer,
                     &mainchain_client,
-                    &cli.node_zmq_addr_sequence,
+                    &node_zmq_addr_sequence,
                     shutdown_signal,
                 );
 
@@ -583,7 +620,7 @@ async fn task(
                 mempool_task(
                     validator,
                     mainchain_client,
-                    &cli.node_zmq_addr_sequence,
+                    &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
                     |_mempool| futures::future::pending(),
                     shutdown_signal,
@@ -638,7 +675,7 @@ async fn task(
                 mempool_task(
                     wallet,
                     mainchain_client,
-                    &cli.node_zmq_addr_sequence,
+                    &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
                     |mempool| async {
                         match run_gbt_server(
@@ -686,7 +723,7 @@ async fn task(
         shutdown_signal: shutdown_signal_rx,
         shutdown_tx: shutdown_tx.clone(),
     };
-    (task_handle, err_rxs)
+    Ok((task_handle, err_rxs))
 }
 
 #[tokio::main]
@@ -921,7 +958,7 @@ async fn main() -> Result<()> {
     };
 
     let (task_handle, mut err_rxs) =
-        task(enforcer.clone(), cli, mainchain_client, info.chain).await;
+        task(enforcer.clone(), cli, mainchain_client, info.chain).await?;
 
     struct TaskHandles {
         main_task: JoinHandle<Result<(), miette::Report>>,
