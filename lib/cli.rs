@@ -380,9 +380,10 @@ pub struct Config {
     pub mining_opts: MiningConfig,
     #[command(flatten)]
     pub node_rpc_opts: NodeRpcConfig,
-    /// Bitcoin node ZMQ endpoint for `sequence`
+    /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
+    /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
-    pub node_zmq_addr_sequence: String,
+    pub node_zmq_addr_sequence: Option<String>,
     /// Serve RPCs such as `getblocktemplate` on this address
     #[arg(default_value_t = DEFAULT_SERVE_RPC_ADDR, long)]
     pub serve_rpc_addr: SocketAddr,

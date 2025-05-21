@@ -19,6 +19,7 @@ http = "1.2.0"
 jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy"] }
 reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tonic = { workspace = true }
