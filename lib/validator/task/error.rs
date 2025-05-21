@@ -230,6 +230,12 @@ pub(in crate::validator) enum ConnectBlock {
 #[derive(Debug, Error)]
 pub(in crate::validator) enum DisconnectBlock {}
 
+impl fatality::Fatality for DisconnectBlock {
+    fn is_fatal(&self) -> bool {
+        true
+    }
+}
+
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
     #[error("Block not in active chain: `{block_hash}`")]
@@ -251,6 +257,9 @@ pub(in crate::validator) enum Sync {
     #[fatal]
     DbTryGet(#[from] db_error::TryGet),
     #[error(transparent)]
+    #[fatal(forward)]
+    DisconnectBlock(#[from] DisconnectBlock),
+    #[error(transparent)]
     #[fatal]
     GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
     #[error("Header sync already in progress")]
@@ -261,6 +270,9 @@ pub(in crate::validator) enum Sync {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
+    #[error(transparent)]
+    #[fatal]
+    LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
     #[error(transparent)]
     #[fatal]
     ReadTxn(#[from] dbs::ReadTxnError),

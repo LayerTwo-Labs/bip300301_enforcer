@@ -109,6 +109,7 @@ impl MainRestClient {
 
     /// Fetches a block header from Bitcoin Core's REST API
     /// https://github.com/bitcoin/bitcoin/blob/master/doc/REST-interface.md#blockheaders
+    /// Returns a vec of headers, block hashes, and height for each header
     #[instrument(skip(self))]
     pub async fn get_block_headers(
         &self,
