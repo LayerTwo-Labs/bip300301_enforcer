@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, collections::HashMap, time::Instant};
+use std::{borrow::Cow, cmp::Ordering, collections::HashMap, future::Future, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
 use bip300301::client::{GetBlockClient, U8Witness};
@@ -10,7 +10,7 @@ use bitcoin::{
 use either::Either;
 use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
-use futures::TryFutureExt as _;
+use futures::{FutureExt as _, TryFutureExt as _};
 use hashlink::LinkedHashSet;
 
 use super::main_rest_client::MainRestClient;
@@ -980,15 +980,17 @@ where
 }
 
 #[tracing::instrument(skip_all)]
-async fn sync_headers<MainRpcClient>(
+async fn sync_headers<MainRpcClient, Signal>(
     dbs: &Dbs,
     main_rest_client: &MainRestClient,
     main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
+    shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bip300301::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
 
@@ -1063,7 +1065,18 @@ where
 
     // The requested block header is the /first/ header in the batch. This means we
     // need to loop from our current tip, until we find the requested main tip.
+    let shutdown_signal = shutdown_signal.shared();
     loop {
+        tokio::select! {
+            biased;
+
+            _ = shutdown_signal.clone() => {
+                tracing::warn!("Header sync interrupted");
+                return Err(error::Sync::Shutdown);
+            }
+            _ = futures::future::ready(()) => {}
+        }
+
         tracing::debug!(
             "Fetching batch of headers starting from #{current_height} `{current_block_hash}`"
         );
@@ -1144,14 +1157,16 @@ where
 
 // MUST be called after `sync_headers`.
 #[tracing::instrument(skip_all)]
-async fn sync_blocks<MainRpcClient>(
+async fn sync_blocks<MainRpcClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
+    shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bip300301::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
     let missing_blocks = tokio::task::block_in_place(|| {
@@ -1176,8 +1191,19 @@ where
         start.elapsed()
     );
 
+    let shutdown_signal = shutdown_signal.shared();
     let mut total_blocks_fetched = 0;
     for missing_block in missing_blocks.into_iter().rev() {
+        tokio::select! {
+            biased;
+
+            _ = shutdown_signal.clone() => {
+                tracing::warn!("Block sync interrupted");
+                return Err(error::Sync::Shutdown);
+            }
+            _ = futures::future::ready(()) => {}
+        }
+
         let block = main_rpc_client
             .get_block(missing_block, U8Witness::<0>)
             .map_err(|err| error::Sync::JsonRpc {
@@ -1211,25 +1237,38 @@ where
     Ok(())
 }
 
-pub(in crate::validator) async fn sync_to_tip<MainClient>(
+pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_rpc_client: &MainClient,
     main_rest_client: &MainRestClient,
     main_tip: BlockHash,
+    shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
+    use futures::FutureExt as _;
+    let shutdown_signal = shutdown_signal.shared();
+
     let () = sync_headers(
         dbs,
         main_rest_client,
         main_rpc_client,
         main_tip,
         header_sync_progress_tx,
+        shutdown_signal.clone(),
     )
     .await?;
-    let () = sync_blocks(dbs, event_tx, main_rpc_client, main_tip).await?;
+    let () = sync_blocks(
+        dbs,
+        event_tx,
+        main_rpc_client,
+        main_tip,
+        shutdown_signal.clone(),
+    )
+    .await?;
     Ok(())
 }

@@ -3,6 +3,7 @@
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
+    future::Future,
 };
 
 use async_broadcast::TrySendError;
@@ -305,7 +306,14 @@ where
 impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
-    async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
+    async fn sync_to_tip<Signal>(
+        &mut self,
+        shutdown_signal: Signal,
+        tip: BlockHash,
+    ) -> Result<(), Self::SyncError>
+    where
+        Signal: Future<Output = ()> + Send,
+    {
         let header_sync_progress_tx = {
             let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
             if header_sync_progress_rx_write.is_some() {
@@ -326,6 +334,7 @@ impl CusfEnforcer for Validator {
             &self.mainchain_client,
             &self.mainchain_rest_client,
             tip,
+            shutdown_signal,
         )
         .map_err(SyncError)
         .await?;
