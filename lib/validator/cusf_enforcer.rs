@@ -306,11 +306,14 @@ where
 impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
-    async fn sync_to_tip<Signal: Future<Output = ()> + Send>(
+    async fn sync_to_tip<Signal>(
         &mut self,
         shutdown_signal: Signal,
         tip: BlockHash,
-    ) -> Result<(), Self::SyncError> {
+    ) -> Result<(), Self::SyncError>
+    where
+        Signal: Future<Output = ()> + Send,
+    {
         let header_sync_progress_tx = {
             let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
             if header_sync_progress_rx_write.is_some() {

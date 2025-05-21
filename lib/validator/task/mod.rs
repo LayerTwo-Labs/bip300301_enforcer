@@ -980,7 +980,7 @@ where
 }
 
 #[tracing::instrument(skip_all)]
-async fn sync_headers<MainRpcClient, Signal: Future<Output = ()> + Send>(
+async fn sync_headers<MainRpcClient, Signal>(
     dbs: &Dbs,
     main_rest_client: &MainRestClient,
     main_rpc_client: &MainRpcClient,
@@ -990,6 +990,7 @@ async fn sync_headers<MainRpcClient, Signal: Future<Output = ()> + Send>(
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bip300301::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
 
@@ -1156,7 +1157,7 @@ where
 
 // MUST be called after `sync_headers`.
 #[tracing::instrument(skip_all)]
-async fn sync_blocks<MainRpcClient, Signal: Future<Output = ()> + Send>(
+async fn sync_blocks<MainRpcClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_rpc_client: &MainRpcClient,
@@ -1165,6 +1166,7 @@ async fn sync_blocks<MainRpcClient, Signal: Future<Output = ()> + Send>(
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bip300301::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
     let missing_blocks = tokio::task::block_in_place(|| {
@@ -1235,7 +1237,7 @@ where
     Ok(())
 }
 
-pub(in crate::validator) async fn sync_to_tip<MainClient, Signal: Future<Output = ()> + Send>(
+pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
@@ -1246,6 +1248,7 @@ pub(in crate::validator) async fn sync_to_tip<MainClient, Signal: Future<Output 
 ) -> Result<(), error::Sync>
 where
     MainClient: bip300301::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
     use futures::FutureExt as _;
     let shutdown_signal = shutdown_signal.shared();

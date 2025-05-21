@@ -422,7 +422,7 @@ where
     NoMempool(#[from] cusf_enforcer_mempool::cusf_enforcer::TaskError<Enforcer>),
 }
 
-async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal: Future<Output = ()> + Send>(
+async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
@@ -434,6 +434,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal: Future<Output = ()> +
     RpcClient: bip300301::client::MainClient + Send + Sync + 'static,
     F: FnOnce(cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>) -> Fut,
     Fut: Future<Output = ()>,
+    Signal: Future<Output = ()> + Send,
 {
     tracing::debug!(%zmq_addr_sequence, "Ensuring ZMQ address for mempool sync is reachable");
 

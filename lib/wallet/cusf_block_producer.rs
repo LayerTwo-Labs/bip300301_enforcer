@@ -46,11 +46,14 @@ impl CusfEnforcer for Wallet {
     // way to run a initial full scan after the validator has synced to the tip.
     // It seems to me (Torkel)that the CUSF enforcer mempool library exposes hooks for
     // this in a sub-optimal way.
-    async fn sync_to_tip<Signal: Future<Output = ()> + Send>(
+    async fn sync_to_tip<Signal>(
         &mut self,
         shutdown_signal: Signal,
         tip_hash: BlockHash,
-    ) -> std::result::Result<(), Self::SyncError> {
+    ) -> std::result::Result<(), Self::SyncError>
+    where
+        Signal: Future<Output = ()> + Send,
+    {
         let () = self
             .inner
             .validator
