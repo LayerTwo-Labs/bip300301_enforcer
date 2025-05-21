@@ -758,7 +758,7 @@ async fn main() -> Result<()> {
     )?;
     tracing::info!(
         data_dir = %cli.data_dir.display(),
-        log_path = %cli.log_path().display(),
+        log_dir = %cli.log_dir().display(),
         "Starting up bip300301_enforcer",
     );
 
