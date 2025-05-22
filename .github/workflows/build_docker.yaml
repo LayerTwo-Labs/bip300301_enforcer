@@ -50,6 +50,16 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Determine Rust version
+        id: rust-version
+        run: |
+          RUST_VERSION=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/{split($2,v,"."); print v[1]"."v[2]; exit}' rust-toolchain.toml)
+          echo "rust-version=$RUST_VERSION" >> $GITHUB_OUTPUT
+
       - name: Build (and maybe push) Docker image
         uses: docker/build-push-action@v6
         with:
@@ -65,3 +75,4 @@ jobs:
           # prettier-ignore
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/bip300301_enforcer:latest
           cache-to: type=inline
+          build-args: RUST_VERSION=${{ steps.rust-version.outputs.rust-version }}

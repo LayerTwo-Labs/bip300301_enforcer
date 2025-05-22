@@ -1,6 +1,6 @@
-# Stable Rust version, as of January 2015. If updating, also update
-# the version in the Dockerfile.
-FROM rust:1.84-slim-bookworm AS builder
+ARG RUST_VERSION=1
+
+FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 WORKDIR /workspace
 COPY . .
 RUN cargo build --locked --release
