@@ -35,11 +35,6 @@ jobs:
           toolchain: nightly
           components: rustfmt, clippy
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: x86_64-unknown-linux-gnu
-
       - name: Check Rust formatting
         # import formatting is nightly only
         run: cargo +nightly fmt --all -- --check
@@ -57,6 +52,11 @@ jobs:
           toolchain: nightly
           components: clippy
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu
+
       - name: Check Clippy
         # We want to hunt for unqualified local imports, but that requires nightly.
         # Nightly introduces a bunch of new errors - we therefore run clippy in
@@ -65,8 +65,8 @@ jobs:
         # prettier-ignore
         run: cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
 
-  check-clippy:
-    name: Check, Lint
+  check-clippy-test:
+    name: Check, Lint, Test
     runs-on: ubuntu-latest
 
     steps:
@@ -87,16 +87,24 @@ jobs:
           shared-key: x86_64-unknown-linux-gnu
 
       - name: Cargo check
-        run: cargo check --all-targets
+        # Specify target so that checked/compiled crates are cached and reused
+        # in later builds
+        run: cargo check --all-targets --target x86_64-unknown-linux-gnu
 
       - name: Clippy
-        run: |
-          cargo clippy --all-targets
+        # Specify target so that checked/compiled crates are cached and reused
+        # in later builds
+        run: cargo clippy --all-targets --target x86_64-unknown-linux-gnu
+
+      - name: Test
+        # Specify target so that checked/compiled crates are cached and reused
+        # in later builds
+        run: cargo test --tests --target x86_64-unknown-linux-gnu
 
   integration-test:
     name: Integration test
     runs-on: ubuntu-latest
-    needs: [check-clippy, check-clippy-nightly]
+    needs: [check-clippy-test, check-clippy-nightly]
     steps:
       - name: Download latest bitcoin-patched
         run: |
@@ -150,20 +158,22 @@ jobs:
           shared-key: x86_64-unknown-linux-gnu
 
       - name: Build (debug)
-        run: cargo build
+        # Specify target so that checked/compiled crates are cached and reused
+        # in later builds
+        run: cargo build --target x86_64-unknown-linux-gnu
 
       - name: Run integration tests
         id: runIntegrationTests
         run: |
-          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          export BIP300301_ENFORCER='target/x86_64-unknown-linux-gnu/debug/bip300301_enforcer'
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
           export ELECTRS='../electrs/target/release/electrs'
           export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
-          cargo run --example integration_tests
+          cargo run --target x86_64-unknown-linux-gnu --example integration_tests
 
-  test-build-release:
+  build-release:
     strategy:
       fail-fast: false
       matrix:
@@ -183,9 +193,9 @@ jobs:
             binary-suffix: .exe
             rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
 
-    name: Test, Build, Release (${{ matrix.name }})
+    name: Build, Release (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    needs: [check-clippy, check-clippy-nightly]
+    needs: [check-clippy-test, check-clippy-nightly]
     permissions:
       contents: write
     timeout-minutes: 20
@@ -200,14 +210,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.name }}
+          shared-key: ${{ matrix.name }}
 
       - name: Install windows-specific deps
         run: sudo apt install mingw-w64 nasm
         if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
-
-      - name: Test
-        run: cargo test --tests
 
       - name: Build
         run: cargo build --release --target ${{ matrix.name }}
@@ -249,7 +256,7 @@ jobs:
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [integration-test, test-build-release]
+    needs: [integration-test, build-release]
     if: github.ref == 'refs/heads/master'
     steps:
       - name: Download artifacts
