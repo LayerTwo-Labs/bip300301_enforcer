@@ -39,7 +39,7 @@ fallible-iterator = "0.3.0"
 fatality = "0.1.1"
 futures = { workspace = true }
 hashlink = { version = "0.10.0", features = ["serde_impl"] }
-heed = "0.21.0"
+heed-types = "0.21.0"
 hex = { workspace = true }
 jiff = { version = "0.2.4", default-features = false }
 jsonrpsee = { workspace = true, features = ["client"] }
@@ -60,6 +60,7 @@ rusqlite_migration = "1.0.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1.0.140"
 serde_path_to_error = "0.1.16"
+sneed = { version = "0.0.19", features = ["observe"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 # Latest version (0.6.0) introduces a non-compatible libsqlite3-sys version
@@ -69,6 +70,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
+transitive = "1.2.0"
 url = "2.5.4"
 uuid = "1.12.1"
 zeromq = "0.4.1"

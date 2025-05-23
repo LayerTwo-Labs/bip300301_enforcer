@@ -11,6 +11,7 @@ use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
 use futures::{FutureExt as _, TryFutureExt as _};
 use hashlink::LinkedHashSet;
+use sneed::{db, RwTxn};
 
 use super::main_rest_client::MainRestClient;
 use crate::{
@@ -25,7 +26,7 @@ use crate::{
         WithdrawalBundleEvent, WithdrawalBundleEventKind, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD,
         WITHDRAWAL_BUNDLE_MAX_AGE,
     },
-    validator::dbs::{db_error, Dbs, RwTxn, UnitKey},
+    validator::dbs::Dbs,
 };
 
 pub mod error;
@@ -148,8 +149,8 @@ fn handle_failed_sidechain_proposals(
     let failed_proposals: Vec<_> = dbs
         .proposal_id_to_sidechain
         .iter(rwtxn)
-        .map_err(db_error::Iter::from)?
-        .map_err(|err| error::HandleFailedSidechainProposals::DbIter(err.into()))
+        .map_err(db::Error::from)?
+        .map_err(db::Error::from)
         .filter_map(|(proposal_id, sidechain)| {
             // doing `height - sidechain.status.proposal_height` can panic if the enforcer has data
             // from a previous sync that is not in the active chain.
@@ -203,11 +204,9 @@ fn handle_m4_votes(
     let active_sidechains: Vec<_> = dbs
         .active_sidechains
         .sidechain()
-        .iter(rwtxn)
-        .map_err(db_error::Iter::from)?
+        .iter(rwtxn)?
         .map(|(sidechain_number, _)| Ok(sidechain_number))
-        .collect()
-        .map_err(db_error::Iter::from)?;
+        .collect()?;
     if upvotes.len() != active_sidechains.len() {
         return Err(error::HandleM4Votes::InvalidVotes {
             expected: active_sidechains.len(),
@@ -223,8 +222,7 @@ fn handle_m4_votes(
         if vote == M4AckBundles::ALARM_TWO_BYTES {
             let _: bool = dbs
                 .active_sidechains
-                .try_alarm_pending_m6ids(rwtxn, &sidechain_number)
-                .map_err(error::HandleM4Votes::TryAlarmPendingM6ids)?;
+                .try_alarm_pending_m6ids(rwtxn, &sidechain_number)?;
         } else if !dbs.active_sidechains.try_upvote_pending_withdrawal(
             rwtxn,
             &sidechain_number,
@@ -571,7 +569,7 @@ pub fn validate_tx(
     let mut rwtxn = dbs.write_txn()?;
     let tip_hash = dbs
         .current_chain_tip
-        .try_get(&rwtxn, &UnitKey)?
+        .try_get(&rwtxn, &())?
         .ok_or(error::ValidateTransactionInner::NoChainTip)?;
     match handle_transaction(
         &mut rwtxn,
@@ -599,7 +597,7 @@ pub(in crate::validator) fn connect_block(
 
     tracing::trace!("verifying chain tip is block parent");
     // Check that current chain tip is block parent
-    match dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? {
+    match dbs.current_chain_tip.try_get(rwtxn, &())? {
         Some(tip) if parent == tip => (),
         Some(tip) => {
             let tip_height = dbs
@@ -736,7 +734,7 @@ pub(in crate::validator) fn connect_block(
         .map_err(error::ConnectBlock::PutBlockInfo)?;
     tracing::trace!("Stored block info");
     let current_tip_cumulative_work: Option<Work> = 'work: {
-        let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? else {
+        let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
             break 'work None;
         };
         Some(
@@ -747,7 +745,7 @@ pub(in crate::validator) fn connect_block(
     };
     let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
     if Some(cumulative_work) > current_tip_cumulative_work {
-        dbs.current_chain_tip.put(rwtxn, &UnitKey, &block_hash)?;
+        dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
         tracing::debug!("updated current chain tip: {}", height);
     }
     let event = {
@@ -1004,7 +1002,7 @@ where
             let mut rwtxn = dbs.write_txn()?;
             let mut current_enforcer_tip = dbs
                 .current_chain_tip
-                .try_get(&rwtxn, &UnitKey)?
+                .try_get(&rwtxn, &())?
                 .unwrap_or_else(BlockHash::all_zeros);
             let last_common_ancestor =
                 dbs.block_hashes
@@ -1017,7 +1015,7 @@ where
                     let () = disconnect_block(&mut rwtxn, dbs, event_tx, current_enforcer_tip)?;
                     current_enforcer_tip = dbs
                         .current_chain_tip
-                        .try_get(&rwtxn, &UnitKey)?
+                        .try_get(&rwtxn, &())?
                         .unwrap_or_else(BlockHash::all_zeros);
                 }
                 rwtxn.commit()?;

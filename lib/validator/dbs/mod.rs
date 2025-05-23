@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 
 use bitcoin::{Amount, OutPoint};
 use fallible_iterator::FallibleIterator as _;
-use heed::{types::SerdeBincode, EnvOpenOptions, RoTxn};
-use miette::Diagnostic;
+use heed_types::SerdeBincode;
 use ordermap::OrderMap;
+use sneed::{db, env, rwtxn, DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey};
 use thiserror::Error;
 
 use crate::types::{
@@ -12,88 +12,45 @@ use crate::types::{
 };
 
 mod block_hashes;
-mod util;
 
-pub use self::{
-    block_hashes::{error as block_hash_dbs_error, BlockHashDbs},
-    util::{
-        db_error, CommitWriteTxnError, Database, Env, NestedWriteTxnError, ReadTxnError,
-        RoDatabase, RwTxn, UnitKey, WriteTxnError,
-    },
-};
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum PutCtipError {
-    #[error(transparent)]
-    Put(#[from] db_error::Put),
-    #[error(transparent)]
-    TryGet(#[from] db_error::TryGet),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum PutActiveSidechainError {
-    #[error(transparent)]
-    Put(#[from] db_error::Put),
-    #[error(transparent)]
-    TryGet(#[from] db_error::TryGet),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryWithPendingWithdrawalsError {
-    #[error(transparent)]
-    Put(#[from] db_error::Put),
-    #[error(transparent)]
-    TryGet(#[from] db_error::TryGet),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryUpvotePendingWithdrawalError {
-    #[error(transparent)]
-    Put(#[from] db_error::Put),
-    #[error(transparent)]
-    TryGet(#[from] db_error::TryGet),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum RetainPendingWithdrawalsError {
-    #[error(transparent)]
-    Iter(#[from] db_error::Iter),
-    #[error(transparent)]
-    Put(#[from] db_error::Put),
-}
+pub use self::block_hashes::{error as block_hash_dbs_error, BlockHashDbs};
 
 pub type PendingM6ids = OrderMap<M6id, PendingM6idInfo>;
 
 /// These DBs should all contain exacty the same keys.
 #[derive(Clone)]
 pub(super) struct ActiveSidechainDbs {
-    ctip: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
+    ctip: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
     /// MUST contain ALL keys/values that `ctip` has ever contained.
     /// Associates Ctip outpoints with their value and sequence number
     ctip_outpoint_to_value_seq:
-        Database<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
     // ALL active sidechains MUST exist as keys
-    pending_m6ids: Database<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>>,
+    pending_m6ids: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>>,
     // ALL active sidechains MUST exist as keys
-    sidechain: Database<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
+    sidechain: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
     slot_sequence_to_treasury_utxo:
-        Database<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
-    pub treasury_utxo_count: Database<SerdeBincode<SidechainNumber>, SerdeBincode<u64>>,
+        DatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
+    pub treasury_utxo_count: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<u64>>,
 }
 
 impl ActiveSidechainDbs {
     const NUM_DBS: u32 = 6;
 
-    fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, util::CreateDbError> {
-        let ctip = env.create_db(rwtxn, "active_sidechain_number_to_ctip")?;
+    fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
+        let ctip = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_ctip")?;
         let ctip_outpoint_to_value_seq =
-            env.create_db(rwtxn, "active_sidechain_ctip_outpoint_to_value_seq")?;
-        let pending_m6ids = env.create_db(rwtxn, "active_sidechain_number_to_pending_m6ids")?;
-        let sidechain = env.create_db(rwtxn, "active_sidechain_number_to_sidechain")?;
-        let slot_sequence_to_treasury_utxo =
-            env.create_db(rwtxn, "active_sidechain_slot_sequence_to_treasury_utxo")?;
+            DatabaseUnique::create(env, rwtxn, "active_sidechain_ctip_outpoint_to_value_seq")?;
+        let pending_m6ids =
+            DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_pending_m6ids")?;
+        let sidechain = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_sidechain")?;
+        let slot_sequence_to_treasury_utxo = DatabaseUnique::create(
+            env,
+            rwtxn,
+            "active_sidechain_slot_sequence_to_treasury_utxo",
+        )?;
         let treasury_utxo_count =
-            env.create_db(rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
+            DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
         Ok(Self {
             ctip,
             ctip_outpoint_to_value_seq,
@@ -104,29 +61,32 @@ impl ActiveSidechainDbs {
         })
     }
 
-    pub fn ctip(&self) -> &RoDatabase<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>> {
+    pub fn ctip(&self) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>> {
         &self.ctip
     }
 
     pub fn ctip_outpoint_to_value_seq(
         &self,
-    ) -> &RoDatabase<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>> {
+    ) -> &RoDatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>
+    {
         &self.ctip_outpoint_to_value_seq
     }
 
     pub fn pending_m6ids(
         &self,
-    ) -> &RoDatabase<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>> {
+    ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>> {
         &self.pending_m6ids
     }
 
-    pub fn sidechain(&self) -> &RoDatabase<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>> {
+    pub fn sidechain(
+        &self,
+    ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>> {
         &self.sidechain
     }
 
     pub fn slot_sequence_to_treasury_utxo(
         &self,
-    ) -> &RoDatabase<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>> {
+    ) -> &RoDatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>> {
         &self.slot_sequence_to_treasury_utxo
     }
 
@@ -136,7 +96,7 @@ impl ActiveSidechainDbs {
         rwtxn: &mut RwTxn,
         sidechain_number: SidechainNumber,
         ctip: &Ctip,
-    ) -> Result<u64, PutCtipError> {
+    ) -> Result<u64, db::Error> {
         let treasury_utxo_count = self
             .treasury_utxo_count
             .try_get(rwtxn, &sidechain_number)?
@@ -178,7 +138,7 @@ impl ActiveSidechainDbs {
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
         sidechain: &Sidechain,
-    ) -> Result<(), PutActiveSidechainError> {
+    ) -> Result<(), db::Error> {
         if !self.pending_m6ids.contains_key(rwtxn, sidechain_number)? {
             self.pending_m6ids
                 .put(rwtxn, sidechain_number, &PendingM6ids::new())?;
@@ -194,7 +154,7 @@ impl ActiveSidechainDbs {
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
         f: F,
-    ) -> Result<Option<T>, TryWithPendingWithdrawalsError>
+    ) -> Result<Option<T>, db::Error>
     where
         F: FnOnce(&mut PendingM6ids) -> T,
     {
@@ -216,7 +176,7 @@ impl ActiveSidechainDbs {
         sidechain_number: &SidechainNumber,
         m6id: M6id,
         f: F,
-    ) -> Result<Option<T>, TryWithPendingWithdrawalsError>
+    ) -> Result<Option<T>, db::Error>
     where
         F: FnOnce(ordermap::map::Entry<'_, M6id, PendingM6idInfo>) -> T,
     {
@@ -233,7 +193,7 @@ impl ActiveSidechainDbs {
         sidechain_number: &SidechainNumber,
         m6id: M6id,
         proposal_height: u32,
-    ) -> Result<bool, TryWithPendingWithdrawalsError> {
+    ) -> Result<bool, db::Error> {
         self.try_with_pending_withdrawal_entry(rwtxn, sidechain_number, m6id, |entry| match entry {
             ordermap::map::Entry::Occupied(mut entry) => {
                 _ = entry.insert(PendingM6idInfo::new(proposal_height))
@@ -251,7 +211,7 @@ impl ActiveSidechainDbs {
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
-    ) -> Result<bool, TryWithPendingWithdrawalsError> {
+    ) -> Result<bool, db::Error> {
         self.try_with_pending_withdrawals(rwtxn, sidechain_number, |pending_m6ids| {
             pending_m6ids
                 .values_mut()
@@ -268,7 +228,7 @@ impl ActiveSidechainDbs {
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
         index: usize,
-    ) -> Result<bool, TryUpvotePendingWithdrawalError> {
+    ) -> Result<bool, db::Error> {
         let Some(mut pending_m6ids) = self.pending_m6ids.try_get(rwtxn, sidechain_number)? else {
             return Ok(false);
         };
@@ -288,18 +248,16 @@ impl ActiveSidechainDbs {
         &self,
         rwtxn: &mut RwTxn,
         mut f: F,
-    ) -> Result<(), RetainPendingWithdrawalsError>
+    ) -> Result<(), db::Error>
     where
         F: FnMut(SidechainNumber, &M6id, &PendingM6idInfo) -> bool,
     {
         let active_sidechains: Vec<_> = self
             .pending_m6ids
             .lazy_decode()
-            .iter(rwtxn)
-            .map_err(db_error::Iter::from)?
+            .iter(rwtxn)?
             .map(|(sidechain_number, _)| Ok(sidechain_number))
-            .collect()
-            .map_err(db_error::Iter::from)?;
+            .collect()?;
         for sidechain_number in active_sidechains {
             let mut pending_m6ids = self
                 .pending_m6ids
@@ -314,21 +272,22 @@ impl ActiveSidechainDbs {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(transitive::Transitive, Debug, Error)]
+#[transitive(
+    from(env::error::CreateDb, env::Error),
+    from(env::error::OpenEnv, env::Error),
+    from(env::error::WriteTxn, env::Error)
+)]
 pub enum CreateDbsError {
     #[error(transparent)]
-    CommitWriteTxn(#[from] util::CommitWriteTxnError),
-    #[error(transparent)]
-    CreateDb(#[from] util::CreateDbError),
+    CommitWriteTxn(#[from] rwtxn::error::Commit),
     #[error("Error creating directory (`{path}`)")]
     CreateDirectory {
         path: PathBuf,
         source: std::io::Error,
     },
     #[error(transparent)]
-    OpenEnv(#[from] util::OpenEnvError),
-    #[error(transparent)]
-    WriteTxn(#[from] util::WriteTxnError),
+    Env(#[from] env::Error),
 }
 
 #[derive(Clone)]
@@ -337,11 +296,11 @@ pub(super) struct Dbs {
     pub active_sidechains: ActiveSidechainDbs,
     pub block_hashes: BlockHashDbs,
     /// Tip that the enforcer is synced to
-    pub current_chain_tip: Database<SerdeBincode<UnitKey>, SerdeBincode<bitcoin::BlockHash>>,
-    pub _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<[u8; 32]>>>,
-    pub _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<[u8; 32]>>>,
+    pub current_chain_tip: DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
+    pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
+    pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub proposal_id_to_sidechain:
-        Database<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>,
+        DatabaseUnique<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>,
 }
 
 impl Dbs {
@@ -361,17 +320,18 @@ impl Dbs {
             const GB: usize = 1024 * 1024 * 1024;
             // 10 GB
             const DB_MAP_SIZE: usize = 10 * GB;
-            let mut env_opts = EnvOpenOptions::new();
-            let _: &mut EnvOpenOptions = env_opts.max_dbs(Self::NUM_DBS).map_size(DB_MAP_SIZE);
-            unsafe { Env::open(&env_opts, db_dir.clone()) }?
+            let mut env_opts = env::OpenOptions::new();
+            let _: &mut env::OpenOptions = env_opts.max_dbs(Self::NUM_DBS).map_size(DB_MAP_SIZE);
+            unsafe { Env::open(&env_opts, &db_dir) }?
         };
         let mut rwtxn = env.write_txn()?;
         let active_sidechains = ActiveSidechainDbs::new(&env, &mut rwtxn)?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
-        let current_chain_tip = env.create_db(&mut rwtxn, "current_chain_tip")?;
-        let leading_by_50 = env.create_db(&mut rwtxn, "leading_by_50")?;
-        let previous_votes = env.create_db(&mut rwtxn, "previous_votes")?;
-        let proposal_id_to_sidechain = env.create_db(&mut rwtxn, "proposal_id_to_sidechain")?;
+        let current_chain_tip = DatabaseUnique::create(&env, &mut rwtxn, "current_chain_tip")?;
+        let leading_by_50 = DatabaseUnique::create(&env, &mut rwtxn, "leading_by_50")?;
+        let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
+        let proposal_id_to_sidechain =
+            DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -386,18 +346,18 @@ impl Dbs {
         })
     }
 
-    pub fn read_txn(&self) -> Result<RoTxn<'_>, ReadTxnError> {
+    pub fn read_txn(&self) -> Result<RoTxn<'_>, env::error::ReadTxn> {
         self.env.read_txn()
     }
 
     pub fn nested_write_txn<'p>(
         &'p self,
         parent: &'p mut RwTxn<'_>,
-    ) -> Result<RwTxn<'p>, NestedWriteTxnError> {
+    ) -> Result<RwTxn<'p>, env::error::NestedWriteTxn> {
         self.env.nested_write_txn(parent)
     }
 
-    pub fn write_txn(&self) -> Result<RwTxn<'_>, WriteTxnError> {
+    pub fn write_txn(&self) -> Result<RwTxn<'_>, env::error::WriteTxn> {
         self.env.write_txn()
     }
 }
