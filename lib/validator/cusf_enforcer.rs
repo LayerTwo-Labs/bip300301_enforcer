@@ -12,19 +12,16 @@ use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer};
 use fallible_iterator::FallibleIterator;
 use fatality::Nested as _;
 use futures::TryFutureExt as _;
-use heed::RoTxn;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
+use sneed::{db, env, rwtxn, RoTxn, RwTxn};
 use thiserror::Error;
 
 use crate::{
     proto::mainchain::HeaderSyncProgress,
     types::{Ctip, Event, SidechainNumber},
     validator::{
-        db_error,
-        dbs::{self, RwTxn},
-        task,
-        task::error::ValidateTransaction as ValidateTransactionError,
+        task::{self, error::ValidateTransaction as ValidateTransactionError},
         Validator,
     },
 };
@@ -37,17 +34,17 @@ pub struct SyncError(#[from] task::error::Sync);
 #[derive(Debug, Diagnostic, Error)]
 enum ConnectBlockErrorInner {
     #[error(transparent)]
-    CommitWriteTxn(#[from] dbs::CommitWriteTxnError),
+    CommitWriteTxn(#[from] rwtxn::error::Commit),
     #[error(transparent)]
     ConnectBlock(#[from] Box<<task::error::ConnectBlock as fatality::Split>::Fatal>),
     #[error(transparent)]
-    DbPut(#[from] db_error::Put),
+    DbPut(#[from] db::error::Put),
     #[error(transparent)]
-    DbTryGet(#[from] db_error::TryGet),
+    DbTryGet(#[from] db::error::TryGet),
     #[error(transparent)]
-    NestedWriteTxn(#[from] dbs::NestedWriteTxnError),
+    NestedWriteTxn(#[from] env::error::NestedWriteTxn),
     #[error(transparent)]
-    WriteTxn(#[from] dbs::WriteTxnError),
+    WriteTxn(#[from] env::error::WriteTxn),
 }
 
 impl From<<task::error::ConnectBlock as fatality::Split>::Fatal> for ConnectBlockErrorInner {
@@ -73,11 +70,11 @@ where
 #[derive(Debug, Diagnostic, Error)]
 enum DisconnectBlockErrorInner {
     #[error(transparent)]
-    CommitWriteTxn(#[from] dbs::CommitWriteTxnError),
+    CommitWriteTxn(#[from] rwtxn::error::Commit),
     #[error(transparent)]
     DisconnectBlock(#[from] task::error::DisconnectBlock),
     #[error(transparent)]
-    WriteTxn(#[from] dbs::WriteTxnError),
+    WriteTxn(#[from] env::error::WriteTxn),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -113,7 +110,7 @@ impl<'a> ParentChildRwTxn<'a> {
     }
 
     /// Commit child rwtxn and return parent
-    fn commit_child(self) -> Result<RwTxn<'a>, dbs::CommitWriteTxnError> {
+    fn commit_child(self) -> Result<RwTxn<'a>, rwtxn::error::Commit> {
         let (commit_res, heads) = self.destruct_into_heads(|tails| tails.child.commit());
         let () = commit_res?;
         Ok(heads.parent)
@@ -386,7 +383,7 @@ pub(crate) enum GetCtipsAfterError {
     #[error(transparent)]
     ConnectBlock(#[from] ConnectBlockError),
     #[error(transparent)]
-    DbIter(#[from] db_error::Iter),
+    DbIter(#[from] db::error::Iter),
 }
 
 /// Get ctips after (speculatively) applying a block.
@@ -401,9 +398,9 @@ pub(crate) fn get_ctips_after(
             .active_sidechains
             .ctip()
             .iter(rotxn)
-            .map_err(db_error::Iter::Init)?
+            .map_err(db::error::Iter::Init)?
             .collect()
-            .map_err(db_error::Iter::Item)
+            .map_err(db::error::Iter::Item)
     })
     .connect_block(validator, block)?
     .transpose()?;
