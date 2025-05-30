@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use bdk_chain::ChainPosition;
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
     BdkElectrumClient,
@@ -1480,6 +1481,41 @@ impl Wallet {
                 sent: final_sent,
             });
         }
+
+        // Make sure that the transaction list is in chronological order.
+        txs.sort_by(|a, b| match (a.chain_position, b.chain_position) {
+            (
+                ChainPosition::Confirmed {
+                    anchor: a_anchor, ..
+                },
+                ChainPosition::Confirmed {
+                    anchor: b_anchor, ..
+                },
+            ) => a_anchor.confirmation_time.cmp(&b_anchor.confirmation_time),
+            (
+                ChainPosition::Confirmed { anchor, .. },
+                ChainPosition::Unconfirmed {
+                    last_seen: Some(last_seen),
+                },
+            ) => anchor.confirmation_time.cmp(&last_seen),
+            (
+                ChainPosition::Unconfirmed {
+                    last_seen: Some(last_seen),
+                },
+                ChainPosition::Confirmed { anchor, .. },
+            ) => last_seen.cmp(&anchor.confirmation_time),
+            (
+                ChainPosition::Unconfirmed {
+                    last_seen: Some(a_last_seen),
+                },
+                ChainPosition::Unconfirmed {
+                    last_seen: Some(b_last_seen),
+                },
+            ) => a_last_seen.cmp(&b_last_seen),
+
+            // Fallback to comparing TXIDs
+            (_, _) => a.txid.cmp(&b.txid),
+        });
         Ok(txs)
     }
 
