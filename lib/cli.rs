@@ -339,7 +339,7 @@ pub struct WalletConfig {
     #[arg(long = "wallet-skip-periodic-sync", default_value_t = false)]
     pub skip_periodic_sync: bool,
     /// The source of the wallet sync.
-    #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::Electrum, value_enum)]
+    #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::default(), value_enum)]
     pub sync_source: WalletSyncSource,
 
     /// Path to a file containing exactly 12 space-separated BIP39 mnemonic words.
