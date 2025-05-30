@@ -1421,18 +1421,29 @@ impl Wallet {
 
             // Get input values using getrawtransaction
             for input in inputs {
+                // Coinbase transactions have an empty prev output txid, which we'll be unable to fetch
+                if input.previous_output.txid == bitcoin::Txid::all_zeros() {
+                    continue;
+                }
+
                 let transaction_hex = self
                     .inner
                     .main_client
+                    // TODO: get rid of this. It's kind of absurd that we're calling out to getrawtransaction for every input.
+                    // Both from a performance point of view, as well as requiring txindex. Would be better to somehow
+                    // persist the relevant values in the wallet DB
                     .get_raw_transaction(
                         input.previous_output.txid,
                         GetRawTransactionVerbose::<false>,
                         None,
                     )
                     .await
-                    .map_err(|err| error::BitcoinCoreRPC {
-                        method: "getrawtransaction".to_string(),
-                        error: err,
+                    .map_err(|err| error::ListWalletTransactions::FetchTransaction {
+                        txid: input.previous_output.txid,
+                        source: error::BitcoinCoreRPC {
+                            method: "getrawtransaction".to_string(),
+                            error: err,
+                        },
                     })?;
 
                 let prev_output =
@@ -1449,7 +1460,9 @@ impl Wallet {
                 input_value += value;
             }
 
-            let fee = input_value - output_value;
+            let fee = input_value
+                .checked_sub(output_value)
+                .unwrap_or(Amount::ZERO);
             // Calculate net wallet change (excluding fee)
             // We need to handle received and sent separately since Amount can't be negative
             let (final_received, final_sent) = if received >= sent {
