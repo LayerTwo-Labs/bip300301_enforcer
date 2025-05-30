@@ -95,7 +95,7 @@ impl WalletInner {
         network: Network,
     ) -> Result<EsploraClient, error::InitEsploraClient> {
         let default_url = match network {
-            Network::Signet => "http://172.105.148.135:3000",
+            Network::Signet => "https://explorer.drivechain.info/api",
             Network::Regtest => "http://localhost:3003",
             network => return Err(error::UnsupportedNetwork(network).into()),
         };
@@ -126,7 +126,7 @@ impl WalletInner {
         network: Network,
     ) -> Result<ElectrumClient, error::InitElectrumClient> {
         let (default_host, default_port) = match network {
-            Network::Signet => ("drivechain.live", 50001),
+            Network::Signet => ("explorer.drivechain.info", 50001),
             Network::Regtest => ("127.0.0.1", 60401), // Default for mempool/electrs
             network => return Err(error::UnsupportedNetwork(network).into()),
         };
