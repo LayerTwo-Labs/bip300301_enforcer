@@ -1614,15 +1614,39 @@ impl Wallet {
         if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
             .await
             .map_err(error::SendWalletTransaction::BroadcastTx)?
-            .is_some()
+            .is_none()
         {
-            tracing::info!(%txid, "Broadcast send transaction in {:?}", timestamp.elapsed());
-            Ok(convert::bdk_txid_to_bitcoin_txid(txid))
-        } else {
             let err = error::SendWalletTransaction::OpDrivechainNotSupported;
             tracing::error!(%txid, "{:#}", ErrorChain::new(&err));
-            Err(err)
+            return Err(err);
         }
+        tracing::info!(%txid, "Broadcast send transaction in {:?}", timestamp.elapsed());
+
+        // Apply the unconfirmed transaction to the wallet
+        let mut bdk_db_lock = self.inner.bdk_db.lock().await;
+
+        let last_seen = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+
+        let applied_changes = self
+            .inner
+            .write_wallet()
+            .await?
+            .with_mut(|wallet| {
+                wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
+                wallet.persist_async(&mut bdk_db_lock)
+            })
+            .await?;
+
+        // sanity check that we did things correctly
+        if !applied_changes {
+            panic!("PROGRAMMER ERROR: no changes in wallet after applying unconfirmed transaction");
+        }
+
+        tracing::debug!(%txid, "Applied unconfirmed transaction to wallet");
+
+        Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
 
     #[allow(

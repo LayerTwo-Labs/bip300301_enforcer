@@ -1109,6 +1109,10 @@ pub enum SendWalletTransaction {
     SignTransaction(#[from] WalletSignTransaction),
     #[error("failed to broadcast OP_DRIVECHAIN transaction (make sure your node has 'acceptnonstdtxn=1' in its configuration)")]
     OpDrivechainNotSupported,
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    #[error(transparent)]
+    Persistence(#[from] Persistence),
 }
 
 impl ToStatus for SendWalletTransaction {
@@ -1117,6 +1121,8 @@ impl ToStatus for SendWalletTransaction {
             Self::CreateSendPsbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
             Self::BroadcastTx(_) | Self::OpDrivechainNotSupported => StatusBuilder::new(self),
+            Self::NotUnlocked(err) => err.builder(),
+            Self::Persistence(err) => StatusBuilder::new(err),
         }
     }
 }
