@@ -1053,8 +1053,11 @@ impl ToStatus for GetWalletBalance {
 
 #[derive(Diagnostic, Debug, Error)]
 pub enum ListWalletTransactions {
-    #[error(transparent)]
-    BitcoinCoreRPC(#[from] BitcoinCoreRPC),
+    #[error("unable to fetch wallet transaction")]
+    FetchTransaction {
+        txid: bitcoin::Txid,
+        source: BitcoinCoreRPC,
+    },
     #[error(transparent)]
     DeserializeHex(#[from] bitcoin::consensus::encode::FromHexError),
     #[error(transparent)]
@@ -1064,7 +1067,8 @@ pub enum ListWalletTransactions {
 impl ToStatus for ListWalletTransactions {
     fn builder(&self) -> StatusBuilder {
         match self {
-            Self::BitcoinCoreRPC(err) => err.builder(),
+            Self::FetchTransaction { txid, source } => StatusBuilder::new(source)
+                .message(move |f| write!(f, "unable to fetch wallet transaction `{txid:?}`")),
             Self::DeserializeHex(err) => StatusBuilder::new(err),
             Self::NotUnlocked(err) => err.builder(),
         }
