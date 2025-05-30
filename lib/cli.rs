@@ -317,14 +317,14 @@ pub struct WalletConfig {
     pub auto_create: bool,
     /// URL of the Esplora server to use for the wallet.
     ///
-    /// Signet: http://172.105.148.135:3000
+    /// Signet: https://explorer.drivechain.info/api
     /// Regtest: http://localhost:3003
     #[arg(long = "wallet-esplora-url")]
     pub esplora_url: Option<url::Url>,
     /// If no host is provided, a default value is used based on the network
     /// we're on.
     ///
-    /// Signet: drivechain.live, regtest: 127.0.0.1  
+    /// Signet: explorer.drivechain.info, regtest: 127.0.0.1  
     #[arg(long = "wallet-electrum-host")]
     pub electrum_host: Option<String>,
     /// If no port is provided, a default value is used based on the network
