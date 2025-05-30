@@ -65,7 +65,7 @@ pub fn create_client(
 }
 
 /// Broadcasts a transaction to the Bitcoin network.
-/// Returns `Some(txid)`` if broadcast successfully, `None` if the tx failed to
+/// Returns `Some(txid)` if broadcast successfully, `None` if the tx failed to
 /// broadcast due to the node not supporting OP_DRIVECHAIN
 pub async fn broadcast_transaction<RpcClient>(
     rpc_client: &RpcClient,
