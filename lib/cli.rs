@@ -292,9 +292,9 @@ pub struct NodeRpcConfig {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, ValueEnum)]
 pub enum WalletSyncSource {
-    #[default]
     /// Communicates over the Electrum protocol.
     Electrum,
+    #[default]
     /// Communicates over REST to a Esplora server (i.e. mempool.space API)
     Esplora,
     /// The wallet is only synced by new blocks coming in.
