@@ -15,6 +15,7 @@ cusf-enforcer-mempool = { workspace = true }
 educe = { workspace = true }
 either = { workspace = true }
 futures = { workspace = true }
+hex = { workspace = true }
 http = "1.2.0"
 jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy"] }

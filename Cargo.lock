@@ -472,6 +472,7 @@ dependencies = [
  "either",
  "futures",
  "http 1.3.1",
+ "hex",
  "jsonrpsee",
  "miette",
  "reqwest 0.12.15",
