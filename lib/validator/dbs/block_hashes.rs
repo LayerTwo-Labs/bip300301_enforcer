@@ -1,14 +1,16 @@
+use std::time::Instant;
+
 use bitcoin::{block::Header, hashes::Hash as _, BlockHash, Txid, Work};
 use fallible_iterator::FallibleIterator;
 use heed::{types::SerdeBincode, RoTxn};
 use nonempty::NonEmpty;
+use tracing::instrument;
 
+use super::util::RoDatabase;
 use crate::{
     types::{BlockEvent, BlockInfo, BmmCommitments, HeaderInfo, TwoWayPegData},
     validator::dbs::util::{db_error, CreateDbError, Database, Env, RwTxn},
 };
-
-use super::util::RoDatabase;
 
 pub mod error {
     use bitcoin::BlockHash;
@@ -52,6 +54,25 @@ pub mod error {
         fn from(err: Err) -> Self {
             Self(err.into())
         }
+    }
+
+    #[derive(Debug, Error)]
+    pub(crate) enum LastCommonAncestor {
+        #[error(transparent)]
+        DbGet(#[from] db_error::Get),
+        #[error(transparent)]
+        DbTryGet(#[from] db_error::TryGet),
+        #[error(
+            "Missing ancestor at depth {} for {} (height={})",
+            .depth,
+            .block_hash,
+            .height
+        )]
+        MissingAncestor {
+            block_hash: BlockHash,
+            depth: u32,
+            height: u32,
+        },
     }
 
     #[derive(Debug, Error)]
@@ -181,30 +202,31 @@ impl BlockHashDbs {
         self.header.contains_key(rotxn, block_hash)
     }
 
-    /// Check if the database contains the provided block
-    pub fn contains_block(
-        &self,
-        rotxn: &RoTxn,
-        block_hash: &BlockHash,
-    ) -> Result<bool, db_error::TryGet> {
-        self.bmm_commitments.contains_key(rotxn, block_hash)
-    }
-
     /// Store info for a single header
-    pub fn put_header(
+    #[instrument(skip_all)]
+    pub fn put_headers(
         &self,
         rwtxn: &mut RwTxn,
-        header: &Header,
-        height: u32,
+        headers: &[(Header, u32)],
     ) -> Result<(), db_error::Put> {
-        let block_hash = header.block_hash();
-        let () = self.header.put(rwtxn, &block_hash, header)?;
-        let () = self.height.put(rwtxn, &block_hash, &height)?;
-        if header.prev_blockhash != BlockHash::all_zeros() {
-            let () = self
-                .height
-                .put(rwtxn, &header.prev_blockhash, &(height - 1))?;
+        let start = Instant::now();
+
+        for (header, height) in headers {
+            let block_hash = header.block_hash();
+            let () = self.header.put(rwtxn, &block_hash, header)?;
+            let () = self.height.put(rwtxn, &block_hash, height)?;
+            if header.prev_blockhash != BlockHash::all_zeros() {
+                let () = self
+                    .height
+                    .put(rwtxn, &header.prev_blockhash, &(height - 1))?;
+            }
         }
+
+        tracing::debug!(
+            "Stored {} block header(s) in {:?}",
+            headers.len(),
+            start.elapsed(),
+        );
         Ok(())
     }
 
@@ -268,24 +290,75 @@ impl BlockHashDbs {
         })
     }
 
-    /// Find the latest missing ancestor header, if any are missing.
-    /// This may take a long time to run, and should be considered blocking in
-    /// async contexts.
-    pub fn latest_missing_ancestor_header(
+    /// Find the last common ancestor of two blocks,
+    /// if headers for both exist
+    pub fn last_common_ancestor(
         &self,
         rotxn: &RoTxn,
-        block_hash: BlockHash,
-    ) -> Result<Option<BlockHash>, db_error::TryGet> {
-        let mut res = block_hash;
-        let mut ancestor_headers = self.ancestor_headers(rotxn, block_hash);
-        while let Some((_, header)) = ancestor_headers.next()? {
-            res = header.prev_blockhash;
+        block_hash0: BlockHash,
+        block_hash1: BlockHash,
+    ) -> Result<BlockHash, error::LastCommonAncestor> {
+        use std::cmp::Ordering;
+        // if the block hashes are the same, return early
+        if block_hash0 == block_hash1 {
+            return Ok(block_hash0);
         }
-        if res == BlockHash::all_zeros() {
-            Ok(None)
-        } else {
-            Ok(Some(res))
+        if block_hash0 == BlockHash::all_zeros() || block_hash1 == BlockHash::all_zeros() {
+            return Ok(BlockHash::all_zeros());
         }
+        let height0 = self.height.get(rotxn, &block_hash0)?;
+        let height1 = self.height.get(rotxn, &block_hash1)?;
+        let mut ancestors0 = self.ancestor_headers(rotxn, block_hash0);
+        let mut ancestors1 = self.ancestor_headers(rotxn, block_hash1);
+        // Equalize heights of the ancestors iterators to min(height0, height1)
+        // by skipping elements of the longer ancestry
+        match height0.cmp(&height1) {
+            Ordering::Equal => (),
+            Ordering::Less => {
+                for depth in 0..height1 - height0 {
+                    if ancestors1.next()?.is_none() {
+                        return Err(error::LastCommonAncestor::MissingAncestor {
+                            block_hash: block_hash1,
+                            depth,
+                            height: height1,
+                        });
+                    };
+                }
+            }
+            Ordering::Greater => {
+                for depth in 0..height0 - height1 {
+                    if ancestors0.next()?.is_none() {
+                        return Err(error::LastCommonAncestor::MissingAncestor {
+                            block_hash: block_hash0,
+                            depth,
+                            height: height0,
+                        });
+                    };
+                }
+            }
+        }
+        for common_depth in 0..=std::cmp::min(height0, height1) {
+            let Some((ancestor0, _)) = ancestors0.next()? else {
+                let current_height = std::cmp::min(height0, height1) - common_depth;
+                return Err(error::LastCommonAncestor::MissingAncestor {
+                    block_hash: block_hash0,
+                    depth: height0 - current_height,
+                    height: height0,
+                });
+            };
+            let Some((ancestor1, _)) = ancestors1.next()? else {
+                let current_height = std::cmp::min(height0, height1) - common_depth;
+                return Err(error::LastCommonAncestor::MissingAncestor {
+                    block_hash: block_hash1,
+                    depth: height1 - current_height,
+                    height: height1,
+                });
+            };
+            if ancestor0 == ancestor1 {
+                return Ok(ancestor0);
+            }
+        }
+        Ok(BlockHash::all_zeros())
     }
 
     pub fn try_get_header_info(
@@ -326,13 +399,15 @@ impl BlockHashDbs {
     /// Get header infos for the specified block hash, and up to max_ancestors
     /// ancestors.
     /// Returns header infos newest-first.
-    pub fn get_header_infos(
+    pub fn try_get_header_infos(
         &self,
         rotxn: &RoTxn,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<HeaderInfo>, error::GetHeaderInfo> {
-        let header_info = self.get_header_info(rotxn, block_hash)?;
+    ) -> Result<Option<NonEmpty<HeaderInfo>>, error::TryGetHeaderInfo> {
+        let Some(header_info) = self.try_get_header_info(rotxn, block_hash)? else {
+            return Ok(None);
+        };
         let mut ancestors = max_ancestors;
         let mut ancestor = header_info.prev_block_hash;
         let mut res = NonEmpty::new(header_info);
@@ -344,7 +419,7 @@ impl BlockHashDbs {
             ancestors -= 1;
             res.push(header_info);
         }
-        Ok(res)
+        Ok(Some(res))
     }
 
     pub fn try_get_block_info(

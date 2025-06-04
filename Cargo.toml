@@ -2,11 +2,7 @@
 
 [workspace]
 resolver = "2"
-members = [
-    "app",
-    "lib",
-    "integration_tests",
-]
+members = ["app", "lib", "integration_tests"]
 
 [workspace.package]
 authors = [
@@ -16,7 +12,7 @@ authors = [
 ]
 edition = "2021"
 publish = false
-version = "0.3.2"
+version = "0.3.4"
 
 [workspace.dependencies]
 bdk_wallet = { version = "1.0.0" }
@@ -27,6 +23,8 @@ futures = "0.3.30"
 hex = "0.4.3"
 jsonrpsee = { version = "0.24.7" }
 miette = { version = "7.1.0", default-features = false }
+reqwest = { version = "0.12.15", default-features = false, features = ["json"] }
+serde = { version = "1.0.219" }
 thiserror = "2.0.11"
 tokio = { version = "1.36.0", default-features = false }
 tokio-stream = "0.1.15"
@@ -35,14 +33,18 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.18"
 
-[workspace.dependencies.bip300301]
-git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "45f74e37b8295207d29ddbbce10d563ec9f67151"
+[workspace.dependencies.bitcoin-jsonrpsee]
+git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
+rev = "360b4e4e3ab333a34e0d82d023494cbd8f13b06e"
 
 [workspace.dependencies.cusf-enforcer-mempool]
-# https://github.com/LayerTwo-Labs/cusf-enforcer-mempool/pull/5
-git = "https://github.com/torkelrogstad/cusf-enforcer-mempool.git"
-rev = "26bb6bdeb6cb9a7d5222889f49bb1768ccc2e011"
+git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
+rev = "94d71d7a7f8bb37c5df3c2716577b4d0a056c42e"
+
+[workspace.dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug"]
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"
@@ -66,3 +68,8 @@ let_underscore_drop = "deny"
 [patch.crates-io.temp-dir]
 git = "https://gitlab.com/A-Manning/leonhard-llc-ops.git"
 branch = "temp-dir-leak"
+
+# Have to use a patch here. Depending directly on the fork breaks macros. 
+[patch.crates-io.tracing-appender]
+git = "https://github.com/torkelrogstad/tokio-tracing.git"
+branch = "log-rotation-size"

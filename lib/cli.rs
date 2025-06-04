@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -55,7 +54,7 @@ fn get_data_dir() -> Result<PathBuf, String> {
                 .map_err(|_| "APPDATA environment variable not set".to_string())?;
             Path::new(&app_data).join(APP_NAME)
         }
-        os => return Err(format!("Unsupported OS: {}", os)),
+        os => return Err(format!("Unsupported OS: {os}")),
     };
 
     Ok(dir)
@@ -63,7 +62,7 @@ fn get_data_dir() -> Result<PathBuf, String> {
 
 // Sub-par location for the log file.
 // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
-const DEFAULT_LOG_FILENAME: &str = "bip300301_enforcer.log";
+const LOG_FILENAME: &str = "bip300301_enforcer.log";
 
 // Sub-par location for the log dir.
 // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
@@ -220,15 +219,17 @@ pub struct LoggerConfig {
     /// Set a limit for the maximum number of log files that will be retained.
     /// Older log files will be deleted if the maximum number of log files has
     /// been reached.
-    #[arg(long = "max-log-files")]
-    pub max_log_files: Option<usize>,
-    /// Path to write logs to, in addition to stdout.
-    /// If the log rotation is set to `never`, logs are written to the
-    /// specified file. Otherwise, logs are written to the specified directory.
-    /// If no path is provided, logs are written to `bip300301_enforcer.log`
-    /// or `logs/` in the data directory.
-    #[arg(long = "log-path")]
-    path: Option<PathBuf>,
+    #[arg(long = "max-log-files", default_value_t = 10)]
+    pub max_log_files: usize,
+
+    /// Set a limit for the maximum size of a log file, in megabytes.
+    /// If the log file exceeds this size, it will be rotated.
+    #[arg(long = "max-log-file-size-mb", default_value_t = 100)]
+    pub max_log_file_size_mb: u64,
+
+    /// Log file directory.
+    #[arg(long = "log-directory")]
+    directory: Option<PathBuf>,
     /// Log file rotation frequency.
     /// If set, a new log file will be created at the specified interval.
     #[arg(default_value_t, long = "log-rotation", value_enum)]
@@ -380,9 +381,10 @@ pub struct Config {
     pub mining_opts: MiningConfig,
     #[command(flatten)]
     pub node_rpc_opts: NodeRpcConfig,
-    /// Bitcoin node ZMQ endpoint for `sequence`
+    /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
+    /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
-    pub node_zmq_addr_sequence: String,
+    pub node_zmq_addr_sequence: Option<String>,
     /// Serve RPCs such as `getblocktemplate` on this address
     #[arg(default_value_t = DEFAULT_SERVE_RPC_ADDR, long)]
     pub serve_rpc_addr: SocketAddr,
@@ -410,49 +412,6 @@ impl Config {
         self.logger_opts.format.into()
     }
 
-    /// File or dir path for logs
-    pub fn log_path(&self) -> Cow<'_, Path> {
-        if let Some(log_path) = self.logger_opts.path.as_ref() {
-            Cow::Borrowed(log_path)
-        } else {
-            match self.logger_opts.rotation {
-                LogRotation::Never => Cow::Owned(self.data_dir.join(DEFAULT_LOG_FILENAME)),
-                LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => {
-                    Cow::Owned(self.data_dir.join(DEFAULT_LOG_DIRNAME))
-                }
-            }
-        }
-    }
-
-    fn log_dir(&self) -> Result<Cow<'_, Path>, RollingLoggerError> {
-        match self.logger_opts.rotation {
-            LogRotation::Never => {
-                if let Some(log_dir) = self.log_path().parent() {
-                    Ok(Cow::Owned(log_dir.to_owned()))
-                } else {
-                    Err(RollingLoggerError::NoParent)
-                }
-            }
-            LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => Ok(self.log_path()),
-        }
-    }
-
-    fn log_filename_prefix(&self) -> Result<String, RollingLoggerError> {
-        match self.logger_opts.rotation {
-            LogRotation::Never => {
-                if let Some(log_filename) = self.log_path().file_name() {
-                    let prefix = log_filename
-                        .to_str()
-                        .ok_or(RollingLoggerError::InvalidFileName)?;
-                    Ok(prefix.to_owned())
-                } else {
-                    Err(RollingLoggerError::NoFileName)
-                }
-            }
-            LogRotation::Daily | LogRotation::Hourly | LogRotation::Minutely => Ok(String::new()),
-        }
-    }
-
     fn log_filename_suffix(&self) -> Option<&'static str> {
         match self.logger_opts.rotation {
             LogRotation::Never => None,
@@ -462,18 +421,27 @@ impl Config {
         }
     }
 
+    pub fn log_dir(&self) -> PathBuf {
+        self.logger_opts
+            .directory
+            .clone()
+            .unwrap_or(self.data_dir.join(DEFAULT_LOG_DIRNAME))
+    }
+
     pub fn rolling_log_appender(&self) -> Result<RollingFileAppender, RollingLoggerError> {
+        let rotation = Rotation::from(self.logger_opts.rotation)
+            .with_max_bytes(self.logger_opts.max_log_file_size_mb * 1024 * 1024);
+
         let mut builder = RollingFileAppender::builder()
-            .rotation(self.logger_opts.rotation.into())
-            .filename_prefix(self.log_filename_prefix()?);
+            .rotation(rotation)
+            .filename_prefix(LOG_FILENAME)
+            .max_log_files(self.logger_opts.max_log_files);
         if let Some(log_filename_suffix) = self.log_filename_suffix() {
             builder = builder.filename_suffix(log_filename_suffix);
         }
-        if let Some(max_log_files) = self.logger_opts.max_log_files {
-            builder = builder.max_log_files(max_log_files);
-        }
+
         builder
-            .build(self.log_dir()?)
+            .build(self.log_dir())
             .map_err(RollingLoggerError::Init)
     }
 }

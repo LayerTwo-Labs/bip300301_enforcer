@@ -1,7 +1,8 @@
 //! Setup for an integration test
 
-use std::{collections::HashMap, future::Future};
+use std::{collections::HashMap, future::Future, net::SocketAddr};
 
+use anyhow::anyhow;
 use bip300301_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
@@ -19,7 +20,10 @@ use futures::{channel::mpsc, future, FutureExt as _, StreamExt};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
-use tokio::time::sleep;
+use tokio::{
+    net::TcpStream,
+    time::{sleep, timeout, Duration},
+};
 
 use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer};
 
@@ -276,6 +280,50 @@ pub struct PostSetup {
     pub reserved_ports: ReservedPorts,
 }
 
+/// Waits for a TCP port to become available by attempting to connect periodically.
+async fn wait_for_port(host: &str, port: u16, timeout_duration: Duration) -> anyhow::Result<()> {
+    let target_addr_str = format!("{host}:{port}");
+    let target_addr: SocketAddr = target_addr_str
+        .parse()
+        .map_err(|_| anyhow!("Invalid address format {host}:{port}"))?;
+    let check_interval = Duration::from_millis(100);
+
+    let task = async {
+        loop {
+            match TcpStream::connect(target_addr).await {
+                Ok(_) => {
+                    tracing::debug!("Port {port} on {host} is open.");
+                    return Ok(());
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::ConnectionRefused
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    // Port not open yet, wait and retry
+                    tracing::trace!("Port {port} on {host} not open yet ({e}), waiting...");
+                    sleep(check_interval).await;
+                }
+                Err(e) => {
+                    // Other IO error occurred
+                    tracing::warn!(
+                        "Error connecting to {host}:{port} while waiting: {e}. Retrying..."
+                    );
+                    // Still retry, maybe it's a transient issue
+                    sleep(check_interval).await;
+                }
+            }
+        }
+    };
+
+    match timeout(timeout_duration, task).await {
+        Ok(Ok(())) => Ok(()), // Inner Ok(()) means success
+        Ok(Err(e)) => Err(e), // Propagate inner error (though our loop logic makes this unlikely)
+        Err(_) => Err(anyhow!(
+            "Timeout waiting for port {host}:{port} to open after {timeout_duration:?}"
+        )),
+    }
+}
+
 pub async fn setup(
     bin_paths: &BinPaths,
     network: Network,
@@ -464,19 +512,29 @@ pub async fn setup(
         _electrs: electrs_task,
         _bitcoind: bitcoind_task,
     };
-    // wait for enforcer to start
-    sleep(std::time::Duration::from_secs(1)).await;
+    // Wait for enforcer gRPC port to open
+    wait_for_port(
+        "127.0.0.1",
+        enforcer.serve_grpc_port,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+
     let gbt_client = jsonrpsee::http_client::HttpClient::builder()
-        .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))?;
+        .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
+        .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
     if signet_setup.is_some() {
         let () = SignetSetup::configure_miner(&mut signet_miner, &out_dir, &enforcer)?;
     }
     let validator_service_client =
         ValidatorServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await?;
+            .await
+            .map_err(|err| anyhow!("failed to create validator service client: {err:#}"))?;
     let wallet_service_client =
         WalletServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await?;
+            .await
+            .map_err(|err| anyhow!("failed to create wallet service client: {err:#}"))?;
     Ok(PostSetup {
         network,
         mode,
@@ -544,11 +602,17 @@ pub enum DummySidechainError {
     #[error(transparent)]
     BlindedM6(#[from] BlindedM6Error),
     #[error(transparent)]
-    Grpc(#[from] tonic::Status),
+    Grpc(Box<tonic::Status>),
     #[error("Event stream was cancelled due to earlier error")]
     EventStreamCancelled,
     #[error("Event stream was closed unexpectedly")]
     EventStreamClosed,
+}
+
+impl From<tonic::Status> for DummySidechainError {
+    fn from(err: tonic::Status) -> Self {
+        Self::Grpc(Box::new(err))
+    }
 }
 
 /// Dummy implementation of `Sidechain`
@@ -594,13 +658,15 @@ impl DummySidechain {
     }
 
     /// Extract withdrawal bundle events from block info events
+    #[allow(clippy::result_large_err)]
     fn extract_withdrawal_bundle_event(
         block_event: proto::mainchain::block_info::Event,
     ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, tonic::Status> {
-        use proto::{mainchain::block_info::event::Event, IntoStatus};
+        use proto::{mainchain::block_info::event::Event, ToStatus};
         let event = block_event.event.ok_or_else(|| {
             proto::Error::missing_field::<proto::mainchain::block_info::Event>("event")
-                .into_status()
+                .builder()
+                .to_status()
         })?;
         match event {
             Event::Deposit(_) => Ok(None),
@@ -619,7 +685,7 @@ impl DummySidechain {
                 },
                 withdrawal_bundle_event, SubscribeEventsResponse, WithdrawalBundleEvent,
             },
-            IntoStatus,
+            ToStatus,
         };
         let Some(events_stream) = self.event_stream.take() else {
             return Err(DummySidechainError::EventStreamCancelled);
@@ -643,16 +709,21 @@ impl DummySidechain {
                 }
             };
             let subscribe_events_response::Event { event } = event.ok_or_else(|| {
-                proto::Error::missing_field::<SubscribeEventsResponse>("event").into_status()
+                proto::Error::missing_field::<SubscribeEventsResponse>("event")
+                    .builder()
+                    .to_status()
             })?;
             let event: subscribe_events_response::event::Event = event.ok_or_else(|| {
                 proto::Error::missing_field::<subscribe_events_response::Event>("event")
-                    .into_status()
+                    .builder()
+                    .to_status()
             })?;
             match event {
                 Event::ConnectBlock(connect_block_event) => {
                     let block_info = connect_block_event.block_info.ok_or_else(|| {
-                        proto::Error::missing_field::<ConnectBlock>("block_info").into_status()
+                        proto::Error::missing_field::<ConnectBlock>("block_info")
+                            .builder()
+                            .to_status()
                     })?;
                     'inner: for event in block_info.events {
                         let Some(withdrawal_bundle_event) =
@@ -664,7 +735,8 @@ impl DummySidechain {
                             .m6id
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<WithdrawalBundleEvent>("m6id")
-                                    .into_status()
+                                    .builder()
+                                    .to_status()
                             })?
                             .decode_tonic::<WithdrawalBundleEvent, Txid>("m6id")
                             .map(M6id)?;
@@ -672,14 +744,16 @@ impl DummySidechain {
                             .event
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<WithdrawalBundleEvent>("event")
-                                    .into_status()
+                                    .builder()
+                                    .to_status()
                             })?
                             .event
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<withdrawal_bundle_event::Event>(
                                     "event",
                                 )
-                                .into_status()
+                                .builder()
+                                .to_status()
                             })?;
                         match withdrawal_bundle_event {
                             withdrawal_bundle_event::event::Event::Failed(_) => {

@@ -3,6 +3,7 @@
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
+    future::Future,
 };
 
 use async_broadcast::TrySendError;
@@ -22,11 +23,11 @@ use crate::{
     validator::{
         db_error,
         dbs::{self, RwTxn},
-        task, Validator,
+        task,
+        task::error::ValidateTransaction as ValidateTransactionError,
+        Validator,
     },
 };
-
-pub use task::error::ValidateTransaction as ValidateTransactionError;
 
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
@@ -177,11 +178,11 @@ fn connect_block_no_commit<'validator>(
                 reason: reject_reason,
             });
         };
-        tracing::debug!(%block_hash, "Storing header");
+        tracing::trace!("Storing header");
         validator
             .dbs
             .block_hashes
-            .put_header(&mut parent_rwtxn, &block.header, height)?;
+            .put_headers(&mut parent_rwtxn, &[(block.header, height)])?;
     }
     // Commit on block accept, abort on block reject
     let mut parent_child_rwtxn = ParentChildRwTxnTryBuilder {
@@ -189,7 +190,6 @@ fn connect_block_no_commit<'validator>(
         child_builder: |parent: &mut RwTxn| validator.dbs.nested_write_txn(parent),
     }
     .try_build()?;
-    tracing::debug!(%block_hash, "Connecting block");
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| task::connect_block(child_rwtxn, &validator.dbs, block))
         .into_nested()?
@@ -236,14 +236,13 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
         validator: &'validator Validator,
         block: &Block,
     ) -> Result<Self::Output, ConnectBlockError> {
-        let block_hash = block.block_hash();
         match connect_block_no_commit(validator, block)? {
             ConnectBlockRwTxnAction::Accept {
                 event,
                 remove_mempool_txs,
                 rwtxns,
             } => {
-                tracing::info!(%block_hash, "Accepted block");
+                tracing::info!("accepted block");
                 let rwtxn = rwtxns.commit_child()?;
                 rwtxn.commit()?;
                 // Events should only ever be sent after committing DB txs, see
@@ -256,7 +255,7 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
                 header_rwtxn,
                 reason,
             } => {
-                tracing::info!(%block_hash, "rejecting block: {reason:#}");
+                tracing::info!("rejecting block: {reason:#}");
                 header_rwtxn.commit()?;
                 Ok(ConnectBlockAction::Reject)
             }
@@ -307,7 +306,14 @@ where
 impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
-    async fn sync_to_tip(&mut self, tip: BlockHash) -> Result<(), Self::SyncError> {
+    async fn sync_to_tip<Signal>(
+        &mut self,
+        shutdown_signal: Signal,
+        tip: BlockHash,
+    ) -> Result<(), Self::SyncError>
+    where
+        Signal: Future<Output = ()> + Send,
+    {
         let header_sync_progress_tx = {
             let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
             if header_sync_progress_rx_write.is_some() {
@@ -320,12 +326,15 @@ impl CusfEnforcer for Validator {
             *header_sync_progress_rx_write = Some(header_sync_progress_rx);
             header_sync_progress_tx
         };
+        tracing::debug!(block_hash = %tip, "Syncing to tip");
         let () = task::sync_to_tip(
             &self.dbs,
             &self.events_tx,
             &header_sync_progress_tx,
             &self.mainchain_client,
+            &self.mainchain_rest_client,
             tip,
+            shutdown_signal,
         )
         .map_err(SyncError)
         .await?;

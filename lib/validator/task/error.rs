@@ -1,12 +1,16 @@
-use bip300301::jsonrpsee;
 use bitcoin::hashes::sha256d;
+use bitcoin_jsonrpsee::jsonrpsee;
 use fatality::fatality;
 use thiserror::Error;
 
 use crate::{
+    errors::Splittable,
     messages::CoinbaseMessagesError,
     types::SidechainNumber,
-    validator::dbs::{self, db_error},
+    validator::{
+        dbs::{self, db_error},
+        main_rest_client::MainRestClientError,
+    },
 };
 
 #[fatality(splitable)]
@@ -226,16 +230,23 @@ pub(in crate::validator) enum ConnectBlock {
 #[derive(Debug, Error)]
 pub(in crate::validator) enum DisconnectBlock {}
 
+impl fatality::Fatality for DisconnectBlock {
+    fn is_fatal(&self) -> bool {
+        true
+    }
+}
+
 #[fatality(splitable)]
 pub(in crate::validator) enum Sync {
-    #[error("Header sync already in progress")]
-    HeaderSyncInProgress,
+    #[error("Block not in active chain: `{block_hash}`")]
+    #[fatal]
+    BlockNotInActiveChain { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
     #[fatal]
     CommitWriteTxn(#[from] dbs::CommitWriteTxnError),
     #[error(transparent)]
     #[fatal(forward)]
-    ConnectBlock(#[from] ConnectBlock),
+    ConnectBlock(Box<Splittable<ConnectBlock>>),
     #[error(transparent)]
     #[fatal]
     DbGet(#[from] db_error::Get),
@@ -245,6 +256,14 @@ pub(in crate::validator) enum Sync {
     #[error(transparent)]
     #[fatal]
     DbTryGet(#[from] db_error::TryGet),
+    #[error(transparent)]
+    #[fatal(forward)]
+    DisconnectBlock(#[from] DisconnectBlock),
+    #[error(transparent)]
+    #[fatal]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error("Header sync already in progress")]
+    HeaderSyncInProgress,
     #[error("JSON RPC error (`{method}`)")]
     #[fatal]
     JsonRpc {
@@ -253,10 +272,28 @@ pub(in crate::validator) enum Sync {
     },
     #[error(transparent)]
     #[fatal]
+    LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
+    #[error(transparent)]
+    #[fatal]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
     #[fatal]
+    Rest(#[from] MainRestClientError),
+    #[error("Shutdown signal received")]
+    #[fatal]
+    Shutdown,
+    #[error(transparent)]
+    #[fatal]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+    #[error(transparent)]
+    #[fatal]
     WriteTxn(#[from] dbs::WriteTxnError),
+}
+
+impl From<ConnectBlock> for Sync {
+    fn from(err: ConnectBlock) -> Self {
+        Self::ConnectBlock(Box::new(Splittable(err)))
+    }
 }
 
 #[derive(Debug, Error)]

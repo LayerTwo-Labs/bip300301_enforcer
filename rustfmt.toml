@@ -1,1 +1,13 @@
 edition = "2021"
+
+# Sort every `use` list alphabetically
+reorder_imports = true
+
+# Force std / external / local groups separated by one blank line
+group_imports = "StdExternalCrate"
+
+# Control how paths are collapsed:
+#  * "Preserve" – keep whatever is written
+#  * "Crate"    – merge paths from the same root crate
+#  * "Module"   – merge paths at module level
+imports_granularity = "Crate"

@@ -1,8 +1,8 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use async_broadcast::{broadcast, InactiveReceiver, Sender as BroadcastSender};
-use bip300301::jsonrpsee;
 use bitcoin::{self, Amount, BlockHash, OutPoint};
+use bitcoin_jsonrpsee::jsonrpsee;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream::FusedStream, StreamExt};
 use miette::{Diagnostic, IntoDiagnostic};
@@ -11,19 +11,20 @@ use thiserror::Error;
 use tokio::sync::watch::Receiver as WatchReceiver;
 
 use crate::{
-    proto::mainchain::HeaderSyncProgress,
+    proto::{mainchain::HeaderSyncProgress, StatusBuilder, ToStatus},
     types::{
         BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
         SidechainProposalId, TreasuryUtxo, TwoWayPegData,
     },
+    validator::main_rest_client::MainRestClient,
 };
 
 pub mod cusf_enforcer;
 mod dbs;
+pub mod main_rest_client;
 mod task;
 
-use dbs::{db_error, CreateDbsError, Dbs, PendingM6ids};
-pub use task::error::ValidateTransaction as ValidateTransactionError;
+use self::dbs::{db_error, CreateDbsError, Dbs, PendingM6ids};
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -37,11 +38,105 @@ pub enum InitError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-enum GetHeaderInfoErrorInner {
+pub enum GetCtipSequenceNumberError {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
+    TryGet(#[from] db_error::TryGet),
+}
+
+impl ToStatus for GetCtipSequenceNumberError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+            Self::TryGet(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum TryGetCtipError {
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+    #[error(transparent)]
+    TryGet(#[from] db_error::TryGet),
+}
+
+impl ToStatus for TryGetCtipError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+            Self::TryGet(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum GetCtipsError {
+    #[error(transparent)]
+    DbIter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetCtipsError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbIter(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum TryGetCtipValueSeqError {
+    #[error(transparent)]
+    DbTryGet(#[from] db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for TryGetCtipValueSeqError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum GetTreasuryUtxoError {
+    #[error(transparent)]
+    DbGet(#[from] db_error::Get),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetTreasuryUtxoError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum GetHeaderInfoErrorInner {
+    #[error(transparent)]
     GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetHeaderInfoErrorInner {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::GetHeaderInfo(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -58,12 +153,16 @@ where
     }
 }
 
+impl ToStatus for GetHeaderInfoError {
+    fn builder(&self) -> StatusBuilder {
+        self.0.builder()
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
-enum GetHeaderInfosErrorInner {
+enum TryGetHeaderInfosErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
     #[error(transparent)]
     TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
 }
@@ -71,11 +170,11 @@ enum GetHeaderInfosErrorInner {
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct GetHeaderInfosError(GetHeaderInfosErrorInner);
+pub struct TryGetHeaderInfosError(TryGetHeaderInfosErrorInner);
 
-impl<T> From<T> for GetHeaderInfosError
+impl<T> From<T> for TryGetHeaderInfosError
 where
-    GetHeaderInfosErrorInner: From<T>,
+    TryGetHeaderInfosErrorInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -105,15 +204,35 @@ where
 }
 
 #[derive(Debug, Error)]
-enum GetBlockInfosErrorInner {
+enum TryGetBlockInfosErrorInner {
     #[error(transparent)]
     ReadTxn(#[from] dbs::ReadTxnError),
     #[error(transparent)]
-    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
-    #[error(transparent)]
     TryGetBlockInfo(#[from] dbs::block_hash_dbs_error::TryGetBlockInfo),
+    #[error(transparent)]
+    TryGetHeaderInfo(#[from] dbs::block_hash_dbs_error::TryGetHeaderInfo),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct TryGetBlockInfosError(TryGetBlockInfosErrorInner);
+
+impl<T> From<T> for TryGetBlockInfosError
+where
+    TryGetBlockInfosErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+enum GetBlockInfosErrorInner {
+    #[error("Missing header or block: {0}")]
+    MissingHeaderBlock(BlockHash),
+    #[error(transparent)]
+    TryGetBlockInfos(#[from] TryGetBlockInfosError),
 }
 
 #[derive(Debug, Error)]
@@ -155,57 +274,102 @@ where
 #[derive(Debug, Error)]
 pub enum ListHeadersError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     Iter(#[from] db_error::Iter),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum TryGetMainchainTipError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for TryGetMainchainTipError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum GetMainchainTipError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbGet(#[from] dbs::db_error::Get),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetMainchainTipError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum TryGetMainchainTipHeightError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbGet(#[from] dbs::db_error::Get),
     #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for TryGetMainchainTipHeightError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum TryGetBmmCommitmentsError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbTryGet(#[from] dbs::db_error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum GetPendingWithdrawalsError {
     #[error(transparent)]
-    ReadTxn(#[from] dbs::ReadTxnError),
-    #[error(transparent)]
     DbGet(#[from] dbs::db_error::Get),
+    #[error(transparent)]
+    ReadTxn(#[from] dbs::ReadTxnError),
+}
+
+impl ToStatus for GetPendingWithdrawalsError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum EventsStreamError {
     #[error("Events stream closed due to overflow")]
     Overflow,
+}
+
+impl ToStatus for EventsStreamError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::Overflow => StatusBuilder::new(self),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -216,6 +380,15 @@ pub enum GetSidechainsError {
     ReadTxn(#[from] dbs::ReadTxnError),
 }
 
+impl ToStatus for GetSidechainsError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DbIter(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Validator {
     dbs: Dbs,
@@ -223,12 +396,14 @@ pub struct Validator {
     events_tx: BroadcastSender<Event>,
     header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
+    mainchain_rest_client: MainRestClient,
     network: bitcoin::Network,
 }
 
 impl Validator {
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
+        mainchain_rest_client: MainRestClient,
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
@@ -245,6 +420,7 @@ impl Validator {
             events_tx,
             header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
             mainchain_client,
+            mainchain_rest_client,
             network,
         })
     }
@@ -304,14 +480,13 @@ impl Validator {
     pub fn get_ctip_sequence_number(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<u64>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    ) -> Result<Option<u64>, GetCtipSequenceNumberError> {
+        let rotxn = self.dbs.read_txn()?;
         let treasury_utxo_count = self
             .dbs
             .active_sidechains
             .treasury_utxo_count
-            .try_get(&rotxn, &sidechain_number)
-            .into_diagnostic()?;
+            .try_get(&rotxn, &sidechain_number)?;
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
         // In order to get the current sequence number we decrement it by one.
@@ -325,14 +500,13 @@ impl Validator {
     pub fn try_get_ctip(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<Ctip>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    ) -> Result<Option<Ctip>, TryGetCtipError> {
+        let rotxn = self.dbs.read_txn()?;
         let ctip = self
             .dbs
             .active_sidechains
             .ctip()
-            .try_get(&rotxn, &sidechain_number)
-            .into_diagnostic()?;
+            .try_get(&rotxn, &sidechain_number)?;
         Ok(ctip)
     }
 
@@ -348,16 +522,16 @@ impl Validator {
     }
 
     /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
+    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
+        let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
             .ctip()
             .iter(&rotxn)
-            .into_diagnostic()?
-            .collect()
-            .into_diagnostic()?;
+            .map_err(db_error::Iter::from)?
+            .map_err(db_error::Iter::from)
+            .collect()?;
         Ok(res)
     }
 
@@ -366,13 +540,14 @@ impl Validator {
     pub fn try_get_ctip_value_seq(
         &self,
         outpoint: &OutPoint,
-    ) -> Result<Option<(SidechainNumber, Amount, u64)>, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, TryGetCtipValueSeqError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
             .active_sidechains
             .ctip_outpoint_to_value_seq()
-            .try_get(&rotxn, outpoint)
-            .into_diagnostic()
+            .try_get(&rotxn, outpoint)?;
+        Ok(res)
     }
 
     /// Get treasury UTXO by sequence number
@@ -380,13 +555,14 @@ impl Validator {
         &self,
         sidechain_number: SidechainNumber,
         sequence: u64,
-    ) -> Result<TreasuryUtxo, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
+    ) -> Result<TreasuryUtxo, GetTreasuryUtxoError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
             .active_sidechains
             .slot_sequence_to_treasury_utxo()
-            .get(&rotxn, &(sidechain_number, sequence))
-            .into_diagnostic()
+            .get(&rotxn, &(sidechain_number, sequence))?;
+        Ok(res)
     }
 
     pub fn get_header_info(
@@ -401,16 +577,16 @@ impl Validator {
     /// Get header infos for the specified block hash, and up to max_ancestors
     /// ancestors.
     /// Returns header infos newest-first.
-    pub fn get_header_infos(
+    pub fn try_get_header_infos(
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<HeaderInfo>, GetHeaderInfoError> {
+    ) -> Result<Option<NonEmpty<HeaderInfo>>, TryGetHeaderInfosError> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .block_hashes
-            .get_header_infos(&rotxn, block_hash, max_ancestors)?;
+            .try_get_header_infos(&rotxn, block_hash, max_ancestors)?;
         Ok(res)
     }
 
@@ -423,17 +599,26 @@ impl Validator {
     /// Get block infos for the specified block hash, and up to max_ancestors
     /// ancestors.
     /// Returns block infos newest-first.
-    pub fn get_block_infos(
+    pub fn try_get_block_infos(
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+    ) -> Result<Option<NonEmpty<(HeaderInfo, BlockInfo)>>, TryGetBlockInfosError> {
         let rotxn = self.dbs.read_txn()?;
-        let header_infos =
+        let Some(header_infos) =
             self.dbs
                 .block_hashes
-                .get_header_infos(&rotxn, block_hash, max_ancestors)?;
-        let info = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
+                .try_get_header_infos(&rotxn, block_hash, max_ancestors)?
+        else {
+            return Ok(None);
+        };
+        let Some(info) = self
+            .dbs
+            .block_hashes
+            .try_get_block_info(&rotxn, block_hash)?
+        else {
+            return Ok(None);
+        };
         let mut res = NonEmpty::new((header_infos.head, info));
         for header_info in header_infos.tail {
             if let Some(info) = self
@@ -446,7 +631,18 @@ impl Validator {
                 break;
             }
         }
-        Ok(res)
+        Ok(Some(res))
+    }
+
+    pub fn get_block_infos(
+        &self,
+        block_hash: &BlockHash,
+        max_ancestors: usize,
+    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+        match self.try_get_block_infos(block_hash, max_ancestors)? {
+            Some(res) => Ok(res),
+            None => Err(GetBlockInfosErrorInner::MissingHeaderBlock(*block_hash).into()),
+        }
     }
 
     // Lists known block heights and their corresponding header hashes in ascending order.

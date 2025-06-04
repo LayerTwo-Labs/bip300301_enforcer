@@ -3,13 +3,14 @@
 use std::time::SystemTime;
 
 use async_lock::RwLockWriteGuard;
+use bdk_chain::bdk_core;
 use bdk_electrum::electrum_client::ElectrumApi;
 use bdk_esplora::EsploraAsyncExt as _;
-use bip300301::client::{GetBlockClient, U8Witness};
 use either::Either::{self, Left, Right};
 use tokio::time::Instant;
 use tracing::instrument;
 
+use super::{ElectrumClient, EsploraClient};
 use crate::{
     cli::WalletSyncSource,
     types::WithdrawalBundleEventKind,
@@ -19,8 +20,6 @@ use crate::{
         BdkWallet, Persistence, WalletInner,
     },
 };
-
-use super::{ElectrumClient, EsploraClient};
 
 /// Write-locked last_sync, wallet, and database
 #[must_use]
@@ -50,12 +49,18 @@ impl SyncWriteGuard<'_> {
 const ESPLORA_PARALLEL_REQUESTS: usize = 25;
 
 impl WalletInner {
+    pub(in crate::wallet) async fn get_tip(&self) -> Result<bdk_core::BlockId, error::NotUnlocked> {
+        let wallet = self.read_wallet().await?;
+
+        Ok(wallet.local_chain().tip().block_id())
+    }
+
     #[instrument(skip_all, fields(block_height))]
     pub(in crate::wallet) async fn handle_connect_block(
         &self,
         block: &bitcoin::Block,
         block_height: u32,
-        block_info: crate::types::BlockInfo,
+        block_info: &crate::types::BlockInfo,
     ) -> Result<(), error::ConnectBlock> {
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
@@ -82,57 +87,10 @@ impl WalletInner {
             .await?;
         let mut database = self.bdk_db.lock().await;
         tracing::info!(
-            hash = %block.block_hash(),
-            height = block_height,
+            block_hash = %block.block_hash(),
+            block_height = block_height,
             "applying block to BDK wallet"
         );
-
-        let bdk_tip_height = wallet_write.local_chain().tip().height();
-
-        // TODO: should really run the entire handle_connect_block logic here
-        if bdk_tip_height < block_height - 1 {
-            tracing::info!(
-                bdk_tip_height = bdk_tip_height,
-                block_height = block_height,
-                "BDK tip is behind newly received block, catching up"
-            );
-
-            // Collect missing blocks by walking backwards
-            let mut missing_blocks = Vec::new();
-            let mut current_hash = block.header.prev_blockhash;
-            let mut current_height = block_height - 1;
-
-            while current_height > bdk_tip_height {
-                let block = self
-                    .main_client
-                    .get_block(current_hash, U8Witness::<0>)
-                    .await
-                    .map_err(|err| {
-                        error::ConnectBlock::FetchBlock(error::BitcoinCoreRPC {
-                            method: "getblock".to_string(),
-                            error: err,
-                        })
-                    })?;
-
-                let block = block.0;
-                missing_blocks.push((current_height, block.clone()));
-                current_hash = block.header.prev_blockhash;
-                current_height -= 1;
-            }
-
-            // Apply blocks in ascending order
-            missing_blocks.reverse();
-
-            for (height, block) in missing_blocks {
-                tracing::debug!(
-                    height = height,
-                    hash = %block.block_hash(),
-                    "applying missing block"
-                );
-
-                let () = wallet_write.with_mut(|wallet| wallet.apply_block(&block, height))?;
-            }
-        }
 
         let () = wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height))?;
         let _: bool = wallet_write

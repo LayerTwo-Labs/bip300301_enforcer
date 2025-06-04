@@ -1,10 +1,10 @@
-use bip300301::{
+use bitcoin_jsonrpsee::{
     jsonrpsee::{core::ClientError, http_client::HttpClient},
     MainClient,
 };
-use miette::{miette, IntoDiagnostic};
+use miette::miette;
 
-use crate::cli::NodeRpcConfig;
+use crate::{cli::NodeRpcConfig, errors::ErrorChain};
 
 pub fn create_client(
     conf: &NodeRpcConfig,
@@ -50,20 +50,22 @@ pub fn create_client(
         // Default mempool size is 300MB, so 1GiB should be enough
         const MAX_RESPONSE_SIZE: u32 = 1 << 30;
         const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-        let client_builder = bip300301::jsonrpsee::http_client::HttpClientBuilder::default()
-            .max_request_size(MAX_REQUEST_SIZE)
-            .max_response_size(MAX_RESPONSE_SIZE)
-            .request_timeout(REQUEST_TIMEOUT);
+        let client_builder =
+            bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
+                .max_request_size(MAX_REQUEST_SIZE)
+                .max_response_size(MAX_RESPONSE_SIZE)
+                .request_timeout(REQUEST_TIMEOUT);
         Some(client_builder)
     } else {
         None
     };
 
-    bip300301::client(conf.addr, client_builder, &conf_pass, &conf_user).into_diagnostic()
+    bitcoin_jsonrpsee::client(conf.addr, client_builder, &conf_pass, &conf_user)
+        .map_err(|err| miette!("failed to create mainchain RPC client: {err:#}"))
 }
 
 /// Broadcasts a transaction to the Bitcoin network.
-/// Returns `Some(txid)`` if broadcast successfully, `None` if the tx failed to
+/// Returns `Some(txid)` if broadcast successfully, `None` if the tx failed to
 /// broadcast due to the node not supporting OP_DRIVECHAIN
 pub async fn broadcast_transaction<RpcClient>(
     rpc_client: &RpcClient,
@@ -94,7 +96,7 @@ where
         Err(err) => {
             const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
                 "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
-            tracing::error!("failed to broadcast tx: {err:#}");
+            tracing::error!("failed to broadcast tx: {:#}", ErrorChain::new(&err));
             match err {
                 ClientError::Call(err) if err.message() == OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG => {
                     Ok(None)

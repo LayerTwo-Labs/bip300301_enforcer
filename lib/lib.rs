@@ -1,11 +1,14 @@
 pub mod bins;
 pub mod cli;
 mod convert;
+pub mod display;
+pub mod errors;
 pub mod messages;
 pub mod p2p;
 pub mod proto;
 pub mod rpc_client;
 pub mod server;
+mod server_validator;
 pub mod types;
 pub mod validator;
 pub mod wallet;

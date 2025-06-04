@@ -1,5 +1,6 @@
 //! Miscellaneous utility functions and types
 
+#[allow(clippy::mut_from_ref, reason = "False positive")]
 #[allow(clippy::significant_drop_tightening, reason = "False positive")]
 mod rwlock_write_guard_some {
     /// Write guard over values of `Option<T>` that are guaranteed to be `Some`
@@ -53,7 +54,7 @@ mod rwlock_write_guard_some {
     }
 }
 
-pub(in crate::wallet) use rwlock_write_guard_some::RwLockWriteGuardSome;
+pub(in crate::wallet) use self::rwlock_write_guard_some::RwLockWriteGuardSome;
 
 #[allow(clippy::significant_drop_tightening, reason = "False positive")]
 mod rwlock_upgradable_read_guard_some {
@@ -103,7 +104,7 @@ mod rwlock_upgradable_read_guard_some {
     }
 }
 
-pub(in crate::wallet) use rwlock_upgradable_read_guard_some::RwLockUpgradableReadGuardSome;
+pub(in crate::wallet) use self::rwlock_upgradable_read_guard_some::RwLockUpgradableReadGuardSome;
 
 #[allow(clippy::significant_drop_tightening, reason = "False positive")]
 mod rwlock_read_guard_some {
@@ -141,4 +142,4 @@ mod rwlock_read_guard_some {
     }
 }
 
-pub(in crate::wallet) use rwlock_read_guard_some::RwLockReadGuardSome;
+pub(in crate::wallet) use self::rwlock_read_guard_some::RwLockReadGuardSome;

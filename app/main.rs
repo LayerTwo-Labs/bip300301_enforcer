@@ -1,16 +1,37 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
-use bip300301::MainClient;
+use bip300301_enforcer_lib::{
+    cli::{self, LogFormatter},
+    errors::ErrorChain,
+    p2p::compute_signet_magic,
+    proto::{
+        self,
+        crypto::crypto_service_server::CryptoServiceServer,
+        mainchain::{
+            validator_service_server::ValidatorServiceServer,
+            wallet_service_server::WalletServiceServer,
+        },
+    },
+    rpc_client, server,
+    validator::{
+        main_rest_client::{MainRestClient, MainRestClientError},
+        Validator,
+    },
+    wallet::{self, error::BitcoinCoreRPC},
+};
+use bitcoin::ScriptBuf;
+use bitcoin_jsonrpsee::MainClient;
 use clap::Parser;
+use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
-use futures::{channel::oneshot, TryFutureExt as _};
+use futures::{channel::oneshot, FutureExt, SinkExt, StreamExt, TryFutureExt as _};
 use http::{header::HeaderName, Request};
-
-use jsonrpsee::core::client::Error;
-use jsonrpsee::server::RpcServiceBuilder;
-use miette::{miette, IntoDiagnostic, Result};
-use tokio::{net::TcpStream, signal::ctrl_c, spawn, task::JoinHandle};
+use jsonrpsee::{core::client::Error, server::RpcServiceBuilder};
+use miette::{miette, Diagnostic, IntoDiagnostic, Result};
+use reqwest::Url;
+use thiserror::Error;
+use tokio::{net::TcpStream, signal::ctrl_c, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::{
@@ -34,6 +55,8 @@ use bip300301_enforcer_lib::{
 };
 use bdk_wallet::serde_json;
 use wallet::Wallet;
+
+mod file_descriptors;
 
 /// Saturating predecessor of a log level
 fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
@@ -119,11 +142,11 @@ fn set_tracing_subscriber(
 async fn get_block_template<RpcClient>(
     rpc_client: &RpcClient,
     network: bitcoin::Network,
-) -> Result<bip300301::client::BlockTemplate, wallet::error::BitcoinCoreRPC>
+) -> Result<bitcoin_jsonrpsee::client::BlockTemplate, wallet::error::BitcoinCoreRPC>
 where
     RpcClient: MainClient + Sync,
 {
-    let mut request = bip300301::client::BlockTemplateRequest::default();
+    let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
     if network == bitcoin::Network::Signet {
         request.rules.push("signet".to_owned())
     }
@@ -166,7 +189,46 @@ fn propagate_request_id_layer() -> PropagateRequestIdLayer {
     PropagateRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER))
 }
 
-async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr) -> Result<()> {
+#[derive(Debug, Clone)]
+struct FailureHandler;
+use tower_http::classify::GrpcFailureClass;
+
+impl tower_http::trace::OnFailure<GrpcFailureClass> for FailureHandler {
+    fn on_failure(&mut self, failure: GrpcFailureClass, latency: Duration, _span: &tracing::Span) {
+        let code = match failure {
+            GrpcFailureClass::Code(code) => tonic::Code::from_i32(code.into()),
+            GrpcFailureClass::Error(err) => {
+                tracing::warn!("unexpected gRPC failure class: {err}");
+                tonic::Code::Internal
+            }
+        };
+        tracing::error!(
+            latency = ?latency,
+            code = ?code,
+            "gRPC server responding with error",
+        );
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum GrpcServerError {
+    #[error("unable to serve gRPC at `{addr}`")]
+    #[diagnostic(code(grpc_server::serve))]
+    Serve {
+        addr: SocketAddr,
+        source: tonic::transport::Error,
+    },
+    #[error("unable to build reflection service")]
+    #[diagnostic(code(grpc_server::reflection))]
+    Reflection(#[from] tonic_reflection::server::Error),
+}
+
+async fn run_grpc_server<F: Future<Output = ()>>(
+    validator: Either<Validator, Wallet>,
+    shutdown_tx: futures::channel::mpsc::Sender<()>,
+    shutdown_signal: F,
+    addr: SocketAddr,
+) -> Result<(), GrpcServerError> {
     // Ordering here matters! Order here is from official docs on request IDs tracings
     // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
     let tracer = ServiceBuilder::new()
@@ -190,34 +252,38 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
                 })
                 .on_request(())
                 .on_eos(())
-                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
+                // Set this to a low log level. Quickly leads to enormous log files, as our GUI
+                // implementations are sending a lof of requests /all/ the time.
+                .on_response(DefaultOnResponse::new().level(tracing::Level::TRACE))
+                .on_failure(FailureHandler),
         )
         .layer(propagate_request_id_layer())
         .into_inner();
 
     let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
-    let mut builder = Server::builder().layer(tracer).add_service(crypto_service);
+    let mut builder = Server::builder()
+        .layer(tracer)
+        .add_service(crypto_service)
+        .add_service(ValidatorServiceServer::new({
+            let validator = match validator {
+                Either::Left(ref validator) => validator,
+                Either::Right(ref wallet) => wallet.validator(),
+            };
+            server::Validator::new(validator.clone(), shutdown_tx.clone())
+        }));
 
     let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
         .with_service_name(CryptoServiceServer::<server::CryptoServiceServer>::NAME)
         .with_service_name(ValidatorServiceServer::<Validator>::NAME)
         .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
 
-    match validator {
-        Either::Left(validator) => {
-            builder = builder.add_service(ValidatorServiceServer::new(validator));
-        }
-        Either::Right(wallet) => {
-            let validator = wallet.validator().clone();
-            builder = builder.add_service(ValidatorServiceServer::new(validator));
-            tracing::info!("gRPC: enabling wallet service");
-            let wallet_service = WalletServiceServer::new(wallet);
-            builder = builder.add_service(wallet_service);
-            reflection_service_builder =
-                reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
-        }
-    };
+    if let Either::Right(wallet) = validator.clone() {
+        tracing::info!("gRPC: enabling wallet service");
+        let wallet_service = WalletServiceServer::new(wallet);
+        builder = builder.add_service(wallet_service);
+        reflection_service_builder =
+            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
+    }
 
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
 
@@ -237,12 +303,18 @@ async fn run_grpc_server(validator: Either<Validator, Wallet>, addr: SocketAddr)
 
     tracing::info!("Listening for gRPC on {addr} with reflection");
 
-    builder
-        .add_service(reflection_service_builder.build_v1().into_diagnostic()?)
-        .add_service(health_service)
-        .serve(addr)
-        .map_err(|err| miette!("serve gRPC at `{addr}`: {err:#}"))
+    let server = builder
+        .add_service(
+            reflection_service_builder
+                .build_v1()
+                .map_err(GrpcServerError::Reflection)?,
+        )
+        .add_service(health_service);
+
+    server
+        .serve_with_shutdown(addr, shutdown_signal)
         .await
+        .map_err(|err| GrpcServerError::Serve { addr, source: err })
 }
 
 async fn spawn_gbt_server(
@@ -305,8 +377,8 @@ async fn spawn_gbt_server(
 async fn run_gbt_server(
     mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
-    network_info: bip300301::client::NetworkInfo,
-    sample_block_template: bip300301::client::BlockTemplate,
+    network_info: bitcoin_jsonrpsee::client::NetworkInfo,
+    sample_block_template: bitcoin_jsonrpsee::client::BlockTemplate,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
     serve_addr: SocketAddr,
 ) -> miette::Result<()> {
@@ -323,41 +395,77 @@ async fn run_gbt_server(
     Ok(())
 }
 
-async fn is_address_port_open(addr: &str) -> Result<bool> {
+async fn is_address_port_open(addr: &str) -> Result<bool, std::io::Error> {
     let addr = addr.strip_prefix("tcp://").unwrap_or_default();
     match tokio::time::timeout(Duration::from_millis(250), TcpStream::connect(&addr)).await {
         Ok(Ok(_)) => Ok(true),
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Ok(false),
-        Ok(Err(e)) => Err(miette!("failed to connect to {addr}: {e:#}")),
+        Ok(Err(e)) => Err(e),
         Err(_) => Ok(false),
     }
 }
 
-async fn mempool_task<Enforcer, RpcClient, F, Fut>(
+#[derive(educe::Educe, Diagnostic, Error)]
+#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
+enum MempoolTaskError<Enforcer>
+where
+    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
+{
+    #[error("mempool initial sync error")]
+    InitialSync(#[source] InitialSyncMempoolError<Enforcer>),
+    #[error("mempool task sync error")]
+    SyncTask(#[source] SyncTaskError<Enforcer>),
+    #[error("failed to check if ZMQ address is reachable: failed to connect to {addr}")]
+    ZmqCheck {
+        addr: String,
+        source: std::io::Error,
+    },
+    #[error("ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}")]
+    ZmqNotReachable { zmq_addr_sequence: String },
+}
+
+#[derive(educe::Educe, Diagnostic, Error)]
+#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
+enum TaskError<Enforcer>
+where
+    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
+{
+    #[error("CUSF enforcer task w/mempool error")]
+    Mempool(#[from] MempoolTaskError<Enforcer>),
+    #[error("CUSF enforcer task w/o mempool error")]
+    NoMempool(#[from] cusf_enforcer_mempool::cusf_enforcer::TaskError<Enforcer>),
+}
+
+async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
-    err_tx: oneshot::Sender<miette::Report>,
+    err_tx: oneshot::Sender<MempoolTaskError<Enforcer>>,
     on_mempool_synced: F,
+    shutdown_signal: Signal,
 ) where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
-    RpcClient: bip300301::client::MainClient + Send + Sync + 'static,
+    RpcClient: bitcoin_jsonrpsee::client::MainClient + Send + Sync + 'static,
     F: FnOnce(cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>) -> Fut,
     Fut: Future<Output = ()>,
+    Signal: Future<Output = ()> + Send,
 {
     tracing::debug!(%zmq_addr_sequence, "Ensuring ZMQ address for mempool sync is reachable");
 
     match is_address_port_open(zmq_addr_sequence).await {
         Ok(true) => (),
         Ok(false) => {
-            let err = miette::miette!(
-                "ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}"
-            );
+            let err = MempoolTaskError::ZmqNotReachable {
+                zmq_addr_sequence: zmq_addr_sequence.to_owned(),
+            };
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
         Err(err) => {
-            let err = miette::miette!("failed to check if ZMQ address is reachable: {err:#}");
+            let err = MempoolTaskError::ZmqCheck {
+                addr: zmq_addr_sequence.to_owned(),
+                source: err,
+            };
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
@@ -367,6 +475,7 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         &mut enforcer,
         &rpc_client,
         zmq_addr_sequence,
+        shutdown_signal,
     )
     .inspect_ok(|_| tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete"))
     .instrument(tracing::info_span!("initial_mempool_sync"));
@@ -374,7 +483,8 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
     let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
         Ok(res) => res,
         Err(err) => {
-            let err = miette::miette!("mempool: initial sync error: {err:#}");
+            let err = MempoolTaskError::InitialSync(err);
+            tracing::error!("{:#}", ErrorChain::new(&err));
             let _send_err: Result<(), _> = err_tx.send(err);
             return;
         }
@@ -386,65 +496,169 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut>(
         rpc_client,
         sequence_stream,
         |err| async move {
-            let err = miette::Report::from_err(err);
-            let err = miette::miette!("mempool: task sync error: {err:#}");
+            let err = MempoolTaskError::SyncTask(err);
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     );
     on_mempool_synced(mempool).await
 }
 
+#[derive(Debug, Diagnostic, Error)]
+enum EnforcerTaskErr {
+    #[error(transparent)]
+    MempoolValidator(#[from] MempoolTaskError<Validator>),
+    #[error(transparent)]
+    MempoolWallet(#[from] MempoolTaskError<Wallet>),
+    #[error(transparent)]
+    NoMempool(#[from] TaskError<Either<Validator, Wallet>>),
+}
+
+enum EnforcerTaskErrRx {
+    MempoolValidator(oneshot::Receiver<MempoolTaskError<Validator>>),
+    MempoolWallet(oneshot::Receiver<MempoolTaskError<Wallet>>),
+    NoMempool(oneshot::Receiver<TaskError<Either<Validator, Wallet>>>),
+}
+
+impl EnforcerTaskErrRx {
+    async fn receive(self) -> Result<EnforcerTaskErr, oneshot::Canceled> {
+        match self {
+            Self::MempoolValidator(err_rx) => err_rx.await.map(EnforcerTaskErr::MempoolValidator),
+            Self::MempoolWallet(err_rx) => err_rx.await.map(EnforcerTaskErr::MempoolWallet),
+            Self::NoMempool(err_rx) => err_rx.await.map(EnforcerTaskErr::NoMempool),
+        }
+    }
+}
+
 /// Error receivers for main task
 struct ErrRxs {
-    enforcer_task: oneshot::Receiver<miette::Report>,
-    grpc_server: oneshot::Receiver<miette::Report>,
+    enforcer_task: EnforcerTaskErrRx,
+    grpc_server: oneshot::Receiver<GrpcServerError>,
+    shutdown_signal: oneshot::Receiver<()>,
+    shutdown_tx: futures::channel::mpsc::Sender<()>,
+}
+
+async fn get_zmq_addr_sequence(
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+) -> Result<String> {
+    let notifications = mainchain_client
+        .get_zmq_notifications()
+        .await
+        .map_err(|err| BitcoinCoreRPC {
+            method: "getzmqnotifications".to_string(),
+            error: err,
+        })?;
+
+    let Some(address) = notifications
+        .iter()
+        .find(|n| n.notification_type == "pubsequence")
+        .map(|n| n.address.clone())
+    else {
+        #[derive(Debug, Diagnostic, Error)]
+        #[error(
+            "unable to find ZMQ notification for `pubsequence` in `getzmqnotifications` response"
+        )]
+        #[diagnostic(
+                help("Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"),
+                code(bip300301_enforcer::zmq_pubsequence_notification_missing),
+                url("https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements")
+            )]
+        struct ZmqNotificationMissing;
+
+        return Err(ZmqNotificationMissing.into());
+    };
+    Ok(address)
 }
 
 async fn task(
     enforcer: Either<Validator, Wallet>,
     cli: cli::Config,
-    mainchain_client: bip300301::jsonrpsee::http_client::HttpClient,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
-) -> Result<(JoinHandle<()>, ErrRxs)> {
-    let (grpc_server_err_tx, grpc_server_err_rx) = oneshot::channel();
-    let _grpc_server_task: JoinHandle<()> = spawn(
-        run_grpc_server(enforcer.clone(), cli.serve_grpc_addr).unwrap_or_else(|err| {
-            let _send_err = grpc_server_err_tx.send(err);
-        }),
-    );
-
+) -> Result<(JoinHandle<Result<()>>, ErrRxs)> {
     let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
-    let res = match (cli.enable_mempool, enforcer) {
-        (false, enforcer) => cusf_enforcer_mempool::cusf_enforcer::spawn_task(
-            enforcer,
-            mainchain_client,
-            cli.node_zmq_addr_sequence,
-            |err| async move {
-                let err = miette::miette!("CUSF enforcer task w/o mempool: {err:#}");
-                let _send_err: Result<(), _> = enforcer_task_err_tx.send(err);
-            },
-        ),
-        (true, Either::Left(validator)) => spawn(async move {
-            tracing::info!("mempool sync task w/validator: starting");
-            mempool_task(
-                validator,
-                mainchain_client,
-                &cli.node_zmq_addr_sequence,
-                enforcer_task_err_tx,
-                |_mempool| futures::future::pending(),
-            )
+
+    let (shutdown_signal_tx, shutdown_signal_rx) = oneshot::channel();
+    let (shutdown_tx, mut shutdown_rx) = futures::channel::mpsc::channel(1);
+
+    let node_zmq_addr_sequence = match cli.node_zmq_addr_sequence {
+        Some(node_zmq_addr_sequence) => node_zmq_addr_sequence,
+        None => get_zmq_addr_sequence(mainchain_client.clone()).await?,
+    };
+
+    let shutdown_signal = async move {
+        shutdown_rx
+            .next()
             .await
-        }),
+            .and_then(|_| {
+                tracing::debug!("received on shutdown channel, sending signal");
+                shutdown_signal_tx
+                    .send(())
+                    .inspect(|_| tracing::trace!("sent shutdown signal"))
+                    .inspect_err(|_| tracing::error!("unable to send shutdown signal"))
+                    .ok()
+            })
+            .unwrap_or(())
+    }
+    .shared();
+
+    let (task_handle, enforcer_task_err_rx) = match (cli.enable_mempool, enforcer.clone()) {
+        (false, enforcer) => {
+            let shutdown_signal = shutdown_signal.clone();
+            let task_handle = tokio::task::spawn(async move {
+                tracing::info!("CUSF enforcer task w/o mempool: starting");
+
+                let mut enforcer = enforcer.clone();
+                let task = cusf_enforcer_mempool::cusf_enforcer::task(
+                    &mut enforcer,
+                    &mainchain_client,
+                    &node_zmq_addr_sequence,
+                    shutdown_signal,
+                );
+
+                if let Err(err) = task.await {
+                    let err = TaskError::NoMempool(err);
+                    let _send_err: Result<(), _> = enforcer_task_err_tx.send(err);
+                }
+                Ok(())
+            });
+            (
+                task_handle,
+                EnforcerTaskErrRx::NoMempool(enforcer_task_err_rx),
+            )
+        }
+        (true, Either::Left(validator)) => {
+            let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
+            let shutdown_signal = shutdown_signal.clone();
+            let task_handle = tokio::task::spawn(async move {
+                tracing::info!("mempool sync task w/validator: starting");
+                mempool_task(
+                    validator,
+                    mainchain_client,
+                    &node_zmq_addr_sequence,
+                    enforcer_task_err_tx,
+                    |_mempool| futures::future::pending(),
+                    shutdown_signal,
+                )
+                .await;
+                Ok(())
+            });
+            (
+                task_handle,
+                EnforcerTaskErrRx::MempoolValidator(enforcer_task_err_rx),
+            )
+        }
         (true, Either::Right(wallet)) => {
             tracing::info!("mempool sync task w/wallet: starting");
-            spawn(async move {
+            let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
+            let shutdown_signal = shutdown_signal.clone();
+            let task_handle = tokio::task::spawn(async move {
                 // A pre-requisite for the mempool sync task is that the wallet is
                 // initialized and unlocked. Give a nice error message if this is not
                 // the case!
                 if !wallet.is_initialized().await {
-                    tracing::error!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method.");
-                    return;
+                    return Err(miette!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."));
                 }
+
                 let mining_reward_address = match cli.mining_opts.coinbase_recipient {
                     Some(mining_reward_address) => Ok(mining_reward_address),
                     None => wallet.get_new_address().await,
@@ -453,31 +667,29 @@ async fn task(
                 let mining_reward_address = match mining_reward_address {
                     Ok(mining_reward_address) => mining_reward_address,
                     Err(err) => {
-                        let err: miette::Report = err;
-                        tracing::error!("failed to get mining reward address: {err:#}");
-                        return;
+                        let err = miette::Report::from_err(err);
+                        return Err(err.wrap_err("failed to get mining reward address"));
                     }
                 };
                 let network_info = match mainchain_client.get_network_info().await {
                     Ok(network_info) => network_info,
                     Err(err) => {
                         let err = miette::Report::from_err(err);
-                        tracing::error!("failed to get network info: {err:#}");
-                        return;
+                        return Err(err.wrap_err("failed to get network info"));
                     }
                 };
                 let sample_block_template =
                     match get_block_template(&mainchain_client, network).await {
                         Ok(block_template) => block_template,
                         Err(err) => {
-                            tracing::error!("failed to get sample block template: {err:#}");
-                            return;
+                            let err = miette::Report::from_err(err);
+                            return Err(err.wrap_err("failed to get sample block template"));
                         }
                     };
                 mempool_task(
                     wallet,
                     mainchain_client,
-                    &cli.node_zmq_addr_sequence,
+                    &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
                     |mempool| async {
                         match run_gbt_server(
@@ -494,16 +706,38 @@ async fn task(
                             Err(err) => tracing::error!("JSON-RPC server error: {err:#}"),
                         }
                     },
+                    shutdown_signal,
                 )
-                .await
-            })
+                .await;
+                Ok(())
+            });
+            (
+                task_handle,
+                EnforcerTaskErrRx::MempoolWallet(enforcer_task_err_rx),
+            )
         }
     };
+
+    let (grpc_server_err_tx, grpc_server_err_rx) = oneshot::channel();
+    let _grpc_server_task: JoinHandle<()> = {
+        let shutdown_signal = shutdown_signal.clone();
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::task::spawn(
+            run_grpc_server(enforcer, shutdown_tx, shutdown_signal, cli.serve_grpc_addr)
+                .inspect(|_| tracing::info!("gRPC server finished"))
+                .unwrap_or_else(|err| {
+                    let _send_err = grpc_server_err_tx.send(err);
+                }),
+        )
+    };
+
     let err_rxs = ErrRxs {
         enforcer_task: enforcer_task_err_rx,
         grpc_server: grpc_server_err_rx,
+        shutdown_signal: shutdown_signal_rx,
+        shutdown_tx: shutdown_tx.clone(),
     };
-    Ok((res, err_rxs))
+    Ok((task_handle, err_rxs))
 }
 
 async fn spawn_json_rpc_server(serve_addr: SocketAddr) -> miette::Result<jsonrpsee::server::ServerHandle> {
@@ -713,10 +947,33 @@ async fn main() -> Result<()> {
     )?;
     tracing::info!(
         data_dir = %cli.data_dir.display(),
-        log_path = %cli.log_path().display(),
+        log_dir = %cli.log_dir().display(),
         "Starting up bip300301_enforcer",
     );
 
+    let raw_url = format!("http://{}", cli.node_rpc_opts.addr);
+    let mainchain_rest_client = MainRestClient::new(
+        Url::parse(&raw_url)
+            .map_err(|err| miette!("invalid mainchain REST URL `{raw_url}`: {err:#}"))?,
+    );
+
+    let ts = tokio::time::Instant::now();
+    match mainchain_rest_client.get_chain_info().await {
+        Ok(_) => {
+            tracing::info!(
+                "verified mainchain REST server is enabled in {:?}",
+                ts.elapsed()
+            );
+        }
+        Err(MainRestClientError::RestServerNotEnabled) => {
+            return Err(miette!(
+                "Mainchain REST server at `{raw_url}` is not enabled! Do this with the `-rest` flag or `rest=1` in your Bitcoin Core configuration file"
+            ));
+        }
+        Err(err) => {
+            return Err(miette::Report::from_err(err));
+        }
+    }
     // Start JSON-RPC server
     let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr).await?;
 
@@ -724,13 +981,8 @@ async fn main() -> Result<()> {
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
 
     tracing::info!(
-        "Created mainchain client from options: {}:{}@{}",
+        "created mainchain JSON-RPC client from options: {}:*****@{}",
         cli.node_rpc_opts.user.as_deref().unwrap_or("cookie"),
-        cli.node_rpc_opts
-            .pass
-            .as_deref()
-            .map(|_| "*****")
-            .unwrap_or("cookie"),
         cli.node_rpc_opts.addr,
     );
 
@@ -760,7 +1012,8 @@ async fn main() -> Result<()> {
                 method: "getblockchaininfo".to_string(),
                 error: err,
             }),
-        }?;
+        }
+        .map_err(|err| miette!("failed to get blockchain info: {err:#}"))?;
 
         let delay = tokio::time::Duration::from_millis(250);
         tokio::time::sleep(delay).await;
@@ -789,13 +1042,64 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let validator = Validator::new(mainchain_client.clone(), &validator_data_dir, info.chain)
-        .into_diagnostic()?;
+    let validator = Validator::new(
+        mainchain_client.clone(),
+        mainchain_rest_client,
+        &validator_data_dir,
+        info.chain,
+    )
+    .into_diagnostic()?;
+
+    let signet_challenge = if info.chain == bitcoin::Network::Signet {
+        let block_template = get_block_template(&mainchain_client, info.chain).await?;
+        let Some(signet_challenge) = block_template.signet_challenge else {
+            return Err(miette!("signet challenge not found in block template"));
+        };
+
+        // We cannot verify that there's one specific signet challenge being used here,
+        // because the user might want to run their own signet. However, if they're on
+        // the standard signet, they're doing something wrong.
+        let standard_signet_challenge = {
+            const STANDARD_SIGNET_CHALLENGE_HEX : &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae";
+            ScriptBuf::from_hex(STANDARD_SIGNET_CHALLENGE_HEX)
+                .expect("standard signet challenge is invalid")
+        };
+
+        if signet_challenge == standard_signet_challenge {
+            #[derive(Debug, Diagnostic, Error)]
+            #[error("You're trying to run the enforcer against the standard signet chain! This is not what you want.")]
+            #[diagnostic(
+                help("either run against the L2L signet, or your own custom signet"),
+                code(bip300301_enforcer::standard_signet),
+                url("https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements")
+            )]
+            struct StandardSignetError;
+
+            return Err(StandardSignetError.into());
+        }
+
+        Some(signet_challenge)
+    } else {
+        None
+    };
 
     let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
-        let block_template = get_block_template(&mainchain_client, info.chain).await?;
-        let magic = block_template
-            .signet_challenge
+        // The wallet needs the txindex in order to operate. Will lead to obscure errors later
+        // if we fail RPC requests due to the index not being there.
+        //
+        // TODO: should actually move away from needed txindex, but that's for another day.
+        // TODO: we could check if the index is synced here. not necessary?
+        let index_info = mainchain_client.get_index_info().await.map_err(|err| {
+            wallet::error::BitcoinCoreRPC {
+                method: "getindexinfo".to_string(),
+                error: err,
+            }
+        })?;
+        if !index_info.contains_key("txindex") {
+            return Err(miette!("`txindex` is not enabled on the mainchain client"));
+        }
+
+        let magic = signet_challenge
             .map(|signet_challenge| compute_signet_magic(&signet_challenge))
             .unwrap_or_else(|| info.chain.magic());
         let wallet = Wallet::new(
@@ -845,18 +1149,92 @@ async fn main() -> Result<()> {
         Either::Left(validator)
     };
 
-    let (_task, err_rxs) = task(enforcer.clone(), cli, mainchain_client, info.chain).await?;
+    let (task_handle, mut err_rxs) =
+        task(enforcer.clone(), cli, mainchain_client, info.chain).await?;
+
+    struct TaskHandles {
+        main_task: JoinHandle<Result<(), miette::Report>>,
+    }
+
+    impl TaskHandles {
+        async fn join_all(self) -> Result<(), miette::Report> {
+            let Self { main_task } = self;
+            main_task.await.unwrap_or_else(|join_err| {
+                Err(miette!("main task panicked or was cancelled: {join_err:#}"))
+            })
+        }
+    }
+
+    // If other tasks also need to be gracefully waited for on shutdown,
+    // add them here.
+    let mut handles = TaskHandles {
+        main_task: task_handle,
+    };
+
+    async fn graceful_shutdown(
+        shutdown_tx: &mut futures::channel::mpsc::Sender<()>,
+        handles: TaskHandles,
+    ) {
+        // If we've not yet sent the shutdown signal, do so now. In the case of an interrupt signal,
+        // this branch will hit
+        if (shutdown_tx.send(()).await).is_ok() {
+            tracing::debug!("sent shutdown signal");
+        }
+
+        if let Err(err) = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            // Wait for all handles to finish
+            handles.join_all(),
+        )
+        .await
+        .map_err(|err| miette!("shutdown: error while waiting for tasks to finish: {err:#}"))
+        {
+            tracing::error!("{:#}", err);
+        };
+    }
 
     tokio::select! {
-        enforcer_task_err = err_rxs.enforcer_task => {
+
+        _ = err_rxs.shutdown_signal => {
+            tracing::info!("Shutting down due to shutdown signal");
+            graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
+            Ok(())
+        }
+
+        task_err = &mut handles.main_task => {
+            match task_err {
+                Ok(Ok(())) => {
+                    tracing::info!("Task completed, exiting with zero exit code ");
+                    Ok(())
+                }
+                Ok(Err(err)) => Err(err),
+                Err(join_error) => {
+                    Err(miette!(
+                        "main task panicked or was cancelled: {join_error:#}"
+                    ))
+                }
+            }
+        }
+        enforcer_task_err = err_rxs.enforcer_task.receive() => {
             match enforcer_task_err {
                 Ok(err) => {
-                    tracing::error!("Received enforcer task error: {err:}");
-                    Err(miette!(err))
+                    let err = miette::Error::from(err);
+                    tracing::error!("Received enforcer task error: {err:#}");
+                    if cfg!(target_os = "macos") && format!("{err:#}").contains("Too many open files") {
+                        tracing::error!(err = %err, "too many open files, dumping all open file descriptors");
+                        match file_descriptors::list_open_descriptors_macos() {
+                            Ok(open_fds) => {
+                                tracing::error!("open file descriptors: {:#?}", open_fds);
+                            }
+                            Err(err) => {
+                                tracing::error!(err = %err, "failed to list open file descriptors");
+                            }
+                        }
+                    }
+                    Err(err)
                 }
                 Err(err) => {
                     let err = miette!("Unable to receive error from enforcer task: {err:#}");
-                    tracing::error!("{err:#}");
                     Err(err)
                 }
             }
@@ -864,12 +1242,11 @@ async fn main() -> Result<()> {
         grpc_server_err = err_rxs.grpc_server => {
             match grpc_server_err {
                 Ok(err) => {
-                    tracing::error!("Received gRPC server error: {err:#}");
-                    Err(miette!(err))
+                    let err = miette::Report::from_err(err);
+                    Err(err.wrap_err("gRPC server error"))
                 }
                 Err(err) => {
-                    let err = miette!("Unable to receive error from grpc server: {err:#}");
-                    tracing::error!("{err:#}");
+                    let err = miette!("Unable to receive error from gRPC server: {err:#}");
                     Err(err)
                 }
             }
@@ -878,6 +1255,7 @@ async fn main() -> Result<()> {
             match signal {
                 Ok(()) => {
                     tracing::info!("Shutting down due to process interruption");
+                    graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
                     Ok(())
                 }
                 Err(err) => {

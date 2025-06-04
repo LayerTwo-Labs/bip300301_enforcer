@@ -1,18 +1,18 @@
-use std::{borrow::Cow, cmp::Ordering, collections::HashMap};
+use std::{borrow::Cow, cmp::Ordering, collections::HashMap, future::Future, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
-use bip300301::client::{GetBlockClient, U8Witness};
 use bitcoin::{
-    self,
     hashes::{sha256d, Hash as _},
     Amount, Block, BlockHash, OutPoint, Transaction, Work,
 };
+use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use either::Either;
 use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
-use futures::TryFutureExt as _;
+use futures::{FutureExt as _, TryFutureExt as _};
 use hashlink::LinkedHashSet;
 
+use super::main_rest_client::MainRestClient;
 use crate::{
     messages::{
         compute_m6id, parse_op_drivechain, CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain,
@@ -151,7 +151,9 @@ fn handle_failed_sidechain_proposals(
         .map_err(db_error::Iter::from)?
         .map_err(|err| error::HandleFailedSidechainProposals::DbIter(err.into()))
         .filter_map(|(proposal_id, sidechain)| {
-            let sidechain_proposal_age = height - sidechain.status.proposal_height;
+            // doing `height - sidechain.status.proposal_height` can panic if the enforcer has data
+            // from a previous sync that is not in the active chain.
+            let sidechain_proposal_age = height.saturating_sub(sidechain.status.proposal_height);
             let sidechain_slot_is_used = dbs
                 .active_sidechains
                 .sidechain()
@@ -587,7 +589,7 @@ pub fn validate_tx(
 }
 
 /// Block header should be stored before calling this.
-#[tracing::instrument(skip_all, fields(block_hash = %block.block_hash()))]
+#[tracing::instrument(skip_all)]
 pub(in crate::validator) fn connect_block(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
@@ -595,19 +597,26 @@ pub(in crate::validator) fn connect_block(
 ) -> Result<Event, error::ConnectBlock> {
     let parent = block.header.prev_blockhash;
 
+    tracing::trace!("verifying chain tip is block parent");
     // Check that current chain tip is block parent
     match dbs.current_chain_tip.try_get(rwtxn, &UnitKey)? {
         Some(tip) if parent == tip => (),
         Some(tip) => {
+            let tip_height = dbs
+                .block_hashes
+                .height()
+                .get(rwtxn, &tip)
+                .unwrap_or_default();
+            tracing::error!(
+                chain_tip = %tip,
+                incoming_block_parent = %parent,
+                "unable to connect block: chain tip is not parent of incoming block"
+            );
             return Err(error::ConnectBlock::BlockParent {
                 parent,
                 tip,
-                tip_height: dbs
-                    .block_hashes
-                    .height()
-                    .get(rwtxn, &tip)
-                    .unwrap_or_default(),
-            })
+                tip_height,
+            });
         }
         None if block.header.prev_blockhash == BlockHash::all_zeros() => (),
         None => {
@@ -618,6 +627,8 @@ pub(in crate::validator) fn connect_block(
             })
         }
     }
+
+    tracing::trace!("starting block processing");
     let height = dbs.block_hashes.height().get(rwtxn, &block.block_hash())?;
     let coinbase = &block.txdata[0];
     let mut coinbase_messages = CoinbaseMessages::new();
@@ -768,91 +779,288 @@ pub(in crate::validator) fn disconnect_block(
     todo!();
 }
 
-async fn sync_headers<MainClient>(
+// Find the best ancestor of the node's tip that the enforcer has
+// Returns hash and height of the best ancestor.
+async fn fetch_best_ancestor<MainRpcClient>(
     dbs: &Dbs,
-    main_client: &MainClient,
+    mainchain: &MainRpcClient,
+    node_tip: BlockHash,
+    node_tip_height: u32,
+) -> Result<Option<(BlockHash, u32)>, error::Sync>
+where
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+{
+    if node_tip == BlockHash::all_zeros() {
+        return Ok(None);
+    }
+
+    // Check if enforcer already has the node tip
+    {
+        let rotxn = dbs.read_txn()?;
+        if dbs.block_hashes.contains_header(&rotxn, &node_tip)? {
+            return Ok(Some((node_tip, node_tip_height)));
+        }
+    }
+
+    // Find best ancestor via binary search
+    let mut best_known_ancestor: Option<(BlockHash, u32)> = None;
+    let mut oldest_known_missing_ancestor_height = node_tip_height;
+
+    loop {
+        let best_known_ancestor_height = best_known_ancestor.map(|(_, height)| height);
+        let midpoint_height =
+            oldest_known_missing_ancestor_height.midpoint(best_known_ancestor_height.unwrap_or(0));
+        if Some(midpoint_height) == best_known_ancestor_height
+            || midpoint_height == oldest_known_missing_ancestor_height
+        {
+            return Ok(best_known_ancestor);
+        }
+
+        let midpoint = mainchain
+            .getblockhash(midpoint_height as usize)
+            .await
+            .map_err(|err| error::Sync::JsonRpc {
+                method: "getblockhash".to_owned(),
+                source: err,
+            })?;
+        let rotxn = dbs.read_txn()?;
+        if dbs.block_hashes.contains_header(&rotxn, &midpoint)? {
+            best_known_ancestor = Some((midpoint, midpoint_height));
+        } else {
+            oldest_known_missing_ancestor_height = midpoint_height;
+        }
+    }
+}
+
+#[tracing::instrument(skip_all)]
+async fn sync_headers<MainRpcClient, Signal>(
+    dbs: &Dbs,
+    main_rest_client: &MainRestClient,
+    main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
+    shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
-    let mut block_hash = main_tip;
+    let start = Instant::now();
 
-    while let Some((latest_missing_header, latest_missing_header_height)) =
-        tokio::task::block_in_place(|| {
-            let rotxn = dbs.read_txn()?;
-            match dbs
-                .block_hashes
-                .latest_missing_ancestor_header(&rotxn, block_hash)
-                .map_err(error::Sync::DbTryGet)?
-            {
-                Some(latest_missing_header) => {
-                    let height = dbs
-                        .block_hashes
-                        .height()
-                        .try_get(&rotxn, &latest_missing_header)?;
-                    Ok::<_, error::Sync>(Some((latest_missing_header, height)))
-                }
-                None => Ok(None),
-            }
+    if main_tip == BlockHash::all_zeros() {
+        return Ok(());
+    }
+
+    let main_tip_height = main_rpc_client
+        .getblockheader(main_tip)
+        .await
+        .map_err(|err| error::Sync::JsonRpc {
+            method: "getblockheader".to_owned(),
+            source: err,
         })?
-    {
-        if let Some(latest_missing_header_height) = latest_missing_header_height {
-            tracing::debug!("Syncing header #{latest_missing_header_height} `{latest_missing_header}` -> `{main_tip}`");
-        } else {
-            tracing::debug!("Syncing header `{latest_missing_header}` -> `{main_tip}`");
+        .height;
+
+    let best_ancestor: Option<(BlockHash, u32)> =
+        fetch_best_ancestor(dbs, main_rpc_client, main_tip, main_tip_height).await?;
+
+    // Return early if all headers are already available.
+    let (mut current_block_hash, mut current_height, new_headers_needed) = match best_ancestor {
+        Some((ancestor, height)) => {
+            if ancestor == main_tip {
+                return Ok(());
+            } else {
+                (ancestor, height, main_tip_height - height)
+            }
         }
-        let header = main_client
-            .getblockheader(latest_missing_header)
-            .map_err(|err| error::Sync::JsonRpc {
-                method: "getblockheader".to_owned(),
-                source: err,
-            })
+        None => {
+            let genesis_block_hash =
+                main_rpc_client
+                    .getblockhash(0)
+                    .await
+                    .map_err(|err| error::Sync::JsonRpc {
+                        method: "getblockhash".to_owned(),
+                        source: err,
+                    })?;
+            (genesis_block_hash, 0, main_tip_height + 1)
+        }
+    };
+
+    // Fetch headers in batches for efficiency
+    // 2000 is max allowed by Bitcoin Core
+    const HEADER_FETCH_BATCH_SIZE: usize = 2000;
+
+    tracing::debug!(
+        "Syncing headers starting from #{current_height} `{current_block_hash}` up to `{main_tip}`"
+    );
+
+    // The requested block header is the /first/ header in the batch. This means we
+    // need to loop from our current tip, until we find the requested main tip.
+    let shutdown_signal = shutdown_signal.shared();
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = shutdown_signal.clone() => {
+                tracing::warn!("Header sync interrupted");
+                return Err(error::Sync::Shutdown);
+            }
+            _ = futures::future::ready(()) => {}
+        }
+
+        tracing::debug!(
+            "Fetching batch of headers starting from #{current_height} `{current_block_hash}`"
+        );
+
+        // It is possible that the first header is not new
+        let headers_needed = (main_tip_height - current_height) + 1;
+        let batch_size = std::cmp::min(HEADER_FETCH_BATCH_SIZE, headers_needed as usize);
+        // Fetch a batch of headers
+        let headers = main_rest_client
+            .get_block_headers(&current_block_hash, batch_size)
             .await?;
-        latest_missing_header_height.inspect(|height| assert_eq!(*height, header.height));
-        let height = header.height;
+
+        match headers.last() {
+            Some((_, last_block_hash, last_block_height)) => {
+                // Update the block_hash to the latest header fetched in this
+                // batch to continue the loop
+                current_block_hash = *last_block_hash;
+                current_height = *last_block_height;
+            }
+            None => {
+                // This will be empty if the requested block hash is not in the
+                // current active chain, i.e. if we're dealing with a reorg,
+                // or the provided mainchain tip was invalid.
+
+                // Syncing headers is a reasonably quick operation.
+                // We therefore deal with it by erroring out here, and then
+                // retrying the sync from further out in the call stack.
+                //
+                // This branch only hits if we're dealing with a reorg /while/
+                // we're syncing headers.
+                // If we've reorged before starting the sync, it is picked up
+                // at the beginning. It is such an edge case that we don't
+                // bother implementing it (for now, at least)
+                return Err(error::Sync::BlockNotInActiveChain {
+                    block_hash: current_block_hash,
+                });
+            }
+        }
+
+        // Store the fetched headers
         let mut rwtxn = dbs.write_txn()?;
-        dbs.block_hashes
-            .put_header(&mut rwtxn, &header.into(), height)?;
+        dbs.block_hashes.put_headers(
+            &mut rwtxn,
+            &headers
+                .iter()
+                .map(|(header, _, height)| (*header, *height))
+                .collect::<Vec<_>>(),
+        )?;
         let () = rwtxn.commit()?;
-        block_hash = latest_missing_header;
+
+        // Send progress update
         let progress = HeaderSyncProgress {
-            current_height: Some(height),
+            current_height: Some(current_height),
         };
-        // Send progress through watch channel
         if let Err(err) = progress_tx.send(progress) {
             tracing::warn!("Failed to send header sync progress: {err:#}");
         }
+
+        // Important: break out here /after/ storing the last header.
+        if current_block_hash == main_tip {
+            tracing::info!(main_tip = %main_tip, "Reached main tip at height {current_height}!");
+            break;
+        } else if current_height == main_tip_height {
+            return Err(error::Sync::BlockNotInActiveChain {
+                block_hash: main_tip,
+            });
+        }
     }
+
+    tracing::info!(
+        main_tip = ?main_tip,
+        "Synced {new_headers_needed} headers in {}",
+        jiff::SignedDuration::try_from(start.elapsed()).unwrap()
+    );
     Ok(())
 }
 
 // MUST be called after `sync_headers`.
-async fn sync_blocks<MainClient>(
+#[tracing::instrument(skip_all)]
+async fn sync_blocks<MainRpcClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
-    main_client: &MainClient,
+    main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
+    shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
-    let missing_blocks: Vec<BlockHash> = tokio::task::block_in_place(|| {
+    let start = Instant::now();
+    let missing_blocks = tokio::task::block_in_place(|| {
+        let current_enforcer_tip = {
+            let mut rwtxn = dbs.write_txn()?;
+            let mut current_enforcer_tip = dbs
+                .current_chain_tip
+                .try_get(&rwtxn, &UnitKey)?
+                .unwrap_or_else(BlockHash::all_zeros);
+            let last_common_ancestor =
+                dbs.block_hashes
+                    .last_common_ancestor(&rwtxn, current_enforcer_tip, main_tip)?;
+            if current_enforcer_tip != last_common_ancestor {
+                tracing::info!(
+                    "Disconnecting tip {current_enforcer_tip} -> {last_common_ancestor}"
+                );
+                while current_enforcer_tip != last_common_ancestor {
+                    let () = disconnect_block(&mut rwtxn, dbs, event_tx, current_enforcer_tip)?;
+                    current_enforcer_tip = dbs
+                        .current_chain_tip
+                        .try_get(&rwtxn, &UnitKey)?
+                        .unwrap_or_else(BlockHash::all_zeros);
+                }
+                rwtxn.commit()?;
+            } else {
+                rwtxn.abort();
+            }
+            current_enforcer_tip
+        };
         let rotxn = dbs.read_txn()?;
-        dbs.block_hashes
+        let missing_blocks = dbs
+            .block_hashes
             .ancestor_headers(&rotxn, main_tip)
-            .map(|(block_hash, _header)| Ok(block_hash))
-            .take_while(|block_hash| Ok(!dbs.block_hashes.contains_block(&rotxn, block_hash)?))
-            .collect()
-            .map_err(error::Sync::from)
+            .map(|(block_hash, _)| Ok(block_hash))
+            .take_while(|block_hash| Ok(*block_hash != current_enforcer_tip))
+            .collect::<Vec<_>>()
+            .map_err(error::Sync::from)?;
+        Ok::<_, error::Sync>(missing_blocks)
     })?;
+
     if missing_blocks.is_empty() {
+        tracing::info!("No missing blocks, skipping sync");
         return Ok(());
     }
+
+    tracing::info!(
+        "identified {} missing blocks in {:?}, starting sync",
+        missing_blocks.len(),
+        start.elapsed()
+    );
+
+    let shutdown_signal = shutdown_signal.shared();
+    let mut total_blocks_fetched = 0;
     for missing_block in missing_blocks.into_iter().rev() {
-        tracing::debug!("Syncing block `{missing_block}` -> `{main_tip}`");
-        let block = main_client
+        tokio::select! {
+            biased;
+
+            _ = shutdown_signal.clone() => {
+                tracing::warn!("Block sync interrupted");
+                return Err(error::Sync::Shutdown);
+            }
+            _ = futures::future::ready(()) => {}
+        }
+
+        let block = main_rpc_client
             .get_block(missing_block, U8Witness::<0>)
             .map_err(|err| error::Sync::JsonRpc {
                 method: "getblock".to_owned(),
@@ -860,33 +1068,63 @@ where
             })
             .await?
             .0;
+        total_blocks_fetched += 1;
+
         let mut rwtxn = dbs.write_txn()?;
+
         let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
+
+        tracing::debug!("Syncing block #{height} `{missing_block}` -> `{main_tip}`",);
 
         // We should not call out to `invalidateblock` in case of failures here,
         // as that is handled by the cusf-enforcer-mempool crate.
         // FIXME: handle disconnects
         let event = connect_block(&mut rwtxn, dbs, &block)?;
-        tracing::debug!("connected block at height {height}: {missing_block}");
+        tracing::trace!("connected block at height {height}: {missing_block}");
         let () = rwtxn.commit()?;
         // Events should only ever be sent after committing DB txs, see
         // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
         let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
+    tracing::info!(
+        "Synced {total_blocks_fetched} blocks in {:?}",
+        start.elapsed()
+    );
     Ok(())
 }
 
-pub(in crate::validator) async fn sync_to_tip<MainClient>(
+pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
-    main_client: &MainClient,
+    main_rpc_client: &MainClient,
+    main_rest_client: &MainRestClient,
     main_tip: BlockHash,
+    shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
-    MainClient: bip300301::client::MainClient + Sync,
+    MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+    Signal: Future<Output = ()> + Send,
 {
-    let () = sync_headers(dbs, main_client, main_tip, header_sync_progress_tx).await?;
-    let () = sync_blocks(dbs, event_tx, main_client, main_tip).await?;
+    use futures::FutureExt as _;
+    let shutdown_signal = shutdown_signal.shared();
+
+    let () = sync_headers(
+        dbs,
+        main_rest_client,
+        main_rpc_client,
+        main_tip,
+        header_sync_progress_tx,
+        shutdown_signal.clone(),
+    )
+    .await?;
+    let () = sync_blocks(
+        dbs,
+        event_tx,
+        main_rpc_client,
+        main_tip,
+        shutdown_signal.clone(),
+    )
+    .await?;
     Ok(())
 }

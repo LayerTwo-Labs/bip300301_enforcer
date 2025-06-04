@@ -1,14 +1,13 @@
 use std::collections::{hash_map, HashMap};
 
-use bitcoin::amount::CheckedSum;
-use bitcoin::script::{Instruction, Instructions};
 use bitcoin::{
+    amount::CheckedSum,
     hashes::{sha256d, Hash},
     opcodes::{
         all::{OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
     },
-    script::PushBytesBuf,
+    script::{Instruction, Instructions, PushBytesBuf},
     Amount, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
@@ -22,9 +21,12 @@ use nom::{
 };
 use thiserror::Error;
 
-use crate::types::{
-    M6id, SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
-    OP_DRIVECHAIN,
+use crate::{
+    proto::{StatusBuilder, ToStatus},
+    types::{
+        M6id, SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
+        OP_DRIVECHAIN,
+    },
 };
 
 #[derive(Debug)]
@@ -388,6 +390,14 @@ pub enum CoinbaseMessagesError {
     DuplicateM2 { index: usize, slot: SidechainNumber },
     #[error("M4 already included at index `{index}`")]
     DuplicateM4 { index: usize },
+}
+
+impl ToStatus for CoinbaseMessagesError {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::DuplicateM2 { .. } | Self::DuplicateM4 { .. } => StatusBuilder::new(self),
+        }
+    }
 }
 
 /// Valid, ordered list of coinbase messages
@@ -786,9 +796,8 @@ pub fn create_sidechain_proposal(
 #[cfg(test)]
 mod tests {
 
-    use crate::types::SidechainProposal;
-
     use super::*;
+    use crate::types::SidechainProposal;
 
     #[test]
     fn test_parse_m8_bmm_request() {

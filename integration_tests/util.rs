@@ -158,6 +158,11 @@ where
             }
         };
         cmd.stdout(std::process::Stdio::from(stdout_file));
+        tracing::debug!(
+            stdout_file = stdout_fp.to_string_lossy().to_string(),
+            stderr_file = stderr_fp.to_string_lossy().to_string(),
+            "Running command: {cmd:?}",
+        );
         let mut cmd = match cmd.spawn() {
             Ok(cmd) => cmd,
             Err(err) => {
@@ -165,6 +170,8 @@ where
                 return anyhow::anyhow!("Spawning command {command} failed: `{err:#}`");
             }
         };
+
+        tracing::debug!("Waiting for `{command}` to finish");
         let exit_status = match cmd.wait().await {
             Ok(exit_status) => exit_status,
             Err(err) => {
@@ -184,11 +191,11 @@ where
             stderr_file = stderr_fp.to_string_lossy().to_string(),
         );
 
-        let mut msg = format!("Command `{command}` finished: `{}`", exit_status,);
+        let mut msg = format!("Command `{command}` finished: `{exit_status}`");
 
         if let Ok(stderr) = std::fs::read_to_string(stderr_fp).map(|s| s.trim().to_owned()) {
             if !stderr.is_empty() {
-                msg.push_str(&format!("\nStderr:\n{}", stderr));
+                msg.push_str(&format!("\nStderr:\n{stderr}"));
             }
         }
         anyhow::anyhow!(msg)
@@ -263,6 +270,7 @@ impl Bitcoind {
             format!("-rpcuser={}", self.rpc_user),
             format!("-rpcpassword={}", self.rpc_pass),
             format!("-rpcport={}", self.rpc_port),
+            "-rest".to_owned(), // needed for batch requesting block headers
             "-server".to_owned(),
             format!("-zmqpubsequence=tcp://127.0.0.1:{}", self.zmq_sequence_port),
         ];
@@ -385,8 +393,6 @@ impl Enforcer {
             self.node_rpc_user.clone(),
             "--node-rpc-pass".to_owned(),
             self.node_rpc_pass.clone(),
-            "--node-zmq-addr-sequence".to_owned(),
-            format!("tcp://127.0.0.1:{}", self.node_zmq_sequence_port),
             "--enable-wallet".to_owned(),
             "--log-level".to_owned(),
             "trace".to_owned(),
