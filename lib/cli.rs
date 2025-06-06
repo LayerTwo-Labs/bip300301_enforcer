@@ -292,9 +292,9 @@ pub struct NodeRpcConfig {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, ValueEnum)]
 pub enum WalletSyncSource {
-    #[default]
     /// Communicates over the Electrum protocol.
     Electrum,
+    #[default]
     /// Communicates over REST to a Esplora server (i.e. mempool.space API)
     Esplora,
     /// The wallet is only synced by new blocks coming in.
@@ -317,14 +317,14 @@ pub struct WalletConfig {
     pub auto_create: bool,
     /// URL of the Esplora server to use for the wallet.
     ///
-    /// Signet: http://172.105.148.135:3000
+    /// Signet: https://explorer.drivechain.info/api
     /// Regtest: http://localhost:3003
     #[arg(long = "wallet-esplora-url")]
     pub esplora_url: Option<url::Url>,
     /// If no host is provided, a default value is used based on the network
     /// we're on.
     ///
-    /// Signet: drivechain.live, regtest: 127.0.0.1  
+    /// Signet: explorer.drivechain.info, regtest: 127.0.0.1  
     #[arg(long = "wallet-electrum-host")]
     pub electrum_host: Option<String>,
     /// If no port is provided, a default value is used based on the network
@@ -339,7 +339,7 @@ pub struct WalletConfig {
     #[arg(long = "wallet-skip-periodic-sync", default_value_t = false)]
     pub skip_periodic_sync: bool,
     /// The source of the wallet sync.
-    #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::Electrum, value_enum)]
+    #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::default(), value_enum)]
     pub sync_source: WalletSyncSource,
 
     /// Path to a file containing exactly 12 space-separated BIP39 mnemonic words.
