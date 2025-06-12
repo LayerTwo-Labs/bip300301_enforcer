@@ -10,7 +10,9 @@ use bip300301_enforcer_lib::{
         crypto::crypto_service_server::CryptoServiceServer,
         mainchain::{
             validator_service_server::ValidatorServiceServer,
-            wallet_service_server::WalletServiceServer,
+            wallet_service_server::{WalletServiceServer},
+            wallet_service_client::{WalletServiceClient},
+            ListSidechainDepositTransactionsRequest,
         },
     },
     rpc_client, server,
@@ -739,8 +741,65 @@ async fn spawn_json_rpc_server(serve_addr: SocketAddr) -> miette::Result<jsonrps
     // Add method to list sidechain deposit transactions
     rpc_server.register_async_method("list_sidechain_deposit_transactions", |_params, _ctx, _extensions| async move {
         
+        // Create a gRPC client connection
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:50051")
+            .connect()
+            .await
+            .map_err(|e| jsonrpsee::types::ErrorObject::owned(
+                1, "Failed to connect to gRPC server", Some(e.to_string())
+            ))?;
+
+        // Create wallet service client
+        let mut client = WalletServiceClient::new(channel);
+
+        // Make the gRPC call
+        let response = client
+            .list_sidechain_deposit_transactions(ListSidechainDepositTransactionsRequest {})
+            .await
+            .map_err(|e| jsonrpsee::types::ErrorObject::owned(
+                2, "gRPC call failed", Some(e.to_string())
+            ))?;
+
+        // Convert gRPC response to JSON-RPC response
+        let transactions = response.into_inner().transactions.into_iter()
+            .map(|tx| {
+                let sidechain_number = tx.sidechain_number;
+                let tx_json = match tx.tx {
+                    Some(t) => {
+                        let txid = t.txid.and_then(|h| h.hex);
+                        let confirmation_info = t.confirmation_info.map(|c| {
+                            let block_hash = c.block_hash.and_then(|h| h.hex);
+                            let timestamp = c.timestamp.map(|ts| {
+                                serde_json::json!({
+                                    "seconds": ts.seconds,
+                                    "nanos": ts.nanos
+                                })
+                            });
+                            serde_json::json!({
+                                "height": c.height,
+                                "block_hash": block_hash,
+                                "timestamp": timestamp
+                            })
+                        });
+                        serde_json::json!({
+                            "txid": txid,
+                            "fee_sats": t.fee_sats,
+                            "received_sats": t.received_sats,
+                            "sent_sats": t.sent_sats,
+                            "confirmation_info": confirmation_info
+                        })
+                    }
+                    None => serde_json::Value::Null,
+                };
+                serde_json::json!({
+                    "sidechain_number": sidechain_number,
+                    "tx": tx_json
+                })
+            })
+            .collect::<Vec<_>>();
+
         tracing::info!("list_sidechain_deposit_transactions");
-        Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(vec![])
+        Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(transactions)
 
     }).map_err(|err| miette!("Failed to register list_sidechain_deposit_transactions method: {err:#}"))?;
 
