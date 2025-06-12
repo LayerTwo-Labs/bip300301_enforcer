@@ -40,19 +40,6 @@ use tower_http::{
 };
 use tracing::Instrument;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
-use bip300301_enforcer_lib::messages::parse_op_drivechain;
-use bip300301_enforcer_lib::{
-    cli::{self, LogFormatter},
-    p2p::compute_signet_magic,
-    proto::{
-        self,
-        crypto::crypto_service_server::CryptoServiceServer,
-        mainchain::{wallet_service_server::WalletServiceServer, Server as ValidatorServiceServer},
-    },
-    rpc_client, server,
-    validator::Validator,
-    wallet,
-};
 use bdk_wallet::serde_json;
 use wallet::Wallet;
 
@@ -751,127 +738,11 @@ async fn spawn_json_rpc_server(serve_addr: SocketAddr) -> miette::Result<jsonrps
 
     // Add method to list sidechain deposit transactions
     rpc_server.register_async_method("list_sidechain_deposit_transactions", |_params, _ctx, _extensions| async move {
-        // Get the wallet from the context
-        let wallet = _extensions.get::<Wallet>().ok_or_else(|| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InternalError.code(),
-                "Wallet not found in context".to_string(),
-                None::<()>,
-            )
-        })?;
+        
+        tracing::info!("list_sidechain_deposit_transactions");
+        Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(vec![])
 
-        // List all wallet transactions
-        let transactions = wallet.list_wallet_transactions().await.map_err(|err| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InternalError.code(),
-                format!("Failed to list transactions: {}", err),
-                None::<()>,
-            )
-        })?;
-
-        // Filter for deposit transactions
-        let deposit_transactions = transactions.into_iter()
-            .filter_map(|tx| {
-                // Check if this is a deposit transaction by looking at the first output
-                let Some(treasury_output) = tx.tx.output.first() else {
-                    return None;
-                };
-
-                // Parse the OP_DRIVECHAIN script to get the sidechain number
-                let Ok((_, sidechain_number)) = parse_op_drivechain(&treasury_output.script_pubkey.to_bytes()) else {
-                    return None;
-                };
-
-                // Create a deposit transaction object
-                Some(serde_json::json!({
-                    "sidechain_number": sidechain_number.0,
-                    "txid": tx.txid.to_string(),
-                    "fee_sats": tx.fee.to_sat(),
-                    "received_sats": tx.received.to_sat(),
-                    "sent_sats": tx.sent.to_sat(),
-                    "confirmation": match tx.chain_position {
-                        bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } => {
-                            Some(serde_json::json!({
-                                "height": anchor.block_id.height,
-                                "block_hash": anchor.block_id.hash.to_string(),
-                                "timestamp": anchor.confirmation_time
-                            }))
-                        }
-                        bdk_wallet::chain::ChainPosition::Unconfirmed { .. } => None
-                    }
-                }))
-            })
-            .collect::<Vec<_>>();
-
-        Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(deposit_transactions)
     }).map_err(|err| miette!("Failed to register list_sidechain_deposit_transactions method: {err:#}"))?;
-
-    // Add method to broadcast withdrawal bundle
-    rpc_server.register_async_method("broadcast_withdrawal_bundle", |params, _ctx, _extensions| async move {
-        // Get the wallet from the context
-        let wallet = _extensions.get::<Wallet>().ok_or_else(|| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InternalError.code(),
-                "Wallet not found in context".to_string(),
-                None::<()>,
-            )
-        })?;
-
-        // Parse parameters
-        let params = params.parse::<(u8, String)>().map_err(|err| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InvalidParams.code(),
-                format!("Invalid parameters: {}", err),
-                None::<()>,
-            )
-        })?;
-
-        let (sidechain_number, transaction_hex) = params;
-        let sidechain_id = bip300301_enforcer_lib::types::SidechainNumber(sidechain_number);
-
-        // Decode transaction from hex
-        let transaction_bytes = hex::decode(transaction_hex).map_err(|err| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InvalidParams.code(),
-                format!("Invalid transaction hex: {}", err),
-                None::<()>,
-            )
-        })?;
-
-        // Deserialize transaction
-        let transaction: bitcoin::Transaction = bitcoin::consensus::deserialize(&transaction_bytes).map_err(|err| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InvalidParams.code(),
-                format!("Invalid transaction format: {}", err),
-                None::<()>,
-            )
-        })?;
-
-        // Convert to BlindedM6
-        let transaction: bip300301_enforcer_lib::types::BlindedM6 = 
-            std::borrow::Cow::<bitcoin::Transaction>::Owned(transaction)
-                .try_into()
-                .map_err(|err| {
-                    jsonrpsee::types::ErrorObject::owned(
-                        jsonrpsee::types::ErrorCode::InvalidParams.code(),
-                        format!("Invalid withdrawal bundle format: {}", err),
-                        None::<()>,
-                    )
-                })?;
-
-        // Put withdrawal bundle
-        let m6id = wallet.put_withdrawal_bundle(sidechain_id, &transaction).await.map_err(|err| {
-            jsonrpsee::types::ErrorObject::owned(
-                jsonrpsee::types::ErrorCode::InternalError.code(),
-                format!("Failed to put withdrawal bundle: {}", err),
-                None::<()>,
-            )
-        })?;
-
-        Ok::<serde_json::Value, jsonrpsee::types::ErrorObject>(serde_json::json!({
-            "m6id": m6id.0.to_string()
-        }))
-    }).map_err(|err| miette!("Failed to register broadcast_withdrawal_bundle method: {err:#}"))?;
 
     tracing::info!("Listening for JSON-RPC on {}", serve_addr);
 
