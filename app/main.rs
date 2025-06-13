@@ -873,6 +873,7 @@ async fn spawn_json_rpc_server(
     Ok(handle)
 }
 
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // We want to get panics properly logged, with request IDs and all that jazz.
@@ -932,6 +933,7 @@ async fn main() -> Result<()> {
             return Err(miette::Report::from_err(err));
         }
     }
+  
     // Start JSON-RPC server
     let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr, cli.serve_grpc_addr).await?;
 
