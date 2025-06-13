@@ -753,7 +753,7 @@ async fn spawn_json_rpc_server(
                 tracing::info!("grpc_serve_addr: {}", grpc_serve_addr);
                 let channel = tonic::transport::Channel::from_shared(format!(
                     "http://{}",
-                    grpc_serve_addr.to_string()
+                    grpc_serve_addr
                 ))
                 .map_err(|e| {
                     jsonrpsee::types::ErrorObject::owned(
