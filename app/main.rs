@@ -749,23 +749,26 @@ async fn spawn_json_rpc_server(
             move |_params, _ctx, _extensions| async move {
                 // Create a gRPC client connection
                 tracing::info!("grpc_serve_addr: {}", grpc_serve_addr);
-                let channel = tonic::transport::Channel::from_shared(format!("http://{}", grpc_serve_addr.to_string()))
-                    .map_err(|e| {
-                        jsonrpsee::types::ErrorObject::owned(
-                            1,
-                            "Failed to create gRPC channel",
-                            Some(e.to_string()),
-                        )
-                    })?
-                    .connect()
-                    .await
-                    .map_err(|e| {
-                        jsonrpsee::types::ErrorObject::owned(
-                            1,
-                            "Failed to connect to gRPC server",
-                            Some(e.to_string()),
-                        )
-                    })?;
+                let channel = tonic::transport::Channel::from_shared(format!(
+                    "http://{}",
+                    grpc_serve_addr.to_string()
+                ))
+                .map_err(|e| {
+                    jsonrpsee::types::ErrorObject::owned(
+                        1,
+                        "Failed to create gRPC channel",
+                        Some(e.to_string()),
+                    )
+                })?
+                .connect()
+                .await
+                .map_err(|e| {
+                    jsonrpsee::types::ErrorObject::owned(
+                        1,
+                        "Failed to connect to gRPC server",
+                        Some(e.to_string()),
+                    )
+                })?;
 
                 // Create wallet service client
                 let mut client = WalletServiceClient::new(channel);
@@ -873,7 +876,6 @@ async fn spawn_json_rpc_server(
     Ok(handle)
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // We want to get panics properly logged, with request IDs and all that jazz.
@@ -933,7 +935,7 @@ async fn main() -> Result<()> {
             return Err(miette::Report::from_err(err));
         }
     }
-  
+
     // Start JSON-RPC server
     let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr, cli.serve_grpc_addr).await?;
 
