@@ -1,6 +1,7 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
+use bdk_wallet::serde_json;
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
     errors::ErrorChain,
@@ -10,8 +11,7 @@ use bip300301_enforcer_lib::{
         crypto::crypto_service_server::CryptoServiceServer,
         mainchain::{
             validator_service_server::ValidatorServiceServer,
-            wallet_service_server::{WalletServiceServer},
-            wallet_service_client::{WalletServiceClient},
+            wallet_service_client::WalletServiceClient, wallet_service_server::WalletServiceServer,
             ListSidechainDepositTransactionsRequest,
         },
     },
@@ -42,7 +42,6 @@ use tower_http::{
 };
 use tracing::Instrument;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
-use bdk_wallet::serde_json;
 use wallet::Wallet;
 
 mod file_descriptors;
@@ -729,79 +728,108 @@ async fn task(
     Ok((task_handle, err_rxs))
 }
 
-async fn spawn_json_rpc_server(serve_addr: SocketAddr) -> miette::Result<jsonrpsee::server::ServerHandle> {
+async fn spawn_json_rpc_server(
+    serve_addr: SocketAddr,
+    grpc_serve_addr: SocketAddr,
+) -> miette::Result<jsonrpsee::server::ServerHandle> {
     // Create an empty RPC server
     let mut rpc_server = jsonrpsee::server::RpcModule::new(());
 
     // Add a simple ping method
-    rpc_server.register_method("ping", |_params, _ctx, _extensions| {
-        Ok::<&str, jsonrpsee::types::ErrorCode>("pong")
-    }).map_err(|err| miette!("Failed to register ping method: {err:#}"))?;
+    rpc_server
+        .register_method("ping", |_params, _ctx, _extensions| {
+            Ok::<&str, jsonrpsee::types::ErrorCode>("pong")
+        })
+        .map_err(|err| miette!("Failed to register ping method: {err:#}"))?;
 
     // Add method to list sidechain deposit transactions
-    rpc_server.register_async_method("list_sidechain_deposit_transactions", |_params, _ctx, _extensions| async move {
-        
-        // Create a gRPC client connection
-        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:50051")
-            .connect()
-            .await
-            .map_err(|e| jsonrpsee::types::ErrorObject::owned(
-                1, "Failed to connect to gRPC server", Some(e.to_string())
-            ))?;
+    rpc_server
+        .register_async_method(
+            "list_sidechain_deposit_transactions",
+            move |_params, _ctx, _extensions| async move {
+                // Create a gRPC client connection
+                tracing::info!("grpc_serve_addr: {}", grpc_serve_addr);
+                let channel = tonic::transport::Channel::from_shared(format!("http://{}", grpc_serve_addr.to_string()))
+                    .map_err(|e| {
+                        jsonrpsee::types::ErrorObject::owned(
+                            1,
+                            "Failed to create gRPC channel",
+                            Some(e.to_string()),
+                        )
+                    })?
+                    .connect()
+                    .await
+                    .map_err(|e| {
+                        jsonrpsee::types::ErrorObject::owned(
+                            1,
+                            "Failed to connect to gRPC server",
+                            Some(e.to_string()),
+                        )
+                    })?;
 
-        // Create wallet service client
-        let mut client = WalletServiceClient::new(channel);
+                // Create wallet service client
+                let mut client = WalletServiceClient::new(channel);
 
-        // Make the gRPC call
-        let response = client
-            .list_sidechain_deposit_transactions(ListSidechainDepositTransactionsRequest {})
-            .await
-            .map_err(|e| jsonrpsee::types::ErrorObject::owned(
-                2, "gRPC call failed", Some(e.to_string())
-            ))?;
+                // Make the gRPC call
+                let response = client
+                    .list_sidechain_deposit_transactions(ListSidechainDepositTransactionsRequest {})
+                    .await
+                    .map_err(|e| {
+                        jsonrpsee::types::ErrorObject::owned(
+                            2,
+                            "gRPC call failed",
+                            Some(e.to_string()),
+                        )
+                    })?;
 
-        // Convert gRPC response to JSON-RPC response
-        let transactions = response.into_inner().transactions.into_iter()
-            .map(|tx| {
-                let sidechain_number = tx.sidechain_number;
-                let tx_json = match tx.tx {
-                    Some(t) => {
-                        let txid = t.txid.and_then(|h| h.hex);
-                        let confirmation_info = t.confirmation_info.map(|c| {
-                            let block_hash = c.block_hash.and_then(|h| h.hex);
-                            let timestamp = c.timestamp.map(|ts| {
+                // Convert gRPC response to JSON-RPC response
+                let transactions = response
+                    .into_inner()
+                    .transactions
+                    .into_iter()
+                    .map(|tx| {
+                        let sidechain_number = tx.sidechain_number;
+                        let tx_json = match tx.tx {
+                            Some(t) => {
+                                let txid = t.txid.and_then(|h| h.hex);
+                                let confirmation_info = t.confirmation_info.map(|c| {
+                                    let block_hash = c.block_hash.and_then(|h| h.hex);
+                                    let timestamp = c.timestamp.map(|ts| {
+                                        serde_json::json!({
+                                            "seconds": ts.seconds,
+                                            "nanos": ts.nanos
+                                        })
+                                    });
+                                    serde_json::json!({
+                                        "height": c.height,
+                                        "block_hash": block_hash,
+                                        "timestamp": timestamp
+                                    })
+                                });
                                 serde_json::json!({
-                                    "seconds": ts.seconds,
-                                    "nanos": ts.nanos
+                                    "txid": txid,
+                                    "fee_sats": t.fee_sats,
+                                    "received_sats": t.received_sats,
+                                    "sent_sats": t.sent_sats,
+                                    "confirmation_info": confirmation_info
                                 })
-                            });
-                            serde_json::json!({
-                                "height": c.height,
-                                "block_hash": block_hash,
-                                "timestamp": timestamp
-                            })
-                        });
+                            }
+                            None => serde_json::Value::Null,
+                        };
                         serde_json::json!({
-                            "txid": txid,
-                            "fee_sats": t.fee_sats,
-                            "received_sats": t.received_sats,
-                            "sent_sats": t.sent_sats,
-                            "confirmation_info": confirmation_info
+                            "sidechain_number": sidechain_number,
+                            "tx": tx_json
                         })
-                    }
-                    None => serde_json::Value::Null,
-                };
-                serde_json::json!({
-                    "sidechain_number": sidechain_number,
-                    "tx": tx_json
-                })
-            })
-            .collect::<Vec<_>>();
+                    })
+                    .collect::<Vec<_>>();
 
-        tracing::info!("list_sidechain_deposit_transactions");
-        Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(transactions)
-
-    }).map_err(|err| miette!("Failed to register list_sidechain_deposit_transactions method: {err:#}"))?;
+                tracing::info!("list_sidechain_deposit_transactions");
+                Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(transactions)
+            },
+        )
+        .map_err(|err| {
+            miette!("Failed to register list_sidechain_deposit_transactions method: {err:#}")
+        })?;
 
     tracing::info!("Listening for JSON-RPC on {}", serve_addr);
 
@@ -905,7 +933,7 @@ async fn main() -> Result<()> {
         }
     }
     // Start JSON-RPC server
-    let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr).await?;
+    let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr, cli.serve_grpc_addr).await?;
 
     let mainchain_client =
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
