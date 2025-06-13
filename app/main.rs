@@ -751,26 +751,24 @@ async fn spawn_json_rpc_server(
             move |_params, _ctx, _extensions| async move {
                 // Create a gRPC client connection
                 tracing::info!("grpc_serve_addr: {}", grpc_serve_addr);
-                let channel = tonic::transport::Channel::from_shared(format!(
-                    "http://{}",
-                    grpc_serve_addr
-                ))
-                .map_err(|e| {
-                    jsonrpsee::types::ErrorObject::owned(
-                        1,
-                        "Failed to create gRPC channel",
-                        Some(e.to_string()),
-                    )
-                })?
-                .connect()
-                .await
-                .map_err(|e| {
-                    jsonrpsee::types::ErrorObject::owned(
-                        1,
-                        "Failed to connect to gRPC server",
-                        Some(e.to_string()),
-                    )
-                })?;
+                let channel =
+                    tonic::transport::Channel::from_shared(format!("http://{}", grpc_serve_addr))
+                        .map_err(|e| {
+                            jsonrpsee::types::ErrorObject::owned(
+                                1,
+                                "Failed to create gRPC channel",
+                                Some(e.to_string()),
+                            )
+                        })?
+                        .connect()
+                        .await
+                        .map_err(|e| {
+                            jsonrpsee::types::ErrorObject::owned(
+                                1,
+                                "Failed to connect to gRPC server",
+                                Some(e.to_string()),
+                            )
+                        })?;
 
                 // Create wallet service client
                 let mut client = WalletServiceClient::new(channel);
