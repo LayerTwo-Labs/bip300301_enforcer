@@ -1,7 +1,9 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
-use bdk_wallet::bip39::{Language, Mnemonic};
-use bdk_wallet::serde_json;
+use bdk_wallet::{
+    bip39::{Language, Mnemonic},
+    serde_json,
+};
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
     errors::ErrorChain,
