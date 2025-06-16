@@ -545,7 +545,7 @@ impl WalletService for crate::wallet::Wallet {
 
         tracing::trace!("get_balance: fetching from BDK wallet");
 
-        let balance = self
+        let (balance, has_synced) = self
             .get_wallet_balance()
             .await
             .map_err(|err| err.builder().to_status())?;
@@ -555,6 +555,7 @@ impl WalletService for crate::wallet::Wallet {
         let response = GetBalanceResponse {
             confirmed_sats: balance.confirmed.to_sat(),
             pending_sats: (balance.total() - balance.confirmed).to_sat(),
+            has_synced,
         };
 
         Ok(tonic::Response::new(response))

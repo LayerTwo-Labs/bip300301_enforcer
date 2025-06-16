@@ -1355,14 +1355,15 @@ impl Wallet {
     }
 
     #[instrument(skip_all)]
-    pub async fn get_wallet_balance(&self) -> Result<bdk_wallet::Balance, error::GetWalletBalance> {
-        if self.inner.last_sync.read().await.is_none() {
-            return Err(error::NotSynced.into());
-        }
+    /// Returns the balance of the wallet, alongside a bool indicating whether the wallet is synced.
+    pub async fn get_wallet_balance(
+        &self,
+    ) -> Result<(bdk_wallet::Balance, bool), error::GetWalletBalance> {
+        let has_synced = self.inner.last_sync.read().await.is_some();
 
         let balance = self.inner.read_wallet().await?.balance();
 
-        Ok(balance)
+        Ok((balance, has_synced))
     }
 
     #[allow(
