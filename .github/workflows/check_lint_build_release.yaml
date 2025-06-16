@@ -118,25 +118,19 @@ jobs:
           git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
           popd
 
-      - name: Checkout electrs
-        run: |
-          pushd ..
-          git clone --branch ${{ env.ELECTRS_VERSION }} --depth 1 https://github.com/mempool/electrs.git
-          popd
-
       - name: Cache electrs binary
         id: cache-electrs
         uses: actions/cache@v4
         with:
-          path: ../electrs/target/release/electrs
+          path: ${{ runner.temp }}/electrs/target/release/electrs
           key: electrs-binary-${{ env.ELECTRS_VERSION }}
 
       - name: Install electrs
         if: steps.cache-electrs.outputs.cache-hit != 'true'
         run: |
-          pushd ../electrs
+          git clone --branch ${{ env.ELECTRS_VERSION }} --depth 1 https://github.com/mempool/electrs.git ${{ runner.temp }}/electrs
+          cd ${{ runner.temp }}/electrs
           cargo build --locked --release
-          popd
 
       - uses: actions/checkout@v4
         with:
@@ -163,7 +157,7 @@ jobs:
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
-          export ELECTRS='../electrs/target/release/electrs'
+          export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
           cargo run --example integration_tests
 
