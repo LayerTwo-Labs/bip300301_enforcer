@@ -1,6 +1,9 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
-use bdk_wallet::{bip39::{Language, Mnemonic}, serde_json};
+use bdk_wallet::{
+    bip39::{Language, Mnemonic},
+    serde_json,
+};
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
     errors::ErrorChain,
@@ -10,8 +13,7 @@ use bip300301_enforcer_lib::{
         crypto::crypto_service_server::CryptoServiceServer,
         mainchain::{
             validator_service_server::ValidatorServiceServer,
-            wallet_service_client::WalletServiceClient,
-            wallet_service_server::WalletServiceServer,
+            wallet_service_client::WalletServiceClient, wallet_service_server::WalletServiceServer,
             ListSidechainDepositTransactionsRequest,
         },
     },
