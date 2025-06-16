@@ -228,6 +228,7 @@ pub struct ReservedPorts {
     pub bitcoind_rpc: ReservedPort,
     pub bitcoind_zmq_sequence: ReservedPort,
     pub electrs_electrum_rpc: ReservedPort,
+    pub electrs_electrum_http: ReservedPort,
     pub electrs_monitoring: ReservedPort,
     pub enforcer_serve_grpc: ReservedPort,
     pub enforcer_serve_rpc: ReservedPort,
@@ -240,6 +241,7 @@ impl ReservedPorts {
             bitcoind_rpc: ReservedPort::random()?,
             bitcoind_zmq_sequence: ReservedPort::random()?,
             electrs_electrum_rpc: ReservedPort::random()?,
+            electrs_electrum_http: ReservedPort::random()?,
             electrs_monitoring: ReservedPort::random()?,
             enforcer_serve_grpc: ReservedPort::random()?,
             enforcer_serve_rpc: ReservedPort::random()?,
@@ -471,6 +473,7 @@ pub async fn setup(
         daemon_dir: bitcoind.data_dir.join("path"),
         daemon_rpc_port: bitcoind.rpc_port,
         electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
+        electrum_http_port: reserved_ports.electrs_electrum_http.port(),
         monitoring_port: reserved_ports.electrs_monitoring.port(),
         network: bitcoind.network,
         signet_magic: signet_setup.as_ref().map(|setup| setup.signet_magic),
@@ -495,7 +498,8 @@ pub async fn setup(
         node_zmq_sequence_port: bitcoind.zmq_sequence_port,
         serve_grpc_port: reserved_ports.enforcer_serve_grpc.port(),
         serve_rpc_port: reserved_ports.enforcer_serve_rpc.port(),
-        wallet_electrum_port: electrs.electrum_rpc_port,
+        wallet_electrum_rpc_port: electrs.electrum_rpc_port,
+        wallet_electrum_http_port: electrs.electrum_http_port,
     };
     let enforcer_task = enforcer.spawn_command_with_args::<_, String, _, _, _>(
         [(

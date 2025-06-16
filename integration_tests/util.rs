@@ -308,6 +308,7 @@ pub struct Electrs {
     pub auth: (String, String), // username + password
     pub daemon_rpc_port: u16,
     pub electrum_rpc_port: u16,
+    pub electrum_http_port: u16,
     pub monitoring_port: u16,
     pub network: bitcoin::Network,
     pub signet_magic: Option<bitcoin::p2p::Magic>,
@@ -337,6 +338,8 @@ impl Electrs {
             format!("127.0.0.1:{}", self.daemon_rpc_port),
             "--electrum-rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.electrum_rpc_port),
+            "--http-addr".to_owned(),
+            format!("127.0.0.1:{}", self.electrum_http_port),
             "--monitoring-addr".to_owned(),
             format!("127.0.0.1:{}", self.monitoring_port),
             "--network".to_owned(),
@@ -367,7 +370,8 @@ pub struct Enforcer {
     pub node_zmq_sequence_port: u16,
     pub serve_grpc_port: u16,
     pub serve_rpc_port: u16,
-    pub wallet_electrum_port: u16,
+    pub wallet_electrum_rpc_port: u16,
+    pub wallet_electrum_http_port: u16,
 }
 
 impl Enforcer {
@@ -404,7 +408,9 @@ impl Enforcer {
             "--wallet-electrum-host".to_owned(),
             "127.0.0.1".to_owned(),
             "--wallet-electrum-port".to_owned(),
-            self.wallet_electrum_port.to_string(),
+            self.wallet_electrum_rpc_port.to_string(),
+            "--wallet-esplora-url".to_owned(),
+            format!("http://127.0.0.1:{}", self.wallet_electrum_http_port),
             "--wallet-skip-periodic-sync".to_owned(),
         ];
         if self.enable_mempool {
