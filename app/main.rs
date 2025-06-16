@@ -27,7 +27,7 @@ use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
 use futures::{channel::oneshot, FutureExt, SinkExt, StreamExt, TryFutureExt as _};
 use http::{header::HeaderName, Request};
-use jsonrpsee::{core::client::Error, server::RpcServiceBuilder};
+use jsonrpsee::{core::client::Error, server::middleware::rpc::RpcServiceBuilder};
 use miette::{miette, Diagnostic, IntoDiagnostic, Result};
 use reqwest::Url;
 use thiserror::Error;
