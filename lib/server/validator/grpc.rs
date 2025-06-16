@@ -23,25 +23,9 @@ use crate::{
         },
         ToStatus as _,
     },
-    server::{invalid_field_value, missing_field},
+    server::{invalid_field_value, missing_field, validator::Server},
     types::SidechainNumber,
-    validator::Validator,
 };
-
-#[derive(Clone)]
-pub struct Server {
-    validator: Validator,
-    shutdown_tx: futures::channel::mpsc::Sender<()>,
-}
-
-impl Server {
-    pub fn new(validator: Validator, shutdown_tx: futures::channel::mpsc::Sender<()>) -> Self {
-        Self {
-            validator,
-            shutdown_tx,
-        }
-    }
-}
 
 #[tonic::async_trait]
 impl ValidatorService for Server {

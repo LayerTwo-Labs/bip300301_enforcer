@@ -1,9 +1,6 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 
-use bdk_wallet::{
-    bip39::{Language, Mnemonic},
-    serde_json,
-};
+use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
     cli::{self, LogFormatter},
     errors::ErrorChain,
@@ -13,8 +10,7 @@ use bip300301_enforcer_lib::{
         crypto::crypto_service_server::CryptoServiceServer,
         mainchain::{
             validator_service_server::ValidatorServiceServer,
-            wallet_service_client::WalletServiceClient, wallet_service_server::WalletServiceServer,
-            ListSidechainDepositTransactionsRequest,
+            wallet_service_server::WalletServiceServer,
         },
     },
     rpc_client, server,
@@ -200,6 +196,66 @@ impl tower_http::trace::OnFailure<GrpcFailureClass> for FailureHandler {
     }
 }
 
+async fn spawn_json_rpc_server(
+    validator: Either<Validator, Wallet>,
+    serve_addr: SocketAddr,
+) -> miette::Result<jsonrpsee::server::ServerHandle> {
+    let methods = match validator {
+        Either::Left(validator) => {
+            server::validator::json_rpc::RpcServer::into_rpc(validator).into()
+        }
+        Either::Right(wallet) => {
+            let mut methods: jsonrpsee::server::Methods =
+                server::validator::json_rpc::RpcServer::into_rpc(wallet.validator().clone()).into();
+            methods
+                .merge(server::wallet::json_rpc::RpcServer::into_rpc(wallet))
+                .into_diagnostic()?;
+            methods
+        }
+    };
+
+    tracing::info!("Listening for JSON-RPC on {}", serve_addr);
+
+    // Ordering here matters! Order here is from official docs on request IDs tracings
+    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
+    let tracer = tower::ServiceBuilder::new()
+        .layer(set_request_id_layer())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(move |request: &http::Request<_>| {
+                    let request_id = request
+                        .headers()
+                        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
+                        .and_then(|h| h.to_str().ok())
+                        .filter(|s| !s.is_empty());
+
+                    tracing::span!(
+                        tracing::Level::DEBUG,
+                        "json_rpc_server",
+                        request_id, // this is needed for the record call below to work
+                    )
+                })
+                .on_request(())
+                .on_eos(())
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
+        )
+        .layer(propagate_request_id_layer())
+        .into_inner();
+
+    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
+    let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
+
+    let handle = jsonrpsee::server::Server::builder()
+        .set_http_middleware(http_middleware)
+        .set_rpc_middleware(rpc_middleware)
+        .build(serve_addr)
+        .await
+        .map_err(|err| miette!("initialize JSON-RPC server at `{serve_addr}`: {err:#}"))?
+        .start(methods);
+    Ok(handle)
+}
+
 #[derive(Debug, Diagnostic, Error)]
 enum GrpcServerError {
     #[error("unable to serve gRPC at `{addr}`")]
@@ -250,7 +306,7 @@ async fn run_grpc_server<F: Future<Output = ()>>(
         .layer(propagate_request_id_layer())
         .into_inner();
 
-    let crypto_service = CryptoServiceServer::new(server::CryptoServiceServer);
+    let crypto_service = CryptoServiceServer::new(server::crypto::CryptoServiceServer);
     let mut builder = Server::builder()
         .layer(tracer)
         .add_service(crypto_service)
@@ -259,11 +315,11 @@ async fn run_grpc_server<F: Future<Output = ()>>(
                 Either::Left(ref validator) => validator,
                 Either::Right(ref wallet) => wallet.validator(),
             };
-            server::Validator::new(validator.clone(), shutdown_tx.clone())
+            server::validator::Server::new(validator.clone(), shutdown_tx.clone())
         }));
 
     let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
-        .with_service_name(CryptoServiceServer::<server::CryptoServiceServer>::NAME)
+        .with_service_name(CryptoServiceServer::<server::crypto::CryptoServiceServer>::NAME)
         .with_service_name(ValidatorServiceServer::<Validator>::NAME)
         .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
 
@@ -283,7 +339,7 @@ async fn run_grpc_server<F: Future<Output = ()>>(
     for service in [
         ValidatorServiceServer::<Validator>::NAME,
         WalletServiceServer::<Wallet>::NAME,
-        CryptoServiceServer::<server::CryptoServiceServer>::NAME,
+        CryptoServiceServer::<server::crypto::CryptoServiceServer>::NAME,
     ] {
         tracing::debug!("Setting health status for service: {service}");
         health_reporter
@@ -730,152 +786,6 @@ async fn task(
     Ok((task_handle, err_rxs))
 }
 
-async fn spawn_json_rpc_server(
-    serve_addr: SocketAddr,
-    grpc_serve_addr: SocketAddr,
-) -> miette::Result<jsonrpsee::server::ServerHandle> {
-    // Create an empty RPC server
-    let mut rpc_server = jsonrpsee::server::RpcModule::new(());
-
-    // Add a simple ping method
-    rpc_server
-        .register_async_method("ping", |_params, _ctx, _extensions| async move {
-            Ok::<&str, jsonrpsee::types::ErrorCode>("pong")
-        })
-        .map_err(|err| miette!("Failed to register ping method: {err:#}"))?;
-
-    // Add method to list sidechain deposit transactions
-    rpc_server
-        .register_async_method(
-            "list_sidechain_deposit_transactions",
-            move |_params, _ctx, _extensions| async move {
-                // Create a gRPC client connection
-                tracing::info!("grpc_serve_addr: {}", grpc_serve_addr);
-                let channel =
-                    tonic::transport::Channel::from_shared(format!("http://{}", grpc_serve_addr))
-                        .map_err(|e| {
-                            jsonrpsee::types::ErrorObject::owned(
-                                1,
-                                "Failed to create gRPC channel",
-                                Some(e.to_string()),
-                            )
-                        })?
-                        .connect()
-                        .await
-                        .map_err(|e| {
-                            jsonrpsee::types::ErrorObject::owned(
-                                1,
-                                "Failed to connect to gRPC server",
-                                Some(e.to_string()),
-                            )
-                        })?;
-
-                // Create wallet service client
-                let mut client = WalletServiceClient::new(channel);
-
-                // Make the gRPC call
-                let response = client
-                    .list_sidechain_deposit_transactions(ListSidechainDepositTransactionsRequest {})
-                    .await
-                    .map_err(|e| {
-                        jsonrpsee::types::ErrorObject::owned(
-                            2,
-                            "gRPC call failed",
-                            Some(e.to_string()),
-                        )
-                    })?;
-
-                // Convert gRPC response to JSON-RPC response
-                let transactions = response
-                    .into_inner()
-                    .transactions
-                    .into_iter()
-                    .map(|tx| {
-                        let sidechain_number = tx.sidechain_number;
-                        let tx_json = match tx.tx {
-                            Some(t) => {
-                                let txid = t.txid.and_then(|h| h.hex);
-                                let confirmation_info = t.confirmation_info.map(|c| {
-                                    let block_hash = c.block_hash.and_then(|h| h.hex);
-                                    let timestamp = c.timestamp.map(|ts| {
-                                        serde_json::json!({
-                                            "seconds": ts.seconds,
-                                            "nanos": ts.nanos
-                                        })
-                                    });
-                                    serde_json::json!({
-                                        "height": c.height,
-                                        "block_hash": block_hash,
-                                        "timestamp": timestamp
-                                    })
-                                });
-                                serde_json::json!({
-                                    "txid": txid,
-                                    "fee_sats": t.fee_sats,
-                                    "received_sats": t.received_sats,
-                                    "sent_sats": t.sent_sats,
-                                    "confirmation_info": confirmation_info
-                                })
-                            }
-                            None => serde_json::Value::Null,
-                        };
-                        serde_json::json!({
-                            "sidechain_number": sidechain_number,
-                            "tx": tx_json
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                tracing::info!("list_sidechain_deposit_transactions");
-                Ok::<Vec<serde_json::Value>, jsonrpsee::types::ErrorObject>(transactions)
-            },
-        )
-        .map_err(|err| {
-            miette!("Failed to register list_sidechain_deposit_transactions method: {err:#}")
-        })?;
-
-    tracing::info!("Listening for JSON-RPC on {}", serve_addr);
-
-    // Ordering here matters! Order here is from official docs on request IDs tracings
-    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
-    let tracer = tower::ServiceBuilder::new()
-        .layer(set_request_id_layer())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(move |request: &http::Request<_>| {
-                    let request_id = request
-                        .headers()
-                        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
-                        .and_then(|h| h.to_str().ok())
-                        .filter(|s| !s.is_empty());
-
-                    tracing::span!(
-                        tracing::Level::DEBUG,
-                        "json_rpc_server",
-                        request_id, // this is needed for the record call below to work
-                    )
-                })
-                .on_request(())
-                .on_eos(())
-                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
-        )
-        .layer(propagate_request_id_layer())
-        .into_inner();
-
-    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
-    let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
-
-    let handle = jsonrpsee::server::Server::builder()
-        .set_http_middleware(http_middleware)
-        .set_rpc_middleware(rpc_middleware)
-        .build(serve_addr)
-        .await
-        .map_err(|err| miette!("initialize JSON-RPC server at `{serve_addr}`: {err:#}"))?
-        .start(rpc_server);
-    Ok(handle)
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // We want to get panics properly logged, with request IDs and all that jazz.
@@ -937,12 +847,6 @@ async fn main() -> Result<()> {
     }
     let mainchain_client =
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
-
-    // Start JSON-RPC server
-    let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr, cli.serve_grpc_addr)
-        .await
-        .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
-
     tracing::info!(
         "created mainchain JSON-RPC client from options: {}:*****@{}",
         cli.node_rpc_opts.user.as_deref().unwrap_or("cookie"),
@@ -1111,6 +1015,10 @@ async fn main() -> Result<()> {
     } else {
         Either::Left(validator)
     };
+    // Start JSON-RPC server
+    let _json_rpc_handle = spawn_json_rpc_server(enforcer.clone(), cli.serve_json_rpc_addr)
+        .await
+        .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
 
     let (task_handle, mut err_rxs) =
         task(enforcer.clone(), cli, mainchain_client, info.chain).await?;

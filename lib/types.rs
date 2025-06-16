@@ -396,7 +396,7 @@ pub enum Event {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BDKWalletTransaction {
     pub txid: bitcoin::Txid,
     pub tx: Arc<Transaction>,

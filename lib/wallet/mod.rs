@@ -1520,6 +1520,70 @@ impl Wallet {
         Ok(txs)
     }
 
+    pub async fn list_sidechain_deposit_transactions(
+        &self,
+    ) -> Result<
+        Vec<(SidechainNumber, crate::types::BDKWalletTransaction)>,
+        error::ListSidechainDepositTransactions,
+    > {
+        self.list_wallet_transactions()
+            .await?
+            .into_iter()
+            .map(Ok::<_, error::ListSidechainDepositTransactions>)
+            .transpose_into_fallible()
+            .filter_map(|bdk_wallet_tx| {
+                let Some(treasury_output) = bdk_wallet_tx.tx.output.first() else {
+                    return Ok(None);
+                };
+                let Ok((_, sidechain_number)) =
+                    crate::messages::parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
+                else {
+                    return Ok(None);
+                };
+                let treasury_outpoint = bitcoin::OutPoint {
+                    txid: bdk_wallet_tx.txid,
+                    vout: 0,
+                };
+                let spent_ctip = match self
+                    .validator()
+                    .try_get_ctip_value_seq(&treasury_outpoint)?
+                {
+                    Some((_, _, seq)) => {
+                        let spent_treasury_utxo = self
+                            .validator()
+                            .get_treasury_utxo(sidechain_number, seq - 1)?;
+                        Some(crate::types::Ctip {
+                            outpoint: spent_treasury_utxo.outpoint,
+                            value: spent_treasury_utxo.total_value,
+                        })
+                    }
+                    None => {
+                        // May be unconfirmed
+                        // check if current ctip in inputs
+                        match self.validator().try_get_ctip(sidechain_number)? {
+                            Some(ctip) => {
+                                if bdk_wallet_tx.tx.input.iter().any(|txin: &bitcoin::TxIn| {
+                                    txin.previous_output == ctip.outpoint
+                                }) {
+                                    Some(ctip)
+                                } else {
+                                    return Ok(None);
+                                }
+                            }
+                            None => None,
+                        }
+                    }
+                };
+                if let Some(spent_ctip) = spent_ctip {
+                    if spent_ctip.value > treasury_output.value {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some((sidechain_number, bdk_wallet_tx)))
+            })
+            .collect()
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"

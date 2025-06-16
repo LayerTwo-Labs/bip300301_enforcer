@@ -231,6 +231,7 @@ pub struct ReservedPorts {
     pub electrs_electrum_http: ReservedPort,
     pub electrs_monitoring: ReservedPort,
     pub enforcer_serve_grpc: ReservedPort,
+    pub enforcer_serve_json_rpc: ReservedPort,
     pub enforcer_serve_rpc: ReservedPort,
 }
 
@@ -244,6 +245,7 @@ impl ReservedPorts {
             electrs_electrum_http: ReservedPort::random()?,
             electrs_monitoring: ReservedPort::random()?,
             enforcer_serve_grpc: ReservedPort::random()?,
+            enforcer_serve_json_rpc: ReservedPort::random()?,
             enforcer_serve_rpc: ReservedPort::random()?,
         })
     }
@@ -497,6 +499,7 @@ pub async fn setup(
         node_rpc_port: bitcoind.rpc_port,
         node_zmq_sequence_port: bitcoind.zmq_sequence_port,
         serve_grpc_port: reserved_ports.enforcer_serve_grpc.port(),
+        serve_json_rpc_port: reserved_ports.enforcer_serve_json_rpc.port(),
         serve_rpc_port: reserved_ports.enforcer_serve_rpc.port(),
         wallet_electrum_rpc_port: electrs.electrum_rpc_port,
         wallet_electrum_http_port: electrs.electrum_http_port,

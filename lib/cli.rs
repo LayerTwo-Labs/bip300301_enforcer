@@ -361,6 +361,8 @@ pub enum RollingLoggerError {
 
 const DEFAULT_SERVE_RPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8122));
+const DEFAULT_SERVE_JSON_RPC_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8123));
 const DEFAULT_SERVE_GRPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_051));
 
@@ -388,6 +390,9 @@ pub struct Config {
     /// Serve RPCs such as `getblocktemplate` on this address
     #[arg(default_value_t = DEFAULT_SERVE_RPC_ADDR, long)]
     pub serve_rpc_addr: SocketAddr,
+    /// Serve other JSON-RPC methods on this address
+    #[arg(default_value_t = DEFAULT_SERVE_JSON_RPC_ADDR, long)]
+    pub serve_json_rpc_addr: SocketAddr,
     /// Serve gRPCs on this address
     #[arg(default_value_t = DEFAULT_SERVE_GRPC_ADDR, long)]
     pub serve_grpc_addr: SocketAddr,

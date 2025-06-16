@@ -1076,6 +1076,29 @@ impl ToStatus for ListWalletTransactions {
 }
 
 #[derive(Diagnostic, Debug, Error)]
+pub enum ListSidechainDepositTransactions {
+    #[error(transparent)]
+    GetTreasuryUtxo(#[from] validator::GetTreasuryUtxoError),
+    #[error(transparent)]
+    ListWalletTransactions(#[from] ListWalletTransactions),
+    #[error(transparent)]
+    TryGetCtip(#[from] validator::TryGetCtipError),
+    #[error(transparent)]
+    TryGetCtipValueSeq(#[from] validator::TryGetCtipValueSeqError),
+}
+
+impl ToStatus for ListSidechainDepositTransactions {
+    fn builder(&self) -> StatusBuilder {
+        match self {
+            Self::GetTreasuryUtxo(err) => err.builder(),
+            Self::ListWalletTransactions(err) => err.builder(),
+            Self::TryGetCtip(err) => err.builder(),
+            Self::TryGetCtipValueSeq(err) => err.builder(),
+        }
+    }
+}
+
+#[derive(Diagnostic, Debug, Error)]
 pub enum CreateSendPsbt {
     #[error(transparent)]
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
