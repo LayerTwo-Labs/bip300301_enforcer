@@ -739,7 +739,7 @@ async fn spawn_json_rpc_server(
 
     // Add a simple ping method
     rpc_server
-        .register_method("ping", |_params, _ctx, _extensions| {
+        .register_async_method("ping", |_params, _ctx, _extensions| async move {
             Ok::<&str, jsonrpsee::types::ErrorCode>("pong")
         })
         .map_err(|err| miette!("Failed to register ping method: {err:#}"))?;
@@ -939,7 +939,9 @@ async fn main() -> Result<()> {
         rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
 
     // Start JSON-RPC server
-    let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr, cli.serve_grpc_addr).await?;
+    let _json_rpc_handle = spawn_json_rpc_server(cli.serve_rpc_addr, cli.serve_grpc_addr)
+        .await
+        .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
 
     tracing::info!(
         "created mainchain JSON-RPC client from options: {}:*****@{}",
