@@ -2,7 +2,7 @@ use std::{future::Future, net::SocketAddr, time::Duration};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
-    cli::{self, LogFormatter},
+    cli::{self, LogFormatter, WalletSyncSource},
     errors::ErrorChain,
     p2p::compute_signet_magic,
     proto::{
@@ -420,14 +420,14 @@ async fn spawn_gbt_server(
     Ok(handle)
 }
 
-async fn run_gbt_server(
+async fn start_gbt_server(
     mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
     network_info: bitcoin_jsonrpsee::client::NetworkInfo,
     sample_block_template: bitcoin_jsonrpsee::client::BlockTemplate,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
     serve_addr: SocketAddr,
-) -> miette::Result<()> {
+) -> miette::Result<jsonrpsee::server::ServerHandle> {
     let gbt_server = cusf_enforcer_mempool::server::Server::new(
         mining_reward_address.script_pubkey(),
         mempool,
@@ -437,8 +437,7 @@ async fn run_gbt_server(
     )
     .into_diagnostic()?;
     let gbt_server_handle = spawn_gbt_server(gbt_server, serve_addr).await?;
-    let () = gbt_server_handle.stopped().await;
-    Ok(())
+    Ok(gbt_server_handle)
 }
 
 async fn is_address_port_open(addr: &str) -> Result<bool, std::io::Error> {
@@ -482,18 +481,16 @@ where
     NoMempool(#[from] cusf_enforcer_mempool::cusf_enforcer::TaskError<Enforcer>),
 }
 
-async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
+async fn sync_mempool<Enforcer, RpcClient, Signal>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
     err_tx: oneshot::Sender<MempoolTaskError<Enforcer>>,
-    on_mempool_synced: F,
     shutdown_signal: Signal,
-) where
+) -> Result<cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>, MempoolTaskError<Enforcer>>
+where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
     RpcClient: bitcoin_jsonrpsee::client::MainClient + Send + Sync + 'static,
-    F: FnOnce(cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>) -> Fut,
-    Fut: Future<Output = ()>,
     Signal: Future<Output = ()> + Send,
 {
     tracing::debug!(%zmq_addr_sequence, "Ensuring ZMQ address for mempool sync is reachable");
@@ -504,16 +501,14 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
             let err = MempoolTaskError::ZmqNotReachable {
                 zmq_addr_sequence: zmq_addr_sequence.to_owned(),
             };
-            let _send_err: Result<(), _> = err_tx.send(err);
-            return;
+            return Err(err);
         }
         Err(err) => {
             let err = MempoolTaskError::ZmqCheck {
                 addr: zmq_addr_sequence.to_owned(),
                 source: err,
             };
-            let _send_err: Result<(), _> = err_tx.send(err);
-            return;
+            return Err(err);
         }
     }
 
@@ -531,10 +526,10 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
         Err(err) => {
             let err = MempoolTaskError::InitialSync(err);
             tracing::error!("{:#}", ErrorChain::new(&err));
-            let _send_err: Result<(), _> = err_tx.send(err);
-            return;
+            return Err(err);
         }
     };
+
     let mempool = cusf_enforcer_mempool::mempool::MempoolSync::new(
         enforcer,
         mempool,
@@ -546,7 +541,8 @@ async fn mempool_task<Enforcer, RpcClient, F, Fut, Signal>(
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     );
-    on_mempool_synced(mempool).await
+
+    Ok(mempool)
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -615,12 +611,18 @@ async fn get_zmq_addr_sequence(
     Ok(address)
 }
 
-async fn task(
+/// Returns a join handle for the main task, a shared future for the shutdown signal,
+/// and error receivers for the main task sub components
+async fn spawn_task(
     enforcer: Either<Validator, Wallet>,
     cli: cli::Config,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
-) -> Result<(JoinHandle<Result<()>>, ErrRxs)> {
+) -> Result<(
+    JoinHandle<Result<()>>,
+    futures::future::Shared<impl Future<Output = ()>>,
+    ErrRxs,
+)> {
     let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
 
     let (shutdown_signal_tx, shutdown_signal_rx) = oneshot::channel();
@@ -640,7 +642,9 @@ async fn task(
                 shutdown_signal_tx
                     .send(())
                     .inspect(|_| tracing::trace!("sent shutdown signal"))
-                    .inspect_err(|_| tracing::error!("unable to send shutdown signal"))
+                    .inspect_err(|_| {
+                        tracing::error!("unable to send shutdown signal, receiver was dropped")
+                    })
                     .ok()
             })
             .unwrap_or(())
@@ -677,15 +681,14 @@ async fn task(
             let shutdown_signal = shutdown_signal.clone();
             let task_handle = tokio::task::spawn(async move {
                 tracing::info!("mempool sync task w/validator: starting");
-                mempool_task(
+                let _mempool = sync_mempool(
                     validator,
                     mainchain_client,
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
-                    |_mempool| futures::future::pending(),
                     shutdown_signal,
                 )
-                .await;
+                .await?;
                 Ok(())
             });
             (
@@ -732,29 +735,34 @@ async fn task(
                             return Err(err.wrap_err("failed to get sample block template"));
                         }
                     };
-                mempool_task(
+                let mempool = sync_mempool(
                     wallet,
                     mainchain_client,
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
-                    |mempool| async {
-                        match run_gbt_server(
-                            mining_reward_address,
-                            network,
-                            network_info,
-                            sample_block_template,
-                            mempool,
-                            cli.serve_rpc_addr,
-                        )
-                        .await
-                        {
-                            Ok(()) => (),
-                            Err(err) => tracing::error!("JSON-RPC server error: {err:#}"),
-                        }
-                    },
-                    shutdown_signal,
+                    shutdown_signal.clone(),
                 )
-                .await;
+                .await?;
+
+                let server_handle = start_gbt_server(
+                    mining_reward_address,
+                    network,
+                    network_info,
+                    sample_block_template,
+                    mempool,
+                    cli.serve_rpc_addr,
+                )
+                .await?;
+
+                shutdown_signal.clone().await;
+
+                tracing::debug!("stopping JSON-RPC server");
+
+                // This should never fail. The only failure mode is the server
+                // already being stopped, and we have full control over that.
+                if let Err(err) = server_handle.stop() {
+                    tracing::error!("error stopping JSON-RPC server: {err:#}");
+                }
                 Ok(())
             });
             (
@@ -783,7 +791,7 @@ async fn task(
         shutdown_signal: shutdown_signal_rx,
         shutdown_tx: shutdown_tx.clone(),
     };
-    Ok((task_handle, err_rxs))
+    Ok((task_handle, shutdown_signal, err_rxs))
 }
 
 #[tokio::main]
@@ -1020,26 +1028,80 @@ async fn main() -> Result<()> {
         .await
         .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
 
-    let (task_handle, mut err_rxs) =
-        task(enforcer.clone(), cli, mainchain_client, info.chain).await?;
+    let (main_task_handle, shutdown_signal, mut err_rxs) =
+        spawn_task(enforcer.clone(), cli.clone(), mainchain_client, info.chain).await?;
+
+    let mut wallet_sync_task_handle: Option<JoinHandle<Result<(), miette::Report>>> = None;
+
+    if let Either::Right(wallet) = enforcer.clone() {
+        // Big wallets (thousands of UTXOs) can get really bad performance for the
+        // periodic sync. Therefore we expose a knob to disable it.
+        let sync_source_disabled = cli.wallet_opts.sync_source == WalletSyncSource::Disabled;
+
+        if cli.wallet_opts.full_scan {
+            wallet.full_scan().await?;
+        }
+
+        if !cli.wallet_opts.skip_periodic_sync && !sync_source_disabled {
+            let wallet = wallet.clone();
+            let shutdown_signal = shutdown_signal.clone();
+            let handle = tokio::spawn(async move { wallet.sync_task(shutdown_signal).await });
+            wallet_sync_task_handle = Some(handle);
+        }
+    };
 
     struct TaskHandles {
         main_task: JoinHandle<Result<(), miette::Report>>,
+        wallet_sync_task: Option<JoinHandle<Result<(), miette::Report>>>,
     }
 
     impl TaskHandles {
         async fn join_all(self) -> Result<(), miette::Report> {
-            let Self { main_task } = self;
-            main_task.await.unwrap_or_else(|join_err| {
-                Err(miette!("main task panicked or was cancelled: {join_err:#}"))
-            })
+            let Self {
+                main_task,
+                wallet_sync_task,
+            } = self;
+
+            let mut tasks: Vec<std::pin::Pin<Box<dyn Future<Output = _> + Send>>> = vec![Box::pin(
+                main_task.inspect(|_| tracing::info!("main task finished")),
+            )];
+            let mut task_labels = vec!["main task"];
+
+            if let Some(wallet_sync_task) = wallet_sync_task {
+                tasks.push(Box::pin(
+                    wallet_sync_task.inspect(|_| tracing::info!("wallet sync task finished")),
+                ));
+                task_labels.push("wallet sync task");
+            }
+
+            for (i, result) in futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .enumerate()
+            {
+                let task_name = task_labels[i];
+
+                match result {
+                    Ok(Ok(())) => (),
+                    Ok(Err(err)) => return Err(miette!("task {task_name} failed: {err:#}")),
+
+                    Err(join_err) => {
+                        return Err(miette!(
+                            "task {task_name} panicked or was cancelled: {join_err:#}"
+                        ))
+                    }
+                }
+            }
+
+            Ok(())
         }
     }
 
     // If other tasks also need to be gracefully waited for on shutdown,
     // add them here.
     let mut handles = TaskHandles {
-        main_task: task_handle,
+        main_task: main_task_handle,
+        wallet_sync_task: wallet_sync_task_handle,
     };
 
     async fn graceful_shutdown(
@@ -1049,7 +1111,7 @@ async fn main() -> Result<()> {
         // If we've not yet sent the shutdown signal, do so now. In the case of an interrupt signal,
         // this branch will hit
         if (shutdown_tx.send(()).await).is_ok() {
-            tracing::debug!("sent shutdown signal");
+            tracing::debug!("shutdown: sent signal");
         }
 
         if let Err(err) = tokio::time::timeout(
@@ -1058,9 +1120,18 @@ async fn main() -> Result<()> {
             handles.join_all(),
         )
         .await
-        .map_err(|err| miette!("shutdown: error while waiting for tasks to finish: {err:#}"))
-        {
-            tracing::error!("{:#}", err);
+        .map_err(|err| {
+            #[derive(Debug, Diagnostic, Error)]
+            #[error("shutdown: error while waiting for tasks to finish")]
+            #[diagnostic(code(bip300301_enforcer::shutdown))]
+            struct ShutdownError {
+                #[source]
+                err: tokio::time::error::Elapsed,
+            }
+            ShutdownError { err }
+        }) {
+            // why isn't the source displayed here?
+            tracing::error!("{err:#}");
         };
     }
 
