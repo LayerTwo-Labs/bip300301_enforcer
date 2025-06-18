@@ -756,12 +756,12 @@ async fn spawn_task(
 
                 shutdown_signal.clone().await;
 
-                tracing::debug!("stopping JSON-RPC server");
+                tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
 
                 // This should never fail. The only failure mode is the server
                 // already being stopped, and we have full control over that.
                 if let Err(err) = server_handle.stop() {
-                    tracing::error!("error stopping JSON-RPC server: {err:#}");
+                    tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
                 }
                 Ok(())
             });
@@ -1016,20 +1016,37 @@ async fn main() -> Result<()> {
             wallet.create_wallet(mnemonic, None).await?;
         }
 
-        // One might think the full scan could be initiated here - but that needs
-        // to happen /after/ the validator has been synced.
-
         Either::Right(wallet)
     } else {
         Either::Left(validator)
     };
     // Start JSON-RPC server
-    let _json_rpc_handle = spawn_json_rpc_server(enforcer.clone(), cli.serve_json_rpc_addr)
+    let json_rpc_server_handle = spawn_json_rpc_server(enforcer.clone(), cli.serve_json_rpc_addr)
         .await
         .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
 
     let (main_task_handle, shutdown_signal, mut err_rxs) =
         spawn_task(enforcer.clone(), cli.clone(), mainchain_client, info.chain).await?;
+
+    let json_rpc_handle: JoinHandle<Result<(), miette::Report>> = {
+        let shutdown_signal = shutdown_signal.clone();
+        tokio::spawn(async move {
+            shutdown_signal.await;
+
+            if let Err(err) = json_rpc_server_handle.stop() {
+                #[derive(Debug, Diagnostic, Error)]
+                #[error("error stopping JSON-RPC server: {err:#}")]
+                #[diagnostic(code(bip300301_enforcer::json_rpc_server::stop))]
+                struct StopError {
+                    #[source]
+                    err: jsonrpsee::server::AlreadyStoppedError,
+                }
+                return Err(miette::Report::from_err(StopError { err }));
+            }
+
+            Ok(())
+        })
+    };
 
     let mut wallet_sync_task_handle: Option<JoinHandle<Result<(), miette::Report>>> = None;
 
@@ -1053,43 +1070,42 @@ async fn main() -> Result<()> {
     struct TaskHandles {
         main_task: JoinHandle<Result<(), miette::Report>>,
         wallet_sync_task: Option<JoinHandle<Result<(), miette::Report>>>,
+        json_rpc_handle: JoinHandle<Result<(), miette::Report>>,
     }
 
     impl TaskHandles {
-        async fn join_all(self) -> Result<(), miette::Report> {
+        async fn try_join_all(self) -> Result<(), miette::Report> {
             let Self {
                 main_task,
                 wallet_sync_task,
+                json_rpc_handle,
             } = self;
 
-            let mut tasks: Vec<std::pin::Pin<Box<dyn Future<Output = _> + Send>>> = vec![Box::pin(
-                main_task.inspect(|_| tracing::info!("main task finished")),
-            )];
-            let mut task_labels = vec!["main task"];
+            let mut tasks: Vec<std::pin::Pin<Box<dyn Future<Output = Result<_, _>> + Send>>> = vec![
+                Box::pin(main_task.map(|res| {
+                    tracing::info!("main task finished");
+                    res
+                })),
+                Box::pin(json_rpc_handle.map(|res| {
+                    tracing::info!("JSON-RPC server finished");
+                    res
+                })),
+            ];
 
             if let Some(wallet_sync_task) = wallet_sync_task {
-                tasks.push(Box::pin(
-                    wallet_sync_task.inspect(|_| tracing::info!("wallet sync task finished")),
-                ));
-                task_labels.push("wallet sync task");
+                tasks.push(Box::pin(wallet_sync_task.map(|res| {
+                    tracing::info!("wallet sync task finished");
+                    res
+                })));
             }
 
-            for (i, result) in futures::future::join_all(tasks)
+            for result in futures::future::try_join_all(tasks)
                 .await
                 .into_iter()
-                .enumerate()
+                .flatten()
             {
-                let task_name = task_labels[i];
-
-                match result {
-                    Ok(Ok(())) => (),
-                    Ok(Err(err)) => return Err(miette!("task {task_name} failed: {err:#}")),
-
-                    Err(join_err) => {
-                        return Err(miette!(
-                            "task {task_name} panicked or was cancelled: {join_err:#}"
-                        ))
-                    }
+                if let Err(err) = result {
+                    tracing::error!("task failed: {err:#}");
                 }
             }
 
@@ -1102,6 +1118,7 @@ async fn main() -> Result<()> {
     let mut handles = TaskHandles {
         main_task: main_task_handle,
         wallet_sync_task: wallet_sync_task_handle,
+        json_rpc_handle,
     };
 
     async fn graceful_shutdown(
@@ -1117,7 +1134,7 @@ async fn main() -> Result<()> {
         if let Err(err) = tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
             // Wait for all handles to finish
-            handles.join_all(),
+            handles.try_join_all(),
         )
         .await
         .map_err(|err| {
