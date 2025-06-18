@@ -8,7 +8,6 @@ pub mod p2p;
 pub mod proto;
 pub mod rpc_client;
 pub mod server;
-mod server_validator;
 pub mod types;
 pub mod validator;
 pub mod wallet;

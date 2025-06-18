@@ -362,6 +362,7 @@ pub struct Enforcer {
     pub node_rpc_port: u16,
     pub node_zmq_sequence_port: u16,
     pub serve_grpc_port: u16,
+    pub serve_json_rpc_port: u16,
     pub serve_rpc_port: u16,
     pub wallet_electrum_rpc_port: u16,
     pub wallet_electrum_http_port: u16,
@@ -389,6 +390,10 @@ impl Enforcer {
             "--enable-wallet".to_owned(),
             "--log-level=trace".to_owned(),
             format!("--serve-grpc-addr=127.0.0.1:{}", self.serve_grpc_port),
+            format!(
+                "--serve-json-rpc-addr=127.0.0.1:{}",
+                self.serve_json_rpc_port
+            ),
             format!("--serve-rpc-addr=127.0.0.1:{}", self.serve_rpc_port),
             "--wallet-auto-create".to_owned(),
             format!("--wallet-electrum-host=127.0.0.1"),
