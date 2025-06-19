@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, future::Future, sync::atomic::Ordering};
+use std::{borrow::Cow, collections::HashMap, future::Future};
 
 use bitcoin::{hashes::Hash as _, BlockHash, Transaction, Txid};
 use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
@@ -12,7 +12,6 @@ use cusf_enforcer_mempool::{
 use tracing::instrument;
 
 use crate::{
-    cli::WalletSyncSource,
     validator::Validator,
     wallet::{error, Wallet},
 };
@@ -60,37 +59,7 @@ impl CusfEnforcer for Wallet {
             .clone()
             .sync_to_tip(shutdown_signal, tip_hash)
             .await?;
-        tracing::debug!(%tip_hash, "Synced validator, syncing wallet..");
-
-        // If this branch hits, it means we we're just finishing up the initial sync.
-        // We only want to run the full sync a single time!
-        if self
-            .has_initial_synced
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-            && self.inner.config.wallet_opts.full_scan
-        {
-            tracing::debug!("Full wallet scan requested, starting...");
-            let tip = self.full_scan().await?;
-            tracing::info!(tip = %tip, "Full wallet scan completed");
-        }
-
-        // We previously ran a wallet sync here unconditionally within this function. The sync
-        // takes a long time on big wallets (100k+ UTXOs), and therefore has to be omitted in
-        // some cases.
-        let sync_source_disabled =
-            self.inner.config.wallet_opts.sync_source == WalletSyncSource::Disabled;
-
-        if !self.inner.config.wallet_opts.skip_periodic_sync && !sync_source_disabled {
-            tracing::debug!("Sending start signal to wallet task, kicking off periodic sync");
-            let mut start_tx_lock = self.task.start_tx.lock();
-            if let Some(start_tx) = start_tx_lock.take() {
-                start_tx.send(()).unwrap_or_else(|_| {
-                    tracing::error!("Failed to send start signal to wallet task")
-                });
-            }
-        }
-
+        tracing::debug!(%tip_hash, "Synced validator");
         Ok(())
     }
 
