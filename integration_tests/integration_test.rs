@@ -26,6 +26,9 @@ use crate::{
     util::{self, AsyncTrial, BinPaths},
 };
 
+type TestFuture = std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+type TestTrial = AsyncTrial<TestFuture>;
+
 pub async fn propose_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
 where
     S: Sidechain,
@@ -525,8 +528,8 @@ where
         .ok_or_else(|| anyhow::anyhow!("Unexpected end of test task result stream"))?
 }
 
-pub fn tests(bin_paths: &BinPaths) -> Vec<AsyncTrial<impl Future<Output = anyhow::Result<()>>>> {
-    [
+pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
+    let deposit_withdraw_roundtrip_tests = [
         (Network::Regtest, Mode::GetBlockTemplate),
         (Network::Regtest, Mode::Mempool),
         (Network::Regtest, Mode::NoMempool),
@@ -537,10 +540,32 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<AsyncTrial<impl Future<Output = anyhow
         let bin_paths = bin_paths.clone();
         AsyncTrial::new(
             format!("deposit_withdraw_roundtrip (mode: {mode}, network: {network})"),
-            async move {
+            Box::pin(async move {
                 deposit_withdraw_roundtrip::<DummySidechain>(bin_paths, *network, *mode, ()).await
-            },
+            }) as TestFuture,
         )
-    })
-    .collect()
+    });
+
+    // TODO: add a signet test here?
+    let unconfirmed_transactions_tests =
+        [(Network::Regtest, Mode::Mempool)]
+            .iter()
+            .map(|(network, mode)| {
+                let bin_paths = bin_paths.clone();
+                AsyncTrial::new(
+                    format!("unconfirmed_transactions (mode: {mode}, network: {network})"),
+                    Box::pin(async move {
+                        use crate::test_unconfirmed_transactions::test_unconfirmed_transactions;
+
+                        test_unconfirmed_transactions(bin_paths, *network, *mode).await
+                    }) as TestFuture,
+                )
+            });
+
+    let mut async_trials = vec![];
+
+    async_trials.extend(deposit_withdraw_roundtrip_tests);
+    async_trials.extend(unconfirmed_transactions_tests);
+
+    async_trials
 }
