@@ -904,6 +904,7 @@ pub mod mainchain {
         fn from(tx: &crate::types::BDKWalletTransaction) -> Self {
             Self {
                 txid: Some(ReverseHex::encode(&tx.txid)),
+                raw_transaction: Some(ConsensusHex::encode(&tx.tx)),
                 fee_sats: tx.fee.to_sat(),
                 received_sats: tx.received.to_sat(),
                 sent_sats: tx.sent.to_sat(),
