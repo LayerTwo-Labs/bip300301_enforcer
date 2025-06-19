@@ -1756,15 +1756,9 @@ impl Wallet {
     )]
     #[instrument(skip_all)]
     pub async fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>, error::NotUnlocked> {
-        let start = Instant::now();
         let wallet_read = self.inner.read_wallet().await?;
         let utxos = wallet_read.list_unspent().collect::<Vec<_>>();
 
-        tracing::debug!(
-            "listed {} wallet utxos in {:?}",
-            utxos.len(),
-            start.elapsed()
-        );
         Ok(utxos)
     }
 
