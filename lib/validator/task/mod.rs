@@ -5,12 +5,15 @@ use bitcoin::{
     Amount, Block, BlockHash, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use either::Either;
 use fallible_iterator::FallibleIterator;
 use fatality::Split as _;
-use futures::{FutureExt as _, TryFutureExt as _};
+use futures::FutureExt as _;
 use hashlink::LinkedHashSet;
+use jsonrpsee::core::{
+    client::BatchResponse,
+    params::{ArrayParams, BatchRequestBuilder},
+};
 use sneed::{RwTxn, db};
 
 use super::main_rest_client::MainRestClient;
@@ -976,6 +979,68 @@ where
     Ok(())
 }
 
+async fn fetch_blocks_batch<MainRpcClient>(
+    main_rpc_client: &MainRpcClient,
+    block_hashes: &[BlockHash],
+) -> Result<Vec<Block>, error::Sync>
+where
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+{
+    let mut get_block_batch = BatchRequestBuilder::new();
+    for block_hash in block_hashes {
+        // By default (1) a deserialized block is returned. We want to do this ourselves!
+        let verbosity = 0;
+
+        let mut params = ArrayParams::new();
+        params
+            .insert(block_hash.to_string())
+            .expect("failed to insert block hash");
+
+        params
+            .insert(verbosity)
+            .expect("failed to insert verbosity");
+
+        get_block_batch
+            .insert("getblock", params)
+            .map_err(error::Sync::JsonSerialize)?;
+    }
+
+    let start = Instant::now();
+
+    let batch_response: BatchResponse<String> = main_rpc_client
+        .batch_request(get_block_batch)
+        .boxed() // IMPORTANT: omitting this box leads to cryptic a lifetime error
+        .await
+        .map_err(|err| error::Sync::JsonRpc {
+            method: "getblock (batched)".to_owned(),
+            source: err,
+        })?;
+
+    tracing::debug!(
+        "Fetched batch of {} block(s) in {:?}",
+        batch_response.len(),
+        start.elapsed(),
+    );
+
+    let blocks = match batch_response.ok() {
+        Ok(blocks) => blocks
+            .map(|block| {
+                let bytes = hex::decode(block)?;
+                let block: bitcoin::Block = bitcoin::consensus::deserialize(&bytes)?;
+
+                Ok::<_, error::Sync>(block)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Err(errors) => {
+            return Err(error::Sync::BatchJsonRpc {
+                errors: errors.map(|e| e.message().to_string()).collect(),
+            });
+        }
+    };
+
+    Ok(blocks)
+}
+
 // MUST be called after `sync_headers`.
 #[tracing::instrument(skip_all)]
 async fn sync_blocks<MainRpcClient, Signal>(
@@ -989,6 +1054,11 @@ where
     MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     Signal: Future<Output = ()> + Send,
 {
+    // Batch size for concurrent block fetching
+    // It's hard to know what a good size here is, without
+    // further benchmarking.
+    const BLOCK_FETCH_BATCH_SIZE: usize = 500;
+
     let start = Instant::now();
     let missing_blocks = tokio::task::block_in_place(|| {
         let current_enforcer_tip = {
@@ -1034,14 +1104,17 @@ where
     }
 
     tracing::info!(
-        "identified {} missing blocks in {:?}, starting sync",
+        "identified {} missing blocks in {:?}, starting batched sync",
         missing_blocks.len(),
         start.elapsed()
     );
 
     let shutdown_signal = shutdown_signal.shared();
     let mut total_blocks_fetched = 0;
-    for missing_block in missing_blocks.into_iter().rev() {
+
+    // Process blocks in batches for better network efficiency
+    let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
+    for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
         tokio::select! {
             biased;
 
@@ -1052,32 +1125,29 @@ where
             _ = futures::future::ready(()) => {}
         }
 
-        let block = main_rpc_client
-            .get_block(missing_block, U8Witness::<0>)
-            .map_err(|err| error::Sync::JsonRpc {
-                method: "getblock".to_owned(),
-                source: err,
-            })
-            .await?
-            .0;
-        total_blocks_fetched += 1;
+        let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
+        total_blocks_fetched += blocks.len();
 
-        let mut rwtxn = dbs.write_txn()?;
+        // Process blocks sequentially to maintain ordering and database consistency
+        for block in blocks {
+            let block_hash = block.block_hash();
+            let mut rwtxn = dbs.write_txn()?;
+            let height = dbs.block_hashes.height().get(&rwtxn, &block_hash)?;
 
-        let height = dbs.block_hashes.height().get(&rwtxn, &missing_block)?;
+            tracing::debug!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
 
-        tracing::debug!("Syncing block #{height} `{missing_block}` -> `{main_tip}`",);
-
-        // We should not call out to `invalidateblock` in case of failures here,
-        // as that is handled by the cusf-enforcer-mempool crate.
-        // FIXME: handle disconnects
-        let event = connect_block(&mut rwtxn, dbs, &block)?;
-        tracing::trace!("connected block at height {height}: {missing_block}");
-        let () = rwtxn.commit()?;
-        // Events should only ever be sent after committing DB txs, see
-        // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+            // We should not call out to `invalidateblock` in case of failures here,
+            // as that is handled by the cusf-enforcer-mempool crate.
+            // FIXME: handle disconnects
+            let event = connect_block(&mut rwtxn, dbs, &block)?;
+            tracing::trace!("connected block at height {height}: {block_hash}");
+            let () = rwtxn.commit()?;
+            // Events should only ever be sent after committing DB txs, see
+            // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+            let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+        }
     }
+
     tracing::info!(
         "Synced {total_blocks_fetched} blocks in {:?}",
         start.elapsed()
