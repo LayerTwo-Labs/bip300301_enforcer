@@ -366,8 +366,19 @@ const DEFAULT_SERVE_JSON_RPC_ADDR: SocketAddr =
 const DEFAULT_SERVE_GRPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_051));
 
+fn get_long_version() -> clap::builder::Str {
+    format!(
+        "v{}
+ commit: {}
+ binary: bip300301_enforcer",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_HASH"),
+    )
+    .into()
+}
+
 #[derive(Clone, Parser)]
-#[clap(version)]
+#[clap(version, long_version = get_long_version())]
 pub struct Config {
     /// Directory to store wallet + drivechain + validator data.
     #[arg(default_value_os_t = get_data_dir().unwrap_or_else(|_| PathBuf::from("./datadir")), long)]
@@ -407,6 +418,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// Returns the git hash that was set during build time
+    pub fn git_hash(&self) -> &'static str {
+        env!("GIT_HASH")
+    }
+
     pub fn bitcoin_cli(&self, network: bitcoin::Network) -> crate::bins::BitcoinCli {
         crate::bins::BitcoinCli {
             path: self.mining_opts.bitcoin_cli_path.clone(),
