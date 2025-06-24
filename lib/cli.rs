@@ -367,6 +367,7 @@ const DEFAULT_SERVE_GRPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_051));
 
 #[derive(Clone, Parser)]
+#[clap(version)]
 pub struct Config {
     /// Directory to store wallet + drivechain + validator data.
     #[arg(default_value_os_t = get_data_dir().unwrap_or_else(|_| PathBuf::from("./datadir")), long)]
