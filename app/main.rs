@@ -827,6 +827,7 @@ async fn main() -> Result<()> {
     tracing::info!(
         data_dir = %cli.data_dir.display(),
         log_dir = %cli.log_dir().display(),
+        git_hash = env!("GIT_HASH"),
         "Starting up bip300301_enforcer",
     );
 
