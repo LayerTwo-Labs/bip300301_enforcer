@@ -31,7 +31,7 @@ use jsonrpsee::{core::client::Error, server::middleware::rpc::RpcServiceBuilder}
 use miette::{miette, Diagnostic, IntoDiagnostic, Result};
 use reqwest::Url;
 use thiserror::Error;
-use tokio::{net::TcpStream, signal::ctrl_c, task::JoinHandle};
+use tokio::{net::TcpStream, task::JoinHandle};
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::{
@@ -796,6 +796,8 @@ async fn spawn_task(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let (mut self_interrupt_tx, mut self_interrupt_rx) = futures::channel::mpsc::unbounded();
+
     // We want to get panics properly logged, with request IDs and all that jazz.
     //
     // Save the original panic hook.
@@ -1066,12 +1068,58 @@ async fn main() -> Result<()> {
             let handle = tokio::spawn(async move { wallet.sync_task(shutdown_signal).await });
             wallet_sync_task_handle = Some(handle);
         }
+    }
+
+    let exit_after_sync_task = match cli.exit_after_sync {
+        Some(exit_after_sync) => {
+            let exit_after_sync = if exit_after_sync != 0 {
+                exit_after_sync
+            } else {
+                info.blocks
+            };
+
+            let validator = match &enforcer {
+                Either::Left(validator) => validator.clone(),
+                Either::Right(wallet) => wallet.validator().clone(),
+            };
+            let handle = tokio::spawn(async move {
+                tracing::info!(
+                    "Waiting for sync to height {} before exiting",
+                    exit_after_sync
+                );
+
+                let mut events = std::pin::pin!(validator.subscribe_events());
+                while let Some(event) = events.next().await {
+                    use bip300301_enforcer_lib::types::Event;
+
+                    if let Ok(Event::ConnectBlock { header_info, .. }) = event {
+                        if header_info.height >= exit_after_sync {
+                            tracing::info!(
+                                "Synced to block height {}, exiting",
+                                header_info.height
+                            );
+                            let _ = self_interrupt_tx.send(()).await;
+
+                            tracing::debug!("Sent self interrupt signal");
+                            break;
+                        }
+                    }
+                }
+
+                Ok(())
+            });
+
+            Some(handle)
+        }
+
+        None => None,
     };
 
     struct TaskHandles {
         main_task: JoinHandle<Result<(), miette::Report>>,
         wallet_sync_task: Option<JoinHandle<Result<(), miette::Report>>>,
         json_rpc_handle: JoinHandle<Result<(), miette::Report>>,
+        exit_after_sync_task: Option<JoinHandle<Result<(), miette::Report>>>,
     }
 
     impl TaskHandles {
@@ -1080,6 +1128,7 @@ async fn main() -> Result<()> {
                 main_task,
                 wallet_sync_task,
                 json_rpc_handle,
+                exit_after_sync_task,
             } = self;
 
             let mut tasks: Vec<std::pin::Pin<Box<dyn Future<Output = Result<_, _>> + Send>>> = vec![
@@ -1096,6 +1145,13 @@ async fn main() -> Result<()> {
             if let Some(wallet_sync_task) = wallet_sync_task {
                 tasks.push(Box::pin(wallet_sync_task.map(|res| {
                     tracing::info!("wallet sync task finished");
+                    res
+                })));
+            }
+
+            if let Some(exit_after_sync_task) = exit_after_sync_task {
+                tasks.push(Box::pin(exit_after_sync_task.map(|res| {
+                    tracing::info!("exit after sync task finished");
                     res
                 })));
             }
@@ -1120,6 +1176,7 @@ async fn main() -> Result<()> {
         main_task: main_task_handle,
         wallet_sync_task: wallet_sync_task_handle,
         json_rpc_handle,
+        exit_after_sync_task,
     };
 
     async fn graceful_shutdown(
@@ -1211,7 +1268,21 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        signal = ctrl_c() => {
+        signal = self_interrupt_rx.next() => {
+            match signal {
+                Some(()) => {
+                    tracing::info!("Shutting down due to self interrupt");
+                    graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
+                    Ok(())
+                }
+                None => {
+                    tracing::error!("Unable to receive self interrupt signal");
+                    Err(miette!("Unable to receive self interrupt signal"))
+                }
+            }
+
+        }
+        signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => {
                     tracing::info!("Shutting down due to process interruption");

@@ -398,6 +398,11 @@ pub struct Config {
     pub serve_grpc_addr: SocketAddr,
     #[command(flatten)]
     pub wallet_opts: WalletConfig,
+
+    /// Exit after syncing to the specified block height. If set to 0, we exit
+    /// after syncing to the tip. Can be used for benchmarking sync speeds.
+    #[arg(long)]
+    pub exit_after_sync: Option<u32>,
 }
 
 impl Config {
