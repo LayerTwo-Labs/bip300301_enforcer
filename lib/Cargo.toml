@@ -29,7 +29,7 @@ bitcoin-jsonrpsee = { workspace = true }
 bitcoin-send-tx-p2p = "0.3.0"
 blake3 = "1.5.4"
 byteorder = "1.5.0"
-clap = { workspace = true, features = ["derive", "string"] }
+clap = { workspace = true, features = ["derive", "string", "std"] }
 cusf-enforcer-mempool = { workspace = true }
 derive_more = { version = "1.0.0", features = ["debug", "display"] }
 ed25519-dalek-bip32 = "0.3.0"
