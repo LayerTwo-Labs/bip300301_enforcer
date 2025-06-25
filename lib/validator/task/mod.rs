@@ -1057,7 +1057,11 @@ where
     // Batch size for concurrent block fetching
     // It's hard to know what a good size here is, without
     // further benchmarking.
-    const BLOCK_FETCH_BATCH_SIZE: usize = 500;
+    //
+    // TODO: for some reason we're running into HTTP error about too
+    // large responses when we're also doing just a single DB commit
+    // per batch. Why are these related?
+    const BLOCK_FETCH_BATCH_SIZE: usize = 50;
 
     let start = Instant::now();
     let missing_blocks = tokio::task::block_in_place(|| {
@@ -1128,10 +1132,13 @@ where
         let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
         total_blocks_fetched += blocks.len();
 
+        // Do a single DB transaction for the entire batch. DB commits are a big part
+        // of the sync time, so we want to reduce the number of times we do this.
+        let mut rwtxn = dbs.write_txn()?;
+
         // Process blocks sequentially to maintain ordering and database consistency
         for block in blocks {
             let block_hash = block.block_hash();
-            let mut rwtxn = dbs.write_txn()?;
             let height = dbs.block_hashes.height().get(&rwtxn, &block_hash)?;
 
             tracing::debug!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
@@ -1141,11 +1148,12 @@ where
             // FIXME: handle disconnects
             let event = connect_block(&mut rwtxn, dbs, &block)?;
             tracing::trace!("connected block at height {height}: {block_hash}");
-            let () = rwtxn.commit()?;
             // Events should only ever be sent after committing DB txs, see
             // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
             let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
         }
+
+        let () = rwtxn.commit()?;
     }
 
     tracing::info!(
