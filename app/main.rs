@@ -14,6 +14,7 @@ use bip300301_enforcer_lib::{
         },
     },
     rpc_client, server,
+    types::Event,
     validator::{
         main_rest_client::{MainRestClient, MainRestClientError},
         Validator,
@@ -1090,11 +1091,11 @@ async fn main() -> Result<()> {
                 );
 
                 let mut events = std::pin::pin!(validator.subscribe_events());
-                while let Some(event) = events.next().await {
-                    use bip300301_enforcer_lib::types::Event;
-
-                    if let Ok(Event::ConnectBlock { header_info, .. }) = event {
-                        if header_info.height >= exit_after_sync {
+                loop {
+                    match events.next().await {
+                        Some(Ok(Event::ConnectBlock { header_info, .. }))
+                            if header_info.height >= exit_after_sync =>
+                        {
                             tracing::info!(
                                 "Synced to block height {}, exiting",
                                 header_info.height
@@ -1102,12 +1103,23 @@ async fn main() -> Result<()> {
                             let _ = self_interrupt_tx.send(()).await;
 
                             tracing::debug!("Sent self interrupt signal");
-                            break;
+                            return Ok(());
+                        }
+
+                        Some(Ok(event)) => {
+                            tracing::debug!("exit-after-sync: received event: {event:#?}");
+                        }
+
+                        Some(Err(err)) => {
+                            return Err(miette::Report::from_err(err)
+                                .wrap_err("exit-after-sync: error receiving event"));
+                        }
+
+                        None => {
+                            return Err(miette!("exit-after-sync: no event received"));
                         }
                     }
                 }
-
-                Ok(())
             });
 
             Some(handle)
