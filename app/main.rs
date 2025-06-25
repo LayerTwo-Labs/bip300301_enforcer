@@ -830,6 +830,7 @@ async fn main() -> Result<()> {
         data_dir = %cli.data_dir.display(),
         log_dir = %cli.log_dir().display(),
         git_hash = cli.git_hash(),
+        build = if cfg!(debug_assertions) { "debug" } else { "release" },
         "Starting up bip300301_enforcer",
     );
 
