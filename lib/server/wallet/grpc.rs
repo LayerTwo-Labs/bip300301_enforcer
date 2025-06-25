@@ -584,7 +584,6 @@ impl WalletService for crate::wallet::Wallet {
                     .ok(),
                 }
             })
-            .filter(|output| output.is_confirmed)
             .collect();
 
         Ok(tonic::Response::new(ListUnspentOutputsResponse { outputs }))
