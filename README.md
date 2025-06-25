@@ -197,3 +197,20 @@ Integration tests can be run using
 ```bash
 $ cargo run --example integration_tests -- <TEST ARGS>
 ```
+
+# Profiling
+
+```bash
+# Generate a flamegraph for Rust code. This does NOT
+# measure syscalls/IO wait
+# https://github.com/flamegraph-rs/flamegraph
+$ cargo install flamegraph
+$ cargo flamegraph --  --data-dir ./datadir \
+          --node-rpc-addr=localhost:38332 \
+          --node-rpc-user=user \
+          --node-rpc-pass=password \
+          --enable-mempool --exit-after-sync 100000
+
+# macOS only
+$ ./scripts/trace_enforcer_macos.sh
+```
