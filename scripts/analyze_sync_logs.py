@@ -158,7 +158,11 @@ def create_plot(
         total_blocks / total_time_minutes if total_time_minutes > 0 else 0
     )
 
-    stats_text = f"Synced {total_blocks:,} blocks in {total_time_minutes:.0f} minutes ({total_time_hours:.1f} hours)\nAverage: {avg_speed_per_minute:.0f} blocks/minute"
+    minutes = int(total_time_minutes)
+    seconds = int((total_time_minutes - minutes) * 60)
+    hours = int(total_time_hours)
+    remaining_minutes = int((total_time_hours - hours) * 60)
+    stats_text = f"Synced {total_blocks:,} blocks in {minutes}m {seconds}s ({hours}h {remaining_minutes}m)\nAverage: {avg_speed_per_minute:.0f} blocks/minute"
     plt.text(
         0.02,
         0.98,
