@@ -2,7 +2,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObject};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::str::FromStr;
 
-use crate::types::{BlockInfo, Ctip, HeaderInfo, SidechainNumber};
+use crate::types::{BlockInfo, Ctip, HeaderInfo, SidechainNumber, TwoWayPegData};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Pong;
@@ -46,6 +46,11 @@ pub trait Rpc {
 
     #[method(name = "get_block_info")]
     fn get_block_info(&self, block_hash: String) -> RpcResult<BlockInfoResponse>;
+
+    #[method(name = "get_two_way_peg_data")]
+    fn get_two_way_peg_data(&self, start_block: Option<String>, end_block: String) -> RpcResult<Vec<TwoWayPegData>>;
+
+    
 }
 
 impl RpcServer for crate::validator::Validator {
@@ -74,5 +79,26 @@ impl RpcServer for crate::validator::Validator {
             header_info,
             block_info,
         })
+    }
+
+    fn get_two_way_peg_data(&self, start_block: Option<String>, end_block: String) -> RpcResult<Vec<TwoWayPegData>> {
+        // Parse the end block hash from hex string
+        let end_block_hash = bitcoin::BlockHash::from_str(&end_block)
+            .map_err(|e| ErrorObject::owned(-1, format!("Invalid end block hash: {}", e), Option::<()>::None))?;
+        
+        // Parse the start block hash if provided
+        let start_block_hash = if let Some(start_block_str) = start_block {
+            let hash = bitcoin::BlockHash::from_str(&start_block_str)
+                .map_err(|e| ErrorObject::owned(-1, format!("Invalid start block hash: {}", e), Option::<()>::None))?;
+            Some(hash)
+        } else {
+            None
+        };
+        
+        // Get two-way peg data
+        let two_way_peg_data = self.get_two_way_peg_data(start_block_hash, end_block_hash)
+            .map_err(|e| ErrorObject::owned(-1, format!("Failed to get two-way peg data: {}", e), Option::<()>::None))?;
+        
+        Ok(two_way_peg_data)
     }
 }

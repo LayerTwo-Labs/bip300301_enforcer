@@ -298,7 +298,7 @@ pub struct Deposit {
     pub value: Amount,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct HeaderInfo {
     pub block_hash: BlockHash,
     pub prev_block_hash: BlockHash,
@@ -379,7 +379,7 @@ impl BlockInfo {
 }
 
 /// Two-way peg data for a single block
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TwoWayPegData {
     pub header_info: HeaderInfo,
     pub block_info: BlockInfo,
