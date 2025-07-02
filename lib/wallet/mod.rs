@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
+    future::Future,
     path::Path,
     str::FromStr,
-    sync::{atomic::AtomicBool, Arc},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -31,10 +32,9 @@ use bitcoin_jsonrpsee::{
 };
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{channel::oneshot, FutureExt, TryFutureExt};
-use parking_lot::Mutex;
+use futures::{FutureExt, TryFutureExt};
 use rusqlite::Connection;
-use tokio::{spawn, task::JoinHandle, time::Instant};
+use tokio::time::Instant;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -643,105 +643,6 @@ impl WalletInner {
     }
 }
 
-pub struct Task {
-    /// Send a startup signal
-    start_tx: Mutex<Option<oneshot::Sender<()>>>,
-    /// Send a shutdown signal.
-    /// Should only be `None` during drop.
-    /// Shutdown signal must be sent before dropping owned tasks.
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    sync: JoinHandle<()>,
-}
-
-impl Task {
-    /// This task may block, and so attempting to abort it may fail.
-    /// see https://docs.rs/tokio/latest/tokio/task/fn.block_in_place.html
-    /// A shutdown signal is used to ensure that the task stops after
-    /// the blocking task completes.
-    async fn sync_task(
-        wallet: Arc<WalletInner>,
-        start_rx: oneshot::Receiver<()>,
-        mut shutdown_rx: oneshot::Receiver<()>,
-    ) {
-        use futures::future::{select, Either};
-        const SYNC_INTERVAL: Duration = Duration::from_secs(15);
-        tracing::debug!(
-            interval = %jiff::SignedDuration::try_from(SYNC_INTERVAL).unwrap(),
-            "wallet sync task: starting"
-        );
-        // Wait for the start signal to be sent before starting the sync.
-        // Take care to also listen for the shutdown signal or channel
-        // closures, which might happen while waiting for the start signal
-        shutdown_rx = match select(start_rx, shutdown_rx).await {
-            // Start signal received
-            Either::Left((Ok(()), shutdown_rx)) => shutdown_rx,
-            // Start signal cancelled
-            Either::Left((Err(_), _shutdown_rx)) => {
-                tracing::info!("shutting down (start signal channel closed)");
-                return;
-            }
-            // Shutdown signal received
-            Either::Right((Ok(()), _start_rx)) => {
-                tracing::info!("shutting down)");
-                return;
-            }
-            // Shutdown signal cancelled
-            Either::Right((Err(_), _start_rx)) => {
-                tracing::info!("shutting down (shutdown signal channel closed)");
-                return;
-            }
-        };
-        let mut sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
-        loop {
-            tokio::select! {
-                biased;  // Prioritize shutdown
-
-                _ = &mut shutdown_rx => {
-                    tracing::info!("shutting down");
-                    return
-                }
-                _ = &mut sleep => {
-                    let tick = Uuid::new_v4().simple();
-                    let span = tracing::span!(tracing::Level::DEBUG,
-                        "wallet_sync",
-                        %tick,
-                    );
-                    let guard = span.enter();
-                    if let Err(err) = wallet.sync().await {
-                        tracing::error!("wallet sync error: {:#}", ErrorChain::new(&err));
-                    }
-                    drop(guard);
-                    sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
-                }
-            }
-        }
-    }
-
-    fn new(wallet: Arc<WalletInner>) -> Self {
-        let (start_tx, start_rx) = oneshot::channel();
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        Self {
-            start_tx: Mutex::new(Some(start_tx)),
-            shutdown_tx: Some(shutdown_tx),
-            sync: spawn(Self::sync_task(wallet, start_rx, shutdown_rx)),
-        }
-    }
-}
-
-impl Drop for Task {
-    fn drop(&mut self) {
-        let Self {
-            start_tx: _start_tx,
-            shutdown_tx,
-            sync,
-        } = self;
-        if let Some(shutdown_tx) = shutdown_tx.take() {
-            let _send_shutdown_signal_result: Result<(), ()> = shutdown_tx.send(());
-        };
-        sync.abort();
-    }
-}
-
 /// Optional parameters for sending a wallet transaction
 #[derive(Debug, Default)]
 pub struct CreateTransactionParams {
@@ -772,9 +673,6 @@ pub struct WalletInfo {
 #[derive(Clone)]
 pub struct Wallet {
     inner: Arc<WalletInner>,
-    task: Arc<Task>,
-
-    has_initial_synced: Arc<AtomicBool>,
 }
 
 impl Wallet {
@@ -787,12 +685,46 @@ impl Wallet {
     ) -> Result<Self, error::InitWallet> {
         let inner =
             Arc::new(WalletInner::new(data_dir, config, main_client, validator, magic).await?);
-        let task = Task::new(inner.clone());
-        Ok(Self {
-            inner,
-            task: Arc::new(task),
-            has_initial_synced: Arc::new(AtomicBool::new(false)),
-        })
+        Ok(Self { inner })
+    }
+
+    pub async fn sync_task<F: Future<Output = ()>>(
+        &self,
+        shutdown_signal: F,
+    ) -> Result<(), miette::Report> {
+        const SYNC_INTERVAL: Duration = Duration::from_secs(15);
+        tracing::debug!(
+            interval = %jiff::SignedDuration::try_from(SYNC_INTERVAL).unwrap(),
+            "wallet sync task: starting"
+        );
+
+        // Needed so we can use `tokio::select!`
+        futures::pin_mut!(shutdown_signal);
+
+        let mut sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
+        loop {
+            tokio::select! {
+                biased;  // Prioritize shutdown
+
+                res = &mut shutdown_signal => {
+                    tracing::info!("shutting down sync task");
+                    return Ok(res);
+                }
+                _ = &mut sleep => {
+                    let tick = Uuid::new_v4().simple();
+                    let span = tracing::span!(tracing::Level::DEBUG,
+                        "wallet_sync",
+                        %tick,
+                    );
+                    let guard = span.enter();
+                    if let Err(err) = self.inner.sync().await {
+                        tracing::error!("wallet sync error: {:#}", ErrorChain::new(&err));
+                    }
+                    drop(guard);
+                    sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
+                }
+            }
+        }
     }
 
     #[allow(clippy::result_large_err)]
@@ -1756,15 +1688,9 @@ impl Wallet {
     )]
     #[instrument(skip_all)]
     pub async fn get_utxos(&self) -> Result<Vec<bdk_wallet::LocalOutput>, error::NotUnlocked> {
-        let start = Instant::now();
         let wallet_read = self.inner.read_wallet().await?;
         let utxos = wallet_read.list_unspent().collect::<Vec<_>>();
 
-        tracing::debug!(
-            "listed {} wallet utxos in {:?}",
-            utxos.len(),
-            start.elapsed()
-        );
         Ok(utxos)
     }
 

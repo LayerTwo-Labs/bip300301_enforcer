@@ -78,6 +78,7 @@ impl ToStatus for NotSynced {
 #[derive(Debug, Diagnostic, Error)]
 #[diagnostic(code(wallet_not_unlocked))]
 #[error("enforcer wallet not unlocked")]
+#[help("use the cusf.mainchain.v1.WalletService/UnlockWallet RPC to unlock the wallet")]
 pub struct NotUnlocked;
 
 impl ToStatus for NotUnlocked {
