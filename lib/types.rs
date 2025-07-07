@@ -298,7 +298,7 @@ pub struct Deposit {
     pub value: Amount,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct HeaderInfo {
     pub block_hash: BlockHash,
     pub prev_block_hash: BlockHash,
@@ -349,7 +349,7 @@ impl From<WithdrawalBundleEvent> for BlockEvent {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct BlockInfo {
     /// Sequential map of sidechain IDs to BMM commitments
     pub bmm_commitments: BmmCommitments,
@@ -379,7 +379,7 @@ impl BlockInfo {
 }
 
 /// Two-way peg data for a single block
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TwoWayPegData {
     pub header_info: HeaderInfo,
     pub block_info: BlockInfo,

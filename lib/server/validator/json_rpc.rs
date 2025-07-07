@@ -30,7 +30,7 @@ impl Serialize for Pong {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct BlockInfoResponse {
     pub header_info: HeaderInfo,
     pub block_info: BlockInfo,
@@ -45,7 +45,7 @@ pub trait Rpc {
     fn get_ctip(&self, sidechain_number: SidechainNumber) -> RpcResult<Ctip>;
 
     #[method(name = "get_block_info")]
-    fn get_block_info(&self, block_hash: String) -> RpcResult<BlockInfoResponse>;
+    fn get_block_info(&self, block_hash: bitcoin::BlockHash) -> RpcResult<BlockInfoResponse>;
 
     #[method(name = "get_two_way_peg_data")]
     fn get_two_way_peg_data(&self, start_block: Option<String>, end_block: String) -> RpcResult<Vec<TwoWayPegData>>;
@@ -63,15 +63,12 @@ impl RpcServer for crate::validator::Validator {
             .map_err(|e| ErrorObject::owned(-1, e.to_string(), Option::<()>::None))
     }
 
-    fn get_block_info(&self, block_hash: String) -> RpcResult<BlockInfoResponse> {
-        // Parse the block hash from hex string
-        let block_hash = bitcoin::BlockHash::from_str(&block_hash)
-            .map_err(|e| ErrorObject::owned(-1, format!("Invalid block hash: {}", e), Option::<()>::None))?;
+    fn get_block_info(&self, block_hash: bitcoin::BlockHash) -> RpcResult<BlockInfoResponse> {
         
         // Get header info and block info
         let header_info = self.get_header_info(&block_hash)
             .map_err(|e| ErrorObject::owned(-1, format!("Failed to get header info: {}", e), Option::<()>::None))?;
-        
+            
         let block_info = self.get_block_info(&block_hash)
             .map_err(|e| ErrorObject::owned(-1, format!("Failed to get block info: {}", e), Option::<()>::None))?;
         

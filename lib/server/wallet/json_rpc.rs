@@ -22,9 +22,9 @@ pub trait Rpc {
         sidechain_id: u32,
         value_sats: u64,
         height: u32,
-        critical_hash: String,
-        prev_bytes: String,
-    ) -> RpcResult<String>;
+        critical_hash: [u8; 32],
+        prev_bytes: [u8; 32],
+    ) -> RpcResult<bitcoin::Txid>;
 
     
 }
@@ -52,9 +52,9 @@ impl RpcServer for crate::wallet::Wallet {
         sidechain_id: u32,
         value_sats: u64,
         height: u32,
-        critical_hash: String,
-        prev_bytes: String,
-    ) -> RpcResult<String> {
+        critical_hash: [u8; 32],
+        prev_bytes: [u8; 32],
+    ) -> RpcResult<bitcoin::Txid> {
         let sidechain_number = SidechainNumber::from(sidechain_id as u8);
         let amount = bdk_wallet::bitcoin::Amount::from_sat(value_sats);
         let locktime = bdk_wallet::bitcoin::absolute::LockTime::from_height(height)
