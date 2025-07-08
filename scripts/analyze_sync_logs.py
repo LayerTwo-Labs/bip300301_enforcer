@@ -39,9 +39,9 @@ def extract_sync_progress(log_file: Path) -> tuple[pd.DataFrame, str, str]:
     git_hash = "unknown"
     build_type = "unknown"
 
-    # Pattern to match sync progress: "updated current chain tip: N"
+    # Pattern to match sync progress: "Syncing block #N"
     progress_pattern = re.compile(
-        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z).*updated current chain tip: (\d+)"
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z).*Syncing block #(\d+)"
     )
 
     # Pattern to match sync start: "identified X missing blocks in Y, starting sync"
