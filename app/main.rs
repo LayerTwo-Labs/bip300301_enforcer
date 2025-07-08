@@ -1084,16 +1084,29 @@ async fn main() -> Result<()> {
 
     let exit_after_sync_task = match cli.exit_after_sync {
         Some(exit_after_sync) => {
+            let validator = match &enforcer {
+                Either::Left(validator) => validator.clone(),
+                Either::Right(wallet) => wallet.validator().clone(),
+            };
+
             let exit_after_sync = if exit_after_sync != 0 {
+                // Sanity check that the user didn't give an exit height that's
+                // below what we're currently at.
+
+                let mainchain_tip = validator.try_get_block_height()?;
+                if exit_after_sync < mainchain_tip.unwrap_or_default() {
+                    return Err(miette!(
+                        "exit-after-sync height {} is below current height {}",
+                        exit_after_sync,
+                        mainchain_tip.unwrap_or_default()
+                    ));
+                }
+
                 exit_after_sync
             } else {
                 info.blocks
             };
 
-            let validator = match &enforcer {
-                Either::Left(validator) => validator.clone(),
-                Either::Right(wallet) => wallet.validator().clone(),
-            };
             let handle = tokio::spawn(async move {
                 tracing::info!(
                     "Waiting for sync to height {} before exiting",
