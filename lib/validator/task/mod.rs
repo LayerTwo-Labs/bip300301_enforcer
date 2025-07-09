@@ -1057,10 +1057,6 @@ where
     // Batch size for concurrent block fetching
     // It's hard to know what a good size here is, without
     // further benchmarking.
-    //
-    // TODO: for some reason we're running into HTTP error about too
-    // large responses when we're also doing just a single DB commit
-    // per batch. Why are these related?
     const BLOCK_FETCH_BATCH_SIZE: usize = 50;
 
     let start = Instant::now();
