@@ -8,8 +8,7 @@ use ordermap::OrderMap;
 use thiserror::Error;
 
 use crate::types::{
-    Ctip, Hash256, M6id, PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposalId,
-    TreasuryUtxo,
+    Ctip, M6id, PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposalId, TreasuryUtxo,
 };
 
 mod block_hashes;
@@ -339,8 +338,8 @@ pub(super) struct Dbs {
     pub block_hashes: BlockHashDbs,
     /// Tip that the enforcer is synced to
     pub current_chain_tip: Database<SerdeBincode<UnitKey>, SerdeBincode<bitcoin::BlockHash>>,
-    pub _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
-    pub _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<Hash256>>>,
+    pub _leading_by_50: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<[u8; 32]>>>,
+    pub _previous_votes: Database<SerdeBincode<UnitKey>, SerdeBincode<Vec<[u8; 32]>>>,
     pub proposal_id_to_sidechain:
         Database<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>,
 }

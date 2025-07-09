@@ -2,6 +2,14 @@ pub mod crypto;
 pub mod validator;
 pub mod wallet;
 
+fn custom_json_rpc_err<Error>(error: Error) -> jsonrpsee::types::ErrorObject<'static>
+where
+    Error: std::error::Error,
+{
+    let err_msg = format!("{:#}", crate::errors::ErrorChain::new(&error));
+    jsonrpsee::types::ErrorObject::owned(-1, err_msg, Option::<()>::None)
+}
+
 pub(crate) fn invalid_field_value<Message, Error>(
     field_name: &str,
     value: &str,

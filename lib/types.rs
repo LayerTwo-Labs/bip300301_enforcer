@@ -11,7 +11,7 @@ use bitcoin::{
     script::{Instruction, Instructions},
     Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Transaction, Txid, Work,
 };
-use derive_more::derive::Display;
+use derive_more::derive::{self, Display};
 use hashlink::LinkedHashMap;
 use miette::Diagnostic;
 use nom::Finish;
@@ -24,7 +24,60 @@ use crate::proto::{StatusBuilder, ToStatus};
 pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
 pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
 
-pub type Hash256 = [u8; 32];
+#[derive(derive::Debug, Clone, Copy, Display, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[debug("{}", hex::encode(_0))]
+#[display("{}", hex::encode(_0))]
+#[repr(transparent)]
+pub struct BmmCommitment(pub [u8; 32]);
+
+impl bitcoin::consensus::Decodable for BmmCommitment {
+    fn consensus_decode<R: bitcoin::io::Read + ?Sized>(
+        reader: &mut R,
+    ) -> Result<Self, bitcoin::consensus::encode::Error> {
+        bitcoin::consensus::Decodable::consensus_decode(reader).map(Self)
+    }
+}
+
+impl bitcoin::consensus::Encodable for BmmCommitment {
+    fn consensus_encode<W>(&self, writer: &mut W) -> Result<usize, bitcoin::io::Error>
+    where
+        W: bitcoin::io::Write + ?Sized,
+    {
+        self.0.consensus_encode(writer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BmmCommitment {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            hex::serde::deserialize(deserializer).map(Self)
+        } else {
+            Deserialize::deserialize(deserializer).map(Self)
+        }
+    }
+}
+
+impl From<[u8; 32]> for BmmCommitment {
+    fn from(inner: [u8; 32]) -> Self {
+        Self(inner)
+    }
+}
+
+impl Serialize for BmmCommitment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            hex::serde::serialize(self.0, serializer)
+        } else {
+            self.0.serialize(serializer)
+        }
+    }
+}
 
 #[derive(
     Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
@@ -57,7 +110,7 @@ impl From<SidechainNumber> for u8 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, derive_more::Display, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Display, Eq, Hash, PartialEq, Serialize)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct M6id(pub Txid);
@@ -298,7 +351,7 @@ pub struct Deposit {
     pub value: Amount,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct HeaderInfo {
     pub block_hash: BlockHash,
     pub prev_block_hash: BlockHash,
@@ -324,7 +377,7 @@ pub struct WithdrawalBundleEvent {
 }
 
 /// BMM commitments for a single block
-pub type BmmCommitments = LinkedHashMap<SidechainNumber, Hash256>;
+pub type BmmCommitments = LinkedHashMap<SidechainNumber, BmmCommitment>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum BlockEvent {
@@ -349,7 +402,33 @@ impl From<WithdrawalBundleEvent> for BlockEvent {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Block info specific to some sidechain
+#[derive(Clone, Debug, Serialize)]
+pub struct SidechainBlockInfo<E = BlockEvent>
+where
+    E: std::borrow::Borrow<BlockEvent>,
+{
+    pub bmm_commitment: Option<BmmCommitment>,
+    pub events: Vec<E>,
+}
+
+impl<E> SidechainBlockInfo<E>
+where
+    E: std::borrow::Borrow<BlockEvent>,
+{
+    pub fn to_owned(&self) -> SidechainBlockInfo<BlockEvent> {
+        SidechainBlockInfo {
+            bmm_commitment: self.bmm_commitment,
+            events: self
+                .events
+                .iter()
+                .map(|event| event.borrow().clone())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct BlockInfo {
     /// Sequential map of sidechain IDs to BMM commitments
     pub bmm_commitments: BmmCommitments,
@@ -376,10 +455,33 @@ impl BlockInfo {
             BlockEvent::Deposit(_) | BlockEvent::SidechainProposal { .. } => None,
         })
     }
+
+    /// Return block info specific to the specified sidechain
+    pub fn only_sidechain(
+        &self,
+        sidechain_number: SidechainNumber,
+    ) -> SidechainBlockInfo<&BlockEvent> {
+        let bmm_commitment = self.bmm_commitments.get(&sidechain_number).copied();
+        let events = self
+            .events
+            .iter()
+            .filter(|event| match event {
+                BlockEvent::Deposit(deposit) => deposit.sidechain_id == sidechain_number,
+                BlockEvent::SidechainProposal { .. } => false,
+                BlockEvent::WithdrawalBundle(bundle_event) => {
+                    bundle_event.sidechain_id == sidechain_number
+                }
+            })
+            .collect();
+        SidechainBlockInfo {
+            bmm_commitment,
+            events,
+        }
+    }
 }
 
 /// Two-way peg data for a single block
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TwoWayPegData {
     pub header_info: HeaderInfo,
     pub block_info: BlockInfo,

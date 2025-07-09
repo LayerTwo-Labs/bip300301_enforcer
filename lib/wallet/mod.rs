@@ -44,7 +44,7 @@ use crate::{
     errors::ErrorChain,
     messages::{self, M8BmmRequest},
     types::{
-        BDKWalletTransaction, BlindedM6, Ctip, M6id, PendingM6idInfo, SidechainAck,
+        BDKWalletTransaction, BlindedM6, BmmCommitment, Ctip, M6id, PendingM6idInfo, SidechainAck,
         SidechainNumber, SidechainProposal, SidechainProposalId,
     },
     validator::{self, Validator},
@@ -932,7 +932,7 @@ impl Wallet {
     async fn get_bmm_requests(
         &self,
         prev_blockhash: &bitcoin::BlockHash,
-    ) -> Result<Vec<(SidechainNumber, [u8; 32])>, rusqlite::Error> {
+    ) -> Result<Vec<(SidechainNumber, BmmCommitment)>, rusqlite::Error> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, _> {
             let mut statement = connection
@@ -942,9 +942,9 @@ impl Wallet {
 
             let queried = statement
                 .query_map([prev_blockhash.as_byte_array()], |row| {
-                    let sidechain_number: u8 = row.get(0)?;
-                    let side_blockhash: [u8; 32] = row.get(1)?;
-                    Ok((SidechainNumber::from(sidechain_number), side_blockhash))
+                    let sidechain_number = SidechainNumber(row.get(0)?);
+                    let side_blockhash = BmmCommitment(row.get(1)?);
+                    Ok((sidechain_number, side_blockhash))
                 })?
                 .collect::<Result<_, _>>()?;
 
@@ -1786,12 +1786,12 @@ impl Wallet {
     fn bmm_request_message(
         sidechain_number: SidechainNumber,
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: [u8; 32],
+        sidechain_block_hash: BmmCommitment,
     ) -> Result<bdk_wallet::bitcoin::ScriptBuf, bitcoin::script::PushBytesError> {
         let message = [
             &M8BmmRequest::TAG[..],
             &[sidechain_number.into()],
-            &sidechain_block_hash,
+            sidechain_block_hash.0.as_slice(),
             &prev_mainchain_block_hash.to_byte_array(),
         ]
         .concat();
@@ -1807,7 +1807,7 @@ impl Wallet {
         &self,
         sidechain_number: SidechainNumber,
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: [u8; 32],
+        sidechain_block_hash: BmmCommitment,
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmTx> {
@@ -1852,7 +1852,7 @@ impl Wallet {
         &self,
         sidechain_number: SidechainNumber,
         prev_blockhash: bdk_wallet::bitcoin::BlockHash,
-        side_block_hash: [u8; 32],
+        side_block_hash: BmmCommitment,
     ) -> Result<bool, rusqlite::Error> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<bool, rusqlite::Error> {
@@ -1863,7 +1863,7 @@ impl Wallet {
                 .execute((
                     u8::from(sidechain_number),
                     prev_blockhash.to_byte_array(),
-                    side_block_hash,
+                    side_block_hash.0,
                 ))
                 .map_or_else(
                     |err| if err.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
@@ -1886,7 +1886,7 @@ impl Wallet {
         &self,
         sidechain_number: SidechainNumber,
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: [u8; 32],
+        sidechain_block_hash: BmmCommitment,
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<Option<bdk_wallet::bitcoin::Transaction>, error::CreateBmmRequest> {
