@@ -147,13 +147,13 @@ impl Wallet {
         }
 
         let bmm_hashes = self.get_bmm_requests(&mainchain_tip).await?;
-        for (sidechain_number, bmm_hash) in &bmm_hashes {
+        for (sidechain_number, bmm_hash) in bmm_hashes.iter().copied() {
             tracing::info!(
                 "Generate: adding BMM accept for SC {} with hash: {}",
                 sidechain_number,
-                hex::encode(bmm_hash)
+                bmm_hash
             );
-            coinbase_builder.bmm_accept(*sidechain_number, bmm_hash)?;
+            coinbase_builder.bmm_accept(sidechain_number, bmm_hash)?;
         }
         for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
             for (m6id, _blinded_m6, m6id_info) in m6ids {

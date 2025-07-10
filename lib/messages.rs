@@ -24,8 +24,8 @@ use thiserror::Error;
 use crate::{
     proto::{StatusBuilder, ToStatus},
     types::{
-        M6id, SidechainDeclaration, SidechainDescription, SidechainNumber, SidechainProposal,
-        OP_DRIVECHAIN,
+        BmmCommitment, M6id, SidechainDeclaration, SidechainDescription, SidechainNumber,
+        SidechainProposal, OP_DRIVECHAIN,
     },
 };
 
@@ -229,10 +229,16 @@ impl TryFrom<M4AckBundles> for ScriptBuf {
     }
 }
 
+fn parse_bmm_commitment(input: &[u8]) -> IResult<&[u8], BmmCommitment> {
+    let (input, bmm_commitment) = take(32usize)(input)?;
+    let bmm_commitment = BmmCommitment(bmm_commitment.try_into().unwrap());
+    Ok((input, bmm_commitment))
+}
+
 #[derive(Debug)]
 pub struct M7BmmAccept {
     pub sidechain_number: SidechainNumber,
-    pub sidechain_block_hash: [u8; 32],
+    pub sidechain_block_hash: BmmCommitment,
 }
 
 impl M7BmmAccept {
@@ -241,10 +247,7 @@ impl M7BmmAccept {
     fn parse(input: &[u8]) -> IResult<&[u8], Self> {
         let (input, sidechain_number) = take(1usize)(input)?;
         let sidechain_number = sidechain_number[0];
-        let (input, sidechain_block_hash) = take(32usize)(input)?;
-        // Unwrap here is fine, because if we didn't get exactly 32 bytes we'd fail on the previous
-        // line.
-        let sidechain_block_hash = sidechain_block_hash.try_into().unwrap();
+        let (input, sidechain_block_hash) = parse_bmm_commitment(input)?;
         let message = Self {
             sidechain_number: SidechainNumber::from(sidechain_number),
             sidechain_block_hash,
@@ -264,7 +267,7 @@ impl TryFrom<M7BmmAccept> for ScriptBuf {
         let message = [
             &M7BmmAccept::TAG[..],
             &[sidechain_number.into()],
-            &sidechain_block_hash,
+            &sidechain_block_hash.0[..],
         ]
         .concat();
         let data = PushBytesBuf::try_from(message)?;
@@ -559,11 +562,11 @@ impl CoinbaseBuilder {
     pub fn bmm_accept(
         &mut self,
         sidechain_number: SidechainNumber,
-        bmm_hash: &[u8; 32],
+        sidechain_block_hash: BmmCommitment,
     ) -> Result<&mut Self, CoinbaseMessagesError> {
         let message = CoinbaseMessage::M7BmmAccept(M7BmmAccept {
             sidechain_number,
-            sidechain_block_hash: *bmm_hash,
+            sidechain_block_hash,
         });
         self.messages.push(message)?;
         Ok(self)
@@ -580,7 +583,7 @@ impl Default for CoinbaseBuilder {
 pub struct M8BmmRequest {
     pub sidechain_number: SidechainNumber,
     // Also called H* or critical hash, critical data hash, hash critical
-    pub sidechain_block_hash: [u8; 32],
+    pub sidechain_block_hash: BmmCommitment,
     pub prev_mainchain_block_hash: [u8; 32],
 }
 
@@ -602,9 +605,8 @@ impl M8BmmRequest {
         let (input, _) = tag(Self::TAG)(input)?;
         let (input, sidechain_number) = take(1usize)(input)?;
         let sidechain_number = sidechain_number[0];
-        let (input, sidechain_block_hash) = take(32usize)(input)?;
+        let (input, sidechain_block_hash) = parse_bmm_commitment(input)?;
         let (input, prev_mainchain_block_hash) = take(32usize)(input)?;
-        let sidechain_block_hash = sidechain_block_hash.try_into().unwrap();
         let prev_mainchain_block_hash = prev_mainchain_block_hash.try_into().unwrap();
         let message = Self {
             sidechain_number: sidechain_number.into(),
@@ -825,7 +827,7 @@ mod tests {
 
         assert!(remaining.is_empty());
         assert_eq!(result.sidechain_number, sidechain_number);
-        assert_eq!(result.sidechain_block_hash.to_vec(), critical_bytes);
+        assert_eq!(result.sidechain_block_hash.0.as_slice(), critical_bytes);
         assert_eq!(
             result.prev_mainchain_block_hash.to_vec(),
             prev_mainchain_block_hash

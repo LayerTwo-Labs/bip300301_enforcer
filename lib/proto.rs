@@ -774,25 +774,30 @@ pub mod mainchain {
         }
     }
 
-    impl crate::types::BlockInfo {
-        pub fn as_proto(&self, sidechain_number: SidechainNumber) -> BlockInfo {
-            let bmm_commitment = self.bmm_commitments.get(&sidechain_number);
-            let events = self
+    impl<E> From<&crate::types::SidechainBlockInfo<E>> for BlockInfo
+    where
+        E: std::borrow::Borrow<crate::types::BlockEvent>,
+    {
+        fn from(block_info: &crate::types::SidechainBlockInfo<E>) -> Self {
+            let bmm_commitment = block_info.bmm_commitment.as_ref().map(ConsensusHex::encode);
+            let events = block_info
                 .events
                 .iter()
                 .filter_map(|event| {
-                    let (event_sidechain_number, event) = Option::<_>::from(event)?;
-                    if event_sidechain_number == sidechain_number {
-                        Some(event)
-                    } else {
-                        None
-                    }
+                    let (_event_sidechain_number, event) = Option::<_>::from(event.borrow())?;
+                    Some(event)
                 })
                 .collect();
-            BlockInfo {
-                bmm_commitment: bmm_commitment.map(ConsensusHex::encode),
+            Self {
+                bmm_commitment,
                 events,
             }
+        }
+    }
+
+    impl crate::types::BlockInfo {
+        pub fn as_proto(&self, sidechain_number: SidechainNumber) -> BlockInfo {
+            (&self.only_sidechain(sidechain_number)).into()
         }
     }
 
