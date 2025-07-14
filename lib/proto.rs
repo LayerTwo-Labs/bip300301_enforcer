@@ -663,6 +663,7 @@ pub mod mainchain {
                 prev_block_hash: Some(ReverseHex::encode(&header_info.prev_block_hash)),
                 height: header_info.height,
                 work: Some(ConsensusHex::encode(&header_info.work.to_le_bytes())),
+                timestamp: header_info.timestamp as u64,
             }
         }
     }

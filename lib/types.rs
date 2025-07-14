@@ -357,6 +357,7 @@ pub struct HeaderInfo {
     pub prev_block_hash: BlockHash,
     pub height: u32,
     pub work: Work,
+    pub timestamp: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
