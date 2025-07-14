@@ -379,6 +379,7 @@ impl BlockHashDbs {
             prev_block_hash: header.prev_blockhash,
             height,
             work: header.work(),
+            timestamp: header.time,
         };
         Ok(Some(header_info))
     }
