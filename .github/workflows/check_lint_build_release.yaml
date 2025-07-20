@@ -261,7 +261,7 @@ jobs:
           zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
-        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+        uses: yitianyigexiangfa/ssh-scp-ssh-pipelines@v1.1.5
         with:
           host: 45.33.96.47
           user: root
