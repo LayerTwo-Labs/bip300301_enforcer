@@ -756,7 +756,7 @@ pub(in crate::validator) fn connect_block(
             prev_block_hash: prev_mainchain_block_hash,
             height,
             work: block.header.work(),
-            timestamp: block.header.time
+            timestamp: block.header.time,
         };
         Event::ConnectBlock {
             header_info,
