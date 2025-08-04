@@ -4,7 +4,7 @@ use bitcoin::{Amount, OutPoint};
 use fallible_iterator::FallibleIterator as _;
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
-use sneed::{db, env, rwtxn, DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey};
+use sneed::{DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey, db, env, rwtxn};
 use thiserror::Error;
 
 use crate::types::{
@@ -13,7 +13,7 @@ use crate::types::{
 
 mod block_hashes;
 
-pub use self::block_hashes::{error as block_hash_dbs_error, BlockHashDbs};
+pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 
 pub type PendingM6ids = OrderMap<M6id, PendingM6idInfo>;
 

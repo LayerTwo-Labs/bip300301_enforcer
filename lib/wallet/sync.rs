@@ -15,9 +15,8 @@ use crate::{
     cli::WalletSyncSource,
     types::WithdrawalBundleEventKind,
     wallet::{
-        error,
+        BdkWallet, Persistence, WalletInner, error,
         util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
-        BdkWallet, Persistence, WalletInner,
     },
 };
 
@@ -253,7 +252,7 @@ impl WalletInner {
             Either::Right(Either::Right(_disabled)) => {
                 return Err(error::FullScan::InvalidSyncSource {
                     sync_source: WalletSyncSource::Disabled,
-                })
+                });
             }
         };
 

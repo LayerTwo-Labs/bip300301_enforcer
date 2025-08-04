@@ -1,13 +1,19 @@
-use std::time::Instant;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
-use bitcoin::{block::Header, hashes::Hash as _, BlockHash, Txid, Work};
+use bitcoin::{BlockHash, Txid, Work, block::Header, hashes::Hash as _};
 use fallible_iterator::FallibleIterator;
 use heed_types::SerdeBincode;
 use nonempty::NonEmpty;
-use sneed::{db, env, DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn};
+use sneed::{DatabaseDup, DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, db, env};
 use tracing::instrument;
 
-use crate::types::{BlockEvent, BlockInfo, BmmCommitments, HeaderInfo, TwoWayPegData};
+use crate::types::{
+    BlockEvent, BlockInfo, BmmCommitment, BmmCommitments, HeaderInfo, SidechainNumber,
+    TwoWayPegData,
+};
 
 pub mod error {
     use bitcoin::BlockHash;
@@ -32,11 +38,17 @@ pub mod error {
     #[transitive(from(db::error::Put, db::Error), from(db::error::TryGet, db::Error))]
     pub(in crate::validator::dbs::block_hashes) enum PutBlockInfoInner {
         #[error(transparent)]
-        Db(#[from] db::Error),
+        Db(Box<db::Error>),
         #[error(transparent)]
         MissingHeader(#[from] MissingHeader),
         #[error(transparent)]
         MissingParent(#[from] MissingParent),
+    }
+
+    impl From<db::Error> for PutBlockInfoInner {
+        fn from(err: db::Error) -> Self {
+            Self::Db(Box::new(err))
+        }
     }
 
     #[derive(Debug, Error)]
@@ -128,10 +140,18 @@ pub struct BlockHashDbs {
     // All keys in this DB MUST also exist in `header` as keys AND/OR
     // `prev_blockhash` in a value
     height: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<u32>>,
+    // Used for determining conflicts for mempool txs.
+    // Maps block hash and sidechain number to a set of txids and their h*
+    // commitments.
+    #[allow(clippy::type_complexity)]
+    seen_bmm_request_txs: DatabaseDup<
+        SerdeBincode<(BlockHash, SidechainNumber)>,
+        SerdeBincode<(Txid, BmmCommitment)>,
+    >,
 }
 
 impl BlockHashDbs {
-    pub const NUM_DBS: u32 = 6;
+    pub const NUM_DBS: u32 = 7;
 
     pub(super) fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
         let bmm_commitments = DatabaseUnique::create(env, rwtxn, "block_hash_to_bmm_commitments")?;
@@ -140,6 +160,7 @@ impl BlockHashDbs {
         let events = DatabaseUnique::create(env, rwtxn, "block_hash_to_events")?;
         let header = DatabaseUnique::create(env, rwtxn, "block_hash_to_header")?;
         let height = DatabaseUnique::create(env, rwtxn, "block_hash_to_height")?;
+        let seen_bmm_request_txs = DatabaseDup::create(env, rwtxn, "seen_bmm_request_txs")?;
         Ok(Self {
             bmm_commitments,
             coinbase_txid,
@@ -147,6 +168,7 @@ impl BlockHashDbs {
             events,
             header,
             height,
+            seen_bmm_request_txs,
         })
     }
 
@@ -501,5 +523,68 @@ impl BlockHashDbs {
         }
         res.reverse();
         Ok(res)
+    }
+
+    /// Get seen BMM requests for a given parent block hash and sidechain slot.
+    /// Returns a map of h* commitments to txids.
+    pub fn get_seen_bmm_requests(
+        &self,
+        rotxn: &RoTxn,
+        parent_block_hash: BlockHash,
+        sidechain_slot: SidechainNumber,
+    ) -> Result<HashMap<BmmCommitment, HashSet<Txid>>, db::Error> {
+        self.seen_bmm_request_txs
+            .get(rotxn, &(parent_block_hash, sidechain_slot))?
+            .fold(
+                HashMap::<_, HashSet<_>>::new(),
+                |mut res, (txid, commitment)| {
+                    res.entry(commitment).or_default().insert(txid);
+                    Ok(res)
+                },
+            )
+            .map_err(db::Error::from)
+    }
+
+    /// Get seen BMM requests for a given parent block hash/
+    /// Returns a map of sidechain numbers to h* commitments to txids.
+    pub fn get_seen_bmm_requests_for_parent_block(
+        &self,
+        rotxn: &RoTxn,
+        parent_block_hash: BlockHash,
+    ) -> Result<HashMap<SidechainNumber, HashMap<BmmCommitment, HashSet<Txid>>>, db::error::Range>
+    {
+        self.seen_bmm_request_txs
+            .range_through_duplicate_values(
+                rotxn,
+                &((parent_block_hash, SidechainNumber::MIN)
+                    ..=(parent_block_hash, SidechainNumber::MAX)),
+            )?
+            .fold(
+                HashMap::<_, HashMap<_, HashSet<_>>>::new(),
+                |mut res, ((_parent_block_hash, sidechain_slot), (txid, commitment))| {
+                    res.entry(sidechain_slot)
+                        .or_default()
+                        .entry(commitment)
+                        .or_default()
+                        .insert(txid);
+                    Ok(res)
+                },
+            )
+            .map_err(db::error::Range::from)
+    }
+
+    pub fn put_seen_bmm_request(
+        &self,
+        rwtxn: &mut RwTxn,
+        parent_block_hash: BlockHash,
+        sidechain_slot: SidechainNumber,
+        txid: Txid,
+        commitment: BmmCommitment,
+    ) -> Result<(), db::error::Put> {
+        self.seen_bmm_request_txs.put(
+            rwtxn,
+            &(parent_block_hash, sidechain_slot),
+            &(txid, commitment),
+        )
     }
 }

@@ -5,13 +5,14 @@ use bdk_esplora::esplora_client;
 use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
 use either::Either;
-use miette::{diagnostic, Diagnostic};
+use miette::{Diagnostic, diagnostic};
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
     cli::WalletSyncSource,
     errors::ErrorChain,
+    messages::CoinbaseMessagesError,
     proto::{StatusBuilder, ToStatus},
     types::SidechainNumber,
     validator::{self, Validator},
@@ -229,11 +230,7 @@ pub(crate) enum ReadDbMnemonicInner {
 impl ReadDbMnemonicInner {
     /// Display a bool that indicates if an `Option<_>` is `Some` or `None`.
     fn display_is_some(is_some: bool) -> &'static str {
-        if is_some {
-            "Some"
-        } else {
-            "None"
-        }
+        if is_some { "Some" } else { "None" }
     }
 }
 
@@ -535,8 +532,7 @@ impl ToStatus for BitcoinCoreRPC {
             {
                 // Try being super precise here. Easy to confuse the /enforcer/ wallet not being
                 // loaded with the /bitcoin core/ wallet not being loaded.
-                let err_msg =
-                    "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet WALLET_NAME`)";
+                let err_msg = "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet WALLET_NAME`)";
                 StatusBuilder {
                     code: tonic::Code::FailedPrecondition,
                     fmt_message: Box::new(|f| err_msg.fmt(f)),
@@ -813,7 +809,13 @@ impl From<rusqlite::Error> for ConnectBlock {
 #[derive(Debug, Diagnostic, Error)]
 pub(in crate::wallet) enum InitialBlockTemplateInner {
     #[error(transparent)]
+    CoinbaseMessages(#[from] CoinbaseMessagesError),
+    #[error(transparent)]
     GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
+    #[error(transparent)]
+    GetSeenBmmRequestsForParentBlock(
+        #[from] crate::validator::GetSeenBmmRequestsForParentBlockError,
+    ),
     #[error(transparent)]
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
 }
@@ -834,8 +836,12 @@ where
 
 #[derive(Debug, Error)]
 pub(in crate::wallet) enum SuffixTxsInner {
+    #[error(transparent)]
+    CoinbaseMessages(#[from] CoinbaseMessagesError),
     #[error("Failed to apply initial block template")]
     InitialBlockTemplate,
+    #[error("Failed to generate coinbase txouts suffix")]
+    GenerateSuffixCoinbaseTxouts(#[source] bitcoin::script::PushBytesError),
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GenerateSuffixTxs),
     #[error(transparent)]
@@ -1006,6 +1012,8 @@ impl ToStatus for GenerateSignetBlock {
 
 #[derive(Diagnostic, Debug, Error)]
 pub enum GenerateBlock {
+    #[error(transparent)]
+    CoinbaseBuilder(#[from] CoinbaseMessagesError),
     #[error("failed to delete BMM requests")]
     DeleteBmmRequests(#[source] rusqlite::Error),
     #[error(transparent)]
@@ -1014,6 +1022,8 @@ pub enum GenerateBlock {
     GenerateSignetBlock(#[from] GenerateSignetBlock),
     #[error(transparent)]
     Mine(#[from] Mine),
+    #[error(transparent)]
+    PushBytesBuf(#[from] bitcoin::script::PushBytesError),
     #[error(transparent)]
     SelectBlockTxs(#[from] SelectBlockTxs),
     #[error(transparent)]
@@ -1025,12 +1035,15 @@ pub enum GenerateBlock {
 impl ToStatus for GenerateBlock {
     fn builder(&self) -> StatusBuilder {
         match self {
+            Self::CoinbaseBuilder(err) => err.builder(),
             Self::GenerateCoinbaseTxouts(err) => err.builder(),
             Self::GenerateSignetBlock(err) => err.builder(),
             Self::Mine(err) => err.builder(),
             Self::SelectBlockTxs(err) => err.builder(),
             Self::TryGetMainchainTip(err) => err.builder(),
-            Self::DeleteBmmRequests(_) | Self::ValidatorNotSynced => StatusBuilder::new(self),
+            Self::DeleteBmmRequests(_) | Self::PushBytesBuf(_) | Self::ValidatorNotSynced => {
+                StatusBuilder::new(self)
+            }
         }
     }
 }
@@ -1131,7 +1144,9 @@ pub enum SendWalletTransaction {
     CreateSendPsbt(#[from] CreateSendPsbt),
     #[error(transparent)]
     SignTransaction(#[from] WalletSignTransaction),
-    #[error("failed to broadcast OP_DRIVECHAIN transaction (make sure your node has 'acceptnonstdtxn=1' in its configuration)")]
+    #[error(
+        "failed to broadcast OP_DRIVECHAIN transaction (make sure your node has 'acceptnonstdtxn=1' in its configuration)"
+    )]
     OpDrivechainNotSupported,
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),

@@ -1,13 +1,13 @@
 use std::str::FromStr;
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, AeadCore, KeyInit, OsRng},
 };
 use argon2::Argon2;
 use bdk_wallet::{
     bip39::{Language, Mnemonic},
-    keys::{bip39::WordCount, GeneratableKey, GeneratedKey},
+    keys::{GeneratableKey, GeneratedKey, bip39::WordCount},
     miniscript::miniscript,
 };
 
@@ -47,7 +47,7 @@ impl EncryptedMnemonic {
         password: &str,
     ) -> Result<Self, error::EncryptMnemonic> {
         use rand::Rng;
-        let key_salt = OsRng.gen::<[u8; 16]>();
+        let key_salt = OsRng.r#gen::<[u8; 16]>();
 
         let key_bytes = stretch_password(password, &key_salt)?;
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);

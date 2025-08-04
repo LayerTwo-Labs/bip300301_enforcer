@@ -7,22 +7,23 @@ use std::{
 };
 
 use async_broadcast::TrySendError;
-use bitcoin::{hashes::Hash as _, Block, BlockHash, Transaction, Txid};
-use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer};
+use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
+use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer, TxAcceptAction};
 use fallible_iterator::FallibleIterator;
 use fatality::Nested as _;
 use futures::TryFutureExt as _;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
-use sneed::{db, env, rwtxn, RoTxn, RwTxn};
+use sneed::{RoTxn, RwTxn, db, env, rwtxn};
 use thiserror::Error;
 
 use crate::{
+    messages::parse_m8_tx,
     proto::mainchain::HeaderSyncProgress,
     types::{Ctip, Event, SidechainNumber},
     validator::{
-        task::{self, error::ValidateTransaction as ValidateTransactionError},
         Validator,
+        task::{self, error::ValidateTransaction as ValidateTransactionError},
     },
 };
 
@@ -42,9 +43,17 @@ enum ConnectBlockErrorInner {
     #[error(transparent)]
     DbTryGet(#[from] db::error::TryGet),
     #[error(transparent)]
+    DbRange(Box<db::error::Range>),
+    #[error(transparent)]
     NestedWriteTxn(#[from] env::error::NestedWriteTxn),
     #[error(transparent)]
     WriteTxn(#[from] env::error::WriteTxn),
+}
+
+impl From<db::error::Range> for ConnectBlockErrorInner {
+    fn from(err: db::error::Range) -> Self {
+        Self::DbRange(Box::new(err))
+    }
 }
 
 impl From<<task::error::ConnectBlock as fatality::Split>::Fatal> for ConnectBlockErrorInner {
@@ -85,6 +94,32 @@ pub struct DisconnectBlockError(DisconnectBlockErrorInner);
 impl<Err> From<Err> for DisconnectBlockError
 where
     DisconnectBlockErrorInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+enum AcceptTxErrorInner {
+    #[error(transparent)]
+    Commit(#[from] rwtxn::error::Commit),
+    #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error(transparent)]
+    ValidateTransaction(#[from] ValidateTransactionError),
+    #[error(transparent)]
+    WriteTxn(#[from] env::error::WriteTxn),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct AcceptTxError(AcceptTxErrorInner);
+
+impl<Err> From<Err> for AcceptTxError
+where
+    AcceptTxErrorInner: From<Err>,
 {
     fn from(err: Err) -> Self {
         Self(err.into())
@@ -192,8 +227,16 @@ fn connect_block_no_commit<'validator>(
         .into_nested()?
     {
         Ok(event) => {
-            // FIXME: implement
-            let remove_mempool_txs = HashSet::new();
+            let remove_mempool_txs = parent_child_rwtxn
+                .with_child(|child_rotxn| {
+                    validator
+                        .dbs
+                        .block_hashes
+                        .get_seen_bmm_requests_for_parent_block(child_rotxn, parent)
+                })?
+                .into_values()
+                .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
+                .collect();
             Ok(ConnectBlockRwTxnAction::Accept {
                 event,
                 remove_mempool_txs,
@@ -360,20 +403,58 @@ impl CusfEnforcer for Validator {
         Ok(())
     }
 
-    type AcceptTxError = ValidateTransactionError;
+    type AcceptTxError = AcceptTxError;
 
     fn accept_tx<TxRef>(
         &mut self,
         tx: &Transaction,
         _tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
-    ) -> Result<bool, Self::AcceptTxError>
+    ) -> Result<TxAcceptAction, Self::AcceptTxError>
     where
         TxRef: Borrow<Transaction>,
     {
+        let mut rwtxn = self.dbs.write_txn()?;
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
-        let res = task::validate_tx(&self.dbs, tx)?;
+        let res = if task::validate_tx(&self.dbs, &mut rwtxn, tx)? {
+            let conflicts_with = if let Some(bmm_request) = parse_m8_tx(tx) {
+                let txid = tx.compute_txid();
+                let conflicts_with = {
+                    let mut seen_bmm_request_txs = self
+                        .dbs
+                        .block_hashes
+                        .get_seen_bmm_requests(
+                            &rwtxn,
+                            bmm_request.prev_mainchain_block_hash,
+                            bmm_request.sidechain_number,
+                        )?
+                        .into_values()
+                        .flatten()
+                        .collect::<HashSet<_>>();
+                    seen_bmm_request_txs.remove(&txid);
+                    seen_bmm_request_txs
+                };
+                let () = self
+                    .dbs
+                    .block_hashes
+                    .put_seen_bmm_request(
+                        &mut rwtxn,
+                        bmm_request.prev_mainchain_block_hash,
+                        bmm_request.sidechain_number,
+                        txid,
+                        bmm_request.sidechain_block_hash,
+                    )
+                    .map_err(db::Error::from)?;
+                rwtxn.commit()?;
+                conflicts_with
+            } else {
+                HashSet::new()
+            };
+            TxAcceptAction::Accept { conflicts_with }
+        } else {
+            TxAcceptAction::Reject
+        };
         Ok(res)
     }
 }

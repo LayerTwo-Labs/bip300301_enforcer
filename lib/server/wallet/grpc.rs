@@ -1,10 +1,10 @@
 use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 
 use bdk_wallet::bip39::Mnemonic;
-use bitcoin::{hashes::Hash as _, Address, Amount, BlockHash, Transaction};
+use bitcoin::{Address, Amount, BlockHash, Transaction, hashes::Hash as _};
 use futures::{
-    stream::{BoxStream, FusedStream},
     StreamExt as _,
+    stream::{BoxStream, FusedStream},
 };
 use thiserror::Error;
 
@@ -12,35 +12,36 @@ use crate::{
     convert,
     errors::ErrorChain,
     proto::{
+        StatusBuilder, ToStatus,
         common::ReverseHex,
         mainchain::{
-            create_sidechain_proposal_response, get_info_response,
+            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
+            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
+            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
+            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
+            CreateSidechainProposalResponse, CreateWalletRequest, CreateWalletResponse,
+            GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
+            GetInfoRequest, GetInfoResponse, ListSidechainDepositTransactionsRequest,
+            ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
+            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
+            SendTransactionRequest, SendTransactionResponse, UnlockWalletRequest,
+            UnlockWalletResponse, WalletTransaction, create_sidechain_proposal_response,
+            get_info_response,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
-            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
-            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
-            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
-            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
-            CreateSidechainProposalRequest, CreateSidechainProposalResponse, CreateWalletRequest,
-            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
-            GetBalanceResponse, GetInfoRequest, GetInfoResponse,
-            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
-            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
-            ListUnspentOutputsResponse, SendTransactionRequest, SendTransactionResponse,
-            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
+            wallet_service_server::WalletService,
         },
-        StatusBuilder, ToStatus,
     },
     server::{invalid_field_value, missing_field},
     types::{BlindedM6, Event, SidechainNumber},
-    wallet::{error::WalletInitialization, CreateTransactionParams},
+    wallet::{CreateTransactionParams, error::WalletInitialization},
 };
 
 /// Stream (non-)confirmations for a sidechain proposal
 fn stream_proposal_confirmations(
     validator: &crate::validator::Validator,
     sidechain_proposal: crate::types::SidechainProposal,
-) -> impl FusedStream<Item = Result<CreateSidechainProposalResponse, tonic::Status>> {
+) -> impl FusedStream<Item = Result<CreateSidechainProposalResponse, tonic::Status>> + use<> {
     fn connect_block_event(
         sidechain_proposal: &crate::types::SidechainProposal,
         confirmations: &mut HashMap<BlockHash, (u32, Arc<bitcoin::OutPoint>)>,
@@ -362,7 +363,7 @@ impl WalletService for crate::wallet::Wallet {
             Ok(false) => {
                 return Err(tonic::Status::failed_precondition(
                     "sidechain is not active",
-                ))
+                ));
             }
             Ok(true) => (),
             Err(err) => return Err(tonic::Status::from_error(err.into())),

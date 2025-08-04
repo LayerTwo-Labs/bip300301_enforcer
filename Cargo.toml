@@ -10,7 +10,7 @@ authors = [
     "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>",
     "Torkel Rogstad <torkel@rogstad.io>",
 ]
-edition = "2021"
+edition = "2024"
 publish = false
 version = "0.3.4"
 
@@ -39,7 +39,7 @@ rev = "36b5f67f69ed25a0a003f0cb82e9c5663fc0f2f2"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "a135b448031bd8e6ca7fac9104a782e7380dced7"
+rev = "ce4d748691329d4ed5f1e1df703a752ab623e114"
 
 [workspace.dependencies.educe]
 version = "0.6.0"

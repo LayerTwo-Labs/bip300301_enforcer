@@ -8,21 +8,21 @@ use bip300301_enforcer_lib::{
     proto::{
         self,
         mainchain::{
+            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
             validator_service_client::ValidatorServiceClient,
-            wallet_service_client::WalletServiceClient, BroadcastWithdrawalBundleRequest,
-            BroadcastWithdrawalBundleResponse,
+            wallet_service_client::WalletServiceClient,
         },
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
 use bitcoin::{Address, Txid};
-use futures::{channel::mpsc, future, FutureExt as _, StreamExt};
+use futures::{FutureExt as _, StreamExt, channel::mpsc, future};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
 use tokio::{
     net::TcpStream,
-    time::{sleep, timeout, Duration},
+    time::{Duration, sleep, timeout},
 };
 
 use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer};
@@ -669,7 +669,7 @@ impl DummySidechain {
     fn extract_withdrawal_bundle_event(
         block_event: proto::mainchain::block_info::Event,
     ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, tonic::Status> {
-        use proto::{mainchain::block_info::event::Event, ToStatus};
+        use proto::{ToStatus, mainchain::block_info::event::Event};
         let event = block_event.event.ok_or_else(|| {
             proto::Error::missing_field::<proto::mainchain::block_info::Event>("event")
                 .builder()
@@ -684,15 +684,15 @@ impl DummySidechain {
     /// Consume ready chunks from event stream
     fn update_from_events(&mut self) -> Result<(), DummySidechainError> {
         use bip300301_enforcer_lib::proto::{
-            self,
+            self, ToStatus,
             mainchain::{
+                SubscribeEventsResponse, WithdrawalBundleEvent,
                 subscribe_events_response::{
                     self,
                     event::{ConnectBlock, Event},
                 },
-                withdrawal_bundle_event, SubscribeEventsResponse, WithdrawalBundleEvent,
+                withdrawal_bundle_event,
             },
-            ToStatus,
         };
         let Some(events_stream) = self.event_stream.take() else {
             return Err(DummySidechainError::EventStreamCancelled);
