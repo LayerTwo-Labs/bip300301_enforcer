@@ -1,6 +1,6 @@
 use bitcoin_jsonrpsee::{
-    jsonrpsee::{core::ClientError, http_client::HttpClient},
     MainClient,
+    jsonrpsee::{core::ClientError, http_client::HttpClient},
 };
 use miette::miette;
 

@@ -6,14 +6,14 @@ use bip300301_enforcer_lib::{
         self,
         common::{ConsensusHex, Hex},
         mainchain::{
-            block_info, withdrawal_bundle_event, CreateDepositTransactionRequest,
-            CreateDepositTransactionResponse, CreateSidechainProposalRequest,
-            GetSidechainProposalsRequest, GetSidechainsRequest,
+            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
+            CreateSidechainProposalRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
+            block_info, withdrawal_bundle_event,
         },
     },
 };
 use bitcoin::Amount;
-use futures::{channel::mpsc, StreamExt as _, TryStreamExt as _};
+use futures::{StreamExt as _, TryStreamExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument;
@@ -22,7 +22,7 @@ use crate::{
     mine::{
         mine, mine_check_block_events, mine_gbt_check, mine_generateblocks_check, mine_signet_check,
     },
-    setup::{setup, DummySidechain, MiningMode, Mode, Network, PostSetup, Sidechain},
+    setup::{DummySidechain, MiningMode, Mode, Network, PostSetup, Sidechain, setup},
     util::{self, AsyncTrial, BinPaths},
 };
 
@@ -208,9 +208,11 @@ where
         .events
         .as_slice()
     {
-        [block_info::Event {
-            event: Some(block_info::event::Event::Deposit(_)),
-        }] => Ok(()),
+        [
+            block_info::Event {
+                event: Some(block_info::event::Event::Deposit(_)),
+            },
+        ] => Ok(()),
         events => anyhow::bail!("Expected deposit event, found `{events:?}`"),
     })
     .await?;

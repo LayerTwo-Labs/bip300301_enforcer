@@ -20,7 +20,7 @@ pub async fn broadcast_nonstandard_tx(
     magic: Magic,
     tx: bitcoin::Transaction,
 ) -> Result<bool, bitcoin_send_tx_p2p::Error> {
-    use bitcoin_send_tx_p2p::{send_tx_p2p_over_clearnet, Config, Error};
+    use bitcoin_send_tx_p2p::{Config, Error, send_tx_p2p_over_clearnet};
     let mut config = Config::default();
     config.block_height = block_height;
     config.magic = magic;
@@ -32,7 +32,7 @@ pub async fn broadcast_nonstandard_tx(
 }
 
 pub fn compute_signet_magic(signet_challenge: &bitcoin::Script) -> Magic {
-    use bitcoin::hashes::{sha256d, Hash as _, HashEngine as _};
+    use bitcoin::hashes::{Hash as _, HashEngine as _, sha256d};
     let mut hasher = sha256d::Hash::engine();
     hasher.input(&[0x25]);
     hasher.input(signet_challenge.as_bytes());

@@ -7,7 +7,7 @@ use futures::channel::mpsc;
 
 use crate::{
     integration_test,
-    setup::{setup, DummySidechain, Mode, Network},
+    setup::{DummySidechain, Mode, Network, setup},
     util::BinPaths,
 };
 

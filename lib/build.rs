@@ -42,12 +42,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set git hash as environment variable for runtime access
     match get_git_hash() {
         Ok(hash) => {
-            println!("cargo:rustc-env=GIT_HASH={}", hash);
+            println!("cargo:rustc-env=GIT_HASH={hash}");
             println!("cargo:rerun-if-changed=.git/HEAD");
             println!("cargo:rerun-if-changed=.git/refs/heads");
         }
         Err(e) => {
-            println!("cargo:warning=Failed to get git hash: {}", e);
+            println!("cargo:warning=Failed to get git hash: {e:#}");
             println!("cargo:rustc-env=GIT_HASH=unknown");
         }
     }

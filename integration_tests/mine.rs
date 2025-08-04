@@ -3,13 +3,12 @@
 use bip300301_enforcer_lib::{
     bins::{CommandError, CommandExt, SignetMiner},
     proto::{
-        self,
+        self, ToStatus,
         mainchain::{
-            subscribe_events_response::event::ConnectBlock, BlockHeaderInfo, GenerateBlocksRequest,
-            GenerateBlocksResponse, SubscribeEventsRequest,
+            BlockHeaderInfo, GenerateBlocksRequest, GenerateBlocksResponse, SubscribeEventsRequest,
+            subscribe_events_response::event::ConnectBlock,
         },
-        sidechain::{subscribe_events_response, SubscribeEventsResponse},
-        ToStatus,
+        sidechain::{SubscribeEventsResponse, subscribe_events_response},
     },
 };
 use bitcoin::Address;
@@ -192,7 +191,7 @@ where
                 check(block_hash).map_err(Either::Right)?
             }
             Event::DisconnectBlock(_) => {
-                return Err(Either::Left(MineSignetError::BlockDisconnect))
+                return Err(Either::Left(MineSignetError::BlockDisconnect));
             }
         };
     }
