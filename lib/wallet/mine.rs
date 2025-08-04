@@ -6,26 +6,26 @@ use std::{
 };
 
 use bitcoin::{
+    Amount, Block, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+    Txid, Witness,
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
     consensus::Encodable as _,
-    constants::{genesis_block, SUBSIDY_HALVING_INTERVAL},
+    constants::{SUBSIDY_HALVING_INTERVAL, genesis_block},
     hash_types::TxMerkleNode,
     hashes::Hash as _,
     merkle_tree,
-    opcodes::{all::OP_RETURN, OP_0},
+    opcodes::{OP_0, all::OP_RETURN},
     script::PushBytesBuf,
     transaction::Version as TxVersion,
-    Amount, Block, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
-    Txid, Witness,
 };
 use bitcoin_jsonrpsee::{
-    client::{BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _},
     MainClient as _,
+    client::{BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _},
 };
 use futures::{
-    stream::{self, FusedStream},
     StreamExt as _,
+    stream::{self, FusedStream},
 };
 
 use crate::{
@@ -34,8 +34,8 @@ use crate::{
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{Ctip, SidechainAck, SidechainNumber, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
     wallet::{
-        error::{self, BitcoinCoreRPC},
         Wallet,
+        error::{self, BitcoinCoreRPC},
     },
 };
 
@@ -56,15 +56,16 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
 impl Wallet {
-    /// Generate coinbase txouts for a new block
-    pub(in crate::wallet) async fn generate_coinbase_txouts(
+    /// Extend coinbase txouts for a new block
+    pub(in crate::wallet) async fn extend_coinbase_txouts(
         &self,
         ack_all_proposals: bool,
         mainchain_tip: BlockHash,
-    ) -> Result<Vec<TxOut>, error::GenerateCoinbaseTxouts> {
-        let mut coinbase_builder = CoinbaseBuilder::new();
+        coinbase_txouts: &mut Vec<TxOut>,
+    ) -> Result<(), error::GenerateCoinbaseTxouts> {
+        let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
         tracing::debug!(
-            message = "Generating coinbase txouts",
+            message = "Extending coinbase txouts",
             ack_all_proposals = ack_all_proposals,
             mainchain_tip = hex::encode(mainchain_tip.as_byte_array()),
         );
@@ -81,11 +82,18 @@ impl Wallet {
                 );
             })?;
 
-        // Sidechain proposals that already exist in the chain
-        let proposed_sidechains = HashMap::<_, _>::from_iter(self.validator().get_sidechains()?);
+        // Sidechain proposals that already exist in the chain,
+        // or will already be proposed in coinbase txouts
+        let proposed_sidechains = self
+            .validator()
+            .get_sidechains()?
+            .into_iter()
+            .map(|(sidechain_proposal_id, _)| sidechain_proposal_id)
+            .chain(coinbase_builder.messages().m1_sidechain_proposal_ids())
+            .collect::<HashSet<_>>();
 
         for sidechain_proposal in sidechain_proposals {
-            if !proposed_sidechains.contains_key(&sidechain_proposal.compute_id()) {
+            if !proposed_sidechains.contains(&sidechain_proposal.compute_id()) {
                 coinbase_builder.propose_sidechain(sidechain_proposal)?;
             }
         }
@@ -134,9 +142,16 @@ impl Wallet {
                 );
                 continue;
             }
+            if coinbase_builder
+                .messages()
+                .m2_ack_slot_vout(&sidechain_ack.sidechain_number)
+                .is_some()
+            {
+                continue;
+            }
 
             tracing::debug!(
-                "Generate: adding ACK for sidechain {}",
+                "Adding ACK for sidechain {}",
                 sidechain_ack.sidechain_number
             );
 
@@ -147,9 +162,16 @@ impl Wallet {
         }
 
         let bmm_hashes = self.get_bmm_requests(&mainchain_tip).await?;
-        for (sidechain_number, bmm_hash) in bmm_hashes.iter().copied() {
+        for (sidechain_number, bmm_hash) in bmm_hashes {
+            if coinbase_builder
+                .messages()
+                .m7_bmm_accept_slot_vout(&sidechain_number)
+                .is_some()
+            {
+                continue;
+            }
             tracing::info!(
-                "Generate: adding BMM accept for SC {} with hash: {}",
+                "Adding BMM accept for SC {} with hash: {}",
                 sidechain_number,
                 bmm_hash
             );
@@ -165,7 +187,7 @@ impl Wallet {
         // Ack bundles
         // TODO: Exclusively ack bundles that are known to the wallet
         // TODO: ack bundles when M2 messages are present
-        if ack_all_proposals && coinbase_builder.messages().m2_acks().is_empty() {
+        if ack_all_proposals && coinbase_builder.messages().m2_ack_slots().is_empty() {
             let active_sidechains = self.inner.validator.get_active_sidechains()?;
             let upvotes = active_sidechains
                 .into_iter()
@@ -184,8 +206,8 @@ impl Wallet {
                 .collect::<Result<_, crate::validator::GetPendingWithdrawalsError>>()?;
             coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
         }
-        let res = coinbase_builder.build()?;
-        Ok(res)
+        let () = coinbase_builder.build()?;
+        Ok(())
     }
 
     /// Generate suffix txs for a new block
@@ -620,10 +642,26 @@ impl Wallet {
                 .await
                 .map_err(error::GenerateBlock::GenerateSignetBlock);
         }
-        let coinbase_outputs = self
-            .generate_coinbase_txouts(ack_all_proposals, mainchain_tip)
+        let mut coinbase_outputs = Vec::new();
+        let () = self
+            .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
         let transactions = self.select_block_txs().await?;
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
+        for tx in &transactions {
+            if let Some(bmm_request) = crate::messages::parse_m8_tx(tx)
+                && coinbase_builder
+                    .messages()
+                    .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
+                    .is_none()
+            {
+                coinbase_builder.bmm_accept(
+                    bmm_request.sidechain_number,
+                    bmm_request.sidechain_block_hash,
+                )?;
+            }
+        }
+        let () = coinbase_builder.build()?;
 
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),

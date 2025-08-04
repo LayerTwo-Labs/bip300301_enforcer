@@ -1,9 +1,9 @@
 use std::time::Instant;
 
-use bitcoin::{block::Header, hashes::Hash, BlockHash, CompactTarget, TxMerkleNode};
+use bitcoin::{BlockHash, CompactTarget, TxMerkleNode, block::Header, hashes::Hash};
 use miette::Diagnostic;
 use reqwest::{Client, Url};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
 use tracing::instrument;
 

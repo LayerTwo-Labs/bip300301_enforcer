@@ -1,5 +1,5 @@
-use bitcoin::{absolute::Height, hashes::Hash, Amount, BlockHash, Transaction, TxOut};
-use futures::{stream::BoxStream, StreamExt as _};
+use bitcoin::{Amount, BlockHash, Transaction, TxOut, absolute::Height, hashes::Hash};
+use futures::{StreamExt as _, stream::BoxStream};
 use miette::IntoDiagnostic as _;
 use tonic::{Request, Response, Status};
 
@@ -7,11 +7,9 @@ use crate::{
     convert,
     messages::{CoinbaseMessage, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle},
     proto::{
+        ToStatus as _,
         common::{ConsensusHex, ReverseHex},
         mainchain::{
-            get_block_info_response, get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
-            get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo, server::ValidatorService,
             GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
             GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
             GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
@@ -20,8 +18,10 @@ use crate::{
             GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
             StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
             SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
+            get_block_info_response, get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
+            get_sidechain_proposals_response::SidechainProposal,
+            get_sidechains_response::SidechainInfo, server::ValidatorService,
         },
-        ToStatus as _,
     },
     server::{invalid_field_value, missing_field, validator::Server},
     types::SidechainNumber,

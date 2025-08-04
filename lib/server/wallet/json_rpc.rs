@@ -1,7 +1,7 @@
 use bitcoin::{BlockHash, Txid};
 use futures::TryFutureExt as _;
 use jsonrpsee::{
-    core::{async_trait, RpcResult},
+    core::{RpcResult, async_trait},
     proc_macros::rpc,
 };
 use thiserror::Error;

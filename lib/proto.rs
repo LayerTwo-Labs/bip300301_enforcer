@@ -85,9 +85,10 @@ impl<'a> StatusBuilder<'a> {
                 std::fmt::Display::fmt(": ", f)?;
                 source.status_message(f)
             }
-            Some(either::Right(mut source)) => {
+            Some(either::Right(source)) => {
                 std::fmt::Display::fmt(": ", f)?;
                 std::fmt::Display::fmt(source, f)?;
+                let mut source = *source;
                 while let Some(cause) = source.source() {
                     source = cause;
                     std::fmt::Display::fmt(": ", f)?;
@@ -116,7 +117,9 @@ impl From<StatusBuilder<'_>> for tonic::Status {
 
 #[derive(miette::Diagnostic, Debug, Error)]
 pub enum Error {
-    #[error("Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`")]
+    #[error(
+        "Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`"
+    )]
     InvalidEnumVariant {
         field_name: String,
         message_name: String,

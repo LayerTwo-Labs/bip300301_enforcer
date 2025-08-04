@@ -9,22 +9,21 @@ use std::{
 
 use bdk_chain::ChainPosition;
 use bdk_electrum::{
-    electrum_client::{self, ElectrumApi},
     BdkElectrumClient,
+    electrum_client::{self, ElectrumApi},
 };
 use bdk_esplora::esplora_client;
 use bdk_wallet::{
-    self,
+    self, KeychainKind,
     keys::{
-        bip39::{Language, Mnemonic},
         DerivableKey as _, ExtendedKey,
+        bip39::{Language, Mnemonic},
     },
-    KeychainKind,
 };
 use bitcoin::{
-    hashes::{sha256, sha256d, Hash as _, HashEngine},
-    script::PushBytesBuf,
     Amount, BlockHash, Network, Transaction, Txid,
+    hashes::{Hash as _, HashEngine, sha256, sha256d},
+    script::PushBytesBuf,
 };
 use bitcoin_jsonrpsee::{
     client::{GetRawTransactionClient, GetRawTransactionVerbose},
@@ -51,7 +50,7 @@ use crate::{
     validator::{self, Validator},
     wallet::{
         error::WalletInitialization,
-        mnemonic::{new_mnemonic, EncryptedMnemonic},
+        mnemonic::{EncryptedMnemonic, new_mnemonic},
         sync::NoSyncClient,
         util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
     },
@@ -161,7 +160,7 @@ impl WalletInner {
     fn init_db_connection(
         data_dir: &Path,
     ) -> Result<rusqlite::Connection, error::InitDbConnection> {
-        use rusqlite_migration::{Migrations, M};
+        use rusqlite_migration::{M, Migrations};
         // 1️⃣ Define migrations
         let migrations = Migrations::new(vec![
             M::up(
@@ -351,7 +350,7 @@ impl WalletInner {
 
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     async fn read_wallet(&self) -> Result<RwLockReadGuardSome<BdkWallet>, error::NotUnlocked> {
-        use futures::future::{select, Either};
+        use futures::future::{Either, select};
         tracing::trace!("wallet: acquiring read lock");
         let read_guard = match select(
             self.bitcoin_wallet.read().boxed(),
@@ -376,7 +375,7 @@ impl WalletInner {
     async fn read_wallet_upgradable(
         &self,
     ) -> Result<RwLockUpgradableReadGuardSome<BdkWallet>, error::NotUnlocked> {
-        use futures::future::{select, Either};
+        use futures::future::{Either, select};
         tracing::trace!("wallet: acquiring upgradable read lock");
         let read_guard = match select(
             self.bitcoin_wallet.upgradable_read().boxed(),
@@ -398,7 +397,7 @@ impl WalletInner {
 
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     async fn write_wallet(&self) -> Result<RwLockWriteGuardSome<BdkWallet>, error::NotUnlocked> {
-        use futures::future::{select, Either};
+        use futures::future::{Either, select};
         let start = SystemTime::now();
         let span = tracing::span!(tracing::Level::TRACE, "acquire_write_lock");
         let _guard = span.enter();
@@ -1943,7 +1942,9 @@ impl Wallet {
             tracing::info!("BMM request: inserted new bmm request into db");
             Ok(Some(tx))
         } else {
-            tracing::warn!("BMM request: Ignored, request exists with same sidechain slot and previous block hash");
+            tracing::warn!(
+                "BMM request: Ignored, request exists with same sidechain slot and previous block hash"
+            );
             Ok(None)
         }
     }
@@ -2011,8 +2012,8 @@ impl Wallet {
         try_include_height: u32,
     ) -> std::result::Result<(), error::ConnectBlock> {
         use bitcoin_jsonrpsee::{
-            client::{GetBlockClient as _, U8Witness},
             MainClient as _,
+            client::{GetBlockClient as _, U8Witness},
         };
 
         let try_include_hash = self

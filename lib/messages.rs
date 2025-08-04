@@ -1,31 +1,32 @@
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, HashSet, hash_map};
 
 use bitcoin::{
+    Amount, BlockHash, Script, ScriptBuf, Transaction, TxOut,
     amount::CheckedSum,
-    hashes::{sha256d, Hash},
+    hashes::{Hash, sha256d},
     opcodes::{
-        all::{OP_PUSHBYTES_1, OP_RETURN},
         OP_TRUE,
+        all::{OP_PUSHBYTES_1, OP_RETURN},
     },
     script::{Instruction, Instructions, PushBytesBuf},
-    Amount, Script, ScriptBuf, Transaction, TxOut,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use miette::Diagnostic;
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{tag, take},
     combinator::{fail, rest},
     multi::many0,
-    IResult,
 };
 use thiserror::Error;
 
 use crate::{
+    errors::ErrorChain,
     proto::{StatusBuilder, ToStatus},
     types::{
-        BmmCommitment, M6id, SidechainDeclaration, SidechainDescription, SidechainNumber,
-        SidechainProposal, OP_DRIVECHAIN,
+        BmmCommitment, M6id, OP_DRIVECHAIN, SidechainDeclaration, SidechainDescription,
+        SidechainNumber, SidechainProposal, SidechainProposalId,
     },
 };
 
@@ -389,16 +390,32 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum CoinbaseMessagesError {
+    #[error(
+        "M1 sidechain proposal for slot `{}` with sidechain description hash `{}` already included at index `{}`",
+        .slot,
+        .sidechain_description_hash,
+        .index
+    )]
+    DuplicateM1 {
+        index: usize,
+        slot: SidechainNumber,
+        sidechain_description_hash: sha256d::Hash,
+    },
     #[error("M2 that acks proposal for slot `{slot}` already included at index `{index}`")]
     DuplicateM2 { index: usize, slot: SidechainNumber },
     #[error("M4 already included at index `{index}`")]
     DuplicateM4 { index: usize },
+    #[error("M7 for slot `{slot}` already included at index `{index}`")]
+    DuplicateM7 { index: usize, slot: SidechainNumber },
 }
 
 impl ToStatus for CoinbaseMessagesError {
     fn builder(&self) -> StatusBuilder {
         match self {
-            Self::DuplicateM2 { .. } | Self::DuplicateM4 { .. } => StatusBuilder::new(self),
+            Self::DuplicateM1 { .. }
+            | Self::DuplicateM2 { .. }
+            | Self::DuplicateM4 { .. }
+            | Self::DuplicateM7 { .. } => StatusBuilder::new(self),
         }
     }
 }
@@ -406,29 +423,72 @@ impl ToStatus for CoinbaseMessagesError {
 /// Valid, ordered list of coinbase messages
 #[derive(Debug, Default)]
 pub struct CoinbaseMessages {
-    messages: Vec<CoinbaseMessage>,
+    /// Coinbase messages, with vout index
+    messages: Vec<(CoinbaseMessage, usize)>,
+    m1_sidechain_proposal_id_to_index: HashMap<SidechainProposalId, usize>,
     m2_ack_slot_to_index: HashMap<SidechainNumber, usize>,
     m4_index: Option<usize>,
+    /// Maps M7 slots to commitment and index
+    m7_slot_to_commitment_index: HashMap<SidechainNumber, (BmmCommitment, usize)>,
 }
 
 impl CoinbaseMessages {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn m1_sidechain_proposal_ids(&self) -> HashSet<SidechainProposalId> {
+        self.m1_sidechain_proposal_id_to_index
+            .keys()
+            .copied()
+            .collect()
     }
 
-    pub fn m2_acks(&self) -> Vec<SidechainNumber> {
-        let mut res: Vec<_> = self.m2_ack_slot_to_index.keys().copied().collect();
-        res.sort();
-        res
+    pub fn m2_ack_slot_vout(&self, slot: &SidechainNumber) -> Option<usize> {
+        self.m2_ack_slot_to_index.get(slot).copied()
+    }
+
+    pub fn m2_ack_slots(&self) -> HashSet<SidechainNumber> {
+        self.m2_ack_slot_to_index.keys().copied().collect()
     }
 
     pub fn m4_exists(&self) -> bool {
         self.m4_index.is_some()
     }
 
-    // TODO: ensure that M1, M3, and M7 pushes are valid
-    pub fn push(&mut self, msg: CoinbaseMessage) -> Result<(), CoinbaseMessagesError> {
+    pub fn m7_bmm_accept_slot_vout(&self, slot: &SidechainNumber) -> Option<usize> {
+        self.m7_slot_to_commitment_index
+            .get(slot)
+            .map(|(_, vout)| *vout)
+    }
+
+    pub fn m7_bmm_accepts(&self) -> HashMap<SidechainNumber, BmmCommitment> {
+        self.m7_slot_to_commitment_index
+            .iter()
+            .map(|(sidechain_number, (commitment, _))| (*sidechain_number, *commitment))
+            .collect()
+    }
+
+    // TODO: ensure that M3 pushes are valid
+    pub fn push(&mut self, msg: CoinbaseMessage, vout: usize) -> Result<(), CoinbaseMessagesError> {
         match &msg {
+            CoinbaseMessage::M1ProposeSidechain(sidechain_proposal) => {
+                let sidechain_proposal_id = SidechainProposalId {
+                    sidechain_number: sidechain_proposal.sidechain_number,
+                    description_hash: sidechain_proposal.description.sha256d_hash(),
+                };
+                match self
+                    .m1_sidechain_proposal_id_to_index
+                    .entry(sidechain_proposal_id)
+                {
+                    hash_map::Entry::Occupied(entry) => Err(CoinbaseMessagesError::DuplicateM1 {
+                        index: *entry.get(),
+                        slot: sidechain_proposal_id.sidechain_number,
+                        sidechain_description_hash: sidechain_proposal_id.description_hash,
+                    }),
+                    hash_map::Entry::Vacant(entry) => {
+                        entry.insert(vout);
+                        self.messages.push((msg, vout));
+                        Ok(())
+                    }
+                }
+            }
             CoinbaseMessage::M2AckSidechain(m2) => {
                 match self.m2_ack_slot_to_index.entry(m2.sidechain_number) {
                     hash_map::Entry::Occupied(entry) => Err(CoinbaseMessagesError::DuplicateM2 {
@@ -436,8 +496,8 @@ impl CoinbaseMessages {
                         slot: m2.sidechain_number,
                     }),
                     hash_map::Entry::Vacant(entry) => {
-                        entry.insert(self.messages.len());
-                        self.messages.push(msg);
+                        entry.insert(vout);
+                        self.messages.push((msg, vout));
                         Ok(())
                     }
                 }
@@ -446,70 +506,135 @@ impl CoinbaseMessages {
                 if let Some(index) = self.m4_index {
                     Err(CoinbaseMessagesError::DuplicateM4 { index })
                 } else {
-                    self.m4_index = Some(self.messages.len());
-                    self.messages.push(msg);
+                    self.m4_index = Some(vout);
+                    self.messages.push((msg, vout));
                     Ok(())
                 }
             }
-            CoinbaseMessage::M1ProposeSidechain(_)
-            | CoinbaseMessage::M3ProposeBundle(_)
-            | CoinbaseMessage::M7BmmAccept(_) => {
-                self.messages.push(msg);
+            CoinbaseMessage::M7BmmAccept(bmm_accept) => {
+                match self
+                    .m7_slot_to_commitment_index
+                    .entry(bmm_accept.sidechain_number)
+                {
+                    hash_map::Entry::Occupied(entry) => {
+                        let (_, index) = entry.get();
+                        Err(CoinbaseMessagesError::DuplicateM7 {
+                            index: *index,
+                            slot: bmm_accept.sidechain_number,
+                        })
+                    }
+                    hash_map::Entry::Vacant(entry) => {
+                        entry.insert((bmm_accept.sidechain_block_hash, vout));
+                        self.messages.push((msg, vout));
+                        Ok(())
+                    }
+                }
+            }
+            CoinbaseMessage::M3ProposeBundle(_) => {
+                self.messages.push((msg, vout));
                 Ok(())
             }
         }
     }
 
-    pub fn extend<I>(&mut self, iter: I) -> Result<(), CoinbaseMessagesError>
-    where
-        I: IntoIterator<Item = CoinbaseMessage>,
-    {
-        iter.into_iter().try_for_each(|msg| self.push(msg))
+    pub fn new(coinbase_txouts: &[TxOut]) -> Result<Self, CoinbaseMessagesError> {
+        let mut this = Self::default();
+        for (vout, output) in coinbase_txouts.iter().enumerate() {
+            let message = match CoinbaseMessage::parse(&output.script_pubkey) {
+                Ok((rest, message)) => {
+                    if !rest.is_empty() {
+                        tracing::warn!("Extra data in coinbase script: `{}`", hex::encode(rest));
+                    }
+                    message
+                }
+                Err(err) => {
+                    // Happens all the time. Would be nice to differentiate between "this isn't a BIP300 message"
+                    // and "we failed real bad".
+                    tracing::trace!(
+                        script = hex::encode(output.script_pubkey.to_bytes()),
+                        "Failed to parse coinbase script: {:#}",
+                        ErrorChain::new(&err)
+                    );
+                    continue;
+                }
+            };
+            this.push(message, vout)?;
+        }
+        Ok(this)
     }
-}
 
-impl<'a> IntoIterator for &'a CoinbaseMessages {
-    type IntoIter = <&'a Vec<CoinbaseMessage> as IntoIterator>::IntoIter;
-    type Item = &'a CoinbaseMessage;
-    fn into_iter(self) -> Self::IntoIter {
+    pub fn iter(&self) -> impl Iterator<Item = &(CoinbaseMessage, usize)> {
         self.messages.iter()
     }
 }
 
 impl IntoIterator for CoinbaseMessages {
-    type IntoIter = <Vec<CoinbaseMessage> as IntoIterator>::IntoIter;
-    type Item = CoinbaseMessage;
+    type IntoIter = <Vec<(CoinbaseMessage, usize)> as IntoIterator>::IntoIter;
+    type Item = (CoinbaseMessage, usize);
     fn into_iter(self) -> Self::IntoIter {
         self.messages.into_iter()
     }
 }
 
-pub struct CoinbaseBuilder {
+#[must_use]
+pub struct CoinbaseBuilder<'a> {
+    coinbase_txouts: &'a mut Vec<TxOut>,
     messages: CoinbaseMessages,
 }
 
-impl CoinbaseBuilder {
-    pub fn new() -> Self {
-        CoinbaseBuilder {
-            messages: CoinbaseMessages::new(),
-        }
+impl<'a> CoinbaseBuilder<'a> {
+    pub fn new(coinbase_txouts: &'a mut Vec<TxOut>) -> Result<Self, CoinbaseMessagesError> {
+        Ok(CoinbaseBuilder {
+            messages: CoinbaseMessages::new(coinbase_txouts)?,
+            coinbase_txouts,
+        })
     }
 
     pub fn messages(&self) -> &CoinbaseMessages {
         &self.messages
     }
 
-    pub fn build(self) -> Result<Vec<TxOut>, bitcoin::script::PushBytesError> {
-        self.messages
+    /// Return the original coinbase_txouts and the extension to the
+    /// coinbase txouts, without extending the original coinbase txouts.
+    fn finalize(self) -> Result<(&'a mut Vec<TxOut>, Vec<TxOut>), bitcoin::script::PushBytesError> {
+        let extention = self
+            .messages
             .into_iter()
-            .map(|message| {
+            .skip_while({
+                let coinbase_txouts_len = self.coinbase_txouts.len();
+                move |(_message, vout)| *vout < coinbase_txouts_len
+            })
+            .map(|(message, _)| {
                 let script_pubkey = message.try_into()?;
-                Ok(TxOut {
+                Ok::<_, bitcoin::script::PushBytesError>(TxOut {
                     value: Amount::from_sat(0),
                     script_pubkey,
                 })
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        Ok((self.coinbase_txouts, extention))
+    }
+
+    /// Return the extension to the coinbase txouts, without extending the
+    /// original coinbase txouts.
+    pub fn build_extension(self) -> Result<Vec<TxOut>, bitcoin::script::PushBytesError> {
+        let (_, extension) = self.finalize()?;
+        Ok(extension)
+    }
+
+    /// Extend the original coinbase txouts with new messages
+    pub fn build(self) -> Result<(), bitcoin::script::PushBytesError> {
+        let (coinbase_txouts, extension) = self.finalize()?;
+        coinbase_txouts.extend(extension);
+        Ok(())
+    }
+
+    fn next_vout_index(&self) -> usize {
+        if let Some((_message, vout)) = self.messages.messages.last() {
+            std::cmp::max(self.coinbase_txouts.len(), vout + 1)
+        } else {
+            self.coinbase_txouts.len()
+        }
     }
 
     pub fn propose_sidechain(
@@ -520,7 +645,7 @@ impl CoinbaseBuilder {
             sidechain_number: proposal.sidechain_number,
             description: proposal.description,
         });
-        self.messages.push(message)?;
+        self.messages.push(message, self.next_vout_index())?;
         Ok(self)
     }
 
@@ -533,7 +658,7 @@ impl CoinbaseBuilder {
             sidechain_number,
             description_hash,
         });
-        self.messages.push(message)?;
+        self.messages.push(message, self.next_vout_index())?;
         Ok(self)
     }
 
@@ -546,7 +671,7 @@ impl CoinbaseBuilder {
             sidechain_number,
             bundle_txid: m6id.0.to_byte_array(),
         });
-        self.messages.push(message)?;
+        self.messages.push(message, self.next_vout_index())?;
         Ok(self)
     }
 
@@ -555,7 +680,7 @@ impl CoinbaseBuilder {
         m4_ack_bundles: M4AckBundles,
     ) -> Result<&mut Self, CoinbaseMessagesError> {
         let message = CoinbaseMessage::M4AckBundles(m4_ack_bundles);
-        self.messages.push(message)?;
+        self.messages.push(message, self.next_vout_index())?;
         Ok(self)
     }
 
@@ -568,14 +693,8 @@ impl CoinbaseBuilder {
             sidechain_number,
             sidechain_block_hash,
         });
-        self.messages.push(message)?;
+        self.messages.push(message, self.next_vout_index())?;
         Ok(self)
-    }
-}
-
-impl Default for CoinbaseBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -584,7 +703,7 @@ pub struct M8BmmRequest {
     pub sidechain_number: SidechainNumber,
     // Also called H* or critical hash, critical data hash, hash critical
     pub sidechain_block_hash: BmmCommitment,
-    pub prev_mainchain_block_hash: [u8; 32],
+    pub prev_mainchain_block_hash: BlockHash,
 }
 
 impl M8BmmRequest {
@@ -607,13 +726,24 @@ impl M8BmmRequest {
         let sidechain_number = sidechain_number[0];
         let (input, sidechain_block_hash) = parse_bmm_commitment(input)?;
         let (input, prev_mainchain_block_hash) = take(32usize)(input)?;
-        let prev_mainchain_block_hash = prev_mainchain_block_hash.try_into().unwrap();
+        let prev_mainchain_block_hash: [u8; 32] = prev_mainchain_block_hash.try_into().unwrap();
+        let prev_mainchain_block_hash = BlockHash::from_byte_array(prev_mainchain_block_hash);
         let message = Self {
             sidechain_number: sidechain_number.into(),
             sidechain_block_hash,
             prev_mainchain_block_hash,
         };
         Ok((input, message))
+    }
+}
+
+pub(crate) fn parse_m8_tx(transaction: &Transaction) -> Option<M8BmmRequest> {
+    let output = transaction.output.first()?;
+    let script = output.script_pubkey.to_bytes();
+    if let Ok((_input, bmm_request)) = M8BmmRequest::parse(&script) {
+        Some(bmm_request)
+    } else {
+        None
     }
 }
 
@@ -781,17 +911,14 @@ pub fn create_sidechain_proposal(
     description.extend_from_slice(&declaration.hash_id_2);
     let description: SidechainDescription = description.into();
 
-    let proposal = SidechainProposal {
-        sidechain_number,
-        description: description.clone(),
+    let tx_out = TxOut {
+        value: Amount::ZERO,
+        script_pubkey: M1ProposeSidechain {
+            sidechain_number,
+            description: description.clone(),
+        }
+        .try_into()?,
     };
-
-    let mut builder = CoinbaseBuilder::new();
-    builder.propose_sidechain(proposal).unwrap();
-    let txouts = builder.build()?; // TODO: better error
-
-    assert!(txouts.len() == 1);
-    let tx_out = txouts.first().unwrap().clone();
     Ok((tx_out, description))
 }
 
@@ -829,8 +956,8 @@ mod tests {
         assert_eq!(result.sidechain_number, sidechain_number);
         assert_eq!(result.sidechain_block_hash.0.as_slice(), critical_bytes);
         assert_eq!(
-            result.prev_mainchain_block_hash.to_vec(),
-            prev_mainchain_block_hash
+            result.prev_mainchain_block_hash.as_byte_array(),
+            prev_mainchain_block_hash.as_slice()
         );
     }
 

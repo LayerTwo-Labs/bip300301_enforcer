@@ -1,5 +1,5 @@
 use bitcoin::{
-    hashes::{hmac, ripemd160, sha256, sha512, Hash, HashEngine},
+    hashes::{Hash, HashEngine, hmac, ripemd160, sha256, sha512},
     key::Secp256k1,
 };
 
@@ -7,10 +7,10 @@ use crate::{
     proto::{
         common::{ConsensusHex, Hex},
         crypto::{
-            crypto_service_server::CryptoService, HmacSha512Request, HmacSha512Response,
-            Ripemd160Request, Ripemd160Response, Secp256k1SecretKeyToPublicKeyRequest,
-            Secp256k1SecretKeyToPublicKeyResponse, Secp256k1SignRequest, Secp256k1SignResponse,
-            Secp256k1VerifyRequest, Secp256k1VerifyResponse,
+            HmacSha512Request, HmacSha512Response, Ripemd160Request, Ripemd160Response,
+            Secp256k1SecretKeyToPublicKeyRequest, Secp256k1SecretKeyToPublicKeyResponse,
+            Secp256k1SignRequest, Secp256k1SignResponse, Secp256k1VerifyRequest,
+            Secp256k1VerifyResponse, crypto_service_server::CryptoService,
         },
     },
     server::{invalid_field_value, missing_field},

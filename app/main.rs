@@ -15,8 +15,8 @@ use bip300301_enforcer_lib::{
     },
     rpc_client, server,
     validator::{
-        main_rest_client::{MainRestClient, MainRestClientError},
         Validator,
+        main_rest_client::{MainRestClient, MainRestClientError},
     },
     wallet::{self, error::BitcoinCoreRPC},
 };
@@ -25,10 +25,10 @@ use bitcoin_jsonrpsee::MainClient;
 use clap::Parser;
 use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
-use futures::{channel::oneshot, FutureExt, SinkExt, StreamExt, TryFutureExt as _};
-use http::{header::HeaderName, Request};
+use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt as _, channel::oneshot};
+use http::{Request, header::HeaderName};
 use jsonrpsee::{core::client::Error, server::middleware::rpc::RpcServiceBuilder};
-use miette::{miette, Diagnostic, IntoDiagnostic, Result};
+use miette::{Diagnostic, IntoDiagnostic, Result, miette};
 use reqwest::Url;
 use thiserror::Error;
 use tokio::{net::TcpStream, task::JoinHandle};
@@ -600,10 +600,14 @@ async fn get_zmq_addr_sequence(
             "unable to find ZMQ notification for `pubsequence` in `getzmqnotifications` response"
         )]
         #[diagnostic(
-                help("Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"),
-                code(bip300301_enforcer::zmq_pubsequence_notification_missing),
-                url("https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements")
-            )]
+            help(
+                "Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"
+            ),
+            code(bip300301_enforcer::zmq_pubsequence_notification_missing),
+            url(
+                "https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements"
+            )
+        )]
         struct ZmqNotificationMissing;
 
         return Err(ZmqNotificationMissing.into());
@@ -705,7 +709,9 @@ async fn spawn_task(
                 // initialized and unlocked. Give a nice error message if this is not
                 // the case!
                 if !wallet.is_initialized().await {
-                    return Err(miette!("Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."));
+                    return Err(miette!(
+                        "Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."
+                    ));
                 }
 
                 let mining_reward_address = match cli.mining_opts.coinbase_recipient {
@@ -939,18 +945,22 @@ async fn main() -> Result<()> {
         // because the user might want to run their own signet. However, if they're on
         // the standard signet, they're doing something wrong.
         let standard_signet_challenge = {
-            const STANDARD_SIGNET_CHALLENGE_HEX : &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae";
+            const STANDARD_SIGNET_CHALLENGE_HEX: &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae";
             ScriptBuf::from_hex(STANDARD_SIGNET_CHALLENGE_HEX)
                 .expect("standard signet challenge is invalid")
         };
 
         if signet_challenge == standard_signet_challenge {
             #[derive(Debug, Diagnostic, Error)]
-            #[error("You're trying to run the enforcer against the standard signet chain! This is not what you want.")]
+            #[error(
+                "You're trying to run the enforcer against the standard signet chain! This is not what you want."
+            )]
             #[diagnostic(
                 help("either run against the L2L signet, or your own custom signet"),
                 code(bip300301_enforcer::standard_signet),
-                url("https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements")
+                url(
+                    "https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements"
+                )
             )]
             struct StandardSignetError;
 

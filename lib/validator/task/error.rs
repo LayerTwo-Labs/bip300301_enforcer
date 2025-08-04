@@ -32,12 +32,18 @@ pub(in crate::validator) enum HandleM1ProposeSidechain {
 pub(in crate::validator) enum HandleM2AckSidechain {
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
     #[error("Missing sidechain proposal for slot `{sidechain_slot}`: `{description_hash}`")]
     MissingProposal {
         sidechain_slot: SidechainNumber,
         description_hash: sha256d::Hash,
     },
+}
+
+impl From<db::Error> for HandleM2AckSidechain {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -51,19 +57,31 @@ pub(in crate::validator) enum HandleM2AckSidechain {
 pub(in crate::validator) enum HandleFailedSidechainProposals {
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
+}
+
+impl From<db::Error> for HandleFailedSidechainProposals {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[fatality(splitable)]
 pub(in crate::validator) enum HandleM3ProposeBundle {
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
     #[error(
         "Cannot propose bundle; sidechain slot {} is inactive",
         .sidechain_number.0
     )]
     InactiveSidechain { sidechain_number: SidechainNumber },
+}
+
+impl From<db::Error> for HandleM3ProposeBundle {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[derive(Transitive)]
@@ -75,7 +93,7 @@ pub(in crate::validator) enum HandleM3ProposeBundle {
 pub(in crate::validator) enum HandleM4Votes {
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
     #[error("Invalid votes: expected {expected}, but found {len}")]
     InvalidVotes { expected: usize, len: usize },
     #[error(
@@ -89,6 +107,12 @@ pub(in crate::validator) enum HandleM4Votes {
     },
 }
 
+impl From<db::Error> for HandleM4Votes {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
+}
+
 #[fatality(splitable)]
 pub(in crate::validator) enum HandleM4AckBundles {
     #[error("Error handling M4 Votes")]
@@ -100,7 +124,13 @@ pub(in crate::validator) enum HandleM4AckBundles {
 pub(in crate::validator) enum HandleFailedM6Ids {
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
+}
+
+impl From<db::Error> for HandleFailedM6Ids {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[derive(Transitive)]
@@ -109,13 +139,19 @@ pub(in crate::validator) enum HandleFailedM6Ids {
 pub(in crate::validator) enum HandleM5M6 {
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
     #[error("Invalid M6")]
     InvalidM6,
     #[error(transparent)]
     M6id(#[from] crate::messages::M6idError),
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
     OldCtipUnspent { sidechain_number: SidechainNumber },
+}
+
+impl From<db::Error> for HandleM5M6 {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[fatality(splitable)]
@@ -140,12 +176,12 @@ pub(in crate::validator) enum HandleTransaction {
 pub(in crate::validator::task) enum ValidateTransactionInner {
     #[error(transparent)]
     DbTryGet(#[from] db::error::TryGet),
+    #[error(transparent)]
+    NestedWriteTxn(#[from] env::error::NestedWriteTxn),
     #[error("No chain tip")]
     NoChainTip,
     #[error(transparent)]
     Transaction(#[from] <HandleTransaction as fatality::Split>::Fatal),
-    #[error(transparent)]
-    WriteTxn(#[from] env::error::WriteTxn),
 }
 
 #[derive(Debug, Error)]
@@ -183,7 +219,7 @@ pub(in crate::validator) enum ConnectBlock {
     CoinbaseMessages(#[from] CoinbaseMessagesError),
     #[error(transparent)]
     #[fatal]
-    Db(#[from] db::Error),
+    Db(Box<db::Error>),
     #[error("Error handling failed M6IDs")]
     #[fatal(forward)]
     FailedM6Ids(#[from] HandleFailedM6Ids),
@@ -210,6 +246,12 @@ pub(in crate::validator) enum ConnectBlock {
     #[error(transparent)]
     #[fatal(forward)]
     Transaction(#[from] HandleTransaction),
+}
+
+impl From<db::Error> for ConnectBlock {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[derive(Debug, Error)]

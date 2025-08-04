@@ -2,14 +2,14 @@ use std::{borrow::Cow, num::TryFromIntError, sync::Arc};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
+    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Transaction, Txid, Work,
     amount::CheckedSum as _,
-    hashes::{sha256d, Hash as _},
+    hashes::{Hash as _, sha256d},
     opcodes::{
-        all::{OP_NOP5, OP_RETURN},
         OP_TRUE,
+        all::{OP_NOP5, OP_RETURN},
     },
     script::{Instruction, Instructions},
-    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Transaction, Txid, Work,
 };
 use derive_more::derive::{self, Display};
 use hashlink::LinkedHashMap;
@@ -86,6 +86,12 @@ impl Serialize for BmmCommitment {
 #[serde(transparent)]
 pub struct SidechainNumber(pub u8);
 
+impl SidechainNumber {
+    pub const MIN: Self = Self(u8::MIN);
+
+    pub const MAX: Self = Self(u8::MAX);
+}
+
 impl From<u8> for SidechainNumber {
     #[inline(always)]
     fn from(sidechain_number: u8) -> Self {
@@ -160,7 +166,7 @@ pub enum DeserializeSidechainProposalError {
     MissingSidechainNumber,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SidechainProposalId {
     pub sidechain_number: SidechainNumber,
     pub description_hash: sha256d::Hash,

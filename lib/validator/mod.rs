@@ -1,10 +1,14 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+};
 
-use async_broadcast::{broadcast, InactiveReceiver, Sender as BroadcastSender};
-use bitcoin::{self, Amount, BlockHash, OutPoint};
+use async_broadcast::{InactiveReceiver, Sender as BroadcastSender, broadcast};
+use bitcoin::{self, Amount, BlockHash, OutPoint, Txid};
 use bitcoin_jsonrpsee::jsonrpsee;
 use fallible_iterator::{FallibleIterator, IteratorExt};
-use futures::{stream::FusedStream, StreamExt};
+use futures::{StreamExt, stream::FusedStream};
 use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use sneed::{db, env};
@@ -12,10 +16,10 @@ use thiserror::Error;
 use tokio::sync::watch::Receiver as WatchReceiver;
 
 use crate::{
-    proto::{mainchain::HeaderSyncProgress, StatusBuilder, ToStatus},
+    proto::{StatusBuilder, ToStatus, mainchain::HeaderSyncProgress},
     types::{
-        BlockInfo, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain, SidechainNumber,
-        SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+        BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain,
+        SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
     },
     validator::main_rest_client::MainRestClient,
 };
@@ -358,6 +362,14 @@ impl ToStatus for GetPendingWithdrawalsError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum GetSeenBmmRequestsForParentBlockError {
+    #[error(transparent)]
+    DbRange(#[from] db::error::Range),
+    #[error(transparent)]
+    ReadTxn(#[from] env::error::ReadTxn),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum EventsStreamError {
     #[error("Events stream closed due to overflow")]
     Overflow,
@@ -428,7 +440,9 @@ impl Validator {
         self.network
     }
 
-    pub fn subscribe_events(&self) -> impl FusedStream<Item = Result<Event, EventsStreamError>> {
+    pub fn subscribe_events(
+        &self,
+    ) -> impl FusedStream<Item = Result<Event, EventsStreamError>> + use<> {
         futures::stream::try_unfold(self.events_rx.activate_cloned(), |mut receiver| async {
             match receiver.recv_direct().await {
                 Ok(event) => Ok(Some((event, receiver))),
@@ -668,11 +682,12 @@ impl Validator {
 
         res.sort_by(|(first_height, _), (second_height, _)| first_height.cmp(second_height));
 
-        debug_assert!(res
-            .clone()
-            .is_sorted_by(|(first_height, _), (second_height, _)| {
-                first_height < second_height
-            }));
+        debug_assert!(
+            res.clone()
+                .is_sorted_by(|(first_height, _), (second_height, _)| {
+                    first_height < second_height
+                })
+        );
         Ok(res)
     }
 
@@ -756,6 +771,21 @@ impl Validator {
             .active_sidechains
             .pending_m6ids()
             .get(&rotxn, sidechain_number)?;
+        Ok(res)
+    }
+
+    pub fn get_seen_bmm_requests_for_parent_block(
+        &self,
+        parent_block_hash: BlockHash,
+    ) -> Result<
+        HashMap<SidechainNumber, HashMap<BmmCommitment, HashSet<Txid>>>,
+        GetSeenBmmRequestsForParentBlockError,
+    > {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
+            .block_hashes
+            .get_seen_bmm_requests_for_parent_block(&rotxn, parent_block_hash)?;
         Ok(res)
     }
 
