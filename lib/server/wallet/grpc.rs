@@ -599,12 +599,10 @@ impl WalletService for crate::wallet::Wallet {
             .await
             .map_err(|err| err.builder().to_status())?
             .into_iter()
-            .map(
-                |(sidechain_number, bdk_wallet_tx)| SidechainDepositTransaction {
-                    sidechain_number: Some(sidechain_number.0.into()),
-                    tx: Some(WalletTransaction::from(&bdk_wallet_tx)),
-                },
-            )
+            .map(|sidechain_deposit_tx| SidechainDepositTransaction {
+                sidechain_number: Some(sidechain_deposit_tx.sidechain_number.0.into()),
+                tx: Some(WalletTransaction::from(&sidechain_deposit_tx.wallet_tx)),
+            })
             .collect();
         let response = ListSidechainDepositTransactionsResponse { transactions };
         Ok(tonic::Response::new(response))
