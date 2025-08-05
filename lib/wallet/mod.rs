@@ -34,6 +34,7 @@ use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{FutureExt, TryFutureExt};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tracing::instrument;
 use uuid::Uuid;
@@ -641,6 +642,15 @@ impl WalletInner {
         let connection = self.self_db.lock().await;
         with_connection(&connection)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SidechainDepositTransaction {
+    pub sidechain_number: SidechainNumber,
+    pub deposit_amount: Amount,
+    #[serde(with = "hex::serde")]
+    pub destination_address: Vec<u8>,
+    pub wallet_tx: BDKWalletTransaction,
 }
 
 /// Optional parameters for sending a wallet transaction
@@ -1454,10 +1464,7 @@ impl Wallet {
 
     pub async fn list_sidechain_deposit_transactions(
         &self,
-    ) -> Result<
-        Vec<(SidechainNumber, crate::types::BDKWalletTransaction)>,
-        error::ListSidechainDepositTransactions,
-    > {
+    ) -> Result<Vec<SidechainDepositTransaction>, error::ListSidechainDepositTransactions> {
         self.list_wallet_transactions()
             .await?
             .into_iter()
@@ -1511,7 +1518,29 @@ impl Wallet {
                         return Ok(None);
                     }
                 }
-                Ok(Some((sidechain_number, bdk_wallet_tx)))
+                let deposit_amount = if let Some(spent_ctip) = spent_ctip {
+                    match treasury_output.value.checked_sub(spent_ctip.value) {
+                        Some(deposit_amount) => deposit_amount,
+                        None => return Ok(None),
+                    }
+                } else {
+                    treasury_output.value
+                };
+                let Some(destination_address_output) = bdk_wallet_tx.tx.output.get(1) else {
+                    return Ok(None);
+                };
+                let Some(destination_address) = crate::messages::try_parse_op_return_address(
+                    &destination_address_output.script_pubkey,
+                ) else {
+                    return Ok(None);
+                };
+                let deposit_tx = SidechainDepositTransaction {
+                    sidechain_number,
+                    deposit_amount,
+                    destination_address,
+                    wallet_tx: bdk_wallet_tx,
+                };
+                Ok(Some(deposit_tx))
             })
             .collect()
     }

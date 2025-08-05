@@ -8,7 +8,8 @@ use thiserror::Error;
 
 use crate::{
     server::custom_json_rpc_err,
-    types::{BDKWalletTransaction, BmmCommitment, SidechainNumber},
+    types::{BmmCommitment, SidechainNumber},
+    wallet::SidechainDepositTransaction,
 };
 
 #[derive(Debug, Error)]
@@ -20,7 +21,7 @@ pub trait Rpc {
     #[method(name = "list_sidechain_deposit_transactions")]
     async fn list_sidechain_deposit_transactions(
         &self,
-    ) -> RpcResult<Vec<(SidechainNumber, BDKWalletTransaction)>>;
+    ) -> RpcResult<Vec<SidechainDepositTransaction>>;
 
     #[method(name = "create_bmm_critical_data_transaction")]
     async fn create_bmm_critical_data_transaction(
@@ -37,7 +38,7 @@ pub trait Rpc {
 impl RpcServer for crate::wallet::Wallet {
     async fn list_sidechain_deposit_transactions(
         &self,
-    ) -> RpcResult<Vec<(SidechainNumber, BDKWalletTransaction)>> {
+    ) -> RpcResult<Vec<SidechainDepositTransaction>> {
         self.list_sidechain_deposit_transactions()
             .map_err(custom_json_rpc_err)
             .await
