@@ -480,7 +480,7 @@ impl ValidatorService for Server {
         match shutdown_tx.try_send(()) {
             Ok(_) => Ok(tonic::Response::new(StopResponse {})),
             Err(err) => {
-                let msg = format!("Failed to send shutdown signal: {}", err);
+                let msg = format!("Failed to send shutdown signal: {err:#}");
                 Err(tonic::Status::unavailable(msg))
             }
         }
