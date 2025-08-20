@@ -39,9 +39,9 @@ def extract_sync_progress(log_file: Path) -> tuple[pd.DataFrame, str, str]:
     git_hash = "unknown"
     build_type = "unknown"
 
-    # Pattern to match sync progress: "updated current chain tip: N"
+    # Pattern to match sync progress: "Syncing block #N"
     progress_pattern = re.compile(
-        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z).*updated current chain tip: (\d+)"
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z).*Syncing block #(\d+)"
     )
 
     # Pattern to match sync start: "identified X missing blocks in Y, starting sync"
@@ -158,7 +158,11 @@ def create_plot(
         total_blocks / total_time_minutes if total_time_minutes > 0 else 0
     )
 
-    stats_text = f"Synced {total_blocks:,} blocks in {total_time_minutes:.0f} minutes ({total_time_hours:.1f} hours)\nAverage: {avg_speed_per_minute:.0f} blocks/minute"
+    minutes = int(total_time_minutes)
+    seconds = int((total_time_minutes - minutes) * 60)
+    hours = int(total_time_hours)
+    remaining_minutes = int((total_time_hours - hours) * 60)
+    stats_text = f"Synced {total_blocks:,} blocks in {minutes}m {seconds}s ({hours}h {remaining_minutes}m)\nAverage: {avg_speed_per_minute:.0f} blocks/minute"
     plt.text(
         0.02,
         0.98,

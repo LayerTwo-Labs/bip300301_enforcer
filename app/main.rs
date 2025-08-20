@@ -14,6 +14,7 @@ use bip300301_enforcer_lib::{
         },
     },
     rpc_client, server,
+    types::Event,
     validator::{
         Validator,
         main_rest_client::{MainRestClient, MainRestClientError},
@@ -38,7 +39,7 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
 };
-use tracing::Instrument;
+use tracing::{Instrument, instrument};
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 use wallet::Wallet;
 
@@ -800,9 +801,46 @@ async fn spawn_task(
     Ok((task_handle, shutdown_signal, err_rxs))
 }
 
+#[instrument(name = "exit_after_sync", skip_all)]
+async fn exit_after_sync_task_handle(
+    validator: Validator,
+    goal_height: u32,
+    mut self_interrupt_tx: futures::channel::mpsc::UnboundedSender<()>,
+) -> Result<(), miette::Report> {
+    tracing::info!("Waiting for sync to height {} before exiting", goal_height);
+
+    let mut events = std::pin::pin!(validator.subscribe_events());
+    tracing::debug!("Subscribed to validator events");
+
+    loop {
+        match events.next().await {
+            Some(Ok(Event::ConnectBlock { header_info, .. }))
+                if header_info.height >= goal_height =>
+            {
+                tracing::info!("Synced to block height {}, exiting", header_info.height);
+                let _ = self_interrupt_tx.send(()).await;
+
+                tracing::debug!("Sent self interrupt signal");
+                return Ok(());
+            }
+
+            Some(Ok(_)) => {}
+
+            Some(Err(err)) => {
+                return Err(miette::Report::from_err(err)
+                    .wrap_err("exit-after-sync: error receiving event"));
+            }
+
+            None => {
+                return Err(miette!("exit-after-sync: no event received"));
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (mut self_interrupt_tx, mut self_interrupt_rx) = futures::channel::mpsc::unbounded();
+    let (self_interrupt_tx, mut self_interrupt_rx) = futures::channel::mpsc::unbounded();
 
     // We want to get panics properly logged, with request IDs and all that jazz.
     //
@@ -1083,43 +1121,36 @@ async fn main() -> Result<()> {
 
     let exit_after_sync_task = match cli.exit_after_sync {
         Some(exit_after_sync) => {
-            let exit_after_sync = if exit_after_sync != 0 {
-                exit_after_sync
-            } else {
-                info.blocks
-            };
-
             let validator = match &enforcer {
                 Either::Left(validator) => validator.clone(),
                 Either::Right(wallet) => wallet.validator().clone(),
             };
-            let handle = tokio::spawn(async move {
-                tracing::info!(
-                    "Waiting for sync to height {} before exiting",
-                    exit_after_sync
-                );
 
-                let mut events = std::pin::pin!(validator.subscribe_events());
-                while let Some(event) = events.next().await {
-                    use bip300301_enforcer_lib::types::Event;
+            let exit_after_sync = if exit_after_sync != 0 {
+                // Sanity check that the user didn't give an exit height that's
+                // below what we're currently at.
 
-                    if let Ok(Event::ConnectBlock { header_info, .. }) = event {
-                        if header_info.height >= exit_after_sync {
-                            tracing::info!(
-                                "Synced to block height {}, exiting",
-                                header_info.height
-                            );
-                            let _ = self_interrupt_tx.send(()).await;
-
-                            tracing::debug!("Sent self interrupt signal");
-                            break;
-                        }
-                    }
+                let mainchain_tip = validator.try_get_block_height()?;
+                if exit_after_sync < mainchain_tip.unwrap_or_default() {
+                    return Err(miette!(
+                        "exit-after-sync height {} is below current height {}",
+                        exit_after_sync,
+                        mainchain_tip.unwrap_or_default()
+                    ));
                 }
 
-                Ok(())
-            });
-
+                exit_after_sync
+            } else {
+                info.blocks
+            };
+            let handle = {
+                let self_interrupt_tx = self_interrupt_tx.clone();
+                tokio::spawn(exit_after_sync_task_handle(
+                    validator,
+                    exit_after_sync,
+                    self_interrupt_tx,
+                ))
+            };
             Some(handle)
         }
 

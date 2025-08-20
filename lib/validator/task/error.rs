@@ -302,6 +302,16 @@ pub(in crate::validator) enum Sync {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
+    #[error("Batch JSON RPC error: {}", .errors.join(", "))]
+    #[fatal]
+    BatchJsonRpc { errors: Vec<String> },
+    #[error("JSON serialization error")]
+    #[fatal]
+    JsonSerialize(#[source] serde_json::Error),
+    #[error(transparent)]
+    DecodeError(#[from] bitcoin::consensus::encode::Error),
+    #[error(transparent)]
+    HexError(#[from] hex::FromHexError),
     #[error(transparent)]
     #[fatal]
     LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),

@@ -418,7 +418,13 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
-        const EVENTS_CHANNEL_CAPACITY: usize = 256;
+        // Note: this needs to be reasonably big. If set too small,
+        // we're going to run into strange issues with the broadcast
+        // channel overflowing. This again leads to subscribers not
+        // not being able to receive events. What's the right number
+        // here? Don't know! 256 was the last value, and that was
+        // too small.
+        const EVENTS_CHANNEL_CAPACITY: usize = 2_000;
 
         let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
         events_rx.set_await_active(false);

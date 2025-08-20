@@ -2,20 +2,36 @@ use bitcoin_jsonrpsee::{
     MainClient,
     jsonrpsee::{core::ClientError, http_client::HttpClient},
 };
-use miette::miette;
+use miette::Diagnostic;
 
 use crate::{cli::NodeRpcConfig, errors::ErrorChain};
 
-pub fn create_client(
-    conf: &NodeRpcConfig,
-    enable_mempool: bool,
-) -> Result<HttpClient, miette::Report> {
+#[derive(Debug, Diagnostic, thiserror::Error)]
+pub enum Error {
+    #[error("RPC user and password must be set together")]
+    UserAndPasswordMustBeSetTogether,
+    #[error("precisely one of RPC user and cookie must be set")]
+    UserOrCookieMustBeSet,
+    #[error("unable to read bitcoind cookie at {cookie_path}")]
+    ReadCookie {
+        cookie_path: String,
+        source: std::io::Error,
+    },
+    #[error("failed to get RPC user name")]
+    GetRpcUser,
+    #[error("failed to get RPC password")]
+    GetRpcPassword,
+    #[error("failed to create mainchain RPC client")]
+    CreateClient(#[source] bitcoin_jsonrpsee::Error),
+}
+
+pub fn create_client(conf: &NodeRpcConfig, enable_mempool: bool) -> Result<HttpClient, Error> {
     if conf.user.is_none() != conf.pass.is_none() {
-        return Err(miette!("RPC user and password must be set together"));
+        return Err(Error::UserAndPasswordMustBeSetTogether);
     }
 
     if conf.user.is_none() == conf.cookie_path.is_none() {
-        return Err(miette!("precisely one of RPC user and cookie must be set"));
+        return Err(Error::UserOrCookieMustBeSet);
     }
 
     let mut conf_user = conf.user.clone().unwrap_or_default();
@@ -23,33 +39,37 @@ pub fn create_client(
 
     if conf.cookie_path.is_some() {
         let cookie_path = conf.cookie_path.clone().unwrap();
-        let auth = std::fs::read_to_string(cookie_path.clone())
-            .map_err(|err| miette!("unable to read bitcoind cookie at {}: {}", cookie_path, err))?;
+        let auth =
+            std::fs::read_to_string(cookie_path.clone()).map_err(|err| Error::ReadCookie {
+                cookie_path: cookie_path.clone(),
+                source: err,
+            })?;
 
         let mut auth = auth.split(':');
 
-        conf_user = auth
-            .next()
-            .ok_or(miette!("failed to get rpcuser"))?
-            .to_string()
-            .clone();
+        conf_user = auth.next().ok_or(Error::GetRpcUser)?.to_string().clone();
 
         conf_pass = auth
             .next()
-            .ok_or(miette!("failed to get rpcpassword"))?
-            .to_string()
+            .ok_or(Error::GetRpcPassword)?
             .to_string()
             .clone();
     }
 
+    // A mempool of default size might contain >300k txs.
+    // batch Requesting 300k txs requires ~30MiB,
+    // so 100MiB should be enough
+    const MAX_REQUEST_SIZE: u32 = 100 * (1 << 20);
+
+    // Default mempool size is 300MB, so 1GiB should be enough
+    //
+    // TODO: it'd be nice to extract what this setting is from
+    // the RPC client at call site. Would require wrapping
+    // the RPC client into a struct containing the config values?
+    const MAX_RESPONSE_SIZE: u32 = 1 << 30;
+    const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
     let client_builder = if enable_mempool {
-        // A mempool of default size might contain >300k txs.
-        // batch Requesting 300k txs requires ~30MiB,
-        // so 100MiB should be enough
-        const MAX_REQUEST_SIZE: u32 = 100 * (1 << 20);
-        // Default mempool size is 300MB, so 1GiB should be enough
-        const MAX_RESPONSE_SIZE: u32 = 1 << 30;
-        const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
         let client_builder =
             bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
                 .max_request_size(MAX_REQUEST_SIZE)
@@ -61,7 +81,7 @@ pub fn create_client(
     };
 
     bitcoin_jsonrpsee::client(conf.addr, client_builder, &conf_pass, &conf_user)
-        .map_err(|err| miette!("failed to create mainchain RPC client: {err:#}"))
+        .map_err(Error::CreateClient)
 }
 
 /// Broadcasts a transaction to the Bitcoin network.
