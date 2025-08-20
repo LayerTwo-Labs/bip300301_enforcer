@@ -348,11 +348,42 @@ pub struct TreasuryUtxo {
     pub previous_total_value: Amount,
 }
 
+mod serde_hexstr_human_readable {
+    use hex::{FromHex, ToHex};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S, T>(data: T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize + ToHex,
+    {
+        if serializer.is_human_readable() {
+            hex::serde::serialize(data, serializer)
+        } else {
+            data.serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de> + FromHex,
+        <T as FromHex>::Error: std::fmt::Display,
+    {
+        if deserializer.is_human_readable() {
+            hex::serde::deserialize(deserializer)
+        } else {
+            T::deserialize(deserializer)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Deposit {
     pub sidechain_id: SidechainNumber,
     pub sequence_number: u64,
     pub outpoint: OutPoint,
+    #[serde(with = "serde_hexstr_human_readable")]
     pub address: Vec<u8>,
     pub value: Amount,
 }
