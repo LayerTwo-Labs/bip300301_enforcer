@@ -335,19 +335,15 @@ impl ToStatus for UnlockExistingWallet {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-#[error("unsupported network (`{0}`)")]
-pub struct UnsupportedNetwork(pub bitcoin::Network);
-
-#[derive(Debug, Diagnostic, Error)]
 pub enum InitEsploraClient {
     #[error("failed to build esplora client")]
     BuildEsploraClient(#[source] esplora_client::Error),
     #[error("failed to get esplora height")]
     EsploraClientHeight(#[source] esplora_client::Error),
+    #[error("esplora url must be explicitly provided for {network}")]
+    MissingUrl { network: bitcoin::Network },
     #[error(transparent)]
     ParseUrl(#[from] url::ParseError),
-    #[error(transparent)]
-    UnsupportedNetwork(#[from] UnsupportedNetwork),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -365,8 +361,8 @@ pub enum InitElectrumClient {
     CreateElectrumClient(#[source] bdk_electrum::electrum_client::Error),
     #[error("failed to get initial block header")]
     GetInitialBlockHeader(#[source] bdk_electrum::electrum_client::Error),
-    #[error(transparent)]
-    UnsupportedNetwork(#[from] UnsupportedNetwork),
+    #[error("electrum host and port must be explicitly provided for {network}")]
+    MissingHostPort { network: bitcoin::Network },
 }
 
 #[derive(Debug, Diagnostic, Error)]
