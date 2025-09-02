@@ -73,6 +73,26 @@ type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
 type ChainSource = Either<ElectrumClient, Either<EsploraClient, NoSyncClient>>;
 
+const fn default_esplora_url(network: Network) -> Option<&'static str> {
+    match network {
+        Network::Signet => Some("https://explorer.drivechain.info/api"),
+        Network::Regtest => Some("http://localhost:3003"),
+        _ => None,
+    }
+}
+
+const fn default_electrum_host_port(network: Network) -> Option<(&'static str, u16)> {
+    match network {
+        Network::Signet => Some(("explorer.drivechain.info", 50001)),
+        Network::Regtest =>
+        // Default for mempool/electrs
+        {
+            Some(("127.0.0.1", 60401))
+        }
+        _ => None,
+    }
+}
+
 struct WalletInner {
     main_client: HttpClient,
     validator: Validator,
@@ -94,14 +114,14 @@ impl WalletInner {
         config: &WalletConfig,
         network: Network,
     ) -> Result<EsploraClient, error::InitEsploraClient> {
-        let default_url = match network {
-            Network::Signet => "https://explorer.drivechain.info/api",
-            Network::Regtest => "http://localhost:3003",
-            network => return Err(error::UnsupportedNetwork(network).into()),
+        let esplora_url = match config.esplora_url.as_ref() {
+            Some(url) => url,
+            None => {
+                let default_url = default_esplora_url(network)
+                    .ok_or(error::InitEsploraClient::MissingUrl { network })?;
+                &url::Url::parse(default_url)?
+            }
         };
-        let default_url = url::Url::parse(default_url)?;
-
-        let esplora_url = config.esplora_url.clone().unwrap_or(default_url);
 
         tracing::info!(esplora_url = %esplora_url, "creating esplora client");
 
@@ -125,17 +145,17 @@ impl WalletInner {
         config: &WalletConfig,
         network: Network,
     ) -> Result<ElectrumClient, error::InitElectrumClient> {
-        let (default_host, default_port) = match network {
-            Network::Signet => ("explorer.drivechain.info", 50001),
-            Network::Regtest => ("127.0.0.1", 60401), // Default for mempool/electrs
-            network => return Err(error::UnsupportedNetwork(network).into()),
-        };
-        let electrum_host = config
-            .electrum_host
-            .clone()
-            .unwrap_or(default_host.to_string());
-        let electrum_port = config.electrum_port.unwrap_or(default_port);
+        let (electrum_host, electrum_port) =
+            match (config.electrum_host.as_deref(), config.electrum_port) {
+                (Some(host), Some(port)) => (host, port),
+                (host, port) => {
+                    let (default_host, default_port) = default_electrum_host_port(network)
+                        .ok_or(error::InitElectrumClient::MissingHostPort { network })?;
+                    (host.unwrap_or(default_host), port.unwrap_or(default_port))
+                }
+            };
         let electrum_url = format!("{electrum_host}:{electrum_port}");
+
         tracing::debug!(%electrum_url, "creating electrum client");
         // Apply a reasonably short timeout to prevent the wallet from hanging
         let timeout = 5;
