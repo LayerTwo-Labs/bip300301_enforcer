@@ -267,5 +267,5 @@ jobs:
           username: root
           password: ${{ secrets.RELEASES_SERVER_PW }}
           port: 22
-          source: 'bip300301-enforcer-latest-*.zip'
-          target: '/var/www/html/'
+          source: "bip300301-enforcer-latest-*.zip"
+          target: "/var/www/html/"
