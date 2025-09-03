@@ -213,12 +213,14 @@ impl CusfEnforcer for Wallet {
         &mut self,
         block_hash: BlockHash,
     ) -> std::result::Result<(), Self::DisconnectBlockError> {
+        // It's sufficient for the enforcer to disconnect the block here. The wallet
+        // has no notion of block disconnects. Once a better tip is found and applied,
+        // BDK logic handles this for us.
         self.inner
             .validator
             .clone()
             .disconnect_block(block_hash)
             .await
-        // FIXME: disconnect block for wallet
     }
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
