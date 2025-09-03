@@ -261,11 +261,11 @@ jobs:
           zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
-        uses: yitianyigexiangfa/ssh-scp-ssh-pipelines@v1.1.5
+        uses: appleboy/scp-action@v1
         with:
           host: 45.33.96.47
-          user: root
-          pass: ${{ secrets.RELEASES_SERVER_PW }}
+          username: root
+          password: ${{ secrets.RELEASES_SERVER_PW }}
           port: 22
-          scp: |
-            'bip300301-enforcer-latest-*.zip' => '/var/www/html/'
+          source: 'bip300301-enforcer-latest-*.zip'
+          target: '/var/www/html/'
