@@ -66,7 +66,9 @@ impl From<db::Error> for HandleFailedSidechainProposals {
     }
 }
 
+#[derive(Transitive)]
 #[fatality(splitable)]
+#[transitive(from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM3ProposeBundle {
     #[error(transparent)]
     #[fatal]
@@ -87,6 +89,7 @@ impl From<db::Error> for HandleM3ProposeBundle {
 #[derive(Transitive)]
 #[fatality(splitable)]
 #[transitive(
+    from(db::error::Get, db::Error),
     from(db::error::IterInit, db::Error),
     from(db::error::IterItem, db::Error)
 )]
@@ -120,7 +123,13 @@ pub(in crate::validator) enum HandleM4AckBundles {
     Votes(#[from] HandleM4Votes),
 }
 
+#[derive(Transitive)]
 #[fatality(splitable)]
+#[transitive(
+    from(db::error::IterInit, db::Error),
+    from(db::error::IterItem, db::Error),
+    from(db::error::TryGet, db::Error)
+)]
 pub(in crate::validator) enum HandleFailedM6Ids {
     #[error(transparent)]
     #[fatal]
@@ -172,16 +181,23 @@ pub(in crate::validator) enum HandleTransaction {
     M8(#[from] HandleM8),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Transitive)]
+#[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator::task) enum ValidateTransactionInner {
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    Db(Box<db::Error>),
     #[error(transparent)]
     NestedWriteTxn(#[from] env::error::NestedWriteTxn),
     #[error("No chain tip")]
     NoChainTip,
     #[error(transparent)]
     Transaction(#[from] <HandleTransaction as fatality::Split>::Fatal),
+}
+
+impl From<db::Error> for ValidateTransactionInner {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -254,12 +270,28 @@ impl From<db::Error> for ConnectBlock {
     }
 }
 
-#[derive(Debug, Error)]
-pub(in crate::validator) enum DisconnectBlock {}
+#[derive(Debug, Error, Transitive)]
+#[transitive(
+    from(db::error::Delete, db::Error),
+    from(db::error::Get, db::Error),
+    from(db::error::Put, db::Error),
+    from(db::error::TryGet, db::Error)
+)]
+pub(in crate::validator) enum DisconnectBlock {
+    #[error(transparent)]
+    Db(Box<db::Error>),
+    #[error(transparent)]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+    #[error("Block hash `{block_hash}` does not match tip `{tip_hash}`")]
+    TipHash {
+        block_hash: bitcoin::BlockHash,
+        tip_hash: bitcoin::BlockHash,
+    },
+}
 
-impl fatality::Fatality for DisconnectBlock {
-    fn is_fatal(&self) -> bool {
-        true
+impl From<db::Error> for DisconnectBlock {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
     }
 }
 
@@ -286,7 +318,7 @@ pub(in crate::validator) enum Sync {
     #[fatal]
     Db(#[from] db::Error),
     #[error(transparent)]
-    #[fatal(forward)]
+    #[fatal]
     DisconnectBlock(#[from] DisconnectBlock),
     #[error(transparent)]
     #[fatal]

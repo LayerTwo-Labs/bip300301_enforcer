@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use bitcoin::{Amount, OutPoint};
-use fallible_iterator::FallibleIterator as _;
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
 use sneed::{DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey, db, env, rwtxn};
@@ -12,6 +11,7 @@ use crate::types::{
 };
 
 mod block_hashes;
+pub(in crate::validator) mod diff;
 
 pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 
@@ -132,6 +132,42 @@ impl ActiveSidechainDbs {
         Ok(sequence_number)
     }
 
+    /// Delete ctip, as part of a block disconnect
+    pub fn delete_ctip(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: SidechainNumber,
+    ) -> Result<(), db::Error> {
+        let ctip = self.ctip.get(rwtxn, &sidechain_number)?;
+        let _ = self
+            .ctip_outpoint_to_value_seq
+            .delete(rwtxn, &ctip.outpoint)?;
+        let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
+        let sequence_number = treasury_utxo_count - 1;
+        self.treasury_utxo_count
+            .put(rwtxn, &sidechain_number, &sequence_number)?;
+        let _ = self
+            .slot_sequence_to_treasury_utxo
+            .delete(rwtxn, &(sidechain_number, sequence_number))?;
+        let prev_ctip_sequence_number = sequence_number.checked_sub(1);
+        match prev_ctip_sequence_number {
+            Some(prev_ctip_sequence_number) => {
+                let prev_treasury_utxo = self
+                    .slot_sequence_to_treasury_utxo
+                    .get(rwtxn, &(sidechain_number, prev_ctip_sequence_number))?;
+                let ctip = Ctip {
+                    outpoint: prev_treasury_utxo.outpoint,
+                    value: prev_treasury_utxo.total_value,
+                };
+                self.ctip.put(rwtxn, &sidechain_number, &ctip)?;
+            }
+            None => {
+                let _ = self.ctip.delete(rwtxn, &sidechain_number)?;
+            }
+        }
+        Ok(())
+    }
+
     // Store a new active sidechain
     pub fn put_sidechain(
         &self,
@@ -147,54 +183,62 @@ impl ActiveSidechainDbs {
         Ok(())
     }
 
-    /// Apply the provided function to pending withdrawals.
-    /// Returns `None` if the sidechain is not active.
-    pub fn try_with_pending_withdrawals<T, F>(
+    // Delete an active sidechain, during a block disconnect
+    pub fn delete_sidechain(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: &SidechainNumber,
+    ) -> Result<(), db::Error> {
+        let _ = self.pending_m6ids.delete(rwtxn, sidechain_number)?;
+        let _ = self.sidechain.delete(rwtxn, sidechain_number)?;
+        Ok(())
+    }
+
+    /// Apply the provided function to pending withdrawals for an active
+    /// sidechain, and write the modified pending withdrawals.
+    pub fn with_pending_withdrawals<T, F>(
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
         f: F,
-    ) -> Result<Option<T>, db::Error>
+    ) -> Result<T, db::Error>
     where
         F: FnOnce(&mut PendingM6ids) -> T,
     {
-        let Some(mut pending_m6ids) = self.pending_m6ids.try_get(rwtxn, sidechain_number)? else {
-            return Ok(None);
-        };
+        let mut pending_m6ids = self.pending_m6ids.get(rwtxn, sidechain_number)?;
         let res = f(&mut pending_m6ids);
         let () = self
             .pending_m6ids
             .put(rwtxn, sidechain_number, &pending_m6ids)?;
-        Ok(Some(res))
+        Ok(res)
     }
 
-    /// Apply the provided function to the specified entry.
-    /// Returns `None` if the sidechain is not active.
-    pub fn try_with_pending_withdrawal_entry<T, F>(
+    /// Apply the provided function to the specified entry for an active
+    /// sidechain.
+    pub fn with_pending_withdrawal_entry<T, F>(
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
         m6id: M6id,
         f: F,
-    ) -> Result<Option<T>, db::Error>
+    ) -> Result<T, db::Error>
     where
         F: FnOnce(ordermap::map::Entry<'_, M6id, PendingM6idInfo>) -> T,
     {
-        self.try_with_pending_withdrawals(rwtxn, sidechain_number, |pending_withdrawals| {
+        self.with_pending_withdrawals(rwtxn, sidechain_number, |pending_withdrawals| {
             f(pending_withdrawals.entry(m6id))
         })
     }
 
-    /// Store a new pending M6id.
-    /// Returns `true` if the sidechain is active.
-    pub fn try_put_pending_m6id(
+    /// Store a new pending M6id for an active sidechain.
+    pub fn put_pending_m6id(
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
         m6id: M6id,
         proposal_height: u32,
-    ) -> Result<bool, db::Error> {
-        self.try_with_pending_withdrawal_entry(rwtxn, sidechain_number, m6id, |entry| match entry {
+    ) -> Result<(), db::Error> {
+        self.with_pending_withdrawal_entry(rwtxn, sidechain_number, m6id, |entry| match entry {
             ordermap::map::Entry::Occupied(mut entry) => {
                 _ = entry.insert(PendingM6idInfo::new(proposal_height))
             }
@@ -202,73 +246,34 @@ impl ActiveSidechainDbs {
                 _ = entry.insert(PendingM6idInfo::new(proposal_height))
             }
         })
-        .map(|res| res.is_some())
     }
 
-    /// Downvote all pending withdrawals
-    /// Returns `true` if the sidechain is active.
-    pub fn try_alarm_pending_m6ids(
+    /// Delete a pending withdrawal for an active sidechain
+    pub fn delete_pending_withdrawal(
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: &SidechainNumber,
-    ) -> Result<bool, db::Error> {
-        self.try_with_pending_withdrawals(rwtxn, sidechain_number, |pending_m6ids| {
+        m6id: M6id,
+    ) -> Result<(), db::Error> {
+        self.with_pending_withdrawal_entry(rwtxn, sidechain_number, m6id, |entry| match entry {
+            ordermap::map::Entry::Occupied(entry) => {
+                _ = entry.remove();
+            }
+            ordermap::map::Entry::Vacant(_) => (),
+        })
+    }
+
+    /// Downvote all pending withdrawals
+    pub fn alarm_pending_m6ds(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: &SidechainNumber,
+    ) -> Result<(), db::Error> {
+        self.with_pending_withdrawals(rwtxn, sidechain_number, |pending_m6ids| {
             pending_m6ids
                 .values_mut()
                 .for_each(|info| info.vote_count = info.vote_count.saturating_sub(1))
         })
-        .map(|res| res.is_some())
-    }
-
-    /// Upvote the pending withdrawal at the specified index
-    /// Returns `true` if the sidechain is active, and there is a pending
-    /// withdrawal at the specified index.
-    pub fn try_upvote_pending_withdrawal(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-        index: usize,
-    ) -> Result<bool, db::Error> {
-        let Some(mut pending_m6ids) = self.pending_m6ids.try_get(rwtxn, sidechain_number)? else {
-            return Ok(false);
-        };
-        if let Some((_m6id, info)) = pending_m6ids.get_index_mut(index) {
-            info.vote_count = info.vote_count.saturating_add(1);
-            let () = self
-                .pending_m6ids
-                .put(rwtxn, sidechain_number, &pending_m6ids)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Retain pending withdrawals for which the predicate returns `true`
-    pub fn retain_pending_withdrawals<F>(
-        &self,
-        rwtxn: &mut RwTxn,
-        mut f: F,
-    ) -> Result<(), db::Error>
-    where
-        F: FnMut(SidechainNumber, &M6id, &PendingM6idInfo) -> bool,
-    {
-        let active_sidechains: Vec<_> = self
-            .pending_m6ids
-            .lazy_decode()
-            .iter(rwtxn)?
-            .map(|(sidechain_number, _)| Ok(sidechain_number))
-            .collect()?;
-        for sidechain_number in active_sidechains {
-            let mut pending_m6ids = self
-                .pending_m6ids
-                .get(rwtxn, &sidechain_number)
-                .expect("sidechain number should exist as key");
-            pending_m6ids.retain(|m6id, info| f(sidechain_number, m6id, info));
-            let () = self
-                .pending_m6ids
-                .put(rwtxn, &sidechain_number, &pending_m6ids)?;
-        }
-        Ok(())
     }
 }
 
@@ -290,6 +295,9 @@ pub enum CreateDbsError {
     Env(#[from] env::Error),
 }
 
+pub type ProposalIdToSidechain =
+    DatabaseUnique<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>;
+
 #[derive(Clone)]
 pub(super) struct Dbs {
     env: Env,
@@ -299,8 +307,7 @@ pub(super) struct Dbs {
     pub current_chain_tip: DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
     pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
-    pub proposal_id_to_sidechain:
-        DatabaseUnique<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>,
+    pub proposal_id_to_sidechain: ProposalIdToSidechain,
 }
 
 impl Dbs {

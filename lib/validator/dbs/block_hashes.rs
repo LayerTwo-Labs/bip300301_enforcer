@@ -10,9 +10,12 @@ use nonempty::NonEmpty;
 use sneed::{DatabaseDup, DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, db, env};
 use tracing::instrument;
 
-use crate::types::{
-    BlockEvent, BlockInfo, BmmCommitment, BmmCommitments, HeaderInfo, SidechainNumber,
-    TwoWayPegData,
+use crate::{
+    types::{
+        BlockEvent, BlockInfo, BmmCommitment, BmmCommitments, HeaderInfo, SidechainNumber,
+        TwoWayPegData,
+    },
+    validator::dbs::diff,
 };
 
 pub mod error {
@@ -134,6 +137,9 @@ pub struct BlockHashDbs {
     cumulative_work: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Work>>,
     // All ancestors for each block MUST exist in this DB.
     // All keys in this DB MUST also exist in ALL other DBs.
+    diff: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<diff::Block>>,
+    // All ancestors for each block MUST exist in this DB.
+    // All keys in this DB MUST also exist in ALL other DBs.
     events: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Vec<BlockEvent>>>,
     // All keys in this DB MUST also exist in `height`
     header: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Header>>,
@@ -151,12 +157,13 @@ pub struct BlockHashDbs {
 }
 
 impl BlockHashDbs {
-    pub const NUM_DBS: u32 = 7;
+    pub const NUM_DBS: u32 = 8;
 
     pub(super) fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
         let bmm_commitments = DatabaseUnique::create(env, rwtxn, "block_hash_to_bmm_commitments")?;
         let coinbase_txid = DatabaseUnique::create(env, rwtxn, "block_hash_to_coinbase_txid")?;
         let cumulative_work = DatabaseUnique::create(env, rwtxn, "block_hash_to_cumulative_work")?;
+        let diff = DatabaseUnique::create(env, rwtxn, "block_hash_to_diff")?;
         let events = DatabaseUnique::create(env, rwtxn, "block_hash_to_events")?;
         let header = DatabaseUnique::create(env, rwtxn, "block_hash_to_header")?;
         let height = DatabaseUnique::create(env, rwtxn, "block_hash_to_height")?;
@@ -165,6 +172,7 @@ impl BlockHashDbs {
             bmm_commitments,
             coinbase_txid,
             cumulative_work,
+            diff,
             events,
             header,
             height,
@@ -180,6 +188,10 @@ impl BlockHashDbs {
 
     pub fn cumulative_work(&self) -> RoDatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Work>> {
         (*self.cumulative_work).clone()
+    }
+
+    pub fn diff(&self) -> RoDatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<diff::Block>> {
+        (*self.diff).clone()
     }
 
     pub fn height(&self) -> RoDatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<u32>> {
@@ -229,6 +241,7 @@ impl BlockHashDbs {
         rwtxn: &mut RwTxn,
         block_hash: &BlockHash,
         block_info: &BlockInfo,
+        diff: &diff::Block,
     ) -> Result<(), error::PutBlockInfo> {
         let Some(header) = self.header.try_get(rwtxn, block_hash)? else {
             let err = error::MissingHeader {
@@ -260,6 +273,7 @@ impl BlockHashDbs {
             .cumulative_work
             .put(rwtxn, block_hash, &cumulative_work)?;
         let () = self.events.put(rwtxn, block_hash, &block_info.events)?;
+        let () = self.diff.put(rwtxn, block_hash, diff)?;
         Ok(())
     }
 
