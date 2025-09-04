@@ -1,6 +1,6 @@
 //! Setup for an integration test
 
-use std::{collections::HashMap, future::Future, net::SocketAddr};
+use std::{collections::HashMap, future::Future, net::SocketAddr, str::FromStr};
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
@@ -15,7 +15,7 @@ use bip300301_enforcer_lib::{
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
-use bitcoin::{Address, Txid};
+use bitcoin::{Address, BlockHash, Txid};
 use futures::{FutureExt as _, StreamExt, channel::mpsc, future};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
@@ -328,6 +328,34 @@ async fn wait_for_port(host: &str, port: u16, timeout_duration: Duration) -> any
     }
 }
 
+pub async fn generate_regtest_block(
+    bitcoin_cli: &bins::BitcoinCli,
+    mining_address: &Address,
+) -> anyhow::Result<BlockHash> {
+    // format is `[block_hash]`
+    let block_count = 1;
+    let generate_block_output = bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [block_count.to_string(), mining_address.to_string()],
+        )
+        .run_utf8()
+        .await
+        .map_err(|err| anyhow!("error generating block: {err:#}"))?;
+
+    let new_block = match serde_json::from_str::<Vec<String>>(&generate_block_output) {
+        Ok(new_block) if new_block.len() == 1 => new_block[0].clone(),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "unexpected `generatetoaddress` response: {}",
+                generate_block_output
+            ));
+        }
+    };
+
+    BlockHash::from_str(&new_block).map_err(|_| anyhow!("invalid block hash: {new_block}"))
+}
 pub async fn setup(
     bin_paths: &BinPaths,
     network: Network,
@@ -442,14 +470,7 @@ pub async fn setup(
     tracing::debug!(%mining_address, "Mining 1 block");
     match network {
         Network::Regtest => {
-            let _output = bitcoin_cli
-                .command::<String, _, _, _, _>(
-                    [],
-                    "generatetoaddress",
-                    ["1", &mining_address.to_string()],
-                )
-                .run_utf8()
-                .await?;
+            let _new_block = generate_regtest_block(&bitcoin_cli, &mining_address).await?;
         }
         Network::Signet => {
             let mine_output = signet_miner

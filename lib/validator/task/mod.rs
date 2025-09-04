@@ -583,7 +583,7 @@ pub fn validate_tx(
 }
 
 /// Block header should be stored before calling this.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(block_hash = %block.block_hash()))]
 pub(in crate::validator) fn connect_block(
     rwtxn: &mut RwTxn,
     dbs: &Dbs,
@@ -760,18 +760,51 @@ pub(in crate::validator) fn connect_block(
     Ok(event)
 }
 
-// TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
-// operations.
+#[tracing::instrument(skip_all, fields(block_hash = %block_hash))]
 pub(in crate::validator) fn disconnect_block(
-    _rwtxn: &mut RwTxn,
-    _dbs: &Dbs,
+    rwtxn: &mut RwTxn<'_>,
+    dbs: &Dbs,
     event_tx: &Sender<Event>,
     block_hash: BlockHash,
 ) -> Result<(), error::DisconnectBlock> {
-    // FIXME: implement
     let event = Event::DisconnectBlock { block_hash };
     let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
-    todo!();
+
+    tracing::warn!("disconnecting block");
+
+    // Extract needed data from database before async operations
+    let header_info = dbs.block_hashes.get_header_info(rwtxn, &block_hash)?;
+    let prev_block_hash = header_info.prev_block_hash;
+
+    // TODO: properly handle all data processing steps that we to in
+    // connect_block, in reverse. We will probably need to insert "undo data"
+    // into a database when deleting data in connect_block, such that we have
+    // it available in this function.
+    // Steps:
+    //
+    // handle_coinbase_message
+    //   handle_m1_propose_sidechain
+    //   handle_m2_ack_sidechain
+    //   handle_m3_propose_bundle
+    // handle_m4_ack_bundles
+    // handle_failed_sidechain_proposals
+    //   PROBLEM: we need "undo data" here, to fix proposal_id_to_sidechain.delete(failed_proposal_id)
+    // handle_failed_m6ids
+    //   PROBLEM: we need "undo data" here, to fix retain_pending_withdrawals
+    // handle_transaction
+    //   handle_m5_m6: update the sidechain treasury values
+    //   handle_m8: add `disconnected` to block infos?
+
+    dbs.current_chain_tip
+        .put(rwtxn, &(), &prev_block_hash)
+        .map_err(db::Error::from)?;
+
+    tracing::info!(
+        "Disconnected block #{}, new tip: {}",
+        header_info.height,
+        prev_block_hash,
+    );
+    Ok(())
 }
 
 // Find the best ancestor of the node's tip that the enforcer has

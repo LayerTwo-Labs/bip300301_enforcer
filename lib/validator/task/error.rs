@@ -255,7 +255,13 @@ impl From<db::Error> for ConnectBlock {
 }
 
 #[derive(Debug, Error)]
-pub(in crate::validator) enum DisconnectBlock {}
+pub(in crate::validator) enum DisconnectBlock {
+    #[error(transparent)]
+    Db(#[from] db::Error),
+
+    #[error(transparent)]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
+}
 
 impl fatality::Fatality for DisconnectBlock {
     fn is_fatal(&self) -> bool {

@@ -564,6 +564,20 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
                 )
             });
 
+    let reorg_disconnect_block_tests =
+        [(Network::Regtest, Mode::Mempool)]
+            .iter()
+            .map(|(network, mode)| {
+                let bin_paths = bin_paths.clone();
+                AsyncTrial::new(
+                    format!("reorg_disconnect_block (mode: {mode}, network: {network})"),
+                    Box::pin(async move {
+                        crate::test_reorg_disconnect_block::test_reorg_disconnect_block(bin_paths)
+                            .await
+                    }) as TestFuture,
+                )
+            });
+
     let peer_bmm_request_tests =
         [(Network::Regtest, Mode::Mempool)]
             .iter()
@@ -585,6 +599,7 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
     async_trials.extend(peer_bmm_request_tests);
+    async_trials.extend(reorg_disconnect_block_tests);
 
     async_trials
 }
