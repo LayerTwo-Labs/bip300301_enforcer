@@ -385,7 +385,7 @@ impl Wallet {
         block
             .consensus_encode(&mut block_bytes)
             .map_err(error::EncodeBlock)?;
-        let () = self
+        if let Some(reason) = self
             .inner
             .main_client
             .submit_block(hex::encode(block_bytes))
@@ -393,7 +393,10 @@ impl Wallet {
             .map_err(|err| error::BitcoinCoreRPC {
                 method: "submitblock".to_string(),
                 error: err,
-            })?;
+            })?
+        {
+            return Err(error::Mine::BlockRejected { reason });
+        }
         let block_hash = block.header.block_hash();
         tracing::info!(%block_hash, %transaction_count, "Submitted block");
         tokio::time::sleep(Duration::from_millis(500)).await;

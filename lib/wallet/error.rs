@@ -896,6 +896,9 @@ pub enum Mine {
     EncodeBlock(#[from] EncodeBlock),
     #[error(transparent)]
     FinalizeBlock(#[from] FinalizeBlock),
+
+    #[error("block rejected: `{reason}`")]
+    BlockRejected { reason: String },
 }
 
 impl ToStatus for Mine {
@@ -904,6 +907,9 @@ impl ToStatus for Mine {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::EncodeBlock(err) => err.builder(),
             Self::FinalizeBlock(err) => err.builder(),
+            err @ Self::BlockRejected { .. } => {
+                StatusBuilder::new(err).message(move |f| write!(f, "{err}"))
+            }
         }
     }
 }
