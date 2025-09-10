@@ -552,12 +552,13 @@ impl WalletService for crate::wallet::Wallet {
                 };
 
                 let unconfirmed_last_seen = match utxo.chain_position {
-                    bdk_wallet::chain::ChainPosition::Unconfirmed { last_seen } => {
-                        last_seen.map(|last_seen| prost_types::Timestamp {
-                            seconds: last_seen as i64,
-                            nanos: 0,
-                        })
-                    }
+                    bdk_wallet::chain::ChainPosition::Unconfirmed {
+                        last_seen,
+                        first_seen: _,
+                    } => last_seen.map(|last_seen| prost_types::Timestamp {
+                        seconds: last_seen as i64,
+                        nanos: 0,
+                    }),
                     bdk_wallet::chain::ChainPosition::Confirmed { .. } => None,
                 };
                 list_unspent_outputs_response::Output {

@@ -378,16 +378,22 @@ type Persistence = <crate::wallet::Persistence as bdk_wallet::AsyncWalletPersist
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitWalletFromMnemonic {
     #[error("failed to create wallet")]
-    CreateWallet(#[from] bdk_wallet::CreateWithPersistError<Persistence>),
+    CreateWallet(#[source] Box<bdk_wallet::CreateWithPersistError<Persistence>>),
     #[diagnostic(transparent)]
     #[error("wallet data mismatch (wipe your data directory and try again)")]
     DataMismatch(#[source] DataMismatch),
     #[error("unable to derive xpriv from extended key")]
     DeriveXpriv,
     #[error("failed to load wallet")]
-    LoadWallet(#[source] bdk_wallet::LoadWithPersistError<Persistence>),
+    LoadWallet(#[source] Box<bdk_wallet::LoadWithPersistError<Persistence>>),
     #[error("mnemonic key error")]
     MnemonicKey(#[from] bdk_wallet::keys::KeyError),
+}
+
+impl From<bdk_wallet::CreateWithPersistError<Persistence>> for InitWalletFromMnemonic {
+    fn from(err: bdk_wallet::CreateWithPersistError<Persistence>) -> Self {
+        Self::CreateWallet(Box::new(err))
+    }
 }
 
 impl From<bdk_wallet::LoadWithPersistError<Persistence>> for InitWalletFromMnemonic {
@@ -395,7 +401,7 @@ impl From<bdk_wallet::LoadWithPersistError<Persistence>> for InitWalletFromMnemo
         if err.to_string().contains("data mismatch") {
             Self::DataMismatch(DataMismatch)
         } else {
-            Self::LoadWallet(err)
+            Self::LoadWallet(Box::new(err))
         }
     }
 }

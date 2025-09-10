@@ -894,7 +894,10 @@ pub mod mainchain {
                         nanos: 0,
                     }),
                 },
-                bdk_wallet::chain::ChainPosition::Unconfirmed { last_seen } => {
+                bdk_wallet::chain::ChainPosition::Unconfirmed {
+                    last_seen,
+                    first_seen: _,
+                } => {
                     let timestamp = last_seen.map(|last_seen| prost_types::Timestamp {
                         seconds: last_seen as i64,
                         nanos: 0,

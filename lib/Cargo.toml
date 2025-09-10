@@ -16,9 +16,9 @@ aes-gcm = { version = "0.10.3", features = ["std"] }
 argon2 = { version = "0.5.3", features = ["std"] }
 async-broadcast = "0.7.1"
 async-lock = "3.4.0"
-bdk_chain = "0.21.1"
-bdk_electrum = { version = "0.20.1", default-features = false }
-bdk_esplora = { version = "0.20.1", default-features = false, features = [
+bdk_chain = "0.23.1"
+bdk_electrum = { version = "0.23.1", default-features = false }
+bdk_esplora = { version = "0.22.1", default-features = false, features = [
     "tokio",
     "async-https-rustls",
 ] }

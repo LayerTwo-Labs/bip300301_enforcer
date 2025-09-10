@@ -1458,20 +1458,24 @@ impl Wallet {
                 ChainPosition::Confirmed { anchor, .. },
                 ChainPosition::Unconfirmed {
                     last_seen: Some(last_seen),
+                    first_seen: _,
                 },
             ) => anchor.confirmation_time.cmp(&last_seen),
             (
                 ChainPosition::Unconfirmed {
                     last_seen: Some(last_seen),
+                    first_seen: _,
                 },
                 ChainPosition::Confirmed { anchor, .. },
             ) => last_seen.cmp(&anchor.confirmation_time),
             (
                 ChainPosition::Unconfirmed {
                     last_seen: Some(a_last_seen),
+                    first_seen: _,
                 },
                 ChainPosition::Unconfirmed {
                     last_seen: Some(b_last_seen),
+                    first_seen: _,
                 },
             ) => a_last_seen.cmp(&b_last_seen),
 
@@ -2084,9 +2088,9 @@ impl Wallet {
             // We can receive 'nested' alerts from BDK, about further missing ancestors. We therefore
             // recurse, but make sure to only do so if the recommended try_include_height is /below/
             // what we just tried. Otherwise we'll just loop forever.
-            Err(error::ConnectBlock::BdkConnect(bdk_chain::local_chain::CannotConnectError {
-                try_include_height,
-            })) if try_include_height < header_info.height => {
+            Err(error::ConnectBlock::BdkConnect(
+                bdk_wallet::chain::local_chain::CannotConnectError { try_include_height },
+            )) if try_include_height < header_info.height => {
                 tracing::info!(
                     "recursing to connect missing block at height {}",
                     try_include_height
