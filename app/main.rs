@@ -22,7 +22,7 @@ use bip300301_enforcer_lib::{
     wallet::{self, error::BitcoinCoreRPC},
 };
 use bitcoin::ScriptBuf;
-use bitcoin_jsonrpsee::MainClient;
+use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
 use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
@@ -930,13 +930,38 @@ async fn main() -> Result<()> {
                 );
                 Ok(())
             }
+            Err(Error::Transport(err))
+                if err.downcast_ref::<transport::Error>().is_some_and(|e| {
+                    matches!(e, transport::Error::Rejected { status_code: 401 })
+                }) =>
+            {
+                let message = if let Some(user) = cli.node_rpc_opts.user {
+                    format!("we tried connecting with RPC user '{user}' and a password, you probably have something different in your bitcoin.conf file")
+                } else {
+                    "check your Bitcoin Core RPC credentials".to_string()
+                };
+                #[derive(Debug, Diagnostic, Error)]
+                #[error("Invalid Bitcoin Core RPC credentials")]
+                #[diagnostic(code(bip300301_enforcer::rpc_credentials))]
+                struct UnauthorizedError {
+                    #[help]
+                    message: String,
+                }
+
+                return Err(UnauthorizedError {
+                    message,
+                }
+                .into());
+            }
 
             Err(err) => Err(wallet::error::BitcoinCoreRPC {
                 method: "getblockchaininfo".to_string(),
                 error: err,
             }),
         }
-        .map_err(|err| miette!("failed to get blockchain info: {err:#}"))?;
+        .map_err(|err| {
+            miette::Report::from(err).wrap_err("unable to verify Bitcoin Core is ready")
+        })?;
 
         let delay = tokio::time::Duration::from_millis(250);
         tokio::time::sleep(delay).await;
