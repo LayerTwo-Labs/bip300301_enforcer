@@ -1,13 +1,13 @@
 use bip300301_enforcer_lib::{bins::CommandExt, proto::common::ConsensusHex};
-use futures::{StreamExt, channel::mpsc};
+use futures::{StreamExt as _, channel::mpsc};
 use tokio::time::sleep;
-use tracing::Instrument;
+use tracing::Instrument as _;
 
 use crate::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     mine,
-    setup::{DummySidechain, Mode, Network, PostSetup, Sidechain, setup},
-    util::{self, BinPaths},
+    setup::{DummySidechain, PostSetup, Sidechain},
+    util,
 };
 
 async fn create_bmm_request_tx(
@@ -76,52 +76,40 @@ async fn create_bmm_request_tx(
 }
 
 async fn test_peer_bmm_request_task(
-    bin_paths: &BinPaths,
-    network: Network,
-    mode: Mode,
+    post_setup: &mut PostSetup,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
-    let mut post_setup = setup(bin_paths, network, mode, res_tx.clone()).await?;
-    let sidechain = DummySidechain::setup((), &post_setup, res_tx).await?;
+    let sidechain = DummySidechain::setup((), post_setup, res_tx).await?;
     tracing::info!("Setup successfully");
-    let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = propose_sidechain::<DummySidechain>(post_setup).await?;
     tracing::info!("Proposed sidechain successfully");
-    let () = activate_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = activate_sidechain::<DummySidechain>(post_setup).await?;
     tracing::info!("Activated sidechain successfully");
-    let () = fund_enforcer::<DummySidechain>(&mut post_setup).await?;
+    let () = fund_enforcer::<DummySidechain>(post_setup).await?;
     tracing::info!("Funded enforcer successfully");
 
     let sidechain_block_hash: [u8; 32] = {
         use bitcoin::hashes::Hash;
         bitcoin::hashes::sha256::Hash::hash(b"dummy sidechain block").to_byte_array()
     };
-    let _txid = create_bmm_request_tx(&mut post_setup, &sidechain_block_hash).await?;
+    let _txid = create_bmm_request_tx(post_setup, &sidechain_block_hash).await?;
     tracing::info!("Created BMM request tx successfully");
     // Wait for mempool inclusion
     sleep(std::time::Duration::from_secs(1)).await;
     // Mine a block and check that the BMM request worked
-    let () = mine::mine_check_block_events::<_, DummySidechain>(
-        &mut post_setup,
-        1,
-        None,
-        |_, block_info| {
+    let () =
+        mine::mine_check_block_events::<_, DummySidechain>(post_setup, 1, None, |_, block_info| {
             let bmm_commitment = block_info
                 .bmm_commitment
                 .ok_or_else(|| anyhow::anyhow!("Expected a BMM commitment"))?;
             let expected_bmm_commitment = ConsensusHex::encode(&sidechain_block_hash);
             anyhow::ensure!(bmm_commitment == expected_bmm_commitment);
             Ok(())
-        },
-    )
-    .await?;
+        })
+        .await?;
     tracing::info!("Included BMM request tx successfully");
 
     drop(sidechain);
-    tracing::info!("Removing {}", post_setup.out_dir.path().display());
-    drop(post_setup.tasks);
-    // Wait for tasks to die
-    sleep(std::time::Duration::from_secs(1)).await;
-    post_setup.out_dir.cleanup()?;
     Ok(())
 }
 
@@ -130,16 +118,12 @@ async fn test_peer_bmm_request_task(
 /// * Creates two deposits
 /// * If mode is not GBT, creates a withdrawal that will be allowed to expire
 /// * Creates and handles a withdrawal
-pub async fn test_peer_bmm_request(
-    bin_paths: BinPaths,
-    network: Network,
-    mode: Mode,
-) -> anyhow::Result<()> {
+pub async fn test_peer_bmm_request(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (res_tx, mut res_rx) = mpsc::unbounded();
     let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
         let res_tx = res_tx.clone();
         async move {
-            let res = test_peer_bmm_request_task(&bin_paths, network, mode, res_tx.clone()).await;
+            let res = test_peer_bmm_request_task(&mut post_setup, res_tx.clone()).await;
             let _send_err: Result<(), _> = res_tx.unbounded_send(res);
         }
         .in_current_span()

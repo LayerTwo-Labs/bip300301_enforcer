@@ -3,24 +3,15 @@ use std::collections::HashMap;
 use bip300301_enforcer_lib::proto::mainchain::{
     ListTransactionsRequest, ListUnspentOutputsRequest, SendTransactionRequest,
 };
-use futures::channel::mpsc;
 
 use crate::{
     integration_test,
-    setup::{DummySidechain, Mode, Network, setup},
-    util::BinPaths,
+    setup::{DummySidechain, PostSetup},
 };
 
 // Verify that unconfirmed transactions are immediately available when listing wallet
 // transactions.
-pub async fn test_unconfirmed_transactions(
-    bin_paths: BinPaths,
-    network: Network,
-    mode: Mode,
-) -> anyhow::Result<()> {
-    let (res_tx, _) = mpsc::unbounded();
-    let mut post_setup = setup(&bin_paths, network, mode, res_tx).await?;
-
+pub async fn test_unconfirmed_transactions(mut post_setup: PostSetup) -> anyhow::Result<()> {
     integration_test::fund_enforcer::<DummySidechain>(&mut post_setup).await?;
 
     let txs_pre = post_setup
@@ -86,8 +77,6 @@ pub async fn test_unconfirmed_transactions(
         })
         .collect::<Vec<_>>();
 
-    // This is failing. Very strange! We're applying the unconfirmed transaction to the wallet,
-    // as shown by it being included when listing above. Could this be a BDK bug?
     assert!(!new_utxos.is_empty());
 
     Ok(())
