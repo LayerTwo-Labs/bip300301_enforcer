@@ -15,8 +15,8 @@ publish = false
 version = "0.3.4"
 
 [workspace.dependencies]
-bdk_wallet = { version = "1.0.0" }
-bitcoin = "0.32.3"
+bdk_wallet = { version = "2.1.0" }
+bitcoin = "0.32.6"
 clap = { version = "4.5.18", default-features = false }
 either = "1.13.0"
 futures = "0.3.30"
