@@ -31,6 +31,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-indicatif = "0.3.8"
 tokio-stream = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }

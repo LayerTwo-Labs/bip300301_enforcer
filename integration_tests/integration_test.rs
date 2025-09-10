@@ -16,18 +16,86 @@ use bitcoin::Amount;
 use futures::{StreamExt as _, TryStreamExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
-use tracing::Instrument;
 
 use crate::{
     mine::{
         mine, mine_check_block_events, mine_gbt_check, mine_generateblocks_check, mine_signet_check,
     },
     setup::{DummySidechain, MiningMode, Mode, Network, PostSetup, Sidechain, setup},
-    util::{self, AsyncTrial, BinPaths},
+    test_unconfirmed_transactions,
+    util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
 
 type TestFuture = std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
 type TestTrial = AsyncTrial<TestFuture>;
+
+struct TestSetupComponents {
+    bin_paths: BinPaths,
+    network: Network,
+    mode: Mode,
+    file_registry: TestFileRegistry,
+    failure_collector: TestFailureCollector,
+}
+
+fn new_trial_with_setup<F, Fut>(name: String, comps: TestSetupComponents, test_fn: F) -> TestTrial
+where
+    F: FnOnce(PostSetup) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let file_registry = comps.file_registry.clone();
+    AsyncTrial::new(
+        name.clone(),
+        Box::pin(async move {
+            let (res_tx, _) = mpsc::unbounded();
+            let post_setup = setup(&comps.bin_paths, comps.network, comps.mode, res_tx).await?;
+
+            // Register specific files with their own configurations
+            file_registry.register_file(
+                &name,
+                post_setup
+                    .out_dir
+                    .path()
+                    .join("bitcoind")
+                    .join("stdout.txt"),
+                FileDumpConfig::new().with_label("Bitcoin Core stdout"),
+            );
+
+            file_registry.register_file(
+                &name,
+                post_setup
+                    .out_dir
+                    .path()
+                    .join("bitcoind")
+                    .join("stderr.txt"),
+                FileDumpConfig::new().with_label("Bitcoin Core stderr"),
+            );
+
+            file_registry.register_file(
+                &name,
+                post_setup
+                    .out_dir
+                    .path()
+                    .join("enforcer")
+                    .join("stdout.txt"),
+                FileDumpConfig::new().with_label("Enforcer stdout"),
+            );
+
+            file_registry.register_file(
+                &name,
+                post_setup
+                    .out_dir
+                    .path()
+                    .join("enforcer")
+                    .join("stderr.txt"),
+                FileDumpConfig::new().with_label("Enforcer stderr"),
+            );
+
+            test_fn(post_setup).await
+        }) as TestFuture,
+        comps.file_registry,
+        comps.failure_collector,
+    )
+}
 
 pub async fn propose_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
 where
@@ -419,27 +487,24 @@ where
 
 #[allow(clippy::significant_drop_tightening, reason = "false positive")]
 async fn deposit_withdraw_roundtrip_task<S>(
-    bin_paths: &BinPaths,
-    network: Network,
-    mode: Mode,
+    post_setup: &mut PostSetup,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     sidechain_init: S::Init,
 ) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
-    let mut post_setup = setup(bin_paths, network, mode, res_tx.clone()).await?;
-    let mut sidechain = S::setup(sidechain_init, &post_setup, res_tx).await?;
+    let mut sidechain = S::setup(sidechain_init, post_setup, res_tx).await?;
     tracing::info!("Setup successfully");
-    let () = propose_sidechain::<S>(&mut post_setup).await?;
+    let () = propose_sidechain::<S>(post_setup).await?;
     tracing::info!("Proposed sidechain successfully");
-    let () = activate_sidechain::<S>(&mut post_setup).await?;
+    let () = activate_sidechain::<S>(post_setup).await?;
     tracing::info!("Activated sidechain successfully");
-    let () = fund_enforcer::<S>(&mut post_setup).await?;
+    let () = fund_enforcer::<S>(post_setup).await?;
     tracing::info!("Funded enforcer successfully");
     let deposit_address = sidechain.get_deposit_address().await?;
     let () = deposit(
-        &mut post_setup,
+        post_setup,
         &mut sidechain,
         &deposit_address,
         DEPOSIT_AMOUNT,
@@ -452,7 +517,7 @@ where
     let () = wait_for_wallet_sync().await?;
     tracing::info!("Attempting second deposit");
     let () = deposit(
-        &mut post_setup,
+        post_setup,
         &mut sidechain,
         &deposit_address,
         DEPOSIT_AMOUNT,
@@ -460,10 +525,10 @@ where
     )
     .await?;
     tracing::info!("Deposited to sidechain successfully");
-    let pending_withdrawal_value = match mode.mining_mode() {
+    let pending_withdrawal_value = match post_setup.mode.mining_mode() {
         MiningMode::GenerateBlocks => {
             let () = withdraw_expire(
-                &mut post_setup,
+                post_setup,
                 &mut sidechain,
                 WITHDRAW_AMOUNT_0,
                 WITHDRAW_FEE_0,
@@ -475,7 +540,7 @@ where
         MiningMode::GetBlockTemplate => Amount::ZERO,
     };
     let () = withdraw_succeed(
-        &mut post_setup,
+        post_setup,
         &mut sidechain,
         WITHDRAW_AMOUNT_1,
         WITHDRAW_FEE_1,
@@ -484,11 +549,6 @@ where
     .await?;
     tracing::info!("Withdrawal succeeded");
     drop(sidechain);
-    tracing::info!("Removing {}", post_setup.out_dir.path().display());
-    drop(post_setup.tasks);
-    // Wait for tasks to die
-    sleep(std::time::Duration::from_secs(1)).await;
-    post_setup.out_dir.cleanup()?;
     Ok(())
 }
 
@@ -498,39 +558,22 @@ where
 /// * If mode is not GBT, creates a withdrawal that will be allowed to expire
 /// * Creates and handles a withdrawal
 pub async fn deposit_withdraw_roundtrip<S>(
-    bin_paths: BinPaths,
-    network: Network,
-    mode: Mode,
+    mut post_setup: PostSetup,
     sidechain_init: S::Init,
 ) -> anyhow::Result<()>
 where
     S: Sidechain + Send,
     S::Init: Send + 'static,
 {
-    let (res_tx, mut res_rx) = mpsc::unbounded();
-    let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
-        let res_tx = res_tx.clone();
-        async move {
-            let res = deposit_withdraw_roundtrip_task::<S>(
-                &bin_paths,
-                network,
-                mode,
-                res_tx.clone(),
-                sidechain_init,
-            )
-            .await;
-            let _send_err: Result<(), _> = res_tx.unbounded_send(res);
-        }
-        .in_current_span()
-    })
-    .into();
-    res_rx
-        .next()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Unexpected end of test task result stream"))?
+    let (res_tx, _) = mpsc::unbounded();
+    deposit_withdraw_roundtrip_task::<S>(&mut post_setup, res_tx, sidechain_init).await
 }
 
-pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
+pub fn tests(
+    bin_paths: &BinPaths,
+    file_registry: TestFileRegistry,
+    failure_collector: TestFailureCollector,
+) -> Vec<TestTrial> {
     let deposit_withdraw_roundtrip_tests = [
         (Network::Regtest, Mode::GetBlockTemplate),
         (Network::Regtest, Mode::Mempool),
@@ -539,12 +582,16 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
     ]
     .iter()
     .map(|(network, mode)| {
-        let bin_paths = bin_paths.clone();
-        AsyncTrial::new(
+        new_trial_with_setup(
             format!("deposit_withdraw_roundtrip (mode: {mode}, network: {network})"),
-            Box::pin(async move {
-                deposit_withdraw_roundtrip::<DummySidechain>(bin_paths, *network, *mode, ()).await
-            }) as TestFuture,
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: *network,
+                mode: *mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            |post_setup| deposit_withdraw_roundtrip::<DummySidechain>(post_setup, ()),
         )
     });
 
@@ -553,14 +600,16 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
         [(Network::Regtest, Mode::Mempool)]
             .iter()
             .map(|(network, mode)| {
-                let bin_paths = bin_paths.clone();
-                AsyncTrial::new(
+                new_trial_with_setup(
                     format!("unconfirmed_transactions (mode: {mode}, network: {network})"),
-                    Box::pin(async move {
-                        use crate::test_unconfirmed_transactions::test_unconfirmed_transactions;
-
-                        test_unconfirmed_transactions(bin_paths, *network, *mode).await
-                    }) as TestFuture,
+                    TestSetupComponents {
+                        bin_paths: bin_paths.clone(),
+                        network: *network,
+                        mode: *mode,
+                        file_registry: file_registry.clone(),
+                        failure_collector: failure_collector.clone(),
+                    },
+                    test_unconfirmed_transactions::test_unconfirmed_transactions,
                 )
             });
 
@@ -568,18 +617,18 @@ pub fn tests(bin_paths: &BinPaths) -> Vec<TestTrial> {
         [(Network::Regtest, Mode::Mempool)]
             .iter()
             .map(|(network, mode)| {
-                let bin_paths = bin_paths.clone();
-                AsyncTrial::new(
+                new_trial_with_setup(
                     format!("peer_bmm_request (mode: {mode}, network: {network})"),
-                    Box::pin(async move {
-                        crate::test_peer_bmm_request::test_peer_bmm_request(
-                            bin_paths, *network, *mode,
-                        )
-                        .await
-                    }) as TestFuture,
+                    TestSetupComponents {
+                        bin_paths: bin_paths.clone(),
+                        network: *network,
+                        mode: *mode,
+                        file_registry: file_registry.clone(),
+                        failure_collector: failure_collector.clone(),
+                    },
+                    crate::test_peer_bmm_request::test_peer_bmm_request,
                 )
             });
-
     let mut async_trials = vec![];
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
