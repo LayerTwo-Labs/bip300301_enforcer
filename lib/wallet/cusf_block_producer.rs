@@ -217,8 +217,20 @@ impl CusfEnforcer for Wallet {
             .validator
             .clone()
             .disconnect_block(block_hash)
-            .await
-        // FIXME: disconnect block for wallet
+            .await?;
+
+        // We're NOT disconnecting blocks for the BDK wallet. This concept doesn't exist
+        // in BDK. Instead, we're supposed to just connect whatever comes in, and the current tip
+        // will be automatically set to the best seen tip. I.e. if a block is invalidated,
+        // it will be considered the best tip in the BDK wallet until it is overtaken
+        // by another.
+        // https://github.com/bitcoindevkit/bdk_wallet/issues/116
+
+        // We're not applying any disconnect logic to our SQLite DB, either. The content
+        // of this DB is wiped (with brutish `DELETE` statement) upon generating a new block.
+        // This means that sidechain proposals etc. must be re-created if we disconnected a
+        // block which caused a sidechain proposal to go out of existence.
+        Ok(())
     }
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
