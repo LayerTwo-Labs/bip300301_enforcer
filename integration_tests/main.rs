@@ -1,4 +1,7 @@
-use bip300301_enforcer_integration_tests::{integration_test, util::BinPaths};
+use bip300301_enforcer_integration_tests::{
+    integration_test,
+    util::{BinPaths, TestFileRegistry},
+};
 use clap::Parser;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
@@ -86,10 +89,12 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         tracing::info!("Loaded env vars from `{}`", env_filepath.display());
     }
 
+    let file_registry = TestFileRegistry::new();
+
     // Create a list of tests
     let mut tests = Vec::<libtest_mimic::Trial>::new();
     tests.extend(
-        integration_test::tests(&BinPaths::from_env()?)
+        integration_test::tests(&BinPaths::from_env()?, file_registry)
             .into_iter()
             .map(|trial| trial.run_blocking(rt_handle.clone())),
     );

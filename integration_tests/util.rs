@@ -1,7 +1,9 @@
 use std::{
+    collections::HashMap,
     ffi::{OsStr, OsString},
     future::Future,
     path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 use futures::TryFutureExt as _;
@@ -68,9 +70,95 @@ impl BinPaths {
     }
 }
 
+/// Configuration for individual file dumping behavior
+#[derive(Clone, Debug)]
+pub struct FileDumpConfig {
+    /// Number of lines to show from the end of large files (default: 100)
+    pub lines: usize,
+    /// Whether to show this file on test failure (default: true)
+    pub show_on_failure: bool,
+    /// Optional label for the file
+    pub label: Option<String>,
+}
+
+impl Default for FileDumpConfig {
+    fn default() -> Self {
+        Self {
+            lines: 10,
+            show_on_failure: true,
+            label: None,
+        }
+    }
+}
+
+impl FileDumpConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_lines(mut self, lines: usize) -> Self {
+        self.lines = lines;
+        self
+    }
+
+    pub fn with_label<S: Into<String>>(mut self, label: S) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn hide_on_failure(mut self) -> Self {
+        self.show_on_failure = false;
+        self
+    }
+}
+
+/// A file with its associated dump configuration
+#[derive(Clone, Debug)]
+pub struct FileWithConfig {
+    pub path: PathBuf,
+    pub config: FileDumpConfig,
+}
+
+/// Registry to track stdout/stderr files for active tests
+#[derive(Clone, Debug, Default)]
+pub struct TestFileRegistry {
+    inner: Arc<Mutex<HashMap<String, Vec<FileWithConfig>>>>,
+}
+
+impl TestFileRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a single file with its configuration for a test
+    pub fn register_file<P: Into<PathBuf>>(
+        &self,
+        test_name: &str,
+        path: P,
+        config: FileDumpConfig,
+    ) {
+        let mut registry = self.inner.lock().unwrap();
+        let file_with_config = FileWithConfig {
+            path: path.into(),
+            config,
+        };
+        registry
+            .entry(test_name.to_string())
+            .or_default()
+            .push(file_with_config);
+    }
+
+    /// Get all registered files with their configurations for a test
+    fn get_files(&self, test_name: &str) -> Vec<FileWithConfig> {
+        let registry = self.inner.lock().unwrap();
+        registry.get(test_name).cloned().unwrap_or_default()
+    }
+}
+
 pub struct AsyncTrial<Fut> {
     name: String,
     test: Fut,
+    file_registry: Option<TestFileRegistry>,
 }
 
 impl<Fut> AsyncTrial<Fut> {
@@ -81,7 +169,13 @@ impl<Fut> AsyncTrial<Fut> {
         Self {
             name: name.as_ref().to_owned(),
             test,
+            file_registry: None,
         }
+    }
+
+    pub fn with_file_registry(mut self, registry: TestFileRegistry) -> Self {
+        self.file_registry = Some(registry);
+        self
     }
 
     // Run the trial on the provided runtime
@@ -91,12 +185,98 @@ impl<Fut> AsyncTrial<Fut> {
         Fut: Future<Output = Result<(), Err>> + Send + 'static,
     {
         let span = tracing::info_span!("test", name = %self.name);
+        let test_name = self.name.clone();
+        let file_registry = self.file_registry.clone();
+
         libtest_mimic::Trial::test(self.name, move || {
             span.in_scope(|| {
-                rt_handle.block_on(async { self.test.map_err(libtest_mimic::Failed::from).await })
+                rt_handle.block_on(async {
+                    let result = self.test.map_err(libtest_mimic::Failed::from).await;
+                    result.inspect_err(|_err| {
+                        // Display stdout/stderr files if available
+                        if let Some(registry) = &file_registry {
+                            let files = registry.get_files(&test_name);
+                            if !files.is_empty() {
+                                let output = format_test_output_files(&test_name, &files);
+                                if !output.is_empty() {
+                                    #[allow(clippy::print_stderr)]
+                                    {
+                                        eprintln!("{output}");
+                                    }
+                                }
+                            }
+                        }
+                    })
+                })
             })
         })
     }
+}
+
+/// Read file contents with optional tail functionality for large files
+pub fn read_file_with_tail(
+    path: &std::path::Path,
+    config: &FileDumpConfig,
+) -> Result<String, std::io::Error> {
+    // Read last N lines
+    let content = std::fs::read_to_string(path)?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    if lines.len() <= config.lines {
+        Ok(content)
+    } else {
+        let tail_start = lines.len() - config.lines;
+        let tail_content = lines[tail_start..].join("\n");
+        Ok(format!(
+            "... [showing last {} lines of {} total lines] ...\n{}",
+            config.lines,
+            lines.len(),
+            tail_content
+        ))
+    }
+}
+
+/// Format and display stdout/stderr files for a test
+pub fn format_test_output_files(test_name: &str, files: &[FileWithConfig]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+
+    let mut output = format!("\n=== Test '{test_name}' Output Files ===");
+
+    for file in files {
+        // Skip files that are configured to be hidden
+        if !file.config.show_on_failure {
+            continue;
+        }
+
+        let mut file_with_config_label = file.path.display().to_string();
+
+        if let Some(label) = &file.config.label {
+            file_with_config_label = format!("{label} ({file_with_config_label})");
+        }
+
+        match read_file_with_tail(&file.path, &file.config) {
+            Ok(content) if !content.trim().is_empty() => {
+                // Only show the label if the content is not empty
+                output.push_str(&format!("\n--- {file_with_config_label} ---\n"));
+
+                output.push_str(&content);
+                if !content.ends_with('\n') {
+                    output.push('\n');
+                }
+
+                // Include the label in the end marker as well!
+                output.push_str(&format!("--- End {file_with_config_label} ---\n"));
+            }
+            Ok(_) => {}
+            Err(err) => {
+                output.push_str(&format!("Error reading file: {err}\n"));
+            }
+        }
+    }
+
+    output
 }
 
 /// Wrapper around `JoinHandle` that aborts the task on drop
