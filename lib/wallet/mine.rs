@@ -82,6 +82,13 @@ impl Wallet {
                 );
             })?;
 
+        if !sidechain_proposals.is_empty() {
+            tracing::debug!(
+                "found {} sidechain proposal(s) in our SQLite DB",
+                sidechain_proposals.len()
+            );
+        }
+
         // Sidechain proposals that already exist in the chain,
         // or will already be proposed in coinbase txouts
         let proposed_sidechains = self

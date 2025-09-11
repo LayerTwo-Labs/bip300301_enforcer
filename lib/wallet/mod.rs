@@ -628,17 +628,29 @@ impl WalletInner {
         I: IntoIterator<Item = (SidechainNumber, M6id)>,
     {
         // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_, _> {
+        let with_connection = |connection: &Connection| -> Result<usize, rusqlite::Error> {
+            let mut total_deleted = 0;
             for (sidechain_number, m6id) in iter {
-                let _ = connection.execute(
+                let deleted = connection.execute(
                     "DELETE FROM bundle_proposals where sidechain_number = ?1 AND bundle_hash = ?2;",
                     (sidechain_number.0, m6id.0.as_byte_array())
                 )?;
+                total_deleted += deleted;
             }
-            Ok(())
+            Ok(total_deleted)
         };
-        let connection = self.self_db.lock().await;
-        with_connection(&connection)
+        let total_deleted = {
+            let connection = self.self_db.lock().await;
+            with_connection(&connection)?
+        };
+
+        if total_deleted > 0 {
+            tracing::debug!(
+                "deleted {} bundle proposal(s) from SQLite DB",
+                total_deleted
+            );
+        }
+        Ok(())
     }
 
     // Gets wiped upon generating a new block.
@@ -649,17 +661,28 @@ impl WalletInner {
     where
         I: IntoIterator<Item = SidechainProposalId>,
     {
-        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+        let with_connection = |connection: &Connection| -> Result<usize, rusqlite::Error> {
+            let mut total_deleted = 0;
             for proposal_id in proposals {
-                let _ = connection.execute(
+                let deleted = connection.execute(
                     "DELETE FROM sidechain_proposals where sidechain_number = ?1 AND data_hash = ?2;",
                     (proposal_id.sidechain_number.0, proposal_id.description_hash.as_byte_array())
                 )?;
+                total_deleted += deleted;
             }
-            Ok(())
+            Ok(total_deleted)
         };
         let connection = self.self_db.lock().await;
-        with_connection(&connection)
+        let total_deleted = with_connection(&connection)?;
+        drop(connection);
+
+        if total_deleted > 0 {
+            tracing::debug!(
+                "deleted {} pending sidechain proposal(s) from SQLite DB",
+                total_deleted
+            );
+        }
+        Ok(())
     }
 }
 
