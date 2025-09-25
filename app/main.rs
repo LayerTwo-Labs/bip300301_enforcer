@@ -901,8 +901,7 @@ async fn main() -> Result<()> {
             return Err(miette::Report::from_err(err));
         }
     }
-    let mainchain_client =
-        rpc_client::create_client(&cli.node_rpc_opts, cli.enable_wallet && cli.enable_mempool)?;
+    let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
     tracing::info!(
         "created mainchain JSON-RPC client from options: {}:*****@{}",
         cli.node_rpc_opts.user.as_deref().unwrap_or("cookie"),
