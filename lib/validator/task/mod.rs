@@ -1091,7 +1091,7 @@ where
     tracing::info!(
         main_tip = ?main_tip,
         "Synced {new_headers_needed} headers in {}",
-        jiff::SignedDuration::try_from(start.elapsed()).unwrap()
+        jiff::SignedDuration::try_from(start.elapsed()).unwrap_or_default()
     );
     Ok(())
 }
@@ -1254,13 +1254,38 @@ where
             let block_hash = block.block_hash();
             let height = dbs.block_hashes.height().get(&rwtxn, &block_hash)?;
 
-            tracing::debug!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
+            tracing::trace!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
 
+            let start_block = Instant::now();
             // We should not call out to `invalidateblock` in case of failures here,
             // as that is handled by the cusf-enforcer-mempool crate.
             // FIXME: handle disconnects
             let event = connect_block(&mut rwtxn, dbs, &block)?;
-            tracing::trace!("connected block at height {height}: {block_hash}");
+
+            let connect_block_duration =
+                jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
+
+            // Create dynamic fields using a HashMap for structured logging
+            match &event {
+                Event::ConnectBlock {
+                    header_info,
+                    block_info,
+                } => {
+                    tracing::debug!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                }
+                Event::DisconnectBlock { block_hash } => {
+                    tracing::debug!(
+                        "Disconnected block: `{block_hash}` in {connect_block_duration}",
+                    );
+                }
+            }
             // Events should only ever be sent after committing DB txs, see
             // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
             let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
