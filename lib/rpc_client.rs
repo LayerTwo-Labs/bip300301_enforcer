@@ -25,7 +25,7 @@ pub enum Error {
     CreateClient(#[source] bitcoin_jsonrpsee::Error),
 }
 
-pub fn create_client(conf: &NodeRpcConfig, enable_mempool: bool) -> Result<HttpClient, Error> {
+pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, Error> {
     if conf.user.is_none() != conf.pass.is_none() {
         return Err(Error::UserAndPasswordMustBeSetTogether);
     }
@@ -69,19 +69,15 @@ pub fn create_client(conf: &NodeRpcConfig, enable_mempool: bool) -> Result<HttpC
     const MAX_RESPONSE_SIZE: u32 = 1 << 30;
     const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-    let client_builder = if enable_mempool {
-        let client_builder =
-            bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
-                .max_request_size(MAX_REQUEST_SIZE)
-                .max_response_size(MAX_RESPONSE_SIZE)
-                .request_timeout(REQUEST_TIMEOUT);
-        Some(client_builder)
-    } else {
-        None
-    };
+    let client_builder = bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
+        .max_request_size(MAX_REQUEST_SIZE)
+        .max_response_size(MAX_RESPONSE_SIZE)
+        .request_timeout(REQUEST_TIMEOUT);
 
-    bitcoin_jsonrpsee::client(conf.addr, client_builder, &conf_pass, &conf_user)
-        .map_err(Error::CreateClient)
+    let client = bitcoin_jsonrpsee::client(conf.addr, Some(client_builder), &conf_pass, &conf_user)
+        .map_err(Error::CreateClient)?;
+
+    Ok(client)
 }
 
 /// Broadcasts a transaction to the Bitcoin network.
