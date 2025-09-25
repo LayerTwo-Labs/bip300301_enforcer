@@ -892,15 +892,19 @@ async fn main() -> Result<()> {
                 ts.elapsed()
             );
         }
-        Err(MainRestClientError::RestServerNotEnabled) => {
-            return Err(miette!(
-                "Mainchain REST server at `{raw_url}` is not enabled! Do this with the `-rest` flag or `rest=1` in your Bitcoin Core configuration file"
-            ));
-        }
-        Err(err) => {
+        Err(err @ MainRestClientError::RestServerNotEnabled) => {
             return Err(miette::Report::from_err(err));
         }
+
+        Err(err) => {
+            let wrapped = miette::Report::from_err(err)
+                .wrap_err("unable to check availability of mainchain REST server");
+
+            return Err(wrapped);
+        }
     }
+    tracing::info!("verified mainchain REST server at `{raw_url}` is available");
+
     let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
     tracing::info!(
         "created mainchain JSON-RPC client from options: {}:*****@{}",
