@@ -27,6 +27,7 @@ use crate::{
 pub mod cusf_enforcer;
 mod dbs;
 pub mod main_rest_client;
+pub mod parse_block_files;
 mod task;
 
 use self::dbs::{Dbs, PendingM6ids};
