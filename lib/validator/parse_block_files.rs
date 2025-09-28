@@ -10,9 +10,16 @@
 //!
 //! The code is partly based on github.com/max-lt/blk-reader
 
-use std::{fs::File, io::BufReader, path::PathBuf};
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    path::PathBuf,
+};
 
-use bitcoin::{Network, Transaction, block::Header, consensus::Decodable};
+use bitcoin::{
+    BlockHash, CompactTarget, Network, Transaction, VarInt, block::Header, consensus::Decodable,
+    hashes::Hash,
+};
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -69,6 +76,9 @@ pub struct ParsedBlock {
 
     // The raw transaction data
     pub raw_tx_data: Vec<u8>,
+
+    // Byte offset within the block file
+    pub offset: usize,
 }
 
 impl ParsedBlock {
@@ -140,6 +150,11 @@ impl BlockFileParser {
             },
             network,
         })
+    }
+
+    /// Set the offset of the reader.
+    pub fn set_offset(&mut self, offset: usize) {
+        self.reader.offset = offset;
     }
 
     /// Parse the next block from the file
@@ -214,6 +229,7 @@ impl BlockFileParser {
         Ok(Some(ParsedBlock {
             header,
             raw_tx_data: txdata,
+            offset: self.reader.offset,
         }))
     }
 
@@ -372,9 +388,199 @@ impl Iterator for BlockDirectoryParser {
     }
 }
 
+/// Bitcoin Core's VarInt format (MSB base-128 encoding) used in CDiskBlockIndex
+/// This is NOT the same as VarInt::consensus_decode
+fn read_varint<R: std::io::Read>(reader: &mut R) -> std::io::Result<u64> {
+    let mut n = 0u64;
+
+    loop {
+        let mut buf = [0u8; 1];
+        reader.read_exact(&mut buf)?;
+        let ch_data = buf[0];
+
+        // Check for overflow before shifting
+        if n > (u64::MAX >> 7) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "VarInt size too large",
+            ));
+        }
+
+        // Extract the 7-bit payload
+        n = (n << 7) | ((ch_data & 0x7F) as u64);
+
+        // Check continuation bit (MSB)
+        if (ch_data & 0x80) != 0 {
+            // More bytes to read - check for overflow before incrementing
+            if n == u64::MAX {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "VarInt size too large",
+                ));
+            }
+            n += 1;
+        } else {
+            // This was the last byte
+            return Ok(n);
+        }
+    }
+}
+
+fn read_uint256<R: std::io::Read>(reader: &mut R) -> std::io::Result<[u8; 32]> {
+    let mut hash = [0u8; 32];
+    reader.read_exact(&mut hash)?;
+    Ok(hash)
+}
+
+fn read_uint32<R: std::io::Read>(reader: &mut R) -> std::io::Result<u32> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+// Block status flags from Bitcoin Core
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockStatus(pub u32);
+
+impl BlockStatus {
+    // Validation levels
+    pub const VALID_UNKNOWN: u32 = 0;
+    pub const VALID_RESERVED: u32 = 1;
+    pub const VALID_TREE: u32 = 2;
+    pub const VALID_TRANSACTIONS: u32 = 3;
+    pub const VALID_CHAIN: u32 = 4;
+    pub const VALID_SCRIPTS: u32 = 5;
+    pub const VALID_MASK: u32 = 7;
+
+    // Data availability flags
+    pub const HAVE_DATA: u32 = 8;
+    pub const HAVE_UNDO: u32 = 16;
+
+    // Failure flags
+    pub const FAILED_VALID: u32 = 32;
+    pub const FAILED_CHILD: u32 = 64;
+
+    // Other flags
+    pub const OPT_WITNESS: u32 = 128;
+
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn validation_level(&self) -> u32 {
+        self.0 & Self::VALID_MASK
+    }
+
+    pub fn has_data(&self) -> bool {
+        (self.0 & Self::HAVE_DATA) != 0
+    }
+
+    pub fn has_undo(&self) -> bool {
+        (self.0 & Self::HAVE_UNDO) != 0
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.validation_level() >= Self::VALID_TREE
+    }
+
+    pub fn has_witness(&self) -> bool {
+        (self.0 & Self::OPT_WITNESS) != 0
+    }
+
+    pub fn is_failed(&self) -> bool {
+        (self.0 & (Self::FAILED_VALID | Self::FAILED_CHILD)) != 0
+    }
+}
+
+// Bitcoin Core CDiskBlockIndex structure
+// Represents an entry into the `blocks/index` LevelDB.
+// Keys are block hashes, values are raw CDiskBlockIndex values.
+// https://github.com/bitcoin/bitcoin/blob/3c5d1a468199722da620f1f3d8ae3319980a46d5/src/chain.h#L354
+#[derive(Debug, Clone, Copy)]
+pub struct CDiskBlockIndex {
+    // Serialization version (historically unused)
+    pub version: u64,
+
+    // Blockchain position
+    pub height: u64,
+    pub status: BlockStatus,
+    pub tx_count: u64,
+
+    // File storage info (optional based on status)
+    pub file_number: Option<u64>,
+    pub data_pos: Option<u64>,
+    pub undo_pos: Option<u64>,
+
+    // Block header fields
+    pub block_version: u32,
+    pub prev_block_hash: BlockHash,
+    pub merkle_root: BlockHash,
+    pub timestamp: u32,
+    pub difficulty_target: CompactTarget,
+    pub nonce: u32,
+}
+
+impl CDiskBlockIndex {
+    /// Deserialize from byte slice
+    pub fn deserialize(reader: &mut impl std::io::Read) -> std::io::Result<Self> {
+        // historically unused, should be hard-coded to 259900
+        let version = read_varint(reader)?;
+
+        let height = read_varint(reader)?;
+
+        let status_raw = read_varint(reader)?;
+        let status = BlockStatus::new(status_raw as u32);
+
+        let tx_count = read_varint(reader)?;
+
+        // Read file/position data if available
+        let mut file_number = None;
+        let mut data_pos = None;
+        let mut undo_pos = None;
+
+        if status.has_data() || status.has_undo() {
+            file_number = Some(read_varint(reader)?);
+        }
+
+        if status.has_data() {
+            data_pos = Some(read_varint(reader)?);
+        }
+
+        if status.has_undo() {
+            undo_pos = Some(read_varint(reader)?);
+        }
+
+        // Read block header fields
+        let block_version = read_uint32(reader)?;
+        let prev_block_hash = read_uint256(reader)?;
+        let merkle_root = read_uint256(reader)?;
+        let timestamp = read_uint32(reader)?;
+        let difficulty_target = read_uint32(reader).map(CompactTarget::from_consensus)?;
+        let nonce = read_uint32(reader)?;
+
+        Ok(CDiskBlockIndex {
+            version: version,
+            height: height,
+            status,
+            tx_count: tx_count,
+            file_number,
+            data_pos,
+            undo_pos,
+            block_version,
+            prev_block_hash: BlockHash::from_byte_array(prev_block_hash),
+            merkle_root: BlockHash::from_byte_array(merkle_root),
+            timestamp,
+            difficulty_target,
+            nonce,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    use bitcoin::Target;
 
     use super::*;
 
@@ -459,5 +665,76 @@ mod tests {
             tx_data[0].compute_txid().to_string(),
             "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
         );
+    }
+
+    // This block is not fully downloaded and processed by the machine syncing Core which it originated from,
+    // which is why the TX count and file pos information is incorrect.
+    #[test]
+    fn test_parse_cdisk_block_index_not_fully_downloaded() {
+        // Block 293374 0000000000000000485620AA56D1A61C14F564233336772F3211F987FC390000
+        // Reverse the endianness into 000039FC87F911322F7736332364F5141CA6D156AA2056480000000000000000
+        // Add 'b' in hex as a prefix , and we have our key
+        // $ ./ldb --db=$HOME/.bitcoin/blocks/index get --value_hex --key_hex 0x62000039FC87F911322F7736332364F5141CA6D156AA2056480000000000000000
+        // 0x8EED3C90F27E020002000000ED2223DDCBBA95C7CCE6CC31CE5CA7463BE8EC7720232ACB0000000000000000F9BF954DB4429571D2B379E49C624C3C9D0D8D9FCB91F8123F22E2558BA8DAB5003E395399DB0019146AE23F
+        const RAW_BLOCK_INDEX: &str = "8EED3C90F27E020002000000ED2223DDCBBA95C7CCE6CC31CE5CA7463BE8EC7720232ACB0000000000000000F9BF954DB4429571D2B379E49C624C3C9D0D8D9FCB91F8123F22E2558BA8DAB5003E395399DB0019146AE23F";
+
+        let data = hex::decode(RAW_BLOCK_INDEX).unwrap();
+        let block_index = CDiskBlockIndex::deserialize(&mut data.as_slice())
+            .expect("failed to deserialize CDiskBlockIndex");
+
+        assert_eq!(block_index.version, 259_900);
+        assert_eq!(block_index.height, 293374);
+        assert_eq!(block_index.timestamp, 1396260352);
+        assert_eq!(
+            block_index.prev_block_hash.to_string(),
+            "0000000000000000cb2a232077ece83b46a75cce31cce6ccc795bacbdd2322ed"
+        );
+        assert_eq!(
+            block_index.merkle_root.to_string(),
+            "b5daa88b55e2223f12f891cb9f8d0d9d3c4c629ce479b3d2719542b44d95bff9"
+        );
+        assert_eq!(block_index.nonce, 0x3fe26a14);
+        assert_eq!(
+            Target::from_compact(block_index.difficulty_target).difficulty_float(),
+            5006860589.2054
+        );
+
+        assert!(block_index.file_number.is_none());
+        assert!(block_index.data_pos.is_none());
+        assert!(block_index.undo_pos.is_none());
+        assert_eq!(block_index.tx_count, 0);
+    }
+
+    #[test]
+    fn test_parse_cdisk_block_index_fully_downloaded() {
+        // Block 135401 0000000000000a753b507e1a96d77a89cc8732bd279636bb892d0114dd794496
+        // $ ./ldb --db=$HOME/.bitcoin/blocks/index get --value_hex --key_hex 0x62964479dd14012d89bb369627bd3287cc897ad7961a7e503b750a000000000000
+        const RAW_BLOCK_INDEX: &str = "8EED3C87A0691D3002ADFE9B3284DCBE5601000000BAE693F577F9977B0F7B183EA9F42F08A64A3EC2F366B1F96C07000000000000FCFC068613CE1D3B756ACF0D09E26D201BE5328727F1D29D171182FFA6BFA64EC0AE174ECFBB0A1AE0DC85D6";
+
+        let data = hex::decode(RAW_BLOCK_INDEX).unwrap();
+        let block_index = CDiskBlockIndex::deserialize(&mut data.as_slice())
+            .expect("failed to deserialize CDiskBlockIndex");
+
+        assert_eq!(block_index.version, 259_900);
+        assert_eq!(block_index.height, 135401);
+        assert_eq!(block_index.timestamp, 1310174912);
+        assert_eq!(
+            block_index.prev_block_hash.to_string(),
+            "000000000000076cf9b166f3c23e4aa6082ff4a93e187b0f7b97f977f593e6ba"
+        );
+        assert_eq!(
+            block_index.merkle_root.to_string(),
+            "4ea6bfa6ff8211179dd2f1278732e51b206de2090dcf6a753b1dce138606fcfc"
+        );
+        assert_eq!(block_index.nonce, 0xd685dce0);
+        assert_eq!(
+            Target::from_compact(block_index.difficulty_target).difficulty_float(),
+            1563027.9961162233
+        );
+
+        assert_eq!(block_index.file_number.unwrap_or_default(), 2);
+        assert_eq!(block_index.data_pos.unwrap_or_default(), 98553394);
+        assert_eq!(block_index.undo_pos.unwrap_or_default(), 12017622);
+        assert_eq!(block_index.tx_count, 48);
     }
 }
