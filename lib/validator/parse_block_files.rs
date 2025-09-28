@@ -13,11 +13,11 @@
 use std::{
     fs::File,
     io::{self, BufReader},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use bitcoin::{
-    BlockHash, CompactTarget, Network, Transaction, VarInt, block::Header, consensus::Decodable,
+    BlockHash, CompactTarget, Network, Transaction, block::Header, consensus::Decodable,
     hashes::Hash,
 };
 use miette::Diagnostic;
@@ -559,10 +559,10 @@ impl CDiskBlockIndex {
         let nonce = read_uint32(reader)?;
 
         Ok(CDiskBlockIndex {
-            version: version,
-            height: height,
+            version,
+            height,
             status,
-            tx_count: tx_count,
+            tx_count,
             file_number,
             data_pos,
             undo_pos,
@@ -574,6 +574,147 @@ impl CDiskBlockIndex {
             nonce,
         })
     }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum FetchBlockIndexError {
+    #[error("CDiskBlockIndex not found for key `{hash}`")]
+    NotFound { hash: BlockHash },
+
+    #[error("failed to deserialize CDiskBlockIndex for key `{hash}`")]
+    Deserialize {
+        hash: BlockHash,
+        source: std::io::Error,
+    },
+
+    #[error("failed to open LevelDB database at `{path}`")]
+    Open {
+        path: PathBuf,
+        source: rusty_leveldb::Status,
+    },
+
+    #[error("failed to copy block index LevelDB at `{src}` to `{dst}`")]
+    Copy {
+        src: PathBuf,
+        dst: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to close LevelDB database at `{path}`")]
+    Close {
+        path: PathBuf,
+        source: rusty_leveldb::Status,
+    },
+
+    #[error("failed to cleanup block index LevelDB at `{path}`")]
+    Cleanup {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+fn fetch_block_index_inner(
+    db: &mut rusty_leveldb::DB,
+    hash: BlockHash,
+) -> Result<CDiskBlockIndex, FetchBlockIndexError> {
+    // Keys are prefixed with 'b', and then the raw value of the hash.
+    // Note that this is the reverse byte order of how hashes are
+    // displayed when formatted as a string!
+    let mut key = vec![b'b'];
+    key.extend(hash.to_byte_array());
+
+    let Some(value) = db.get(&key) else {
+        return Err(FetchBlockIndexError::NotFound { hash });
+    };
+
+    CDiskBlockIndex::deserialize(&mut value.as_ref())
+        .map_err(|err| FetchBlockIndexError::Deserialize { hash, source: err })
+}
+
+fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    std::fs::create_dir_all(dst.as_ref())?;
+
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+
+        // We only expected plain files in the LevelDB directory
+        if !ty.is_file() {
+            continue;
+        }
+
+        std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+// LevelDB only supports a single reader. It uses a locking mechanism to ensure this,
+// and it does not appear like it's at all possible to get around this. We therefore
+// do this in a slightly hacky way: we copy over the entire database directory to a
+// tmp directory, wipe the lock file, read what we need and then delete the entire
+// thing.
+//
+// A fully synced mainchain is per september 2025 around 144 megabytes. Should in other
+// words be fine to do, considering this is an operation we don't expect to have to do
+// often.
+pub fn fetch_block_index<P>(
+    path: P,
+    hash: BlockHash,
+) -> Result<CDiskBlockIndex, FetchBlockIndexError>
+where
+    P: AsRef<Path>,
+{
+    let path = path.as_ref().to_path_buf();
+
+    let clone_path = std::env::temp_dir().join(format!(
+        "block-index-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    ));
+
+    tracing::debug!(
+        "cloning block index LevelDB: {} -> {}",
+        path.display(),
+        clone_path.display()
+    );
+
+    copy_dir(&path, &clone_path).map_err(|e| FetchBlockIndexError::Copy {
+        src: path.clone(),
+        dst: clone_path.clone(),
+        source: e,
+    })?;
+
+    tracing::debug!("opening block index LevelDB: {}", clone_path.display());
+
+    let opts = rusty_leveldb::Options::default();
+    let mut db = rusty_leveldb::DB::open(clone_path.clone(), opts).map_err(|e| {
+        FetchBlockIndexError::Open {
+            path: path.clone(),
+            source: e.clone(),
+        }
+    })?;
+
+    let res = fetch_block_index_inner(&mut db, hash);
+
+    db.close().map_err(|e| FetchBlockIndexError::Close {
+        path: path.clone(),
+        source: e,
+    })?;
+
+    // We should cleanup up after ourselves, to not eat more of the users
+    // resources than necessary
+    tracing::debug!(
+        "cleaning up block index LevelDB: {}",
+        clone_path.clone().display()
+    );
+    std::fs::remove_dir_all(clone_path.clone()).map_err(|e| FetchBlockIndexError::Cleanup {
+        path: clone_path.clone(),
+        source: e,
+    })?;
+
+    res
 }
 
 #[cfg(test)]
