@@ -1158,6 +1158,63 @@ where
     Ok(blocks)
 }
 
+fn handle_block_batch(
+    dbs: &Dbs,
+    blocks: &[Block],
+    event_tx: &Sender<Event>,
+) -> Result<(), error::Sync> {
+    // Do a single DB transaction for the entire batch. DB commits are a big part
+    // of the sync time, so we want to reduce the number of times we do this.
+    let mut rwtxn = dbs.write_txn()?;
+
+    // Process blocks sequentially to maintain ordering and database consistency
+    for block in blocks {
+        let block_hash = block.block_hash();
+
+        tracing::trace!("Syncing block #{} `{block_hash}`", {
+            // Do the data fetch within the macro, to avoid the cost on higher
+            // log levels
+            dbs.block_hashes.height().get(&rwtxn, &block_hash)?
+        });
+
+        let start_block = Instant::now();
+        // We should not call out to `invalidateblock` in case of failures here,
+        // as that is handled by the cusf-enforcer-mempool crate.
+        // FIXME: handle disconnects
+        let event = connect_block(&mut rwtxn, dbs, block)?;
+
+        let connect_block_duration =
+            jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
+
+        // Create dynamic fields using a HashMap for structured logging
+        match &event {
+            Event::ConnectBlock {
+                header_info,
+                block_info,
+            } => {
+                tracing::debug!(
+                    total_txs = block.txdata.len(),
+                    bmm_commitments = block_info.bmm_commitments.len(),
+                    sc_events = block_info.events.len(),
+                    "Synced block #{}: `{}` in {connect_block_duration}",
+                    header_info.height,
+                    header_info.block_hash,
+                );
+            }
+            Event::DisconnectBlock { block_hash } => {
+                tracing::debug!("Disconnected block: `{block_hash}` in {connect_block_duration}",);
+            }
+        }
+        // Events should only ever be sent after committing DB txs, see
+        // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+    }
+
+    let () = rwtxn.commit()?;
+
+    Ok(())
+}
+
 // MUST be called after `sync_headers`.
 #[tracing::instrument(skip_all)]
 async fn sync_blocks<MainRpcClient, Signal>(
@@ -1244,54 +1301,7 @@ where
 
         let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
         total_blocks_fetched += blocks.len();
-
-        // Do a single DB transaction for the entire batch. DB commits are a big part
-        // of the sync time, so we want to reduce the number of times we do this.
-        let mut rwtxn = dbs.write_txn()?;
-
-        // Process blocks sequentially to maintain ordering and database consistency
-        for block in blocks {
-            let block_hash = block.block_hash();
-            let height = dbs.block_hashes.height().get(&rwtxn, &block_hash)?;
-
-            tracing::trace!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
-
-            let start_block = Instant::now();
-            // We should not call out to `invalidateblock` in case of failures here,
-            // as that is handled by the cusf-enforcer-mempool crate.
-            // FIXME: handle disconnects
-            let event = connect_block(&mut rwtxn, dbs, &block)?;
-
-            let connect_block_duration =
-                jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
-
-            // Create dynamic fields using a HashMap for structured logging
-            match &event {
-                Event::ConnectBlock {
-                    header_info,
-                    block_info,
-                } => {
-                    tracing::debug!(
-                        total_txs = block.txdata.len(),
-                        bmm_commitments = block_info.bmm_commitments.len(),
-                        sc_events = block_info.events.len(),
-                        "Synced block #{}: `{}` in {connect_block_duration}",
-                        header_info.height,
-                        header_info.block_hash,
-                    );
-                }
-                Event::DisconnectBlock { block_hash } => {
-                    tracing::debug!(
-                        "Disconnected block: `{block_hash}` in {connect_block_duration}",
-                    );
-                }
-            }
-            // Events should only ever be sent after committing DB txs, see
-            // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-            let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
-        }
-
-        let () = rwtxn.commit()?;
+        handle_block_batch(dbs, &blocks, event_tx)?;
     }
 
     tracing::info!(
