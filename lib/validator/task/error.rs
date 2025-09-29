@@ -9,7 +9,7 @@ use crate::{
     errors::Splittable,
     messages::CoinbaseMessagesError,
     types::SidechainNumber,
-    validator::{dbs, main_rest_client::MainRestClientError},
+    validator::{dbs, main_rest_client::MainRestClientError, parse_block_files},
 };
 
 #[fatality(splitable)]
@@ -353,6 +353,18 @@ pub(in crate::validator) enum Sync {
     #[error("Shutdown signal received")]
     #[fatal]
     Shutdown,
+
+    #[error(transparent)]
+    #[fatal]
+    ParseBlockFiles(#[from] parse_block_files::ParseBlockFileError),
+
+    #[error(transparent)]
+    #[fatal]
+    BlockDirectoryParser(#[from] parse_block_files::BlockDirectoryParserError),
+
+    #[error(transparent)]
+    #[fatal]
+    FetchBlockIndex(#[from] parse_block_files::FetchBlockIndexError),
 }
 
 impl From<ConnectBlock> for Sync {
