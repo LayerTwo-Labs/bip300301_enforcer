@@ -373,7 +373,9 @@ impl CusfEnforcer for Validator {
             &header_sync_progress_tx,
             &self.mainchain_client,
             &self.mainchain_rest_client,
+            self.mainchain_blocks_dir.clone(),
             tip,
+            self.network,
             shutdown_signal,
         )
         .map_err(SyncError)
