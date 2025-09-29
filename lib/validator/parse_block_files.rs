@@ -12,7 +12,7 @@
 
 use std::{
     fs::File,
-    io::{self, BufReader},
+    io::{self, BufReader, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -45,8 +45,12 @@ pub enum ParseBlockFileError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Invalid magic bytes: {found:02X?}, expected {expected:02X?}")]
-    InvalidMagic { found: [u8; 4], expected: [u8; 4] },
+    #[error("Invalid magic bytes at offset {offset}: {found:02X?}, expected {expected:02X?}")]
+    InvalidMagic {
+        found: [u8; 4],
+        expected: [u8; 4],
+        offset: usize,
+    },
 
     #[error("Invalid network: {found}, expected {expected}")]
     InvalidNetwork { found: Network, expected: Network },
@@ -74,10 +78,10 @@ pub enum ParseBlockFileError {
 pub struct ParsedBlock {
     pub header: Header,
 
-    // The raw transaction data
+    /// The raw transaction data
     pub raw_tx_data: Vec<u8>,
 
-    // Byte offset within the block file
+    /// Byte offset within the block file
     pub offset: usize,
 }
 
@@ -111,6 +115,14 @@ impl bitcoin::io::Read for XorReader {
 
         self.offset += bytes_read;
         Ok(bytes_read)
+    }
+}
+
+impl Seek for XorReader {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = self.reader.seek(pos)?;
+        self.offset = new_pos as usize;
+        Ok(new_pos)
     }
 }
 
@@ -153,12 +165,21 @@ impl BlockFileParser {
     }
 
     /// Set the offset of the reader.
-    pub fn set_offset(&mut self, offset: usize) {
-        self.reader.offset = offset;
+    pub fn set_offset(&mut self, offset: usize) -> Result<(), std::io::Error> {
+        self.reader.seek(SeekFrom::Start(offset as u64))?;
+        Ok(())
+    }
+
+    pub fn offset(&self) -> usize {
+        self.reader.offset
     }
 
     /// Parse the next block from the file
     pub fn next_block(&mut self) -> Result<Option<ParsedBlock>, ParseBlockFileError> {
+        // Need to know the STARTING offset of the block, so get this before
+        // we read anything.
+        let offset = self.reader.offset;
+
         // All blocks are prefixed with the P2P magic bytes
         let mut magic = [0u8; 4];
         match bitcoin::io::Read::read_exact(&mut self.reader, &mut magic) {
@@ -213,6 +234,7 @@ impl BlockFileParser {
             return Err(ParseBlockFileError::InvalidMagic {
                 expected: expected_magic,
                 found: magic,
+                offset,
             });
         }
 
@@ -229,7 +251,7 @@ impl BlockFileParser {
         Ok(Some(ParsedBlock {
             header,
             raw_tx_data: txdata,
-            offset: self.reader.offset,
+            offset,
         }))
     }
 
@@ -345,6 +367,33 @@ impl BlockDirectoryParser {
             file_index: 0,
             current_parser: None,
         })
+    }
+
+    pub fn set_file_number(&mut self, num: u32) {
+        self.file_index = num;
+    }
+
+    pub fn file_number(&self) -> u32 {
+        self.file_index
+    }
+
+    fn get_or_init_parser(&mut self) -> Result<&mut BlockFileParser, std::io::Error> {
+        if self.current_parser.is_none() {
+            let parser = BlockFileParser::new(
+                self.xor_key,
+                self.dir_path.join(format!("blk{:05}.dat", self.file_index)),
+                self.network,
+            )?;
+            self.current_parser = Some(parser);
+        }
+
+        // Now we can safely return a mutable reference
+        Ok(self.current_parser.as_mut().unwrap())
+    }
+
+    pub fn set_offset(&mut self, offset: usize) -> Result<(), std::io::Error> {
+        let parser = self.get_or_init_parser()?;
+        parser.set_offset(offset)
     }
 
     fn next_block(&mut self) -> Result<Option<ParsedBlock>, ParseBlockFileError> {
@@ -507,7 +556,7 @@ pub struct CDiskBlockIndex {
     pub tx_count: u64,
 
     // File storage info (optional based on status)
-    pub file_number: Option<u64>,
+    pub file_number: Option<u32>,
     pub data_pos: Option<u64>,
     pub undo_pos: Option<u64>,
 
@@ -539,7 +588,7 @@ impl CDiskBlockIndex {
         let mut undo_pos = None;
 
         if status.has_data() || status.has_undo() {
-            file_number = Some(read_varint(reader)?);
+            file_number = Some(read_varint(reader)? as u32);
         }
 
         if status.has_data() {
@@ -664,6 +713,7 @@ pub fn fetch_block_index<P>(
 where
     P: AsRef<Path>,
 {
+    let start = std::time::Instant::now();
     let path = path.as_ref().to_path_buf();
 
     let clone_path = std::env::temp_dir().join(format!(
@@ -674,7 +724,7 @@ where
             .as_secs(),
     ));
 
-    tracing::debug!(
+    tracing::trace!(
         "cloning block index LevelDB: {} -> {}",
         path.display(),
         clone_path.display()
@@ -686,7 +736,7 @@ where
         source: e,
     })?;
 
-    tracing::debug!("opening block index LevelDB: {}", clone_path.display());
+    tracing::trace!("opening block index LevelDB: {}", clone_path.display());
 
     let opts = rusty_leveldb::Options::default();
     let mut db = rusty_leveldb::DB::open(clone_path.clone(), opts).map_err(|e| {
@@ -705,7 +755,7 @@ where
 
     // We should cleanup up after ourselves, to not eat more of the users
     // resources than necessary
-    tracing::debug!(
+    tracing::trace!(
         "cleaning up block index LevelDB: {}",
         clone_path.clone().display()
     );
@@ -714,7 +764,14 @@ where
         source: e,
     })?;
 
-    res
+    let block_index = res?;
+
+    tracing::debug!(
+        "fetched CBlockIndex for {hash} from {} in {:?}",
+        clone_path.display(),
+        start.elapsed()
+    );
+    Ok(block_index)
 }
 
 #[cfg(test)]
@@ -765,6 +822,19 @@ mod tests {
             tx_data[0].compute_txid().to_string(),
             "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
         );
+
+        // verify that the offset logic works correctly
+        let offset = parsed_blocks[3].offset;
+        assert_ne!(offset, parser.offset());
+
+        parser.set_offset(offset).expect("failed to set offset");
+        let block_from_offset = parser.next_block().expect("failed to parse block");
+        let block_from_offset = block_from_offset.expect("failed to parse block");
+
+        assert_eq!(
+            block_from_offset.header.block_hash(),
+            parsed_blocks[3].header.block_hash()
+        );
     }
 
     #[test]
@@ -805,6 +875,19 @@ mod tests {
         assert_eq!(
             tx_data[0].compute_txid().to_string(),
             "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+        );
+
+        // verify that the offset logic works correctly
+        let offset = parsed_blocks[2].offset;
+        assert_ne!(offset, parser.offset());
+
+        parser.set_offset(offset).expect("failed to set offset");
+        let block_from_offset = parser.next_block().expect("failed to parse block");
+        let block_from_offset = block_from_offset.expect("failed to parse block");
+
+        assert_eq!(
+            block_from_offset.header.block_hash(),
+            parsed_blocks[2].header.block_hash()
         );
     }
 
