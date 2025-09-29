@@ -3,12 +3,13 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     future::Future,
+    path::PathBuf,
     time::Instant,
 };
 
 use async_broadcast::{Sender, TrySendError};
 use bitcoin::{
-    Amount, Block, BlockHash, OutPoint, Transaction, Work,
+    Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
 use either::Either;
@@ -40,6 +41,7 @@ use crate::{
     },
 };
 
+mod block_files;
 pub mod error;
 
 const USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 10;
@@ -1133,11 +1135,7 @@ where
             source: err,
         })?;
 
-    tracing::debug!(
-        "Fetched batch of {} block(s) in {:?}",
-        batch_response.len(),
-        start.elapsed(),
-    );
+    let fetch_duration = start.elapsed();
 
     let blocks = match batch_response.ok() {
         Ok(blocks) => blocks
@@ -1155,10 +1153,20 @@ where
         }
     };
 
+    let deserialization_duration = start.elapsed() - fetch_duration;
+
+    tracing::debug!(
+        "Fetched ({:?}) and deserialized ({:?}) batch of {} block(s) with {} total transactions",
+        fetch_duration,
+        deserialization_duration,
+        blocks.len(),
+        blocks.iter().map(|block| block.txdata.len()).sum::<usize>(),
+    );
+
     Ok(blocks)
 }
 
-fn handle_block_batch(
+pub(crate) fn handle_block_batch(
     dbs: &Dbs,
     blocks: &[Block],
     event_tx: &Sender<Event>,
@@ -1221,7 +1229,9 @@ async fn sync_blocks<MainRpcClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_rpc_client: &MainRpcClient,
+    main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
+    network: Network,
     shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
@@ -1234,7 +1244,7 @@ where
     const BLOCK_FETCH_BATCH_SIZE: usize = 50;
 
     let start = Instant::now();
-    let missing_blocks = tokio::task::block_in_place(|| {
+    let mut missing_blocks = tokio::task::block_in_place(|| {
         let current_enforcer_tip = {
             let mut rwtxn = dbs.write_txn()?;
             let mut current_enforcer_tip = dbs
@@ -1286,6 +1296,31 @@ where
     let shutdown_signal = shutdown_signal.shared();
     let mut total_blocks_fetched = 0;
 
+    if let Some(main_blocks_dir) = main_blocks_dir {
+        let start = Instant::now();
+        tracing::debug!(
+            "syncing blocks from blocks dir: {}",
+            main_blocks_dir.display()
+        );
+
+        // TODO: abort gracefully here. If we're erroring out at any part in the process of
+        // fetching from the blocks dir, just fallback to the fetching via RPC
+        let total_handled_blocks = block_files::sync_from_directory(
+            dbs,
+            event_tx,
+            &mut missing_blocks,
+            main_blocks_dir,
+            network,
+            shutdown_signal.clone(),
+        )
+        .await?;
+
+        tracing::info!(
+            "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
+            start.elapsed()
+        );
+    }
+
     // Process blocks in batches for better network efficiency
     let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
     for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
@@ -1317,7 +1352,9 @@ pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_rpc_client: &MainClient,
     main_rest_client: &MainRestClient,
+    main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
+    network: Network,
     shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
 where
@@ -1340,7 +1377,9 @@ where
         dbs,
         event_tx,
         main_rpc_client,
+        main_blocks_dir,
         main_tip,
+        network,
         shutdown_signal.clone(),
     )
     .await?;

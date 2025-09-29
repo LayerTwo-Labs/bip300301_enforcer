@@ -475,6 +475,7 @@ dependencies = [
  "jsonrpsee",
  "miette",
  "reqwest",
+ "rusty-leveldb",
  "serde",
  "thiserror 2.0.16",
  "tokio",
