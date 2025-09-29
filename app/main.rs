@@ -996,6 +996,7 @@ async fn main() -> Result<()> {
     let validator = Validator::new(
         mainchain_client.clone(),
         mainchain_rest_client,
+        cli.clone().node_blocks_dir_opts.dir,
         &validator_data_dir,
         info.chain,
     )
