@@ -98,10 +98,6 @@ fn process_cached_blocks(
 
             // Check if we should process batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
-                tracing::debug!(
-                    "handling batch of {} blocks from disk",
-                    pending_blocks.len(),
-                );
                 handle_block_batch(dbs, pending_blocks, event_tx)?;
                 *total_handled_blocks += pending_blocks.len();
                 pending_blocks.clear();
@@ -266,11 +262,6 @@ where
 
             // Check if we should process the current batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
-                tracing::debug!(
-                    "handling batch of {} blocks with {} block(s) remaining",
-                    pending_blocks.len(),
-                    missing_blocks.len()
-                );
                 handle_block_batch(dbs, &pending_blocks, event_tx)?;
                 total_handled_blocks += pending_blocks.len();
                 pending_blocks.clear();
