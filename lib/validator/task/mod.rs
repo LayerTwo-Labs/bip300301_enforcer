@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
-    future::Future,
     path::PathBuf,
     time::Instant,
 };
@@ -21,6 +20,7 @@ use jsonrpsee::core::{
     params::{ArrayParams, BatchRequestBuilder},
 };
 use sneed::{RoTxn, RwTxn, db};
+use tokio_util::sync::CancellationToken;
 
 use super::main_rest_client::MainRestClient;
 use crate::{
@@ -947,17 +947,16 @@ where
 }
 
 #[tracing::instrument(skip_all)]
-async fn sync_headers<MainRpcClient, Signal>(
+async fn sync_headers<MainRpcClient>(
     dbs: &Dbs,
     main_rest_client: &MainRestClient,
     main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
-    shutdown_signal: Signal,
+    cancel: CancellationToken,
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
-    Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
 
@@ -1009,16 +1008,10 @@ where
 
     // The requested block header is the /first/ header in the batch. This means we
     // need to loop from our current tip, until we find the requested main tip.
-    let shutdown_signal = shutdown_signal.shared();
     loop {
-        tokio::select! {
-            biased;
-
-            _ = shutdown_signal.clone() => {
-                tracing::warn!("Header sync interrupted");
-                return Err(error::Sync::Shutdown);
-            }
-            _ = futures::future::ready(()) => {}
+        if cancel.is_cancelled() {
+            tracing::warn!("Header sync interrupted");
+            return Err(error::Sync::Shutdown);
         }
 
         tracing::debug!(
@@ -1265,18 +1258,17 @@ pub(crate) fn handle_block_batch(
 
 // MUST be called after `sync_headers`.
 #[tracing::instrument(skip_all)]
-async fn sync_blocks<MainRpcClient, Signal>(
+async fn sync_blocks<MainRpcClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_rpc_client: &MainRpcClient,
     main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
     network: Network,
-    shutdown_signal: Signal,
+    cancel: CancellationToken,
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
-    Signal: Future<Output = ()> + Send,
 {
     // Batch size for concurrent block fetching
     // It's hard to know what a good size here is, without
@@ -1333,7 +1325,6 @@ where
         start.elapsed()
     );
 
-    let shutdown_signal = shutdown_signal.shared();
     let mut total_blocks_fetched = 0;
 
     if let Some(main_blocks_dir) = main_blocks_dir {
@@ -1351,9 +1342,8 @@ where
             &mut missing_blocks,
             main_blocks_dir,
             network,
-            shutdown_signal.clone(),
-        )
-        .await?;
+            cancel.clone(),
+        )?;
 
         tracing::info!(
             "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
@@ -1364,14 +1354,9 @@ where
     // Process blocks in batches for better network efficiency
     let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
     for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
-        tokio::select! {
-            biased;
-
-            _ = shutdown_signal.clone() => {
-                tracing::warn!("Block sync interrupted");
-                return Err(error::Sync::Shutdown);
-            }
-            _ = futures::future::ready(()) => {}
+        if cancel.is_cancelled() {
+            tracing::warn!("Block sync interrupted");
+            return Err(error::Sync::Shutdown);
         }
 
         let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
@@ -1386,41 +1371,43 @@ where
     Ok(())
 }
 
-pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
+// Is this a good name? "Signal" in this context means both
+// signal receiver and signal sender
+pub struct SyncSignals {
+    pub cancel: CancellationToken,
+    pub header_sync_progress_tx: tokio::sync::watch::Sender<HeaderSyncProgress>,
+    pub event_tx: Sender<Event>,
+}
+
+pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
-    event_tx: &Sender<Event>,
-    header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_rpc_client: &MainClient,
     main_rest_client: &MainRestClient,
     main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
     network: Network,
-    shutdown_signal: Signal,
+    signals: SyncSignals,
 ) -> Result<(), error::Sync>
 where
     MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
-    Signal: Future<Output = ()> + Send,
 {
-    use futures::FutureExt as _;
-    let shutdown_signal = shutdown_signal.shared();
-
     let () = sync_headers(
         dbs,
         main_rest_client,
         main_rpc_client,
         main_tip,
-        header_sync_progress_tx,
-        shutdown_signal.clone(),
+        &signals.header_sync_progress_tx,
+        signals.cancel.clone(),
     )
     .await?;
     let () = sync_blocks(
         dbs,
-        event_tx,
+        &signals.event_tx,
         main_rpc_client,
         main_blocks_dir,
         main_tip,
         network,
-        shutdown_signal.clone(),
+        signals.cancel.clone(),
     )
     .await?;
     Ok(())

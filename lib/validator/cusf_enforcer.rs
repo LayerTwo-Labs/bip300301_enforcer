@@ -16,6 +16,7 @@ use miette::Diagnostic;
 use ouroboros::self_referencing;
 use sneed::{RoTxn, RwTxn, db, env, rwtxn};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     messages::parse_m8_tx,
@@ -354,6 +355,8 @@ impl CusfEnforcer for Validator {
     where
         Signal: Future<Output = ()> + Send,
     {
+        let cancel = CancellationToken::new();
+
         let header_sync_progress_tx = {
             let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
             if header_sync_progress_rx_write.is_some() {
@@ -367,21 +370,33 @@ impl CusfEnforcer for Validator {
             header_sync_progress_tx
         };
         tracing::debug!(block_hash = %tip, "Syncing to tip");
-        let () = task::sync_to_tip(
+
+        let sync_future = task::sync_to_tip(
             &self.dbs,
-            &self.events_tx,
-            &header_sync_progress_tx,
             &self.mainchain_client,
             &self.mainchain_rest_client,
             self.mainchain_blocks_dir.clone(),
             tip,
             self.network,
-            shutdown_signal,
+            task::SyncSignals {
+                cancel: cancel.clone(),
+                header_sync_progress_tx,
+                event_tx: self.events_tx.clone(),
+            },
         )
-        .map_err(SyncError)
-        .await?;
-        *self.header_sync_progress_rx.write() = None;
-        Ok(())
+        .map_err(SyncError);
+
+        tokio::select! {
+            result = sync_future => {
+                *self.header_sync_progress_rx.write() = None;
+                result
+            }
+            _ = shutdown_signal => {
+                cancel.cancel();
+                *self.header_sync_progress_rx.write() = None;
+                Ok(())
+            }
+        }
     }
 
     type ConnectBlockError = ConnectBlockError;
