@@ -1171,6 +1171,12 @@ pub(crate) fn handle_block_batch(
     blocks: &[Block],
     event_tx: &Sender<Event>,
 ) -> Result<(), error::Sync> {
+    let start = Instant::now();
+
+    let mut total_txs = 0;
+    let mut total_bmm_commitments = 0;
+    let mut total_events = 0;
+
     // Do a single DB transaction for the entire batch. DB commits are a big part
     // of the sync time, so we want to reduce the number of times we do this.
     let mut rwtxn = dbs.write_txn()?;
@@ -1208,6 +1214,11 @@ pub(crate) fn handle_block_batch(
                     10_000..=99_999 => 100,
                     100_000.. => 1000,
                 };
+
+                total_txs += block.txdata.len();
+                total_bmm_commitments += block_info.bmm_commitments.len();
+                total_events += block_info.events.len();
+
                 // Apparently it isn't possible to do dynamic levels? wtf
                 // https://github.com/tokio-rs/tracing/issues/2730
                 if header_info.height % log_interval == 0 {
@@ -1241,6 +1252,14 @@ pub(crate) fn handle_block_batch(
 
     let () = rwtxn.commit()?;
 
+    tracing::info!(
+        total_txs = total_txs,
+        total_bmm_commitments = total_bmm_commitments,
+        total_events = total_events,
+        "Synced batch of {} blocks in {}",
+        blocks.len(),
+        jiff::SignedDuration::try_from(start.elapsed()).unwrap_or_default(),
+    );
     Ok(())
 }
 
