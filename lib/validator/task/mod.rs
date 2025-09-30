@@ -1202,14 +1202,35 @@ fn handle_block_batch(
                 header_info,
                 block_info,
             } => {
-                tracing::debug!(
-                    total_txs = block.txdata.len(),
-                    bmm_commitments = block_info.bmm_commitments.len(),
-                    sc_events = block_info.events.len(),
-                    "Synced block #{}: `{}` in {connect_block_duration}",
-                    header_info.height,
-                    header_info.block_hash,
-                );
+                // Keep all the blocks at info level in the beginning,
+                // and then taper off into less log noise
+                let modulo = match header_info.height {
+                    0..=999 => 1,
+                    1000..=9999 => 10,
+                    10_000..=99_999 => 100,
+                    100_000.. => 1000,
+                };
+                // Apparently it isn't possible to do dynamic levels? wtf
+                // https://github.com/tokio-rs/tracing/issues/2730
+                if header_info.height % modulo == 0 {
+                    tracing::info!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                } else {
+                    tracing::debug!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                };
             }
             Event::DisconnectBlock { block_hash } => {
                 tracing::debug!("Disconnected block: `{block_hash}` in {connect_block_duration}",);
@@ -1287,7 +1308,7 @@ impl BlockCache {
 /// Configuration constants for block file parsing with caching
 const MAX_BLOCK_CACHE_SIZE: usize = 5000;
 const MAX_ITERATIONS_WITHOUT_MATCH: usize = 5000;
-const BLOCKS_DIR_CONNECT_BATCH_SIZE: usize = 500;
+const BLOCKS_DIR_CONNECT_BATCH_SIZE: usize = 2000;
 
 /// Check cache for subsequent expected blocks and process them if found.
 /// This function iteratively looks for the next expected block in the cache
@@ -1309,9 +1330,8 @@ fn process_cached_blocks(
             // Check if we should process batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
                 tracing::debug!(
-                    "handling cached batch of {} blocks with {} block(s) remaining",
+                    "handling batch of {} blocks from disk",
                     pending_blocks.len(),
-                    missing_blocks.len()
                 );
                 handle_block_batch(dbs, pending_blocks, event_tx)?;
                 *total_handled_blocks += pending_blocks.len();
@@ -1410,7 +1430,6 @@ where
                             pending_blocks.len()
                         );
                         handle_block_batch(dbs, &pending_blocks, event_tx)?;
-                        total_handled_blocks += pending_blocks.len();
                     }
                     return Err(error::Sync::Shutdown);
                 }
@@ -1425,12 +1444,18 @@ where
             None => break,
         };
 
-        // TODO: need to add blocks to the cache here as well - we might
-        // be discarding blocks we're going to need
         if !has_found_start {
             if block.header.block_hash() != first_missing_block {
-                tracing::trace!(
-                    "Expected block `{}` but got `{}` from file at byte offset {}, continuing",
+                // Cache this block as it might be needed later - it could be one of children of
+                // the block we're looking for
+                let full_block = Block {
+                    header: block.header,
+                    txdata: block.parse_tx_data()?,
+                };
+                block_cache.insert(block.header.block_hash(), full_block);
+
+                tracing::debug!(
+                    "Expected block `{}` but got `{}` from file at byte offset {}, caching and continuing",
                     first_missing_block,
                     block.header.block_hash(),
                     block.offset
