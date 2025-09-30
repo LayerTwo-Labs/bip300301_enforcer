@@ -1200,14 +1200,35 @@ pub(crate) fn handle_block_batch(
                 header_info,
                 block_info,
             } => {
-                tracing::debug!(
-                    total_txs = block.txdata.len(),
-                    bmm_commitments = block_info.bmm_commitments.len(),
-                    sc_events = block_info.events.len(),
-                    "Synced block #{}: `{}` in {connect_block_duration}",
-                    header_info.height,
-                    header_info.block_hash,
-                );
+                // Keep all the blocks at info level in the beginning,
+                // and then taper off into less log noise
+                let log_interval = match header_info.height {
+                    0..=999 => 1,
+                    1000..=9999 => 10,
+                    10_000..=99_999 => 100,
+                    100_000.. => 1000,
+                };
+                // Apparently it isn't possible to do dynamic levels? wtf
+                // https://github.com/tokio-rs/tracing/issues/2730
+                if header_info.height % log_interval == 0 {
+                    tracing::info!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                } else {
+                    tracing::debug!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                };
             }
             Event::DisconnectBlock { block_hash } => {
                 tracing::debug!("Disconnected block: `{block_hash}` in {connect_block_duration}",);
