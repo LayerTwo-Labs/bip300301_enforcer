@@ -369,12 +369,15 @@ impl CusfEnforcer for Validator {
         tracing::debug!(block_hash = %tip, "Syncing to tip");
         let () = task::sync_to_tip(
             &self.dbs,
-            &self.events_tx,
-            &header_sync_progress_tx,
             &self.mainchain_client,
             &self.mainchain_rest_client,
+            self.mainchain_blocks_dir.clone(),
             tip,
-            shutdown_signal,
+            task::SyncSignals {
+                shutdown_signal,
+                header_sync_progress_tx,
+                event_tx: self.events_tx.clone(),
+            },
         )
         .map_err(SyncError)
         .await?;

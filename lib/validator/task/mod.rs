@@ -1,8 +1,9 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::Future,
+    path::PathBuf,
     time::Instant,
 };
 
@@ -34,9 +35,12 @@ use crate::{
         SidechainProposalStatus, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
         WithdrawalBundleEvent, WithdrawalBundleEventKind,
     },
-    validator::dbs::{
-        ActiveSidechainDbs, Dbs,
-        diff::{self, Diff},
+    validator::{
+        dbs::{
+            ActiveSidechainDbs, Dbs,
+            diff::{self, Diff},
+        },
+        parse_block_files,
     },
 };
 
@@ -1133,11 +1137,7 @@ where
             source: err,
         })?;
 
-    tracing::debug!(
-        "Fetched batch of {} block(s) in {:?}",
-        batch_response.len(),
-        start.elapsed(),
-    );
+    let fetch_duration = start.elapsed();
 
     let blocks = match batch_response.ok() {
         Ok(blocks) => blocks
@@ -1155,7 +1155,437 @@ where
         }
     };
 
+    let deserialization_duration = start.elapsed() - fetch_duration;
+
+    tracing::debug!(
+        "Fetched ({:?}) and deserialized ({:?}) batch of {} block(s) with {} total transactions",
+        fetch_duration,
+        deserialization_duration,
+        blocks.len(),
+        blocks.iter().map(|block| block.txdata.len()).sum::<usize>(),
+    );
+
     Ok(blocks)
+}
+
+fn handle_block_batch(
+    dbs: &Dbs,
+    blocks: &[Block],
+    event_tx: &Sender<Event>,
+) -> Result<(), error::Sync> {
+    let start = Instant::now();
+
+    let mut total_txs = 0;
+    let mut total_bmm_commitments = 0;
+    let mut total_events = 0;
+
+    // Do a single DB transaction for the entire batch. DB commits are a big part
+    // of the sync time, so we want to reduce the number of times we do this.
+    let mut rwtxn = dbs.write_txn()?;
+
+    // Process blocks sequentially to maintain ordering and database consistency
+    for block in blocks {
+        let block_hash = block.block_hash();
+
+        tracing::trace!("Syncing block #{} `{block_hash}`", {
+            // Do the data fetch within the macro, to avoid the cost on higher
+            // log levels
+            dbs.block_hashes.height().get(&rwtxn, &block_hash)?
+        });
+
+        let start_block = Instant::now();
+        // We should not call out to `invalidateblock` in case of failures here,
+        // as that is handled by the cusf-enforcer-mempool crate.
+        // FIXME: handle disconnects
+        let event = connect_block(&mut rwtxn, dbs, block)?;
+
+        let connect_block_duration =
+            jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
+
+        // Create dynamic fields using a HashMap for structured logging
+        match &event {
+            Event::ConnectBlock {
+                header_info,
+                block_info,
+            } => {
+                // Keep all the blocks at info level in the beginning,
+                // and then taper off into less log noise
+                let modulo = match header_info.height {
+                    0..=999 => 1,
+                    1000..=9999 => 10,
+                    10_000..=99_999 => 100,
+                    100_000.. => 1000,
+                };
+
+                total_txs += block.txdata.len();
+                total_bmm_commitments += block_info.bmm_commitments.len();
+                total_events += block_info.events.len();
+
+                // Apparently it isn't possible to do dynamic levels? wtf
+                // https://github.com/tokio-rs/tracing/issues/2730
+                if header_info.height % modulo == 0 {
+                    tracing::info!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                } else {
+                    tracing::debug!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                };
+            }
+            Event::DisconnectBlock { block_hash } => {
+                tracing::debug!("Disconnected block: `{block_hash}` in {connect_block_duration}",);
+            }
+        }
+        // Events should only ever be sent after committing DB txs, see
+        // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+    }
+
+    let () = rwtxn.commit()?;
+
+    tracing::info!(
+        total_txs = total_txs,
+        total_bmm_commitments = total_bmm_commitments,
+        total_events = total_events,
+        "Synced batch of {} blocks in {}",
+        blocks.len(),
+        jiff::SignedDuration::try_from(start.elapsed()).unwrap_or_default(),
+    );
+    Ok(())
+}
+
+/// Simple LRU-style cache for temporarily storing blocks read from disk
+/// that don't match the current expected block hash.
+struct BlockCache {
+    blocks: HashMap<BlockHash, Block>,
+    insertion_order: VecDeque<BlockHash>,
+    max_size: usize,
+}
+
+impl BlockCache {
+    fn new(max_size: usize) -> Self {
+        Self {
+            blocks: HashMap::new(),
+            insertion_order: VecDeque::new(),
+            max_size,
+        }
+    }
+
+    fn insert(&mut self, block_hash: BlockHash, block: Block) {
+        // If block already exists, don't insert again
+        if self.blocks.contains_key(&block_hash) {
+            return;
+        }
+
+        // Evict oldest block if at capacity
+        while self.blocks.len() >= self.max_size {
+            if let Some(oldest_hash) = self.insertion_order.pop_front() {
+                self.blocks.remove(&oldest_hash);
+                tracing::trace!("Evicted block `{}` from cache", oldest_hash);
+            }
+        }
+
+        // Insert new block
+        self.blocks.insert(block_hash, block);
+        self.insertion_order.push_back(block_hash);
+        tracing::trace!(
+            "Cached block `{}` (cache size: {})",
+            block_hash,
+            self.blocks.len()
+        );
+    }
+
+    fn remove(&mut self, block_hash: &BlockHash) -> Option<Block> {
+        if let Some(block) = self.blocks.remove(block_hash) {
+            // Remove from insertion order
+            if let Some(pos) = self.insertion_order.iter().position(|h| h == block_hash) {
+                self.insertion_order.remove(pos);
+            }
+            tracing::trace!("Cache hit for block `{}`", block_hash,);
+            Some(block)
+        } else {
+            None
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.blocks.len()
+    }
+}
+
+/// Configuration constants for block file parsing with caching
+const MAX_BLOCK_CACHE_SIZE: usize = 5000;
+const MAX_ITERATIONS_WITHOUT_MATCH: usize = 5000;
+const BLOCKS_DIR_CONNECT_BATCH_SIZE: usize = 2000;
+
+/// Check cache for subsequent expected blocks and process them if found.
+/// This function iteratively looks for the next expected block in the cache
+/// and processes it until no more consecutive blocks are found.
+fn process_cached_blocks(
+    dbs: &Dbs,
+    event_tx: &Sender<Event>,
+    block_cache: &mut BlockCache,
+    missing_blocks: &mut Vec<BlockHash>,
+    pending_blocks: &mut Vec<Block>,
+    total_handled_blocks: &mut usize,
+) -> Result<(), error::Sync> {
+    while let Some(&expected_block_hash) = missing_blocks.last() {
+        if let Some(cached_block) = block_cache.remove(&expected_block_hash) {
+            // Found next expected block in cache
+            pending_blocks.push(cached_block);
+            missing_blocks.pop();
+
+            // Check if we should process batch
+            if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
+                handle_block_batch(dbs, pending_blocks, event_tx)?;
+                *total_handled_blocks += pending_blocks.len();
+                pending_blocks.clear();
+            }
+        } else {
+            // Next expected block not in cache, break out
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Sync blocks by reading from the raw block files. The idea is to mutate the missing
+/// blocks vector, such that once this function returns the JSON-RPC sync logic can
+/// finish off the job. Syncing from the block directory is not expected to work all
+/// until the end due to Core having blocks it hasn't flushed to disk.
+///
+/// Handles non-sequential block layout by temporarily caching unexpected blocks
+/// and checking the cache when expected blocks are found.
+#[tracing::instrument(skip_all)]
+async fn sync_from_blocks_dir<Signal>(
+    dbs: &Dbs,
+    event_tx: &Sender<Event>,
+    missing_blocks: &mut Vec<BlockHash>,
+    main_blocks_dir: PathBuf,
+    shutdown_signal: Signal,
+) -> Result<u32, error::Sync>
+where
+    Signal: Future<Output = ()> + Send,
+{
+    let first_missing_block = *missing_blocks.last().expect("missing blocks is empty");
+
+    let index_path = main_blocks_dir.join("index");
+    tracing::debug!(
+        "fetching `{first_missing_block}` from block index at {}",
+        index_path.display()
+    );
+
+    let block_index = parse_block_files::fetch_block_index(index_path, first_missing_block)?;
+
+    let mut parser = parse_block_files::BlockDirectoryParser::new(main_blocks_dir)?;
+
+    let block_index_file_number = block_index
+        .file_number
+        .expect("file number is missing from block index");
+
+    let block_index_data_pos = block_index
+        .adjusted_data_pos()
+        .expect("data pos is missing from block index");
+
+    // Only blocks which aren't fully validated don't have file numbers
+    parser.set_file_number(block_index_file_number);
+    parser.set_offset(block_index_data_pos)?;
+
+    tracing::debug!(
+        "starting block file parser at file number {}",
+        block_index_file_number
+    );
+
+    let mut total_handled_blocks = 0_usize;
+    let mut has_found_start = false;
+    let mut block_cache = BlockCache::new(MAX_BLOCK_CACHE_SIZE);
+    let mut iterations_without_match = 0_usize;
+
+    let mut pending_blocks: Vec<Block> = vec![];
+
+    let target_end_height = dbs.block_hashes.height().get(
+        &dbs.read_txn()?,
+        missing_blocks.first().expect("missing blocks is empty"),
+    )?;
+
+    tracing::debug!("identified target end height: {target_end_height}");
+
+    tracing::info!(
+        "Starting block sync from files with cache (max size: {}, max iterations without match: {})",
+        MAX_BLOCK_CACHE_SIZE,
+        MAX_ITERATIONS_WITHOUT_MATCH
+    );
+
+    let shutdown_signal = shutdown_signal.shared();
+    let mut iteration_count = 0;
+    loop {
+        // Check for shutdown every 100 iterations to avoid too much overhead
+        if iteration_count % 100 == 0 {
+            tokio::select! {
+                biased;
+
+                _ = shutdown_signal.clone() => {
+                    tracing::info!("Block file sync interrupted during processing");
+                    // Process any remaining blocks in the current batch before aborting
+                    if !pending_blocks.is_empty() {
+                        tracing::debug!(
+                            "syncing pending batch of {} blocks before shutdown",
+                            pending_blocks.len()
+                        );
+                        handle_block_batch(dbs, &pending_blocks, event_tx)?;
+                    }
+                    return Err(error::Sync::Shutdown);
+                }
+                _ = tokio::task::yield_now() => {}
+            }
+        }
+        iteration_count += 1;
+
+        let block = match parser.next() {
+            Some(Ok(block)) => block,
+            Some(Err(e)) => return Err(e.into()),
+            None => break,
+        };
+
+        if !has_found_start {
+            if block.header.block_hash() != first_missing_block {
+                // Cache this block as it might be needed later - it could be one of children of
+                // the block we're looking for
+                let full_block = Block {
+                    header: block.header,
+                    txdata: block.parse_tx_data()?,
+                };
+                block_cache.insert(block.header.block_hash(), full_block);
+
+                tracing::debug!(
+                    "Expected block `{}` but got `{}` from file at byte offset {}, caching and continuing",
+                    first_missing_block,
+                    block.header.block_hash(),
+                    block.offset
+                );
+                continue;
+            }
+            tracing::debug!(
+                "Found first missing block at file number {} and byte offset {}: `{}`",
+                parser.file_number(),
+                block.offset,
+                block.header.block_hash()
+            );
+            has_found_start = true;
+        }
+
+        let expected_block_hash = *missing_blocks.last().expect("missing blocks is empty");
+
+        let current_block_hash = block.header.block_hash();
+
+        if current_block_hash == expected_block_hash {
+            // Found the expected block!
+            tracing::trace!(
+                "Found expected block `{}` at file offset {}",
+                expected_block_hash,
+                block.offset
+            );
+
+            iterations_without_match = 0;
+
+            // Process the expected block
+            pending_blocks.push(Block {
+                header: block.header,
+                txdata: block.parse_tx_data()?,
+            });
+            missing_blocks.pop();
+
+            // Check if we should process the current batch
+            if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
+                handle_block_batch(dbs, &pending_blocks, event_tx)?;
+                total_handled_blocks += pending_blocks.len();
+                pending_blocks.clear();
+            }
+
+            // Check cache for subsequent expected blocks
+            process_cached_blocks(
+                dbs,
+                event_tx,
+                &mut block_cache,
+                missing_blocks,
+                &mut pending_blocks,
+                &mut total_handled_blocks,
+            )?;
+        } else {
+            // Block doesn't match expected - cache it
+            let full_block = Block {
+                header: block.header,
+                txdata: block.parse_tx_data()?,
+            };
+
+            block_cache.insert(current_block_hash, full_block);
+            iterations_without_match += 1;
+
+            // Check abort conditions
+            if iterations_without_match >= MAX_ITERATIONS_WITHOUT_MATCH {
+                tracing::warn!(
+                    "Reached maximum iterations ({}) without finding expected block ({}), aborting file sync",
+                    iterations_without_match,
+                    expected_block_hash,
+                );
+
+                // Process any remaining blocks in the current batch before aborting
+                if !pending_blocks.is_empty() {
+                    tracing::debug!(
+                        "syncing pending batch of {} blocks before aborting blocks dir sync",
+                        pending_blocks.len()
+                    );
+                    handle_block_batch(dbs, &pending_blocks, event_tx)?;
+                    total_handled_blocks += pending_blocks.len();
+                    pending_blocks.clear(); // Clear to avoid double processing
+                }
+
+                break;
+            }
+
+            if iterations_without_match % 1000 == 0 {
+                tracing::debug!(
+                    "Processed {} blocks without finding expected `{}`, cache size: {}, file position #{}/{}",
+                    iterations_without_match,
+                    expected_block_hash,
+                    block_cache.len(),
+                    parser.file_number(),
+                    block.offset,
+                );
+            }
+        }
+    }
+
+    // Process any remaining blocks in the pending batch
+    if !pending_blocks.is_empty() {
+        tracing::debug!(
+            "handling final batch of {} blocks at end of file sync",
+            pending_blocks.len()
+        );
+        handle_block_batch(dbs, &pending_blocks, event_tx)?;
+        total_handled_blocks += pending_blocks.len();
+    }
+
+    tracing::info!(
+        "Completed block sync from files: {} blocks processed, {} blocks remaining, cache size: {}",
+        total_handled_blocks,
+        missing_blocks.len(),
+        block_cache.len()
+    );
+
+    Ok(total_handled_blocks as u32)
 }
 
 // MUST be called after `sync_headers`.
@@ -1164,6 +1594,7 @@ async fn sync_blocks<MainRpcClient, Signal>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_rpc_client: &MainRpcClient,
+    main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
     shutdown_signal: Signal,
 ) -> Result<(), error::Sync>
@@ -1177,7 +1608,7 @@ where
     const BLOCK_FETCH_BATCH_SIZE: usize = 50;
 
     let start = Instant::now();
-    let missing_blocks = tokio::task::block_in_place(|| {
+    let mut missing_blocks = tokio::task::block_in_place(|| {
         let current_enforcer_tip = {
             let mut rwtxn = dbs.write_txn()?;
             let mut current_enforcer_tip = dbs
@@ -1229,6 +1660,30 @@ where
     let shutdown_signal = shutdown_signal.shared();
     let mut total_blocks_fetched = 0;
 
+    if let Some(main_blocks_dir) = main_blocks_dir {
+        let start = Instant::now();
+        tracing::debug!(
+            "syncing blocks from blocks dir: {}",
+            main_blocks_dir.display()
+        );
+
+        // TODO: abort gracefully here. If we're erroring out at any part in the process of
+        // fetching from the blocks dir, just fallback to the fetching via RPC
+        let total_handled_blocks = sync_from_blocks_dir(
+            dbs,
+            event_tx,
+            &mut missing_blocks,
+            main_blocks_dir,
+            shutdown_signal.clone(),
+        )
+        .await?;
+
+        tracing::info!(
+            "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
+            start.elapsed()
+        );
+    }
+
     // Process blocks in batches for better network efficiency
     let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
     for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
@@ -1244,54 +1699,7 @@ where
 
         let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
         total_blocks_fetched += blocks.len();
-
-        // Do a single DB transaction for the entire batch. DB commits are a big part
-        // of the sync time, so we want to reduce the number of times we do this.
-        let mut rwtxn = dbs.write_txn()?;
-
-        // Process blocks sequentially to maintain ordering and database consistency
-        for block in blocks {
-            let block_hash = block.block_hash();
-            let height = dbs.block_hashes.height().get(&rwtxn, &block_hash)?;
-
-            tracing::trace!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
-
-            let start_block = Instant::now();
-            // We should not call out to `invalidateblock` in case of failures here,
-            // as that is handled by the cusf-enforcer-mempool crate.
-            // FIXME: handle disconnects
-            let event = connect_block(&mut rwtxn, dbs, &block)?;
-
-            let connect_block_duration =
-                jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
-
-            // Create dynamic fields using a HashMap for structured logging
-            match &event {
-                Event::ConnectBlock {
-                    header_info,
-                    block_info,
-                } => {
-                    tracing::debug!(
-                        total_txs = block.txdata.len(),
-                        bmm_commitments = block_info.bmm_commitments.len(),
-                        sc_events = block_info.events.len(),
-                        "Synced block #{}: `{}` in {connect_block_duration}",
-                        header_info.height,
-                        header_info.block_hash,
-                    );
-                }
-                Event::DisconnectBlock { block_hash } => {
-                    tracing::debug!(
-                        "Disconnected block: `{block_hash}` in {connect_block_duration}",
-                    );
-                }
-            }
-            // Events should only ever be sent after committing DB txs, see
-            // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-            let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
-        }
-
-        let () = rwtxn.commit()?;
+        handle_block_batch(dbs, &blocks, event_tx)?;
     }
 
     tracing::info!(
@@ -1301,35 +1709,43 @@ where
     Ok(())
 }
 
+// Is this a good name? "Signal" in this context means both
+// signal receiver and signal sender
+pub struct SyncSignals<Signal: Future<Output = ()> + Send> {
+    pub shutdown_signal: Signal,
+    pub header_sync_progress_tx: tokio::sync::watch::Sender<HeaderSyncProgress>,
+    pub event_tx: Sender<Event>,
+}
+
 pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     dbs: &Dbs,
-    event_tx: &Sender<Event>,
-    header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_rpc_client: &MainClient,
     main_rest_client: &MainRestClient,
+    main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
-    shutdown_signal: Signal,
+    signals: SyncSignals<Signal>,
 ) -> Result<(), error::Sync>
 where
     MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     Signal: Future<Output = ()> + Send,
 {
     use futures::FutureExt as _;
-    let shutdown_signal = shutdown_signal.shared();
+    let shutdown_signal = signals.shutdown_signal.shared();
 
     let () = sync_headers(
         dbs,
         main_rest_client,
         main_rpc_client,
         main_tip,
-        header_sync_progress_tx,
+        &signals.header_sync_progress_tx,
         shutdown_signal.clone(),
     )
     .await?;
     let () = sync_blocks(
         dbs,
-        event_tx,
+        &signals.event_tx,
         main_rpc_client,
+        main_blocks_dir,
         main_tip,
         shutdown_signal.clone(),
     )

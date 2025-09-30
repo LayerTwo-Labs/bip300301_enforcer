@@ -270,6 +270,13 @@ pub struct MiningConfig {
 }
 
 #[derive(Args, Clone)]
+pub struct NodeBlocksDirConfig {
+    /// Path to the Bitcoin Core blocks directory.
+    #[arg(long = "node-blocks-dir")]
+    pub dir: Option<PathBuf>,
+}
+
+#[derive(Args, Clone)]
 pub struct NodeRpcConfig {
     #[arg(
         default_value_t = DEFAULT_NODE_RPC_ADDR,
@@ -395,6 +402,8 @@ pub struct Config {
     pub mining_opts: MiningConfig,
     #[command(flatten)]
     pub node_rpc_opts: NodeRpcConfig,
+    #[command(flatten)]
+    pub node_blocks_dir_opts: NodeBlocksDirConfig,
     /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
     /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
