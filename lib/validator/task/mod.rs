@@ -1709,35 +1709,41 @@ where
     Ok(())
 }
 
+// Is this a good name? "Signal" in this context means both
+// signal receiver and signal sender
+pub struct SyncSignals<Signal: Future<Output = ()> + Send> {
+    pub shutdown_signal: Signal,
+    pub header_sync_progress_tx: tokio::sync::watch::Sender<HeaderSyncProgress>,
+    pub event_tx: Sender<Event>,
+}
+
 pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
     dbs: &Dbs,
-    event_tx: &Sender<Event>,
-    header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_rpc_client: &MainClient,
     main_rest_client: &MainRestClient,
     main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
-    shutdown_signal: Signal,
+    signals: SyncSignals<Signal>,
 ) -> Result<(), error::Sync>
 where
     MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     Signal: Future<Output = ()> + Send,
 {
     use futures::FutureExt as _;
-    let shutdown_signal = shutdown_signal.shared();
+    let shutdown_signal = signals.shutdown_signal.shared();
 
     let () = sync_headers(
         dbs,
         main_rest_client,
         main_rpc_client,
         main_tip,
-        header_sync_progress_tx,
+        &signals.header_sync_progress_tx,
         shutdown_signal.clone(),
     )
     .await?;
     let () = sync_blocks(
         dbs,
-        event_tx,
+        &signals.event_tx,
         main_rpc_client,
         main_blocks_dir,
         main_tip,
