@@ -4,7 +4,7 @@ use std::{
 };
 
 use bitcoin::{Block, BlockHash, Network};
-use futures::FutureExt as _;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     types::Event,
@@ -119,17 +119,14 @@ fn process_cached_blocks(
 /// Handles non-sequential block layout by temporarily caching unexpected blocks
 /// and checking the cache when expected blocks are found.
 #[tracing::instrument(skip_all)]
-pub async fn sync_from_directory<Signal>(
+pub fn sync_from_directory(
     dbs: &Dbs,
     event_tx: &async_broadcast::Sender<Event>,
     missing_blocks: &mut Vec<BlockHash>,
     main_blocks_dir: PathBuf,
     network: Network,
-    shutdown_signal: Signal,
-) -> Result<u32, error::Sync>
-where
-    Signal: Future<Output = ()> + Send,
-{
+    cancel: CancellationToken,
+) -> Result<u32, error::Sync> {
     let first_missing_block = *missing_blocks.last().expect("missing blocks is empty");
 
     let index_path = main_blocks_dir.join("index");
@@ -181,28 +178,20 @@ where
         MAX_ITERATIONS_WITHOUT_MATCH
     );
 
-    let shutdown_signal = shutdown_signal.shared();
     let mut iteration_count = 0;
     loop {
         // Check for shutdown every 100 iterations to avoid too much overhead
-        if iteration_count % 100 == 0 {
-            tokio::select! {
-                biased;
-
-                _ = shutdown_signal.clone() => {
-                    tracing::info!("Block file sync interrupted during processing");
-                    // Process any remaining blocks in the current batch before aborting
-                    if !pending_blocks.is_empty() {
-                        tracing::debug!(
-                            "syncing pending batch of {} blocks before shutdown",
-                            pending_blocks.len()
-                        );
-                        handle_block_batch(dbs, &pending_blocks, event_tx)?;
-                    }
-                    return Err(error::Sync::Shutdown);
-                }
-                _ = tokio::task::yield_now() => {}
+        if iteration_count % 100 == 0 && cancel.is_cancelled() {
+            tracing::info!("Block file sync interrupted during processing");
+            // Process any remaining blocks in the current batch before aborting
+            if !pending_blocks.is_empty() {
+                tracing::debug!(
+                    "syncing pending batch of {} blocks before shutdown",
+                    pending_blocks.len()
+                );
+                handle_block_batch(dbs, &pending_blocks, event_tx)?;
             }
+            return Err(error::Sync::Shutdown);
         }
         iteration_count += 1;
 
