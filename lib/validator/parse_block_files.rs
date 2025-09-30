@@ -49,7 +49,7 @@ pub enum ParseBlockFileError {
     InvalidMagic {
         found: [u8; 4],
         expected: [u8; 4],
-        offset: usize,
+        offset: u64,
     },
 
     #[error("Invalid network: {found}, expected {expected}")]
@@ -82,7 +82,7 @@ pub struct ParsedBlock {
     pub raw_tx_data: Vec<u8>,
 
     /// Byte offset within the block file
-    pub offset: usize,
+    pub offset: u64,
 }
 
 impl ParsedBlock {
@@ -98,7 +98,7 @@ struct XorReader {
     reader: BufReader<File>,
     xor_key: Option<XorKey>,
 
-    offset: usize,
+    offset: u64,
 }
 
 impl bitcoin::io::Read for XorReader {
@@ -109,11 +109,11 @@ impl bitcoin::io::Read for XorReader {
         // Apply the XOR pattern if we have a key
         if let Some(xor_key) = self.xor_key {
             for i in 0..bytes_read {
-                buf[i] ^= xor_key[(self.offset + i) % xor_key.len()];
+                buf[i] ^= xor_key[(self.offset as usize + i) % xor_key.len()];
             }
         }
 
-        self.offset += bytes_read;
+        self.offset += bytes_read as u64;
         Ok(bytes_read)
     }
 }
@@ -121,7 +121,7 @@ impl bitcoin::io::Read for XorReader {
 impl Seek for XorReader {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = self.reader.seek(pos)?;
-        self.offset = new_pos as usize;
+        self.offset = new_pos;
         Ok(new_pos)
     }
 }
@@ -165,12 +165,12 @@ impl BlockFileParser {
     }
 
     /// Set the offset of the reader.
-    pub fn set_offset(&mut self, offset: usize) -> Result<(), std::io::Error> {
-        self.reader.seek(SeekFrom::Start(offset as u64))?;
+    pub fn set_offset(&mut self, offset: u64) -> Result<(), std::io::Error> {
+        self.reader.seek(SeekFrom::Start(offset))?;
         Ok(())
     }
 
-    pub fn offset(&self) -> usize {
+    pub fn offset(&self) -> u64 {
         self.reader.offset
     }
 
@@ -199,7 +199,7 @@ impl BlockFileParser {
                 .iter()
                 .enumerate()
                 .map(|(i, &byte)| {
-                    let key_index = (self.reader.offset - 4 + i) % xor_key.len();
+                    let key_index = (self.reader.offset as usize - 4 + i) % xor_key.len();
                     byte ^ xor_key[key_index]
                 })
                 .collect();
@@ -391,7 +391,7 @@ impl BlockDirectoryParser {
         Ok(self.current_parser.as_mut().unwrap())
     }
 
-    pub fn set_offset(&mut self, offset: usize) -> Result<(), std::io::Error> {
+    pub fn set_offset(&mut self, offset: u64) -> Result<(), std::io::Error> {
         let parser = self.get_or_init_parser()?;
         parser.set_offset(offset)
     }
@@ -570,6 +570,15 @@ pub struct CDiskBlockIndex {
 }
 
 impl CDiskBlockIndex {
+    /// Return the adjusted data position of this block within the
+    /// Bitcoin Core block files. The return value of this function
+    /// can be fed into [BlockFileParser::set_offset]
+    pub fn adjusted_data_pos(&self) -> Option<u64> {
+        // Magic bytes + size? Found by trial and error
+        const ADJUST_BY: u64 = 8;
+        self.data_pos.map(|pos| pos - ADJUST_BY)
+    }
+
     /// Deserialize from byte slice
     pub fn deserialize(reader: &mut impl std::io::Read) -> std::io::Result<Self> {
         // historically unused, should be hard-coded to 259900
