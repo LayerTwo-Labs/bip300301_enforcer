@@ -365,6 +365,10 @@ pub(in crate::validator) enum Sync {
     #[error(transparent)]
     #[fatal]
     FetchBlockIndex(#[from] parse_block_files::FetchBlockIndexError),
+
+    #[error("failed to set byte offset in block file parser")]
+    #[fatal]
+    BlockFileParserSetOffset(#[source] std::io::Error),
 }
 
 impl From<ConnectBlock> for Sync {

@@ -151,10 +151,15 @@ where
         .file_number
         .expect("file number is missing from block index");
 
-    // TODO: handle byte offset
+    let block_index_data_pos = block_index
+        .adjusted_data_pos()
+        .expect("data pos is missing from block index");
 
     // Only blocks which aren't fully validated don't have file numbers
     parser.set_file_number(block_index_file_number);
+    parser
+        .set_offset(block_index_data_pos)
+        .map_err(error::Sync::BlockFileParserSetOffset)?;
 
     tracing::debug!(
         "starting block file parser at file number {}",
