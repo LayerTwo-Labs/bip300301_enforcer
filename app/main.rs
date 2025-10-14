@@ -738,22 +738,58 @@ async fn spawn_task(
                         return Err(err.wrap_err("failed to get network info"));
                     }
                 };
-                let sample_block_template =
-                    match get_block_template(&mainchain_client, network).await {
-                        Ok(block_template) => block_template,
-                        Err(err) => {
-                            let err = miette::Report::from_err(err);
-                            return Err(err.wrap_err("failed to get sample block template"));
-                        }
-                    };
+
                 let mempool = sync_mempool(
                     wallet,
-                    mainchain_client,
+                    mainchain_client.clone(),
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
                     shutdown_signal.clone(),
                 )
                 .await?;
+
+                // Bitcoin Core refuses to service block templates until IBD is finished. We should
+                // therefore run this check AFTER the mempool sync task has finished, and then
+                // gracefully handle the error.
+                //
+                // Once the mempool sync has finished, we're finished with syncing up until the
+                // current Core tip. However, Core can still be stuck in IBD, hence the need for this loop
+                // https://github.com/bitcoin/bitcoin/blob/6c4fe401e908cff1b67d80035b117aae15fe7db6/src/rpc/mining.cpp#L771-L773
+                let sample_block_template = loop {
+                    // https://github.com/bitcoin/bitcoin/blob/6c4fe401e908cff1b67d80035b117aae15fe7db6/src/rpc/protocol.h#L58
+                    const RPC_CLIENT_NOT_CONNECTED: i32 = -9; // No P2P peers not connected, refuses block template requests
+                    const RPC_IN_WARMUP: i32 = -10; // In IBD etc, refuses block template requests
+                    match get_block_template(&mainchain_client.clone(), network).await {
+                        Ok(block_template) => break block_template,
+                        Err(wallet::error::BitcoinCoreRPC {
+                            method: _,
+                            error: jsonrpsee::core::client::Error::Call(err),
+                        }) if err.code() == RPC_IN_WARMUP => {
+                            tracing::debug!(
+                                err = format!("{}: {}", err.code(), err.message()),
+                                "Transient Bitcoin Core error, retrying before spawning GBT server...",
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        }
+                        Err(wallet::error::BitcoinCoreRPC {
+                            method: _,
+                            error: jsonrpsee::core::client::Error::Call(err),
+                        }) if err.code() == RPC_CLIENT_NOT_CONNECTED => {
+                            #[derive(Debug, Diagnostic, Error)]
+                            #[error(
+                                "Bitcoin Core has no P2P peers connected and refuses to serve block template requests"
+                            )]
+                            #[diagnostic(code(bip300301_enforcer::bitcoin_core_not_connected))]
+                            struct NotConnected;
+
+                            return Err(NotConnected.into());
+                        }
+                        Err(err) => {
+                            let err = miette::Report::from_err(err);
+                            return Err(err.wrap_err("failed to get sample block template"));
+                        }
+                    }
+                };
 
                 let server_handle = start_gbt_server(
                     mining_reward_address,
