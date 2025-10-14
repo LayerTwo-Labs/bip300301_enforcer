@@ -710,9 +710,13 @@ async fn spawn_task(
                 // initialized and unlocked. Give a nice error message if this is not
                 // the case!
                 if !wallet.is_initialized().await {
-                    return Err(miette!(
+                    #[derive(Debug, Diagnostic, Error)]
+                    #[error(
                         "Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."
-                    ));
+                    )]
+                    #[diagnostic(code(wallet_not_initialized))]
+                    struct WalletNotInitialized;
+                    return Err(WalletNotInitialized.into());
                 }
 
                 let mining_reward_address = match cli.mining_opts.coinbase_recipient {
@@ -1051,7 +1055,12 @@ async fn main() -> Result<()> {
             }
         })?;
         if !index_info.contains_key("txindex") {
-            return Err(miette!("`txindex` is not enabled on the mainchain client"));
+            #[derive(Debug, Diagnostic, Error)]
+            #[error("`txindex` is not enabled on the mainchain client")]
+            #[diagnostic(code(bip300301_enforcer::txindex_not_enabled))]
+            struct TxindexNotEnabled;
+
+            return Err(TxindexNotEnabled.into());
         }
 
         let magic = signet_challenge
