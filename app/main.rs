@@ -1329,9 +1329,23 @@ async fn main() -> Result<()> {
                     }
                     Err(err)
                 }
-                Err(err) => {
-                    let err = miette!("Unable to receive error from enforcer task: {err:#}");
-                    Err(err)
+                Err(_canceled) => {
+                    // The enforcer task sender was dropped, which means the task exited early.
+                    // Wait for the main task to complete and get the actual error from there.
+                    tracing::debug!("Enforcer task error receiver canceled, waiting for main task to complete");
+                    match handles.main_task.await {
+                        Ok(Ok(())) => {
+                            // Task completed successfully, this shouldn't happen
+                            Err(miette!("Enforcer task completed successfully but error receiver was canceled"))
+                        }
+                        Ok(Err(err)) => {
+                            // Task returned an error - this is what we want
+                            Err(err)
+                        }
+                        Err(join_error) => {
+                            Err(miette!("Main task panicked or was cancelled: {join_error:#}"))
+                        }
+                    }
                 }
             }
         }
