@@ -340,7 +340,10 @@ pub enum InitEsploraClient {
     BuildEsploraClient(#[source] esplora_client::Error),
     #[error("failed to get esplora height")]
     EsploraClientHeight(#[source] esplora_client::Error),
-    #[error("esplora url must be explicitly provided for {network}")]
+    #[error(
+        "esplora URL must be explicitly provided for {}", 
+        if network == &bitcoin::Network::Bitcoin {"mainnet".to_string()} else {network.to_string()}
+    )]
     MissingUrl { network: bitcoin::Network },
     #[error(transparent)]
     ParseUrl(#[from] url::ParseError),
