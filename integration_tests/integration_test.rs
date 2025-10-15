@@ -7,8 +7,8 @@ use bip300301_enforcer_lib::{
         common::{ConsensusHex, Hex},
         mainchain::{
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateSidechainProposalRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
-            block_info, withdrawal_bundle_event,
+            CreateNewAddressRequest, CreateSidechainProposalRequest, GetSidechainProposalsRequest,
+            GetSidechainsRequest, block_info, withdrawal_bundle_event,
         },
     },
 };
@@ -19,9 +19,7 @@ use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument as _;
 
 use crate::{
-    mine::{
-        mine, mine_check_block_events, mine_gbt_check, mine_generateblocks_check, mine_signet_check,
-    },
+    mine::{mine, mine_check_block_events, mine_signet_check},
     setup::{DummySidechain, MiningMode, Mode, Network, PostSetup, Sidechain, setup},
     test_unconfirmed_transactions,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
@@ -209,30 +207,31 @@ where
         indicatif::ProgressStyle::with_template("[{bar:100}] {pos}/{len}")?.progress_chars("#>-"),
     );
     tracing::info!("Funding enforcer");
-    let () = match (post_setup.network, post_setup.mode.mining_mode()) {
-        (Network::Regtest, MiningMode::GenerateBlocks) => {
-            mine_generateblocks_check(post_setup, BLOCKS, Some(false), |_| {
-                progress_bar.inc(1);
-                Ok::<_, Infallible>(())
-            })
-            .await?
+    let () = match post_setup.network {
+        Network::Regtest => {
+            let address = post_setup
+                .wallet_service_client
+                .create_new_address(CreateNewAddressRequest {})
+                .await?
+                .into_inner()
+                .address;
+
+            post_setup
+                .bitcoin_cli
+                .command::<String, _, _, _, _>(
+                    [],
+                    "generatetoaddress",
+                    [BLOCKS.to_string(), address],
+                )
+                .run_utf8()
+                .await?;
         }
-        (Network::Regtest, MiningMode::GetBlockTemplate) => {
-            mine_gbt_check::<_, Infallible, S>(post_setup, BLOCKS, |_| {
-                progress_bar.inc(1);
-                Ok(())
-            })
-            .await?
-        }
-        (Network::Signet, MiningMode::GetBlockTemplate) => {
+        Network::Signet => {
             mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| {
                 progress_bar.inc(1);
                 Ok(())
             })
             .await?;
-        }
-        (Network::Signet, MiningMode::GenerateBlocks) => {
-            anyhow::bail!("not implemented")
         }
     };
     tracing::debug!("Waiting for wallet sync...");
