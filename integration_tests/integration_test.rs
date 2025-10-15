@@ -1,4 +1,4 @@
-use std::{future::Future, time::Duration};
+use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
@@ -13,7 +13,7 @@ use bip300301_enforcer_lib::{
     },
 };
 use bitcoin::Amount;
-use futures::{StreamExt as _, TryStreamExt as _, channel::mpsc};
+use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument as _;
@@ -89,9 +89,24 @@ where
                 FileDumpConfig::new().with_label("Enforcer stderr"),
             );
 
-            test_fn(post_setup)
-                .instrument(tracing::info_span!("test", name = %name))
-                .await
+            // Wrap test_fn in catch_unwind to convert panics to errors
+            let test_future =
+                test_fn(post_setup).instrument(tracing::info_span!("test", name = %name));
+
+            match AssertUnwindSafe(test_future).catch_unwind().await {
+                Ok(result) => result,
+                Err(panic_payload) => {
+                    // Convert panic to an error
+                    let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+                    Err(anyhow::anyhow!("Test panicked: {}", panic_msg))
+                }
+            }
         }) as TestFuture,
         comps.file_registry,
         comps.failure_collector,
