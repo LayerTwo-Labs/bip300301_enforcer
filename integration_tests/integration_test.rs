@@ -16,6 +16,7 @@ use bitcoin::Amount;
 use futures::{StreamExt as _, TryStreamExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
+use tracing::Instrument as _;
 
 use crate::{
     mine::{
@@ -90,7 +91,9 @@ where
                 FileDumpConfig::new().with_label("Enforcer stderr"),
             );
 
-            test_fn(post_setup).await
+            test_fn(post_setup)
+                .instrument(tracing::info_span!("test", name = %name))
+                .await
         }) as TestFuture,
         comps.file_registry,
         comps.failure_collector,
