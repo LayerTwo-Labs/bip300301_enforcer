@@ -470,19 +470,16 @@ impl ValidatorService for Server {
         &self,
         _: tonic::Request<StopRequest>,
     ) -> Result<tonic::Response<StopResponse>, tonic::Status> {
-        let mut shutdown_tx = self.shutdown_tx.clone();
-        if shutdown_tx.is_closed() {
-            return Err(tonic::Status::unavailable("Shutdown channel is closed"));
+        if self.cancel.is_cancelled() {
+            return Err(tonic::Status::unavailable(
+                "Validator is already shutting down",
+            ));
         }
 
-        tracing::info!("received stop request, sending on shutdown channel");
+        tracing::info!("received stop request, cancelling token");
 
-        match shutdown_tx.try_send(()) {
-            Ok(_) => Ok(tonic::Response::new(StopResponse {})),
-            Err(err) => {
-                let msg = format!("Failed to send shutdown signal: {err:#}");
-                Err(tonic::Status::unavailable(msg))
-            }
-        }
+        self.cancel.cancel();
+
+        Ok(tonic::Response::new(StopResponse {}))
     }
 }

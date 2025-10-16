@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    future::Future,
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -35,6 +34,7 @@ use futures::{FutureExt, TryFutureExt};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -740,10 +740,7 @@ impl Wallet {
         Ok(Self { inner })
     }
 
-    pub async fn sync_task<F: Future<Output = ()>>(
-        &self,
-        shutdown_signal: F,
-    ) -> Result<(), miette::Report> {
+    pub async fn sync_task(&self, cancel: CancellationToken) -> Result<(), miette::Report> {
         const SYNC_INTERVAL: Duration = Duration::from_secs(15);
         tracing::debug!(
             interval = %jiff::SignedDuration::try_from(SYNC_INTERVAL).unwrap(),
@@ -751,6 +748,7 @@ impl Wallet {
         );
 
         // Needed so we can use `tokio::select!`
+        let shutdown_signal = cancel.cancelled();
         futures::pin_mut!(shutdown_signal);
 
         let mut sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
@@ -758,9 +756,9 @@ impl Wallet {
             tokio::select! {
                 biased;  // Prioritize shutdown
 
-                res = &mut shutdown_signal => {
+                _ = &mut shutdown_signal => {
                     tracing::info!("shutting down sync task");
-                    return Ok(res);
+                    return Ok(());
                 }
                 _ = &mut sleep => {
                     let tick = Uuid::new_v4().simple();
