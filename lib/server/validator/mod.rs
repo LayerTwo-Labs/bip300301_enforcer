@@ -1,3 +1,5 @@
+use tokio_util::sync::CancellationToken;
+
 use crate::validator::Validator;
 
 mod grpc;
@@ -6,14 +8,11 @@ pub mod json_rpc;
 #[derive(Clone)]
 pub struct Server {
     validator: Validator,
-    shutdown_tx: futures::channel::mpsc::Sender<()>,
+    cancel: CancellationToken,
 }
 
 impl Server {
-    pub fn new(validator: Validator, shutdown_tx: futures::channel::mpsc::Sender<()>) -> Self {
-        Self {
-            validator,
-            shutdown_tx,
-        }
+    pub fn new(validator: Validator, cancel: CancellationToken) -> Self {
+        Self { validator, cancel }
     }
 }
