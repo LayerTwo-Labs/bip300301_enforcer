@@ -33,6 +33,7 @@ use miette::{Diagnostic, IntoDiagnostic, Result, miette};
 use reqwest::Url;
 use thiserror::Error;
 use tokio::{net::TcpStream, task::JoinHandle};
+use tokio_util::sync::CancellationToken;
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tower_http::{
@@ -270,10 +271,9 @@ enum GrpcServerError {
     Reflection(#[from] tonic_reflection::server::Error),
 }
 
-async fn run_grpc_server<F: Future<Output = ()>>(
+async fn run_grpc_server(
     validator: Either<Validator, Wallet>,
-    shutdown_tx: futures::channel::mpsc::Sender<()>,
-    shutdown_signal: F,
+    cancel: CancellationToken,
     addr: SocketAddr,
 ) -> Result<(), GrpcServerError> {
     // Ordering here matters! Order here is from official docs on request IDs tracings
@@ -316,7 +316,7 @@ async fn run_grpc_server<F: Future<Output = ()>>(
                 Either::Left(ref validator) => validator,
                 Either::Right(ref wallet) => wallet.validator(),
             };
-            server::validator::Server::new(validator.clone(), shutdown_tx.clone())
+            server::validator::Server::new(validator.clone(), cancel.clone())
         }));
 
     let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
@@ -359,7 +359,7 @@ async fn run_grpc_server<F: Future<Output = ()>>(
         .add_service(health_service);
 
     server
-        .serve_with_shutdown(addr, shutdown_signal)
+        .serve_with_shutdown(addr, cancel.clone().cancelled())
         .await
         .map_err(|err| GrpcServerError::Serve { addr, source: err })
 }
@@ -482,17 +482,16 @@ where
     NoMempool(#[from] cusf_enforcer_mempool::cusf_enforcer::TaskError<Enforcer>),
 }
 
-async fn sync_mempool<Enforcer, RpcClient, Signal>(
+async fn sync_mempool<Enforcer, RpcClient>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
     err_tx: oneshot::Sender<MempoolTaskError<Enforcer>>,
-    shutdown_signal: Signal,
+    cancel: CancellationToken,
 ) -> Result<cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>, MempoolTaskError<Enforcer>>
 where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
     RpcClient: bitcoin_jsonrpsee::client::MainClient + Send + Sync + 'static,
-    Signal: Future<Output = ()> + Send,
 {
     tracing::debug!(%zmq_addr_sequence, "Ensuring ZMQ address for mempool sync is reachable");
 
@@ -517,7 +516,7 @@ where
         &mut enforcer,
         &rpc_client,
         zmq_addr_sequence,
-        shutdown_signal,
+        cancel.cancelled(),
     )
     .inspect_ok(|_| tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete"))
     .instrument(tracing::info_span!("initial_mempool_sync"));
@@ -576,8 +575,7 @@ impl EnforcerTaskErrRx {
 struct ErrRxs {
     enforcer_task: EnforcerTaskErrRx,
     grpc_server: oneshot::Receiver<GrpcServerError>,
-    shutdown_signal: oneshot::Receiver<()>,
-    shutdown_tx: futures::channel::mpsc::Sender<()>,
+    cancel: CancellationToken,
 }
 
 async fn get_zmq_addr_sequence(
@@ -623,42 +621,19 @@ async fn spawn_task(
     cli: cli::Config,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     network: bitcoin::Network,
-) -> Result<(
-    JoinHandle<Result<()>>,
-    futures::future::Shared<impl Future<Output = ()>>,
-    ErrRxs,
-)> {
+) -> Result<(JoinHandle<Result<()>>, ErrRxs)> {
     let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
 
-    let (shutdown_signal_tx, shutdown_signal_rx) = oneshot::channel();
-    let (shutdown_tx, mut shutdown_rx) = futures::channel::mpsc::channel(1);
+    let cancel = CancellationToken::new();
 
     let node_zmq_addr_sequence = match cli.node_zmq_addr_sequence {
         Some(node_zmq_addr_sequence) => node_zmq_addr_sequence,
         None => get_zmq_addr_sequence(mainchain_client.clone()).await?,
     };
 
-    let shutdown_signal = async move {
-        shutdown_rx
-            .next()
-            .await
-            .and_then(|_| {
-                tracing::debug!("received on shutdown channel, sending signal");
-                shutdown_signal_tx
-                    .send(())
-                    .inspect(|_| tracing::trace!("sent shutdown signal"))
-                    .inspect_err(|_| {
-                        tracing::error!("unable to send shutdown signal, receiver was dropped")
-                    })
-                    .ok()
-            })
-            .unwrap_or(())
-    }
-    .shared();
-
     let (task_handle, enforcer_task_err_rx) = match (cli.enable_mempool, enforcer.clone()) {
         (false, enforcer) => {
-            let shutdown_signal = shutdown_signal.clone();
+            let cancel = cancel.clone();
             let task_handle = tokio::task::spawn(async move {
                 tracing::info!("CUSF enforcer task w/o mempool: starting");
 
@@ -667,7 +642,7 @@ async fn spawn_task(
                     &mut enforcer,
                     &mainchain_client,
                     &node_zmq_addr_sequence,
-                    shutdown_signal,
+                    cancel.cancelled(),
                 );
 
                 if let Err(err) = task.await {
@@ -683,7 +658,7 @@ async fn spawn_task(
         }
         (true, Either::Left(validator)) => {
             let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
-            let shutdown_signal = shutdown_signal.clone();
+            let cancel = cancel.clone();
             let task_handle = tokio::task::spawn(async move {
                 tracing::info!("mempool sync task w/validator: starting");
                 let _mempool = sync_mempool(
@@ -691,7 +666,7 @@ async fn spawn_task(
                     mainchain_client,
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
-                    shutdown_signal,
+                    cancel,
                 )
                 .await?;
                 Ok(())
@@ -704,7 +679,7 @@ async fn spawn_task(
         (true, Either::Right(wallet)) => {
             tracing::info!("mempool sync task w/wallet: starting");
             let (enforcer_task_err_tx, enforcer_task_err_rx) = oneshot::channel();
-            let shutdown_signal = shutdown_signal.clone();
+            let cancel = cancel.clone();
             let task_handle = tokio::task::spawn(async move {
                 // A pre-requisite for the mempool sync task is that the wallet is
                 // initialized and unlocked. Give a nice error message if this is not
@@ -744,7 +719,7 @@ async fn spawn_task(
                     mainchain_client.clone(),
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
-                    shutdown_signal.clone(),
+                    cancel.clone(),
                 )
                 .await?;
 
@@ -801,7 +776,7 @@ async fn spawn_task(
                 )
                 .await?;
 
-                shutdown_signal.clone().await;
+                cancel.clone().cancelled().await;
 
                 tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
 
@@ -821,10 +796,9 @@ async fn spawn_task(
 
     let (grpc_server_err_tx, grpc_server_err_rx) = oneshot::channel();
     let _grpc_server_task: JoinHandle<()> = {
-        let shutdown_signal = shutdown_signal.clone();
-        let shutdown_tx = shutdown_tx.clone();
+        let cancel = cancel.clone();
         tokio::task::spawn(
-            run_grpc_server(enforcer, shutdown_tx, shutdown_signal, cli.serve_grpc_addr)
+            run_grpc_server(enforcer, cancel, cli.serve_grpc_addr)
                 .inspect(|_| tracing::info!("gRPC server finished"))
                 .unwrap_or_else(|err| {
                     let _send_err = grpc_server_err_tx.send(err);
@@ -835,10 +809,9 @@ async fn spawn_task(
     let err_rxs = ErrRxs {
         enforcer_task: enforcer_task_err_rx,
         grpc_server: grpc_server_err_rx,
-        shutdown_signal: shutdown_signal_rx,
-        shutdown_tx: shutdown_tx.clone(),
+        cancel,
     };
-    Ok((task_handle, shutdown_signal, err_rxs))
+    Ok((task_handle, err_rxs))
 }
 
 #[instrument(name = "exit_after_sync", skip_all)]
@@ -1150,13 +1123,13 @@ async fn main() -> Result<()> {
         .await
         .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
 
-    let (main_task_handle, shutdown_signal, mut err_rxs) =
+    let (main_task_handle, mut err_rxs) =
         spawn_task(enforcer.clone(), cli.clone(), mainchain_client, info.chain).await?;
 
     let json_rpc_handle: JoinHandle<Result<(), miette::Report>> = {
-        let shutdown_signal = shutdown_signal.clone();
+        let cancel = err_rxs.cancel.clone();
         tokio::spawn(async move {
-            shutdown_signal.await;
+            cancel.cancelled().await;
 
             if let Err(err) = json_rpc_server_handle.stop() {
                 #[derive(Debug, Diagnostic, Error)]
@@ -1186,8 +1159,8 @@ async fn main() -> Result<()> {
 
         if !cli.wallet_opts.skip_periodic_sync && !sync_source_disabled {
             let wallet = wallet.clone();
-            let shutdown_signal = shutdown_signal.clone();
-            let handle = tokio::spawn(async move { wallet.sync_task(shutdown_signal).await });
+            let cancel = err_rxs.cancel.clone();
+            let handle = tokio::spawn(async move { wallet.sync_task(cancel).await });
             wallet_sync_task_handle = Some(handle);
         }
     }
@@ -1294,13 +1267,11 @@ async fn main() -> Result<()> {
         exit_after_sync_task,
     };
 
-    async fn graceful_shutdown(
-        shutdown_tx: &mut futures::channel::mpsc::Sender<()>,
-        handles: TaskHandles,
-    ) {
+    async fn graceful_shutdown(cancel: &mut CancellationToken, handles: TaskHandles) {
         // If we've not yet sent the shutdown signal, do so now. In the case of an interrupt signal,
         // this branch will hit
-        if (shutdown_tx.send(()).await).is_ok() {
+        if !cancel.is_cancelled() {
+            cancel.cancel();
             tracing::debug!("shutdown: sent signal");
         }
 
@@ -1327,9 +1298,9 @@ async fn main() -> Result<()> {
 
     tokio::select! {
 
-        _ = err_rxs.shutdown_signal => {
+        _ = err_rxs.cancel.cancelled() => {
             tracing::info!("Shutting down due to shutdown signal");
-            graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
+            graceful_shutdown(&mut err_rxs.cancel, handles).await;
             Ok(())
         }
 
@@ -1401,7 +1372,7 @@ async fn main() -> Result<()> {
             match signal {
                 Some(()) => {
                     tracing::info!("Shutting down due to self interrupt");
-                    graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
+                    graceful_shutdown(&mut err_rxs.cancel, handles).await;
                     Ok(())
                 }
                 None => {
@@ -1415,7 +1386,7 @@ async fn main() -> Result<()> {
             match signal {
                 Ok(()) => {
                     tracing::info!("Shutting down due to process interruption");
-                    graceful_shutdown(&mut err_rxs.shutdown_tx, handles).await;
+                    graceful_shutdown(&mut err_rxs.cancel, handles).await;
                     Ok(())
                 }
                 Err(err) => {
