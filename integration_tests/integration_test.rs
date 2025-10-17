@@ -671,6 +671,17 @@ pub fn tests(
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
     async_trials.extend(peer_bmm_request_tests);
+    async_trials.extend([new_trial(
+        "file_based_block_parser".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_file_based_block_parser::test_file_based_block_parser,
+    )]);
 
     async_trials
 }
