@@ -349,7 +349,10 @@ pub fn format_test_output_files(test_name: &str, files: &[FileWithConfig]) -> St
             }
             Ok(_) => {}
             Err(err) => {
-                output.push_str(&format!("Error reading file: {err}\n"));
+                output.push_str(&format!(
+                    "Error reading file `{path}`: {err}\n",
+                    path = file.path.display()
+                ));
             }
         }
     }
@@ -362,6 +365,23 @@ pub fn format_test_output_files(test_name: &str, files: &[FileWithConfig]) -> St
 #[repr(transparent)]
 pub struct AbortOnDrop<T>(JoinHandle<T>);
 
+impl<T> AbortOnDrop<T> {
+    // TODO: is this OK? Claude dreamed it up!
+    pub fn into_inner(self) -> JoinHandle<T> {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: We wrapped self in ManuallyDrop, so Drop won't run
+        unsafe { std::ptr::read(&this.0) }
+    }
+}
+
+impl<T> std::ops::Deref for AbortOnDrop<T> {
+    type Target = JoinHandle<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort()
@@ -372,6 +392,16 @@ impl<T> From<JoinHandle<T>> for AbortOnDrop<T> {
     fn from(task: JoinHandle<T>) -> Self {
         Self(task)
     }
+}
+
+fn open_file_or_create_new(path: &std::path::Path) -> Result<std::fs::File, std::io::Error> {
+    std::fs::File::create_new(path).or_else(|err| {
+        if err.kind() == std::io::ErrorKind::AlreadyExists {
+            std::fs::File::open(path)
+        } else {
+            Err(err)
+        }
+    })
 }
 
 /// Run command with args, dumping stderr/stdout to `dir` on exit
@@ -396,7 +426,7 @@ where
     let stderr_fp = dir.join("stderr.txt");
     let stdout_fp = dir.join("stdout.txt");
     async move {
-        let stderr_file = match std::fs::File::create_new(stderr_fp.clone()) {
+        let stderr_file = match open_file_or_create_new(&stderr_fp) {
             Ok(stderr_file) => stderr_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -406,7 +436,7 @@ where
             }
         };
         cmd.stderr(std::process::Stdio::from(stderr_file));
-        let stdout_file = match std::fs::File::create_new(stdout_fp.clone()) {
+        let stdout_file = match open_file_or_create_new(&stdout_fp) {
             Ok(stdout_file) => stdout_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -507,6 +537,7 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
+    #[must_use]
     pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
@@ -615,6 +646,8 @@ pub struct Enforcer {
     pub path: PathBuf,
     pub data_dir: PathBuf,
     pub enable_mempool: bool,
+    pub enable_wallet: bool,
+    pub node_blocks_dir: Option<PathBuf>,
     pub node_rpc_user: String,
     pub node_rpc_pass: String,
     pub node_rpc_port: u16,
@@ -627,6 +660,7 @@ pub struct Enforcer {
 }
 
 impl Enforcer {
+    #[must_use]
     pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
@@ -645,7 +679,6 @@ impl Enforcer {
             format!("--node-rpc-addr=127.0.0.1:{}", self.node_rpc_port),
             format!("--node-rpc-user={}", self.node_rpc_user),
             format!("--node-rpc-pass={}", self.node_rpc_pass),
-            "--enable-wallet".to_owned(),
             "--log-level=trace".to_owned(),
             format!("--serve-grpc-addr=127.0.0.1:{}", self.serve_grpc_port),
             format!(
@@ -653,15 +686,26 @@ impl Enforcer {
                 self.serve_json_rpc_port
             ),
             format!("--serve-rpc-addr=127.0.0.1:{}", self.serve_rpc_port),
-            "--wallet-auto-create".to_owned(),
-            format!("--wallet-electrum-host=127.0.0.1"),
-            format!("--wallet-electrum-port={}", self.wallet_electrum_rpc_port),
-            format!(
-                "--wallet-esplora-url=http://127.0.0.1:{}",
-                self.wallet_electrum_http_port
-            ),
-            "--wallet-skip-periodic-sync".to_owned(),
         ];
+
+        if let Some(node_blocks_dir) = &self.node_blocks_dir {
+            default_args.push(format!("--node-blocks-dir={}", node_blocks_dir.display()));
+        }
+
+        if self.enable_wallet {
+            default_args.extend(vec![
+                "--enable-wallet".to_owned(),
+                "--wallet-auto-create".to_owned(),
+                format!("--wallet-electrum-host=127.0.0.1"),
+                format!("--wallet-electrum-port={}", self.wallet_electrum_rpc_port),
+                format!(
+                    "--wallet-esplora-url=http://127.0.0.1:{}",
+                    self.wallet_electrum_http_port
+                ),
+                "--wallet-skip-periodic-sync".to_owned(),
+            ]);
+        }
+
         if self.enable_mempool {
             default_args.push("--enable-mempool".to_owned());
         }

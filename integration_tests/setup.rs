@@ -1,6 +1,6 @@
 //! Setup for an integration test
 
-use std::{collections::HashMap, future::Future, net::SocketAddr};
+use std::{collections::HashMap, future::Future, net::SocketAddr, path::PathBuf};
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
@@ -43,7 +43,7 @@ impl From<Network> for bitcoin::Network {
 }
 
 // Signet-specific setup
-struct SignetSetup {
+pub struct SignetSetup {
     secret_key: bitcoin::PrivateKey,
     signet_challenge: bitcoin::ScriptBuf,
     signet_challenge_addr: bitcoin::Address,
@@ -262,6 +262,14 @@ pub struct Tasks {
 
 type Transport = tonic::transport::Channel;
 
+pub struct PreSetup {
+    pub bin_paths: BinPaths,
+    pub network: Network,
+    pub reserved_ports: ReservedPorts,
+
+    pub directories: Directories,
+}
+
 pub struct PostSetup {
     pub network: Network,
     pub mode: Mode,
@@ -278,14 +286,18 @@ pub struct PostSetup {
     pub receive_address: Address,
     // MUST occur after tasks in order to ensure that tasks are dropped
     // before temp dirs are cleared
-    pub out_dir: TempDir,
+    pub directories: Directories,
     // MUST occur after tasks in order to ensure that tasks are dropped
     // before reserved ports are freed
     pub reserved_ports: ReservedPorts,
 }
 
 /// Waits for a TCP port to become available by attempting to connect periodically.
-async fn wait_for_port(host: &str, port: u16, timeout_duration: Duration) -> anyhow::Result<()> {
+pub async fn wait_for_port(
+    host: &str,
+    port: u16,
+    timeout_duration: Duration,
+) -> anyhow::Result<()> {
     let target_addr_str = format!("{host}:{port}");
     let target_addr: SocketAddr = target_addr_str
         .parse()
@@ -328,6 +340,84 @@ async fn wait_for_port(host: &str, port: u16, timeout_duration: Duration) -> any
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Directories {
+    pub base_dir: TempDir,
+
+    pub bitcoin_dir: PathBuf,
+    pub electrs_dir: PathBuf,
+    pub enforcer_dir: PathBuf,
+}
+
+fn setup_directories() -> anyhow::Result<Directories> {
+    let base_dir = TempDir::new()?;
+    // leak unless explicitly allowed to cleanup
+    base_dir.leak();
+
+    let bitcoin_dir = base_dir.path().join("bitcoind");
+
+    let electrs_dir = base_dir.path().join("electrs");
+
+    let enforcer_dir = base_dir.path().join("enforcer");
+
+    for dir in [&bitcoin_dir, &electrs_dir, &enforcer_dir] {
+        std::fs::create_dir(dir)?;
+    }
+
+    Ok(Directories {
+        base_dir,
+        bitcoin_dir,
+        electrs_dir,
+        enforcer_dir,
+    })
+}
+
+pub fn new_bitcoind(
+    bin_paths: &BinPaths,
+    data_dir: PathBuf,
+    reserved_ports: &ReservedPorts,
+    network: Network,
+    signet_setup: Option<&SignetSetup>,
+) -> Bitcoind {
+    Bitcoind {
+        path: bin_paths.bitcoind.clone(),
+        data_dir,
+        listen_port: reserved_ports.bitcoind_listen.port(),
+        network: network.into(),
+        onion_ports: None,
+        rpc_user: "drivechain".to_owned(),
+        rpc_pass: "integrationtesting".to_owned(),
+        rpc_port: reserved_ports.bitcoind_rpc.port(),
+        rpc_host: "127.0.0.1".to_owned(),
+        signet_challenge: signet_setup
+            .as_ref()
+            .map(|setup| setup.signet_challenge.clone()),
+        txindex: true,
+        zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
+    }
+}
+
+pub fn new_bitcoin_cli(bitcoind: &Bitcoind, path: PathBuf) -> bins::BitcoinCli {
+    bins::BitcoinCli {
+        path,
+        network: bitcoind.network,
+        rpc_user: bitcoind.rpc_user.clone(),
+        rpc_pass: bitcoind.rpc_pass.clone(),
+        rpc_port: bitcoind.rpc_port,
+        rpc_host: bitcoind.rpc_host.clone(),
+        rpc_wallet: None,
+    }
+}
+
+pub fn pre_setup(bin_paths: &BinPaths, network: Network) -> anyhow::Result<PreSetup> {
+    Ok(PreSetup {
+        bin_paths: bin_paths.clone(),
+        network,
+        reserved_ports: ReservedPorts::new()?,
+        directories: setup_directories()?,
+    })
+}
+
 pub async fn setup(
     bin_paths: &BinPaths,
     network: Network,
@@ -341,36 +431,16 @@ pub async fn setup(
     } else {
         None
     };
-    let out_dir = TempDir::new()?;
-    // leak unless explicitly allowed to cleanup
-    out_dir.leak();
-    tracing::info!("Output dir: {}", out_dir.path().display());
-    let bitcoin_dir = out_dir.path().join("bitcoind");
-    std::fs::create_dir(&bitcoin_dir)?;
-    tracing::info!("Bitcoin dir: {}", bitcoin_dir.display());
-    let electrs_dir = out_dir.path().join("electrs");
-    std::fs::create_dir(&electrs_dir)?;
-    tracing::info!("Electrs dir: {}", electrs_dir.display());
-    let enforcer_dir = out_dir.path().join("enforcer");
-    std::fs::create_dir(&enforcer_dir)?;
-    tracing::info!("Enforcer dir: {}", enforcer_dir.display());
+    let dirs = setup_directories()?;
+
     tracing::debug!("Starting bitcoin node");
-    let bitcoind = Bitcoind {
-        path: bin_paths.bitcoind.clone(),
-        data_dir: bitcoin_dir,
-        listen_port: reserved_ports.bitcoind_listen.port(),
-        network: network.into(),
-        onion_ports: None,
-        rpc_user: "drivechain".to_owned(),
-        rpc_pass: "integrationtesting".to_owned(),
-        rpc_port: reserved_ports.bitcoind_rpc.port(),
-        rpc_host: "127.0.0.1".to_owned(),
-        signet_challenge: signet_setup
-            .as_ref()
-            .map(|setup| setup.signet_challenge.clone()),
-        txindex: true,
-        zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
-    };
+    let bitcoind = new_bitcoind(
+        bin_paths,
+        dirs.bitcoin_dir.clone(),
+        &reserved_ports,
+        network,
+        signet_setup.as_ref(),
+    );
     let bitcoind_task = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], {
         let res_tx = res_tx.clone();
         move |err| {
@@ -380,15 +450,7 @@ pub async fn setup(
     // wait for startup
     sleep(std::time::Duration::from_secs(1)).await;
     // Create a wallet and initialize it
-    let mut bitcoin_cli = bins::BitcoinCli {
-        path: bin_paths.bitcoin_cli.clone(),
-        network: bitcoind.network,
-        rpc_user: bitcoind.rpc_user.clone(),
-        rpc_pass: bitcoind.rpc_pass.clone(),
-        rpc_port: bitcoind.rpc_port,
-        rpc_host: bitcoind.rpc_host,
-        rpc_wallet: None,
-    };
+    let mut bitcoin_cli = new_bitcoin_cli(&bitcoind, bin_paths.bitcoin_cli.clone());
     tracing::debug!("Creating wallet");
     let _create_wallet_output = bitcoin_cli
         .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
@@ -470,7 +532,7 @@ pub async fn setup(
     tracing::debug!("Starting electrs");
     let electrs = Electrs {
         path: bin_paths.electrs.clone(),
-        db_dir: electrs_dir,
+        db_dir: dirs.electrs_dir.clone(),
         auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
         daemon_dir: bitcoind.data_dir.join("path"),
         daemon_rpc_port: bitcoind.rpc_port,
@@ -492,8 +554,10 @@ pub async fn setup(
     tracing::debug!("Starting bip300301_enforcer");
     let enforcer = Enforcer {
         path: bin_paths.bip300301_enforcer.clone(),
-        data_dir: enforcer_dir,
+        data_dir: dirs.enforcer_dir.clone(),
         enable_mempool: mode.enable_mempool(),
+        enable_wallet: true,
+        node_blocks_dir: None,
         node_rpc_user: bitcoind.rpc_user,
         node_rpc_pass: bitcoind.rpc_pass,
         node_rpc_port: bitcoind.rpc_port,
@@ -532,7 +596,7 @@ pub async fn setup(
         .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
         .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
     if signet_setup.is_some() {
-        let () = SignetSetup::configure_miner(&mut signet_miner, &out_dir, &enforcer)?;
+        let () = SignetSetup::configure_miner(&mut signet_miner, &dirs.base_dir, &enforcer)?;
     }
     let validator_service_client =
         ValidatorServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
@@ -557,7 +621,7 @@ pub async fn setup(
         wallet_service_client,
         mining_address,
         receive_address,
-        out_dir,
+        directories: dirs.clone(),
         reserved_ports,
     })
 }
