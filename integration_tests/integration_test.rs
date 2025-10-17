@@ -20,7 +20,10 @@ use tracing::Instrument as _;
 
 use crate::{
     mine::{mine, mine_check_block_events, mine_signet_check},
-    setup::{DummySidechain, MiningMode, Mode, Network, PostSetup, Sidechain, setup},
+    setup::{
+        Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
+        pre_setup, setup,
+    },
     test_unconfirmed_transactions,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
@@ -36,6 +39,76 @@ struct TestSetupComponents {
     failure_collector: TestFailureCollector,
 }
 
+fn register_files(file_registry: &TestFileRegistry, name: &str, directories: &Directories) {
+    // Register specific files with their own configurations
+    file_registry.register_file(
+        name,
+        directories.bitcoin_dir.join("stdout.txt"),
+        FileDumpConfig::new().with_label("Bitcoin Core stdout"),
+    );
+
+    file_registry.register_file(
+        name,
+        directories.bitcoin_dir.join("stderr.txt"),
+        FileDumpConfig::new().with_label("Bitcoin Core stderr"),
+    );
+
+    file_registry.register_file(
+        name,
+        directories.enforcer_dir.join("stdout.txt"),
+        FileDumpConfig::new().with_label("Enforcer stdout"),
+    );
+
+    file_registry.register_file(
+        name,
+        directories.enforcer_dir.join("stderr.txt"),
+        FileDumpConfig::new().with_label("Enforcer stderr"),
+    );
+}
+
+async fn catch_unwind<Fut>(test_future: Fut) -> anyhow::Result<()>
+where
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    match AssertUnwindSafe(test_future).catch_unwind().await {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            // Convert panic to an error
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic".to_string()
+            };
+            Err(anyhow::anyhow!("Test panicked: {}", panic_msg))
+        }
+    }
+}
+
+fn new_trial<F, Fut>(name: String, comps: TestSetupComponents, test_fn: F) -> TestTrial
+where
+    F: FnOnce(PreSetup) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let file_registry = comps.file_registry.clone();
+    AsyncTrial::new(
+        name.clone(),
+        Box::pin(async move {
+            let pre_setup = pre_setup(&comps.bin_paths, comps.network)?;
+
+            register_files(&file_registry, &name, &pre_setup.directories);
+
+            let test_future =
+                test_fn(pre_setup).instrument(tracing::info_span!("test", name = %name));
+
+            catch_unwind(test_future).await
+        }),
+        comps.file_registry,
+        comps.failure_collector,
+    )
+}
+
 fn new_trial_with_setup<F, Fut>(name: String, comps: TestSetupComponents, test_fn: F) -> TestTrial
 where
     F: FnOnce(PostSetup) -> Fut + Send + 'static,
@@ -48,65 +121,12 @@ where
             let (res_tx, _) = mpsc::unbounded();
             let post_setup = setup(&comps.bin_paths, comps.network, comps.mode, res_tx).await?;
 
-            // Register specific files with their own configurations
-            file_registry.register_file(
-                &name,
-                post_setup
-                    .out_dir
-                    .path()
-                    .join("bitcoind")
-                    .join("stdout.txt"),
-                FileDumpConfig::new().with_label("Bitcoin Core stdout"),
-            );
+            register_files(&file_registry, &name, &post_setup.directories);
 
-            file_registry.register_file(
-                &name,
-                post_setup
-                    .out_dir
-                    .path()
-                    .join("bitcoind")
-                    .join("stderr.txt"),
-                FileDumpConfig::new().with_label("Bitcoin Core stderr"),
-            );
-
-            file_registry.register_file(
-                &name,
-                post_setup
-                    .out_dir
-                    .path()
-                    .join("enforcer")
-                    .join("stdout.txt"),
-                FileDumpConfig::new().with_label("Enforcer stdout"),
-            );
-
-            file_registry.register_file(
-                &name,
-                post_setup
-                    .out_dir
-                    .path()
-                    .join("enforcer")
-                    .join("stderr.txt"),
-                FileDumpConfig::new().with_label("Enforcer stderr"),
-            );
-
-            // Wrap test_fn in catch_unwind to convert panics to errors
             let test_future =
                 test_fn(post_setup).instrument(tracing::info_span!("test", name = %name));
 
-            match AssertUnwindSafe(test_future).catch_unwind().await {
-                Ok(result) => result,
-                Err(panic_payload) => {
-                    // Convert panic to an error
-                    let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "Unknown panic".to_string()
-                    };
-                    Err(anyhow::anyhow!("Test panicked: {}", panic_msg))
-                }
-            }
+            catch_unwind(test_future).await
         }) as TestFuture,
         comps.file_registry,
         comps.failure_collector,
