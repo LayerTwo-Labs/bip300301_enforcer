@@ -4,6 +4,7 @@ use std::{
 };
 
 use bitcoin::{Block, BlockHash, Network};
+use sneed::RwTxn;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -98,7 +99,10 @@ fn process_cached_blocks(
 
             // Check if we should process batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
-                handle_block_batch(dbs, pending_blocks, event_tx)?;
+                let mut rwtxn: RwTxn<'_> = dbs.write_txn()?;
+                handle_block_batch(dbs, &mut rwtxn, pending_blocks, event_tx)?;
+                rwtxn.commit()?;
+
                 *total_handled_blocks += pending_blocks.len();
                 pending_blocks.clear();
             }
@@ -189,7 +193,9 @@ pub fn sync_from_directory(
                     "syncing pending batch of {} blocks before shutdown",
                     pending_blocks.len()
                 );
-                handle_block_batch(dbs, &pending_blocks, event_tx)?;
+                let mut rwtxn = dbs.write_txn()?;
+                handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+                rwtxn.commit()?;
             }
             return Err(error::Sync::Shutdown);
         }
@@ -251,7 +257,10 @@ pub fn sync_from_directory(
 
             // Check if we should process the current batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
-                handle_block_batch(dbs, &pending_blocks, event_tx)?;
+                let mut rwtxn = dbs.write_txn()?;
+                handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+                rwtxn.commit()?;
+
                 total_handled_blocks += pending_blocks.len();
                 pending_blocks.clear();
             }
@@ -289,7 +298,10 @@ pub fn sync_from_directory(
                         "syncing pending batch of {} blocks before aborting blocks dir sync",
                         pending_blocks.len()
                     );
-                    handle_block_batch(dbs, &pending_blocks, event_tx)?;
+                    let mut rwtxn = dbs.write_txn()?;
+                    handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+                    rwtxn.commit()?;
+
                     total_handled_blocks += pending_blocks.len();
                     pending_blocks.clear(); // Clear to avoid double processing
                 }
@@ -316,7 +328,10 @@ pub fn sync_from_directory(
             "handling final batch of {} blocks at end of file sync",
             pending_blocks.len()
         );
-        handle_block_batch(dbs, &pending_blocks, event_tx)?;
+        let mut rwtxn = dbs.write_txn()?;
+        handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+        rwtxn.commit()?;
+
         total_handled_blocks += pending_blocks.len();
     }
 
