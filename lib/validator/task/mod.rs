@@ -1159,8 +1159,9 @@ where
     Ok(blocks)
 }
 
-pub(crate) fn handle_block_batch(
+pub(crate) fn handle_block_batch<'a>(
     dbs: &Dbs,
+    rwtxn: &mut RwTxn<'a>,
     blocks: &[Block],
     event_tx: &Sender<Event>,
 ) -> Result<(), error::Sync> {
@@ -1170,10 +1171,6 @@ pub(crate) fn handle_block_batch(
     let mut total_bmm_commitments = 0;
     let mut total_events = 0;
 
-    // Do a single DB transaction for the entire batch. DB commits are a big part
-    // of the sync time, so we want to reduce the number of times we do this.
-    let mut rwtxn = dbs.write_txn()?;
-
     // Process blocks sequentially to maintain ordering and database consistency
     for block in blocks {
         let block_hash = block.block_hash();
@@ -1181,14 +1178,14 @@ pub(crate) fn handle_block_batch(
         tracing::trace!("Syncing block #{} `{block_hash}`", {
             // Do the data fetch within the macro, to avoid the cost on higher
             // log levels
-            dbs.block_hashes.height().get(&rwtxn, &block_hash)?
+            dbs.block_hashes.height().get(rwtxn, &block_hash)?
         });
 
         let start_block = Instant::now();
         // We should not call out to `invalidateblock` in case of failures here,
         // as that is handled by the cusf-enforcer-mempool crate.
         // FIXME: handle disconnects
-        let event = connect_block(&mut rwtxn, dbs, block)?;
+        let event = connect_block(rwtxn, dbs, block)?;
 
         let connect_block_duration =
             jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
@@ -1242,8 +1239,6 @@ pub(crate) fn handle_block_batch(
         // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
         let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
-
-    let () = rwtxn.commit()?;
 
     tracing::info!(
         total_txs = total_txs,
@@ -1361,7 +1356,10 @@ where
 
         let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
         total_blocks_fetched += blocks.len();
-        handle_block_batch(dbs, &blocks, event_tx)?;
+
+        let mut rwtxn = dbs.write_txn()?;
+        handle_block_batch(dbs, &mut rwtxn, &blocks, event_tx)?;
+        rwtxn.commit()?;
     }
 
     tracing::info!(
