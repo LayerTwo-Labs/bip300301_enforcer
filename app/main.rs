@@ -364,10 +364,13 @@ async fn run_grpc_server(
         .map_err(|err| GrpcServerError::Serve { addr, source: err })
 }
 
-async fn spawn_gbt_server(
-    server: cusf_enforcer_mempool::server::Server<Wallet>,
+async fn spawn_gbt_server<RpcClient>(
+    server: cusf_enforcer_mempool::server::Server<Wallet, RpcClient>,
     serve_addr: SocketAddr,
-) -> miette::Result<jsonrpsee::server::ServerHandle> {
+) -> miette::Result<jsonrpsee::server::ServerHandle>
+where
+    RpcClient: bitcoin_jsonrpsee::MainClient + Send + Sync + 'static,
+{
     let rpc_server = server.into_rpc();
 
     tracing::info!(
@@ -421,19 +424,24 @@ async fn spawn_gbt_server(
     Ok(handle)
 }
 
-async fn start_gbt_server(
+async fn start_gbt_server<RpcClient>(
     mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
     network_info: bitcoin_jsonrpsee::client::NetworkInfo,
     sample_block_template: bitcoin_jsonrpsee::client::BlockTemplate,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
+    rpc_client: RpcClient,
     serve_addr: SocketAddr,
-) -> miette::Result<jsonrpsee::server::ServerHandle> {
+) -> miette::Result<jsonrpsee::server::ServerHandle>
+where
+    RpcClient: bitcoin_jsonrpsee::MainClient + Send + Sync + 'static,
+{
     let gbt_server = cusf_enforcer_mempool::server::Server::new(
         mining_reward_address.script_pubkey(),
         mempool,
         network,
         network_info,
+        rpc_client,
         sample_block_template,
     )
     .into_diagnostic()?;
@@ -772,6 +780,7 @@ async fn spawn_task(
                     network_info,
                     sample_block_template,
                     mempool,
+                    mainchain_client,
                     cli.serve_rpc_addr,
                 )
                 .await?;
