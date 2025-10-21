@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use bitcoin::{Block, BlockHash, Network};
+use bitcoin::{Block, BlockHash, Network, hashes::Hash};
 use sneed::RwTxn;
 use tokio_util::sync::CancellationToken;
 
@@ -139,27 +139,33 @@ pub fn sync_from_directory(
         index_path.display()
     );
 
-    let block_index = parse_block_files::fetch_block_index(index_path, first_missing_block)?;
-
     let mut parser = parse_block_files::BlockDirectoryParser::new(main_blocks_dir, network)?;
 
-    let block_index_file_number = block_index
-        .file_number
-        .expect("file number is missing from block index");
+    let is_genesis_block =
+        first_missing_block.to_raw_hash().as_byte_array() == network.chain_hash().as_bytes();
 
-    let block_index_data_pos = block_index
-        .adjusted_data_pos()
-        .expect("data pos is missing from block index");
+    // There's no point in fetching the block index for the genesis block, it's always at file number 0.
+    if !is_genesis_block {
+        let block_index = parse_block_files::fetch_block_index(index_path, first_missing_block)?;
 
-    // Only blocks which aren't fully validated don't have file numbers
-    parser.set_file_number(block_index_file_number);
-    parser
-        .set_offset(block_index_data_pos)
-        .map_err(error::Sync::BlockFileParserSetOffset)?;
+        let block_index_file_number = block_index
+            .file_number
+            .expect("file number is missing from block index");
+
+        let block_index_data_pos = block_index
+            .adjusted_data_pos()
+            .expect("data pos is missing from block index");
+
+        // Only blocks which aren't fully validated don't have file numbers
+        parser.set_file_number(block_index_file_number);
+        parser
+            .set_offset(block_index_data_pos)
+            .map_err(error::Sync::BlockFileParserSetOffset)?;
+    }
 
     tracing::debug!(
         "starting block file parser at file number {}",
-        block_index_file_number
+        parser.file_number()
     );
 
     let mut total_handled_blocks = 0_usize;
