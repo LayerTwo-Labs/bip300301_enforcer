@@ -674,9 +674,10 @@ async fn spawn_task(
                     mainchain_client,
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
-                    cancel,
+                    cancel.clone(),
                 )
                 .await?;
+                cancel.cancelled().await;
                 Ok(())
             });
             (
