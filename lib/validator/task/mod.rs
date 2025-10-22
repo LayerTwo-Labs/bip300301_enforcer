@@ -2,13 +2,13 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
-    future::Future,
+    path::PathBuf,
     time::Instant,
 };
 
 use async_broadcast::{Sender, TrySendError};
 use bitcoin::{
-    Amount, Block, BlockHash, OutPoint, Transaction, Work,
+    Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
 use either::Either;
@@ -20,6 +20,7 @@ use jsonrpsee::core::{
     params::{ArrayParams, BatchRequestBuilder},
 };
 use sneed::{RoTxn, RwTxn, db};
+use tokio_util::sync::CancellationToken;
 
 use super::main_rest_client::MainRestClient;
 use crate::{
@@ -40,6 +41,7 @@ use crate::{
     },
 };
 
+mod block_files;
 pub mod error;
 
 const USED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE: u16 = 10;
@@ -945,17 +947,16 @@ where
 }
 
 #[tracing::instrument(skip_all)]
-async fn sync_headers<MainRpcClient, Signal>(
+async fn sync_headers<MainRpcClient>(
     dbs: &Dbs,
     main_rest_client: &MainRestClient,
     main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
-    shutdown_signal: Signal,
+    cancel: CancellationToken,
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
-    Signal: Future<Output = ()> + Send,
 {
     let start = Instant::now();
 
@@ -1007,16 +1008,10 @@ where
 
     // The requested block header is the /first/ header in the batch. This means we
     // need to loop from our current tip, until we find the requested main tip.
-    let shutdown_signal = shutdown_signal.shared();
     loop {
-        tokio::select! {
-            biased;
-
-            _ = shutdown_signal.clone() => {
-                tracing::warn!("Header sync interrupted");
-                return Err(error::Sync::Shutdown);
-            }
-            _ = futures::future::ready(()) => {}
+        if cancel.is_cancelled() {
+            tracing::warn!("Header sync interrupted");
+            return Err(error::Sync::Shutdown);
         }
 
         tracing::debug!(
@@ -1133,11 +1128,7 @@ where
             source: err,
         })?;
 
-    tracing::debug!(
-        "Fetched batch of {} block(s) in {:?}",
-        batch_response.len(),
-        start.elapsed(),
-    );
+    let fetch_duration = start.elapsed();
 
     let blocks = match batch_response.ok() {
         Ok(blocks) => blocks
@@ -1155,21 +1146,124 @@ where
         }
     };
 
+    let deserialization_duration = start.elapsed() - fetch_duration;
+
+    tracing::debug!(
+        "Fetched ({:?}) and deserialized ({:?}) batch of {} block(s) with {} total transactions",
+        fetch_duration,
+        deserialization_duration,
+        blocks.len(),
+        blocks.iter().map(|block| block.txdata.len()).sum::<usize>(),
+    );
+
     Ok(blocks)
+}
+
+pub(crate) fn handle_block_batch<'a>(
+    dbs: &Dbs,
+    rwtxn: &mut RwTxn<'a>,
+    blocks: &[Block],
+    event_tx: &Sender<Event>,
+) -> Result<(), error::Sync> {
+    let start = Instant::now();
+
+    let mut total_txs = 0;
+    let mut total_bmm_commitments = 0;
+    let mut total_events = 0;
+
+    // Process blocks sequentially to maintain ordering and database consistency
+    for block in blocks {
+        let block_hash = block.block_hash();
+
+        tracing::trace!("Syncing block #{} `{block_hash}`", {
+            // Do the data fetch within the macro, to avoid the cost on higher
+            // log levels
+            dbs.block_hashes.height().get(rwtxn, &block_hash)?
+        });
+
+        let start_block = Instant::now();
+        // We should not call out to `invalidateblock` in case of failures here,
+        // as that is handled by the cusf-enforcer-mempool crate.
+        // FIXME: handle disconnects
+        let event = connect_block(rwtxn, dbs, block)?;
+
+        let connect_block_duration =
+            jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
+
+        // Create dynamic fields using a HashMap for structured logging
+        match &event {
+            Event::ConnectBlock {
+                header_info,
+                block_info,
+            } => {
+                // Keep all the blocks at info level in the beginning,
+                // and then taper off into less log noise
+                let log_interval = match header_info.height {
+                    0..=999 => 1,
+                    1000..=9999 => 10,
+                    10_000..=99_999 => 100,
+                    100_000.. => 1000,
+                };
+
+                total_txs += block.txdata.len();
+                total_bmm_commitments += block_info.bmm_commitments.len();
+                total_events += block_info.events.len();
+
+                // Apparently it isn't possible to do dynamic levels? wtf
+                // https://github.com/tokio-rs/tracing/issues/2730
+                if header_info.height % log_interval == 0 {
+                    tracing::info!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                } else {
+                    tracing::debug!(
+                        total_txs = block.txdata.len(),
+                        bmm_commitments = block_info.bmm_commitments.len(),
+                        sc_events = block_info.events.len(),
+                        "Synced block #{}: `{}` in {connect_block_duration}",
+                        header_info.height,
+                        header_info.block_hash,
+                    );
+                };
+            }
+            Event::DisconnectBlock { block_hash } => {
+                tracing::debug!("Disconnected block: `{block_hash}` in {connect_block_duration}",);
+            }
+        }
+        // Events should only ever be sent after committing DB txs, see
+        // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+    }
+
+    tracing::info!(
+        total_txs = total_txs,
+        total_bmm_commitments = total_bmm_commitments,
+        total_events = total_events,
+        "Synced batch of {} blocks in {}",
+        blocks.len(),
+        jiff::SignedDuration::try_from(start.elapsed()).unwrap_or_default(),
+    );
+    Ok(())
 }
 
 // MUST be called after `sync_headers`.
 #[tracing::instrument(skip_all)]
-async fn sync_blocks<MainRpcClient, Signal>(
+async fn sync_blocks<MainRpcClient>(
     dbs: &Dbs,
     event_tx: &Sender<Event>,
     main_rpc_client: &MainRpcClient,
+    main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
-    shutdown_signal: Signal,
+    network: Network,
+    cancel: CancellationToken,
 ) -> Result<(), error::Sync>
 where
     MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
-    Signal: Future<Output = ()> + Send,
 {
     // Batch size for concurrent block fetching
     // It's hard to know what a good size here is, without
@@ -1177,7 +1271,7 @@ where
     const BLOCK_FETCH_BATCH_SIZE: usize = 50;
 
     let start = Instant::now();
-    let missing_blocks = tokio::task::block_in_place(|| {
+    let mut missing_blocks = tokio::task::block_in_place(|| {
         let current_enforcer_tip = {
             let mut rwtxn = dbs.write_txn()?;
             let mut current_enforcer_tip = dbs
@@ -1226,72 +1320,46 @@ where
         start.elapsed()
     );
 
-    let shutdown_signal = shutdown_signal.shared();
     let mut total_blocks_fetched = 0;
+
+    if let Some(main_blocks_dir) = main_blocks_dir {
+        let start = Instant::now();
+        tracing::debug!(
+            "syncing blocks from blocks dir: {}",
+            main_blocks_dir.display()
+        );
+
+        // TODO: abort gracefully here. If we're erroring out at any part in the process of
+        // fetching from the blocks dir, just fallback to the fetching via RPC
+        let total_handled_blocks = block_files::sync_from_directory(
+            dbs,
+            event_tx,
+            &mut missing_blocks,
+            main_blocks_dir,
+            network,
+            cancel.clone(),
+        )?;
+
+        tracing::info!(
+            "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
+            start.elapsed()
+        );
+    }
 
     // Process blocks in batches for better network efficiency
     let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
     for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
-        tokio::select! {
-            biased;
-
-            _ = shutdown_signal.clone() => {
-                tracing::warn!("Block sync interrupted");
-                return Err(error::Sync::Shutdown);
-            }
-            _ = futures::future::ready(()) => {}
+        if cancel.is_cancelled() {
+            tracing::warn!("Block sync interrupted");
+            return Err(error::Sync::Shutdown);
         }
 
         let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
         total_blocks_fetched += blocks.len();
 
-        // Do a single DB transaction for the entire batch. DB commits are a big part
-        // of the sync time, so we want to reduce the number of times we do this.
         let mut rwtxn = dbs.write_txn()?;
-
-        // Process blocks sequentially to maintain ordering and database consistency
-        for block in blocks {
-            let block_hash = block.block_hash();
-            let height = dbs.block_hashes.height().get(&rwtxn, &block_hash)?;
-
-            tracing::trace!("Syncing block #{height} `{block_hash}` -> `{main_tip}`",);
-
-            let start_block = Instant::now();
-            // We should not call out to `invalidateblock` in case of failures here,
-            // as that is handled by the cusf-enforcer-mempool crate.
-            // FIXME: handle disconnects
-            let event = connect_block(&mut rwtxn, dbs, &block)?;
-
-            let connect_block_duration =
-                jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
-
-            // Create dynamic fields using a HashMap for structured logging
-            match &event {
-                Event::ConnectBlock {
-                    header_info,
-                    block_info,
-                } => {
-                    tracing::debug!(
-                        total_txs = block.txdata.len(),
-                        bmm_commitments = block_info.bmm_commitments.len(),
-                        sc_events = block_info.events.len(),
-                        "Synced block #{}: `{}` in {connect_block_duration}",
-                        header_info.height,
-                        header_info.block_hash,
-                    );
-                }
-                Event::DisconnectBlock { block_hash } => {
-                    tracing::debug!(
-                        "Disconnected block: `{block_hash}` in {connect_block_duration}",
-                    );
-                }
-            }
-            // Events should only ever be sent after committing DB txs, see
-            // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-            let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
-        }
-
-        let () = rwtxn.commit()?;
+        handle_block_batch(dbs, &mut rwtxn, &blocks, event_tx)?;
+        rwtxn.commit()?;
     }
 
     tracing::info!(
@@ -1301,37 +1369,43 @@ where
     Ok(())
 }
 
-pub(in crate::validator) async fn sync_to_tip<MainClient, Signal>(
+// Is this a good name? "Signal" in this context means both
+// signal receiver and signal sender
+pub struct SyncSignals {
+    pub cancel: CancellationToken,
+    pub header_sync_progress_tx: tokio::sync::watch::Sender<HeaderSyncProgress>,
+    pub event_tx: Sender<Event>,
+}
+
+pub(in crate::validator) async fn sync_to_tip<MainClient>(
     dbs: &Dbs,
-    event_tx: &Sender<Event>,
-    header_sync_progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
     main_rpc_client: &MainClient,
     main_rest_client: &MainRestClient,
+    main_blocks_dir: Option<PathBuf>,
     main_tip: BlockHash,
-    shutdown_signal: Signal,
+    network: Network,
+    signals: SyncSignals,
 ) -> Result<(), error::Sync>
 where
     MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
-    Signal: Future<Output = ()> + Send,
 {
-    use futures::FutureExt as _;
-    let shutdown_signal = shutdown_signal.shared();
-
     let () = sync_headers(
         dbs,
         main_rest_client,
         main_rpc_client,
         main_tip,
-        header_sync_progress_tx,
-        shutdown_signal.clone(),
+        &signals.header_sync_progress_tx,
+        signals.cancel.clone(),
     )
     .await?;
     let () = sync_blocks(
         dbs,
-        event_tx,
+        &signals.event_tx,
         main_rpc_client,
+        main_blocks_dir,
         main_tip,
-        shutdown_signal.clone(),
+        network,
+        signals.cancel.clone(),
     )
     .await?;
     Ok(())

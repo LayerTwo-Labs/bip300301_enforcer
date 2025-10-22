@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -27,6 +27,7 @@ use crate::{
 pub mod cusf_enforcer;
 mod dbs;
 pub mod main_rest_client;
+pub mod parse_block_files;
 mod task;
 
 use self::dbs::{Dbs, PendingM6ids};
@@ -408,6 +409,7 @@ pub struct Validator {
     header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     mainchain_rest_client: MainRestClient,
+    mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
 }
 
@@ -415,6 +417,7 @@ impl Validator {
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
         mainchain_rest_client: MainRestClient,
+        mainchain_blocks_dir: Option<PathBuf>,
         data_dir: &Path,
         network: bitcoin::Network,
     ) -> Result<Self, InitError> {
@@ -438,6 +441,7 @@ impl Validator {
             header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
             mainchain_client,
             mainchain_rest_client,
+            mainchain_blocks_dir,
             network,
         })
     }
