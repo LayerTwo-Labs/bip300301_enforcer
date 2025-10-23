@@ -492,6 +492,7 @@ where
 
 async fn sync_mempool<Enforcer, RpcClient>(
     mut enforcer: Enforcer,
+    network: bitcoin::Network,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
     err_tx: oneshot::Sender<MempoolTaskError<Enforcer>>,
@@ -522,6 +523,7 @@ where
 
     let init_sync_mempool_future = cusf_enforcer_mempool::mempool::init_sync_mempool(
         &mut enforcer,
+        network,
         &rpc_client,
         zmq_addr_sequence,
         cancel.cancelled(),
@@ -671,6 +673,7 @@ async fn spawn_task(
                 tracing::info!("mempool sync task w/validator: starting");
                 let _mempool = sync_mempool(
                     validator,
+                    network,
                     mainchain_client,
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
@@ -725,6 +728,7 @@ async fn spawn_task(
 
                 let mempool = sync_mempool(
                     wallet,
+                    network,
                     mainchain_client.clone(),
                     &node_zmq_addr_sequence,
                     enforcer_task_err_tx,
