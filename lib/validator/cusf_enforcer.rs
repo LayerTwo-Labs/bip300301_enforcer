@@ -435,7 +435,7 @@ impl CusfEnforcer for Validator {
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
         let res = if task::validate_tx(&self.dbs, &mut rwtxn, tx)? {
-            let conflicts_with = if let Some(bmm_request) = parse_m8_tx(tx) {
+            let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
                 let txid = tx.compute_txid();
                 let conflicts_with = {
                     let mut seen_bmm_request_txs = self
@@ -464,11 +464,19 @@ impl CusfEnforcer for Validator {
                     )
                     .map_err(db::Error::from)?;
                 rwtxn.commit()?;
-                conflicts_with
+                // Size in bytes of a BMM accept output
+                const BMM_ACCEPT_OUTPUT_SIZE: i64 = {
+                    let spk_size: i64 = 39;
+                    spk_size + 1 + 8
+                };
+                (conflicts_with, BMM_ACCEPT_OUTPUT_SIZE)
             } else {
-                HashSet::new()
+                (HashSet::new(), 0)
             };
-            TxAcceptAction::Accept { conflicts_with }
+            TxAcceptAction::Accept {
+                conflicts_with,
+                weight_tweak,
+            }
         } else {
             TxAcceptAction::Reject
         };
