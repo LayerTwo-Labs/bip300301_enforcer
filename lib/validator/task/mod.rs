@@ -1320,30 +1320,35 @@ where
         start.elapsed()
     );
 
-    let mut total_blocks_fetched = 0;
+    let mut total_blocks_fetched: usize = 0;
 
     if let Some(main_blocks_dir) = main_blocks_dir {
         let start = Instant::now();
         tracing::debug!(
+            network = %network,
             "syncing blocks from blocks dir: {}",
             main_blocks_dir.display()
         );
 
-        // TODO: abort gracefully here. If we're erroring out at any part in the process of
-        // fetching from the blocks dir, just fallback to the fetching via RPC
-        let total_handled_blocks = block_files::sync_from_directory(
+        match block_files::sync_from_directory(
             dbs,
             event_tx,
             &mut missing_blocks,
             main_blocks_dir,
             network,
             cancel.clone(),
-        )?;
-
-        tracing::info!(
-            "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
-            start.elapsed()
-        );
+        ) {
+            Ok(total_handled_blocks) => {
+                total_blocks_fetched += total_handled_blocks as usize;
+                tracing::info!(
+                    "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
+                    start.elapsed()
+                );
+            }
+            Err(e) => {
+                tracing::error!("Error syncing blocks from blocks dir: {e:#}");
+            }
+        }
     }
 
     // Process blocks in batches for better network efficiency

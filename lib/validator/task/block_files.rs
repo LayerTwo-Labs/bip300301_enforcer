@@ -150,11 +150,11 @@ pub fn sync_from_directory(
 
         let block_index_file_number = block_index
             .file_number
-            .expect("file number is missing from block index");
+            .ok_or(parse_block_files::FetchBlockIndexError::MissingFileNumber)?;
 
         let block_index_data_pos = block_index
             .adjusted_data_pos()
-            .expect("data pos is missing from block index");
+            .ok_or(parse_block_files::FetchBlockIndexError::MissingDataPos)?;
 
         // Only blocks which aren't fully validated don't have file numbers
         parser.set_file_number(block_index_file_number);

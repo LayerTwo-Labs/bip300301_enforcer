@@ -356,13 +356,22 @@ impl BlockDirectoryParser {
 
         let xor_key: [u8; 8] = xor_key.try_into().expect("xor.dat is not 8 bytes");
 
+        let xor_key = if xor_key.iter().all(|b| *b == 0) {
+            None
+        } else {
+            Some(xor_key)
+        };
+
+        tracing::debug!(
+            network = %network,
+            with_xor_key = %xor_key.is_some(),
+            dir_path = %dir_path.display(),
+            "instantiating block directory parser"
+        );
+
         Ok(Self {
             dir_path,
-            xor_key: if xor_key.iter().all(|b| *b == 0) {
-                None
-            } else {
-                Some(xor_key)
-            },
+            xor_key,
             network,
             file_index: 0,
             current_parser: None,
@@ -669,6 +678,12 @@ pub enum FetchBlockIndexError {
         path: PathBuf,
         source: std::io::Error,
     },
+
+    #[error("file number is missing from block index")]
+    MissingFileNumber,
+
+    #[error("data position is missing from block index")]
+    MissingDataPos,
 }
 
 fn fetch_block_index_inner(
