@@ -37,11 +37,11 @@ tracing-subscriber = "0.3.18"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
-rev = "4c8edd85722ee65e7598323758b3c032efac37bd"
+rev = "db6a71f2c330245cf2ca70f0535d6ddc83e593fe"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "273944cf8e01e4671b4ef30e5442a3976b9fc1bb"
+rev = "85693c3a6466df95d987af3980b277e3648e794c"
 
 [workspace.dependencies.educe]
 version = "0.6.0"
