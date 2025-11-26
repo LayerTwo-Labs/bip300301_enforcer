@@ -81,7 +81,7 @@ where
             } else {
                 "Unknown panic".to_string()
             };
-            Err(anyhow::anyhow!("Test panicked: {}", panic_msg))
+            Err(anyhow::anyhow!("Test panicked: {panic_msg}"))
         }
     }
 }
