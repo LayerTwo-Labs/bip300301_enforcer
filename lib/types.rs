@@ -580,7 +580,7 @@ pub fn op_drivechain_script(sidechain_number: SidechainNumber) -> ScriptBuf {
 pub struct AmountOverflowError;
 
 impl ToStatus for AmountOverflowError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -590,7 +590,7 @@ impl ToStatus for AmountOverflowError {
 pub struct AmountUnderflowError;
 
 impl ToStatus for AmountUnderflowError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -606,7 +606,7 @@ enum BlindedM6FeeOutputError {
 }
 
 impl ToStatus for BlindedM6FeeOutputError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::InvalidSpk { .. } | Self::NonZeroValue | Self::Script(_) => {
                 StatusBuilder::new(self)
@@ -630,7 +630,7 @@ enum BlindedM6ErrorInner {
 }
 
 impl ToStatus for BlindedM6ErrorInner {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::InvalidFeeOutput(err) => StatusBuilder::with_code(self, err.builder()),
             Self::OutputAmountOverflow(err) => StatusBuilder::new(err),
@@ -658,7 +658,7 @@ impl From<BlindedM6FeeOutputError> for BlindedM6Error {
 }
 
 impl ToStatus for BlindedM6Error {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         self.0.builder()
     }
 }

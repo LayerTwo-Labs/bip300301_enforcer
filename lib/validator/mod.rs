@@ -52,7 +52,7 @@ pub enum GetCtipSequenceNumberError {
 }
 
 impl ToStatus for GetCtipSequenceNumberError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ReadTxn(err) => StatusBuilder::new(err),
             Self::TryGet(err) => StatusBuilder::new(err),
@@ -69,7 +69,7 @@ pub enum TryGetCtipError {
 }
 
 impl ToStatus for TryGetCtipError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ReadTxn(err) => StatusBuilder::new(err),
             Self::TryGet(err) => StatusBuilder::new(err),
@@ -86,7 +86,7 @@ pub enum GetCtipsError {
 }
 
 impl ToStatus for GetCtipsError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbIter(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -103,7 +103,7 @@ pub enum TryGetCtipValueSeqError {
 }
 
 impl ToStatus for TryGetCtipValueSeqError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbTryGet(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -120,7 +120,7 @@ pub enum GetTreasuryUtxoError {
 }
 
 impl ToStatus for GetTreasuryUtxoError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -137,7 +137,7 @@ enum GetHeaderInfoErrorInner {
 }
 
 impl ToStatus for GetHeaderInfoErrorInner {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::GetHeaderInfo(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -160,7 +160,7 @@ where
 }
 
 impl ToStatus for GetHeaderInfoError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         self.0.builder()
     }
 }
@@ -292,7 +292,7 @@ pub enum TryGetMainchainTipError {
 }
 
 impl ToStatus for TryGetMainchainTipError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbTryGet(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -309,7 +309,7 @@ pub enum GetMainchainTipError {
 }
 
 impl ToStatus for GetMainchainTipError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -328,7 +328,7 @@ pub enum TryGetMainchainTipHeightError {
 }
 
 impl ToStatus for TryGetMainchainTipHeightError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
             Self::DbTryGet(err) => StatusBuilder::new(err),
@@ -354,7 +354,7 @@ pub enum GetPendingWithdrawalsError {
 }
 
 impl ToStatus for GetPendingWithdrawalsError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -377,7 +377,7 @@ pub enum EventsStreamError {
 }
 
 impl ToStatus for EventsStreamError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::Overflow => StatusBuilder::new(self),
         }
@@ -393,7 +393,7 @@ pub enum GetSidechainsError {
 }
 
 impl ToStatus for GetSidechainsError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbIter(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),

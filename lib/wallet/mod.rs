@@ -369,7 +369,7 @@ impl WalletInner {
     const LOCK_WARN_DURATION: Duration = Duration::from_secs(1);
 
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
-    async fn read_wallet(&self) -> Result<RwLockReadGuardSome<BdkWallet>, error::NotUnlocked> {
+    async fn read_wallet(&self) -> Result<RwLockReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
         use futures::future::{Either, select};
         tracing::trace!("wallet: acquiring read lock");
         let read_guard = match select(
@@ -394,7 +394,7 @@ impl WalletInner {
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     async fn read_wallet_upgradable(
         &self,
-    ) -> Result<RwLockUpgradableReadGuardSome<BdkWallet>, error::NotUnlocked> {
+    ) -> Result<RwLockUpgradableReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
         use futures::future::{Either, select};
         tracing::trace!("wallet: acquiring upgradable read lock");
         let read_guard = match select(
@@ -416,7 +416,9 @@ impl WalletInner {
     }
 
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
-    async fn write_wallet(&self) -> Result<RwLockWriteGuardSome<BdkWallet>, error::NotUnlocked> {
+    async fn write_wallet(
+        &self,
+    ) -> Result<RwLockWriteGuardSome<'_, BdkWallet>, error::NotUnlocked> {
         use futures::future::{Either, select};
         let start = SystemTime::now();
         let span = tracing::span!(tracing::Level::TRACE, "acquire_write_lock");
@@ -1120,10 +1122,9 @@ impl Wallet {
             }
             if let Some(address) =
                 crate::messages::try_parse_op_return_address(&txout.script_pubkey)
+                && let Some(sidechain_id) = sidechain_addrs.get(&address)
             {
-                if let Some(sidechain_id) = sidechain_addrs.get(&address) {
-                    return TxOutKind::OpReturnAddress(*sidechain_id);
-                }
+                return TxOutKind::OpReturnAddress(*sidechain_id);
             }
             TxOutKind::Other
         }
@@ -1557,10 +1558,10 @@ impl Wallet {
                         }
                     }
                 };
-                if let Some(spent_ctip) = spent_ctip {
-                    if spent_ctip.value > treasury_output.value {
-                        return Ok(None);
-                    }
+                if let Some(spent_ctip) = spent_ctip
+                    && spent_ctip.value > treasury_output.value
+                {
+                    return Ok(None);
                 }
                 let deposit_amount = if let Some(spent_ctip) = spent_ctip {
                     match treasury_output.value.checked_sub(spent_ctip.value) {

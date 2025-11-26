@@ -21,7 +21,7 @@ pub enum CommandError {
 }
 
 impl ToStatus for CommandError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::FromUtf8(err) => StatusBuilder::new(err),
             Self::Stderr(_) => StatusBuilder::new(self),

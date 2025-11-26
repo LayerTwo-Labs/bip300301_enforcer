@@ -5,7 +5,7 @@ pub static ENCODED_FILE_DESCRIPTOR_SET: &[u8] =
     tonic::include_file_descriptor_set!("file_descriptor_set");
 
 pub trait ToStatus {
-    fn builder(&self) -> StatusBuilder;
+    fn builder(&self) -> StatusBuilder<'_>;
 }
 
 /// Construct a `tonic::Status` from an Error
@@ -201,7 +201,7 @@ impl Error {
 }
 
 impl ToStatus for Error {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(tonic::Code::InvalidArgument)
     }
 }

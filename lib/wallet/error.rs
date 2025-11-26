@@ -30,7 +30,7 @@ pub struct Electrum {
 }
 
 impl ToStatus for Electrum {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(match self.code {
             // https://github.com/bitcoin/bitcoin/blob/e8f72aefd20049eac81b150e7f0d33709acd18ed/src/common/messages.cpp
             -25 => tonic::Code::InvalidArgument,
@@ -70,7 +70,7 @@ impl TonicStatusExt for tonic::Status {
 pub struct NotSynced;
 
 impl ToStatus for NotSynced {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -83,7 +83,7 @@ impl ToStatus for NotSynced {
 pub struct NotUnlocked;
 
 impl ToStatus for NotUnlocked {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -97,7 +97,7 @@ impl ToStatus for NotUnlocked {
 pub struct DataMismatch;
 
 impl ToStatus for DataMismatch {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -130,7 +130,7 @@ pub enum WalletInitialization {
 }
 
 impl ToStatus for WalletInitialization {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(match self {
             Self::NotSynced(_) => tonic::Code::FailedPrecondition,
             Self::InvalidPassword => tonic::Code::InvalidArgument,
@@ -156,7 +156,7 @@ pub enum WalletSignTransaction {
 }
 
 impl ToStatus for WalletSignTransaction {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::NotUnlocked(err) => err.builder(),
             Self::SignerError(err) => StatusBuilder::new(err),
@@ -199,7 +199,7 @@ pub enum WalletSync {
 pub struct ParseMnemonic(#[from] bdk_wallet::bip39::Error);
 
 impl ToStatus for ParseMnemonic {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -235,7 +235,7 @@ impl ReadDbMnemonicInner {
 }
 
 impl ToStatus for ReadDbMnemonicInner {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ParseMnemonic(err) => err.builder(),
             Self::InvalidDbState { .. } | Self::ReadMnemonic(_) | Self::Rusqlite(_) => {
@@ -260,7 +260,7 @@ where
 }
 
 impl ToStatus for ReadDbMnemonic {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::with_code(self, self.0.builder())
     }
 }
@@ -271,7 +271,7 @@ impl ToStatus for ReadDbMnemonic {
 pub struct StretchPassword(#[from] argon2::Error);
 
 impl ToStatus for StretchPassword {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -285,7 +285,7 @@ pub enum EncryptMnemonic {
 }
 
 impl ToStatus for EncryptMnemonic {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::Encrypt(_) => StatusBuilder::new(self),
             Self::StretchPassword(err) => err.builder(),
@@ -324,7 +324,7 @@ impl From<InitWalletFromMnemonic> for UnlockExistingWallet {
 }
 
 impl ToStatus for UnlockExistingWallet {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::InitWalletFromMnemonic(err) => err.builder(),
             Self::NotEncrypted => StatusBuilder::new(self),
@@ -410,7 +410,7 @@ impl From<bdk_wallet::LoadWithPersistError<Persistence>> for InitWalletFromMnemo
 }
 
 impl ToStatus for InitWalletFromMnemonic {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DataMismatch(source) => StatusBuilder::with_code(self, source.builder()),
             Self::CreateWallet(_)
@@ -444,7 +444,7 @@ impl From<InitWalletFromMnemonic> for CreateNewWallet {
 }
 
 impl ToStatus for CreateNewWallet {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::EncryptMnemonic(err) => err.builder(),
             Self::GenerateMnemonic(_) => StatusBuilder::new(self),
@@ -528,7 +528,7 @@ pub struct BitcoinCoreRPC {
 }
 
 impl ToStatus for BitcoinCoreRPC {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         const BITCOIN_CORE_RPC_ERROR_H_NOT_FOUND: i32 = -18;
         match &self.error {
             jsonrpsee::core::client::Error::Call(err)
@@ -558,7 +558,7 @@ impl ToStatus for BitcoinCoreRPC {
 pub struct EncodeBlock(#[from] pub bitcoin::io::Error);
 
 impl ToStatus for EncodeBlock {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self)
     }
 }
@@ -576,7 +576,7 @@ enum GetBundleProposalsInner {
 }
 
 impl ToStatus for GetBundleProposalsInner {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BlindedM6(err) => err.builder(),
             Self::GetPendingWithdrawals(err) => err.builder(),
@@ -601,7 +601,7 @@ where
 }
 
 impl ToStatus for GetBundleProposals {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::with_code(self, self.0.builder())
     }
 }
@@ -617,7 +617,7 @@ pub enum FetchTransaction {
 }
 
 impl ToStatus for FetchTransaction {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::Convert(err) => StatusBuilder::new(err),
@@ -644,7 +644,7 @@ pub enum CreateDepositPsbt {
 }
 
 impl ToStatus for CreateDepositPsbt {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::AddForeignUtxo(err) => StatusBuilder::new(err),
             Self::FetchTransaction { source, .. } => {
@@ -677,7 +677,7 @@ pub enum CreateDeposit {
 }
 
 impl ToStatus for CreateDeposit {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BroadcastTx(_)
             | Self::BroadcastNonstandardTx(_)
@@ -708,7 +708,7 @@ pub enum GenerateCoinbaseTxouts {
 }
 
 impl ToStatus for GenerateCoinbaseTxouts {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::CoinbaseMessages(err) => err.builder(),
             Self::GetBundleProposals(err) => err.builder(),
@@ -731,7 +731,7 @@ pub enum GenerateSuffixTxs {
 }
 
 impl ToStatus for GenerateSuffixTxs {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::GetBundleProposals(err) => err.builder(),
             Self::M6(err) => err.builder(),
@@ -753,7 +753,7 @@ pub enum SelectBlockTxs {
 }
 
 impl ToStatus for SelectBlockTxs {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::FetchTransaction(err) => err.builder(),
@@ -886,7 +886,7 @@ pub enum FinalizeBlock {
 }
 
 impl ToStatus for FinalizeBlock {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::GetHeaderInfo(err) => err.builder(),
             Self::GetMainchainTip(err) => err.builder(),
@@ -911,7 +911,7 @@ pub enum Mine {
 }
 
 impl ToStatus for Mine {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::EncodeBlock(err) => err.builder(),
@@ -932,7 +932,7 @@ pub struct MissingBinary {
 }
 
 impl ToStatus for MissingBinary {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(if self.source.is_some() {
             tonic::Code::Internal
         } else {
@@ -960,7 +960,7 @@ pub enum VerifyCanMine {
 }
 
 impl ToStatus for VerifyCanMine {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::MissingBinary(err) => err.builder(),
@@ -986,7 +986,7 @@ pub enum GetSignetMinerPath {
 }
 
 impl ToStatus for GetSignetMinerPath {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::CreateSignetMinerDir(err) | Self::DownloadSignetMiner(err) => {
                 StatusBuilder::with_code(self, err.builder())
@@ -1010,7 +1010,7 @@ pub enum GenerateSignetBlock {
 }
 
 impl ToStatus for GenerateSignetBlock {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::FetchMostRecentBlockHash(err) => StatusBuilder::with_code(self, err.builder()),
             Self::GetHeaderInfo(err) => err.builder(),
@@ -1044,7 +1044,7 @@ pub enum GenerateBlock {
 }
 
 impl ToStatus for GenerateBlock {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::CoinbaseBuilder(err) => err.builder(),
             Self::GenerateCoinbaseTxouts(err) => err.builder(),
@@ -1068,7 +1068,7 @@ pub enum GetWalletBalance {
 }
 
 impl ToStatus for GetWalletBalance {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::NotSynced(err) => err.builder(),
             Self::NotUnlocked(err) => err.builder(),
@@ -1090,7 +1090,7 @@ pub enum ListWalletTransactions {
 }
 
 impl ToStatus for ListWalletTransactions {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::FetchTransaction { txid, source } => StatusBuilder::new(source)
                 .message(move |f| write!(f, "unable to fetch wallet transaction `{txid:?}`")),
@@ -1113,7 +1113,7 @@ pub enum ListSidechainDepositTransactions {
 }
 
 impl ToStatus for ListSidechainDepositTransactions {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::GetTreasuryUtxo(err) => err.builder(),
             Self::ListWalletTransactions(err) => err.builder(),
@@ -1137,7 +1137,7 @@ pub enum CreateSendPsbt {
 }
 
 impl ToStatus for CreateSendPsbt {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::UnknownUTXO(_) => StatusBuilder::new(self).code(tonic::Code::InvalidArgument),
             Self::NotUnlocked(err) => err.builder(),
@@ -1166,7 +1166,7 @@ pub enum SendWalletTransaction {
 }
 
 impl ToStatus for SendWalletTransaction {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::CreateSendPsbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
@@ -1188,7 +1188,7 @@ pub enum BuildBmmTx {
 }
 
 impl ToStatus for BuildBmmTx {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::CreateTx(err) => StatusBuilder::new(err),
             Self::NotUnlocked(err) => err.builder(),
@@ -1208,7 +1208,7 @@ enum CreateBmmRequestInner {
 }
 
 impl ToStatus for CreateBmmRequestInner {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::Rusqlite(_) => StatusBuilder::new(self),
@@ -1232,7 +1232,7 @@ where
 }
 
 impl ToStatus for CreateBmmRequest {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::with_code(self, self.0.builder())
     }
 }
@@ -1246,7 +1246,7 @@ pub enum GetNewAddress {
 }
 
 impl ToStatus for GetNewAddress {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::NotUnlocked(err) => err.builder(),
             Self::Persistence(err) => StatusBuilder::new(err),

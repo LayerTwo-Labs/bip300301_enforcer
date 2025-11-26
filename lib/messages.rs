@@ -410,7 +410,7 @@ pub enum CoinbaseMessagesError {
 }
 
 impl ToStatus for CoinbaseMessagesError {
-    fn builder(&self) -> StatusBuilder {
+    fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DuplicateM1 { .. }
             | Self::DuplicateM2 { .. }

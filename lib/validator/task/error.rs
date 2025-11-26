@@ -391,6 +391,7 @@ pub(in crate::validator::task) enum FatalInner {
     ZmqSequenceStream(#[from] cusf_enforcer_mempool::zmq::SequenceStreamError),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct Fatal(FatalInner);

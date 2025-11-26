@@ -115,7 +115,7 @@ impl WalletInner {
     #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync_lock(
         &self,
-    ) -> Result<Option<SyncWriteGuard>, error::WalletSync> {
+    ) -> Result<Option<SyncWriteGuard<'_>>, error::WalletSync> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
         // Hold an upgradable lock for the duration of the sync, to prevent other
