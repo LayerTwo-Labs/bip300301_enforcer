@@ -13,7 +13,7 @@ use bitcoin::{
 use byteorder::{ByteOrder, LittleEndian};
 use miette::Diagnostic;
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take},
     combinator::{fail, rest},
@@ -184,11 +184,12 @@ impl M4AckBundles {
 
     fn parse(input: &[u8]) -> IResult<&[u8], Self> {
         let (input, m4_tag) = alt((
-            tag(Self::REPEAT_PREVIOUS_TAG),
-            tag(Self::ONE_BYTE_TAG),
-            tag(Self::TWO_BYTES_TAG),
-            tag(Self::LEADING_BY_50_TAG),
-        ))(input)?;
+            tag(Self::REPEAT_PREVIOUS_TAG.as_slice()),
+            tag(Self::ONE_BYTE_TAG.as_slice()),
+            tag(Self::TWO_BYTES_TAG.as_slice()),
+            tag(Self::LEADING_BY_50_TAG.as_slice()),
+        ))
+        .parse(input)?;
 
         if m4_tag == Self::REPEAT_PREVIOUS_TAG {
             let message = M4AckBundles::RepeatPrevious;
@@ -199,7 +200,7 @@ impl M4AckBundles {
             let message = M4AckBundles::OneByte { upvotes };
             return Ok((input, message));
         } else if m4_tag == Self::TWO_BYTES_TAG {
-            let (input, upvotes) = many0(take(2usize))(input)?;
+            let (input, upvotes) = many0(take(2usize)).parse(input)?;
             let upvotes: Vec<u16> = upvotes.into_iter().map(LittleEndian::read_u16).collect();
             let message = M4AckBundles::TwoBytes { upvotes };
             return Ok((input, message));
@@ -207,7 +208,7 @@ impl M4AckBundles {
             let message = M4AckBundles::LeadingBy50;
             return Ok((input, message));
         }
-        fail(input)
+        fail().parse(input)
     }
 }
 
@@ -287,7 +288,6 @@ pub enum CoinbaseMessage {
 
 impl CoinbaseMessage {
     pub fn parse(script: &Script) -> IResult<&[u8], Self> {
-        use nom::Parser;
         fn instruction_failure<'a>(
             err_msg: Option<&'static str>,
             instructions: Instructions<'a>,
@@ -319,12 +319,13 @@ impl CoinbaseMessage {
         };
         let input = data.as_bytes();
         let (input, message_tag) = alt((
-            tag(M1ProposeSidechain::TAG),
-            tag(M2AckSidechain::TAG),
-            tag(M3ProposeBundle::TAG),
-            tag(M4AckBundles::TAG),
-            tag(M7BmmAccept::TAG),
-        ))(input)?;
+            tag(M1ProposeSidechain::TAG.as_slice()),
+            tag(M2AckSidechain::TAG.as_slice()),
+            tag(M3ProposeBundle::TAG.as_slice()),
+            tag(M4AckBundles::TAG.as_slice()),
+            tag(M7BmmAccept::TAG.as_slice()),
+        ))
+        .parse(input)?;
         if message_tag == M1ProposeSidechain::TAG {
             return M1ProposeSidechain::parse
                 .map(Self::M1ProposeSidechain)
@@ -340,7 +341,7 @@ impl CoinbaseMessage {
         } else if message_tag == M7BmmAccept::TAG {
             return M7BmmAccept::parse.map(Self::M7BmmAccept).parse(input);
         }
-        fail(input)
+        fail().parse(input)
     }
 }
 
@@ -720,8 +721,8 @@ impl M8BmmRequest {
             + SIDECHAIN_BLOCK_HASH_LENGTH
             + PREV_MAINCHAIN_BLOCK_HASH_LENGTH;
 
-        let (input, _) = tag(&[OP_RETURN.to_u8(), M8_BMM_REQUEST_LENGTH])(input)?;
-        let (input, _) = tag(Self::TAG)(input)?;
+        let (input, _) = tag([OP_RETURN.to_u8(), M8_BMM_REQUEST_LENGTH].as_slice())(input)?;
+        let (input, _) = tag(Self::TAG.as_slice()).parse(input)?;
         let (input, sidechain_number) = take(1usize)(input)?;
         let sidechain_number = sidechain_number[0];
         let (input, sidechain_block_hash) = parse_bmm_commitment(input)?;
@@ -748,10 +749,11 @@ pub(crate) fn parse_m8_tx(transaction: &Transaction) -> Option<M8BmmRequest> {
 }
 
 pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], SidechainNumber> {
-    let (input, _op_drivechain_tag) = tag(&[OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8()])(input)?;
+    let (input, _op_drivechain_tag) =
+        tag([OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8()].as_slice())(input)?;
     let (input, sidechain_number) = take(1usize)(input)?;
     let sidechain_number = sidechain_number[0];
-    tag(&[OP_TRUE.to_u8()])(input)?;
+    tag([OP_TRUE.to_u8()].as_slice())(input)?;
     Ok((input, SidechainNumber::from(sidechain_number)))
 }
 

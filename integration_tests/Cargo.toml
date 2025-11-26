@@ -17,19 +17,19 @@ dotenvy = "0.15.7"
 either = "1.13.0"
 futures = { workspace = true }
 hex = { workspace = true }
-indicatif = { version = "0.17.9", features = ["futures"] }
+indicatif = { version = "0.18.3", features = ["futures"] }
 jsonrpsee = { workspace = true }
 thiserror = { workspace = true }
 libtest-mimic = "0.8.1"
 miniscript = "12.3.0"
 reserve-port = "2.0.1"
 serde_json = "1.0.128"
-strum = { version = "0.26.3", features = ["derive"] }
+strum = { version = "0.27.2", features = ["derive"] }
 temp-dir = "0.2.0"
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-tracing-indicatif = "0.3.8"
+tracing-indicatif = "0.3.13"
 tokio-stream = { workspace = true }
 parking_lot = { workspace = true }
 

@@ -280,10 +280,11 @@ impl SidechainDeclaration {
                 .map(ParseSidechainDeclarationError::FailedToDeserialize)
         }
         const VERSION_0: u8 = 0;
-        let (input, _) =
-            tag(&[VERSION_0])(input).map_err(|_: nom::Err<nom::error::Error<&[u8]>>| {
+        let (input, _) = tag([VERSION_0].as_slice())(input).map_err(
+            |_: nom::Err<nom::error::Error<&[u8]>>| {
                 nom::Err::Error(ParseSidechainDeclarationError::UnknownVersion(input[0]))
-            })?;
+            },
+        )?;
 
         let (input, title_length) = be_u8(input).map_err(failed_to_deserialize)?;
         let (input, title_bytes) = take(title_length)(input).map_err(failed_to_deserialize)?;

@@ -6,10 +6,10 @@ publish.workspace = true
 version.workspace = true
 
 [build-dependencies]
-prost = "0.13.2"
-prost-build = "0.13.3"
-protox = "0.7.1"
-tonic-build = "0.13.0"
+prost = "0.14.1"
+prost-build = "0.14.1"
+protox = "0.9.0"
+tonic-prost-build = "0.14.2"
 
 [dependencies]
 aes-gcm = { version = "0.10.3", features = ["std"] }
@@ -31,7 +31,7 @@ blake3 = "1.5.4"
 byteorder = "1.5.0"
 clap = { workspace = true, features = ["derive", "string", "std"] }
 cusf-enforcer-mempool = { workspace = true }
-derive_more = { version = "1.0.0", features = ["debug", "display"] }
+derive_more = { version = "2.0.1", features = ["debug", "display"] }
 ed25519-dalek-bip32 = "0.3.0"
 educe = { workspace = true }
 either = { workspace = true }
@@ -44,13 +44,13 @@ hex = { workspace = true }
 jiff = { version = "0.2.4", default-features = false }
 jsonrpsee = { workspace = true, features = ["client"] }
 miette = { workspace = true, features = ["derive"] }
-nom = "7.1.3"
+nom = "8.0.0"
 nonempty = "0.11.0"
-ordermap = { version = "0.5.3", features = ["serde"] }
+ordermap = { version = "1.0.0", features = ["serde"] }
 ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
-prost = "0.13.2"
-prost-types = "0.13.3"
+prost = "0.14.1"
+prost-types = "0.14.1"
 rand = "0.8.5"
 regex = "1.11.0"
 reqwest = { workspace = true }
@@ -69,6 +69,7 @@ tokio-rusqlite = "0.5.1"
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = "0.14.2"
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }

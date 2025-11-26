@@ -19,22 +19,23 @@ fn get_git_hash() -> Result<String, Box<dyn std::error::Error>> {
     Ok(hash)
 }
 
-fn compile_protos_with_config<F>(
+fn compile_protos_with_config<F, P>(
     file_descriptor_path: impl AsRef<Path>,
-    protos: &[impl AsRef<Path>],
-    includes: &[impl AsRef<Path>],
+    protos: &[P],
+    includes: &[P],
     config_fn: F,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     F: FnOnce(&mut prost_build::Config) -> Result<(), Box<dyn std::error::Error>>,
+    P: AsRef<Path>,
 {
     let mut config = prost_build::Config::new();
     config.enable_type_names();
     let () = config_fn(&mut config)?;
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .skip_protoc_run()
         .file_descriptor_set_path(file_descriptor_path)
-        .compile_protos_with_config(config, protos, includes)?;
+        .compile_with_config(config, protos, includes)?;
     Ok(())
 }
 

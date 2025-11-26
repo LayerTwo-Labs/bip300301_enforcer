@@ -1840,7 +1840,7 @@ impl Wallet {
             .read_wallet()
             .await
             .map_err(error::WalletSignTransaction::NotUnlocked)?
-            .sign(&mut psbt, bdk_wallet::signer::SignOptions::default())
+            .sign(&mut psbt, bdk_wallet::SignOptions::default())
             .map_err(error::WalletSignTransaction::SignerError)?
         {
             return Err(error::WalletSignTransaction::UnableToSign);
