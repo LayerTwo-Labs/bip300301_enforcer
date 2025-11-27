@@ -1199,20 +1199,26 @@ impl ToStatus for BuildBmmTx {
 
 #[derive(Debug, Diagnostic, Error)]
 enum CreateBmmRequestInner {
+    #[error("failed to broadcast nonstandard tx")]
+    BroadcastNonstandardTx(#[source] bitcoin_send_tx_p2p::Error),
     #[error("failed to build BMM tx")]
     BuildBmmTx(#[from] BuildBmmTx),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
     #[error("failed to sign BMM tx")]
     SignTx(#[from] WalletSignTransaction),
+    #[error(transparent)]
+    TryGetMainchainTipHeight(#[from] validator::TryGetMainchainTipHeightError),
 }
 
 impl ToStatus for CreateBmmRequestInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            Self::BroadcastNonstandardTx(_) => StatusBuilder::new(self),
             Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::Rusqlite(_) => StatusBuilder::new(self),
             Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
+            Self::TryGetMainchainTipHeight(err) => err.builder(),
         }
     }
 }
@@ -1221,6 +1227,14 @@ impl ToStatus for CreateBmmRequestInner {
 #[error("error creating BMM request")]
 #[repr(transparent)]
 pub struct CreateBmmRequest(#[source] CreateBmmRequestInner);
+
+impl CreateBmmRequest {
+    pub(in crate::wallet) const fn broadcast_nonstandard_tx(
+        err: bitcoin_send_tx_p2p::Error,
+    ) -> Self {
+        Self(CreateBmmRequestInner::BroadcastNonstandardTx(err))
+    }
+}
 
 impl<T> From<T> for CreateBmmRequest
 where

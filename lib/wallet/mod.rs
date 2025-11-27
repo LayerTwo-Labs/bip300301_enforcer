@@ -1952,10 +1952,11 @@ impl Wallet {
         with_connection(&connection)
     }
 
-    /// Creates a BMM request transaction. Does NOT broadcast.
+    /// Creates a BMM request transaction.
     /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
     /// request was not stored due to pre-existing request with the same
     /// `sidechain_number` and `prev_mainchain_block_hash`.
+    /// Attempts to broadcast the BMM request tx if stored, IFF on signet.
     pub async fn create_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
@@ -1977,7 +1978,7 @@ impl Wallet {
             .await?;
         let tx = self.sign_transaction(psbt).await?;
         tracing::info!("BMM request: PSBT signed successfully");
-        if self
+        if !self
             .insert_new_bmm_request(
                 sidechain_number,
                 prev_mainchain_block_hash,
@@ -1985,14 +1986,37 @@ impl Wallet {
             )
             .await?
         {
-            tracing::info!("BMM request: inserted new bmm request into db");
-            Ok(Some(tx))
-        } else {
             tracing::warn!(
                 "BMM request: Ignored, request exists with same sidechain slot and previous block hash"
             );
-            Ok(None)
+            return Ok(None);
         }
+        tracing::info!("BMM request: inserted new bmm request into db");
+        let txid = tx.compute_txid();
+        tracing::debug!(%txid, "Broadcasting BMM request transaction...");
+        if self.inner.validator.network() == Network::Signet
+            && self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES
+        {
+            let block_height = self
+                .inner
+                .validator
+                .try_get_block_height()?
+                .unwrap_or_default();
+            let broadcast_successfully = crate::p2p::broadcast_nonstandard_tx(
+                crate::p2p::SIGNET_MINER_P2P_ADDR.into(),
+                block_height as i32,
+                self.inner.magic,
+                tx.clone(),
+            )
+            .await
+            .map_err(error::CreateBmmRequest::broadcast_nonstandard_tx)?;
+            if broadcast_successfully {
+                tracing::info!(%txid, "Broadcast BMM request transaction successfully");
+            } else {
+                tracing::error!(%txid, "Failed to broadcast BMM request transaction");
+            }
+        }
+        Ok(Some(tx))
     }
 
     pub async fn get_wallet_info(&self) -> Result<WalletInfo, error::NotUnlocked> {
