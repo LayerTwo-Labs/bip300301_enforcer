@@ -9,7 +9,7 @@
    signetblocktime=60
    signetchallenge=00141f61d57873d70d28bd28b3c9f9d6bf818b5a0d6a
    acceptnonstdtxn=1 # Important! Otherwise Core rejects OP_DRIVECHAIN TXs
-   addnode=node.drivechain.info
+   addnode=node.signet.drivechain.info
 
    # this can also be set to a different address, as long
    # as you set the CLI arg for bip300301_enforcer
