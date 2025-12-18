@@ -75,7 +75,8 @@ type ChainSource = Either<ElectrumClient, Either<EsploraClient, NoSyncClient>>;
 
 const fn default_esplora_url(network: Network) -> Option<&'static str> {
     match network {
-        Network::Signet => Some("https://explorer.drivechain.info/api"),
+        Network::Signet => Some("https://explorer.signet.drivechain.info/api"),
+        Network::Bitcoin => Some("https://explorer.forknet.drivechain.info/api"),
         Network::Regtest => Some("http://localhost:3003"),
         _ => None,
     }
@@ -83,7 +84,8 @@ const fn default_esplora_url(network: Network) -> Option<&'static str> {
 
 const fn default_electrum_host_port(network: Network) -> Option<(&'static str, u16)> {
     match network {
-        Network::Signet => Some(("explorer.drivechain.info", 50001)),
+        Network::Signet => Some(("node.signet.drivechain.info", 50001)),
+        Network::Bitcoin => Some(("node.forknet.drivechain.info", 50001)),
         Network::Regtest =>
         // Default for mempool/electrs
         {
