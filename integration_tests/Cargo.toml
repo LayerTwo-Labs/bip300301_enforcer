@@ -29,7 +29,7 @@ temp-dir = "0.2.0"
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-tracing-indicatif = "0.3.13"
+tracing-indicatif = "0.3.14"
 tokio-stream = { workspace = true }
 parking_lot = { workspace = true }
 

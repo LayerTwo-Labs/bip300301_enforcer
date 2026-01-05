@@ -24,13 +24,13 @@ hex = "0.4.3"
 jsonrpsee = { version = "0.25.1" }
 miette = { version = "7.1.0", default-features = false }
 parking_lot = { version = "0.12.3" }
-reqwest = { version = "0.12.15", default-features = false, features = ["json"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
 serde = { version = "1.0.219" }
 # pinned due to a bug in fatality
 thiserror = "=2.0.16"
-tokio = { version = "1.36.0", default-features = false }
+tokio = { version = "1.48.0", default-features = false }
 tokio-stream = "0.1.15"
-tokio-util = "0.7.16"
+tokio-util = "0.7.18"
 tonic = "0.14.2"
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
