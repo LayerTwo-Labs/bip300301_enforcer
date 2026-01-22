@@ -32,7 +32,6 @@ byteorder = "1.5.0"
 clap = { workspace = true, features = ["derive", "string", "std"] }
 cusf-enforcer-mempool = { workspace = true }
 derive_more = { version = "2.0.1", features = ["debug", "display"] }
-ed25519-dalek-bip32 = "0.3.0"
 educe = { workspace = true }
 either = { workspace = true }
 fallible-iterator = "0.3.0"
