@@ -99,6 +99,8 @@ struct WalletInner {
     main_client: HttpClient,
     validator: Validator,
     magic: bitcoin::p2p::Magic,
+    // Always Some(_) on signets
+    signet_challenge: Option<bitcoin::ScriptBuf>,
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
     bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
@@ -296,11 +298,15 @@ impl WalletInner {
         main_client: HttpClient,
         validator: Validator,
         magic: bitcoin::p2p::Magic,
+        signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitWallet> {
         let network = {
             let validator_network = validator.network();
             bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())?
         };
+        if network == bdk_wallet::bitcoin::Network::Signet && signet_challenge.is_none() {
+            return Err(error::InitWallet::NoSignetChallengeFound);
+        }
 
         let database_path = data_dir.join("wallet.sqlite.db");
 
@@ -359,6 +365,7 @@ impl WalletInner {
             main_client,
             validator,
             magic,
+            signet_challenge,
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             self_db: tokio::sync::Mutex::new(db_connection),
@@ -738,9 +745,19 @@ impl Wallet {
         main_client: HttpClient,
         validator: Validator,
         magic: bitcoin::p2p::Magic,
+        signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitWallet> {
-        let inner =
-            Arc::new(WalletInner::new(data_dir, config, main_client, validator, magic).await?);
+        let inner = Arc::new(
+            WalletInner::new(
+                data_dir,
+                config,
+                main_client,
+                validator,
+                magic,
+                signet_challenge,
+            )
+            .await?,
+        );
         Ok(Self { inner })
     }
 

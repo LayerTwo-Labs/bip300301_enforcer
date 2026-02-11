@@ -466,6 +466,8 @@ pub enum InitWallet {
     InitEsploraClient(#[from] InitEsploraClient),
     #[error("failed to initialize wallet from mnemonic")]
     InitFromMnemonic(Box<InitWalletFromMnemonic>),
+    #[error("no signet challenge found")]
+    NoSignetChallengeFound,
     #[error("failed to open connection to wallet DB")]
     OpenConnection(#[source] tokio_rusqlite::Error),
     #[error(transparent)]

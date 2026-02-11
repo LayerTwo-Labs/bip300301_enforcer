@@ -939,28 +939,28 @@ async fn main() -> Result<()> {
         cli.node_rpc_opts.addr,
     );
 
-    let mut info = None;
-    while info.is_none() {
+    let info = 'info: loop {
         // From Bitcoin Core src/rpc/protocol.h
         const RPC_IN_WARMUP: i32 = -28;
+
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
         // If Bitcoin Core is booting up, we don't want to fail hard.
         // Check for errors that should go away after a little while,
         // and tolerate those.
-        match mainchain_client.get_blockchain_info().await {
-            Ok(inner_info) => {
-                info = Some(inner_info);
-                Ok(())
-            }
-
-            Err(Error::Call(err)) if err.code() == RPC_IN_WARMUP => {
+        let err = match mainchain_client.get_blockchain_info().await {
+            Ok(info) => break 'info info,
+            Err(err) => err,
+        };
+        let () = match err {
+            Error::Call(err) if err.code() == RPC_IN_WARMUP => {
                 tracing::debug!(
                     err = format!("{}: {}", err.code(), err.message()),
                     "Transient Bitcoin Core error, retrying...",
                 );
                 Ok(())
             }
-            Err(Error::Transport(err))
+            Error::Transport(err)
                 if err.downcast_ref::<transport::Error>().is_some_and(|e| {
                     matches!(e, transport::Error::Rejected { status_code: 401 })
                 }) =>
@@ -983,8 +983,7 @@ async fn main() -> Result<()> {
                 }
                 .into());
             }
-
-            Err(err) => Err(wallet::error::BitcoinCoreRPC {
+            err => Err(wallet::error::BitcoinCoreRPC {
                 method: "getblockchaininfo".to_string(),
                 error: err,
             }),
@@ -993,14 +992,7 @@ async fn main() -> Result<()> {
             miette::Report::from(err).wrap_err("unable to verify Bitcoin Core is ready")
         })?;
 
-        let delay = tokio::time::Duration::from_millis(250);
-        tokio::time::sleep(delay).await;
-    }
-
-    let Some(info) = info else {
-        return Err(miette!(
-            "was never able to query bitcoin core blockchain info"
-        ));
+        tokio::time::sleep(RETRY_DELAY).await;
     };
 
     tracing::info!(
@@ -1088,7 +1080,8 @@ async fn main() -> Result<()> {
         }
 
         let magic = signet_challenge
-            .map(|signet_challenge| compute_signet_magic(&signet_challenge))
+            .as_deref()
+            .map(compute_signet_magic)
             .unwrap_or_else(|| info.chain.magic());
         let wallet = Wallet::new(
             &wallet_data_dir,
@@ -1096,6 +1089,7 @@ async fn main() -> Result<()> {
             mainchain_client.clone(),
             validator,
             magic,
+            signet_challenge,
         )
         .await?;
 

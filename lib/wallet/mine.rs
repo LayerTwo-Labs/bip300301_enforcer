@@ -53,6 +53,17 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
     }
 }
 
+fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
+    const L2L_SIGNET_CHALLENGE: &[u8] = b"00141551188e5153533b4fdd555449e640d9cc129456";
+    const L2L_SIGNET_TARGET_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+    const DEFAULT_TARGET_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+    if signet_challenge.as_bytes() == L2L_SIGNET_CHALLENGE {
+        L2L_SIGNET_TARGET_INTERVAL
+    } else {
+        DEFAULT_TARGET_INTERVAL
+    }
+}
+
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
 impl Wallet {
@@ -599,13 +610,18 @@ impl Wallet {
                 self.inner.config.serve_rpc_addr.port()
             ))
         };
+        let target_block_interval = self
+            .inner
+            .signet_challenge
+            .as_deref()
+            .map(target_block_interval);
 
         let mining_script_path = self.get_signet_miner_path().await?;
         let miner = bins::SignetMiner {
             path: mining_script_path,
             bitcoin_cli: self.inner.config.bitcoin_cli(bitcoin::Network::Signet),
             bitcoin_util: self.inner.config.mining_opts.bitcoin_util_path.clone(),
-            block_interval: Some(Duration::from_secs(60)),
+            block_interval: target_block_interval,
             nbits: None,
             coinbase_recipient,
             getblocktemplate_command,
