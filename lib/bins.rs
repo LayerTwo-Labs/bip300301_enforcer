@@ -179,7 +179,16 @@ pub struct SignetMiner {
 }
 
 impl SignetMiner {
-    pub fn command(&self, subcommand: &str, subcommand_args: Vec<&str>) -> tokio::process::Command {
+    pub fn command<Subcommand, SubcommandArg, SubcommandArgs>(
+        &self,
+        subcommand: Subcommand,
+        subcommand_args: SubcommandArgs,
+    ) -> tokio::process::Command
+    where
+        Subcommand: AsRef<OsStr>,
+        SubcommandArg: AsRef<OsStr>,
+        SubcommandArgs: IntoIterator<Item = SubcommandArg>,
+    {
         let mut command = tokio::process::Command::new(&self.path);
         command.arg(format!(
             "--cli={}",
@@ -190,7 +199,7 @@ impl SignetMiner {
         // we'll get lots of error logs about stderr not being empty.
         command.arg(if self.debug { "--debug" } else { "--quiet" });
 
-        let generate = subcommand == "generate";
+        let generate = subcommand.as_ref() == "generate";
         command.arg(subcommand);
         command.arg(format!("--grind-cmd={} grind", self.bitcoin_util.display()));
         if generate {

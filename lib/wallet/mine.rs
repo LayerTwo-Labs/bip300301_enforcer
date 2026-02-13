@@ -582,12 +582,11 @@ impl Wallet {
         &self,
         coinbase_recipient: Option<bitcoin::Address>,
     ) -> Result<BlockHash, error::GenerateSignetBlock> {
-        let current_height = self
+        let tip_header = self
             .validator()
-            .get_header_info(&self.validator().get_mainchain_tip()?)?
-            .height;
+            .get_header_info(&self.validator().get_mainchain_tip()?)?;
 
-        let is_about_to_difficulty_adjust = (current_height as u64 + 1)
+        let is_about_to_difficulty_adjust = (tip_header.height as u64 + 1)
             % self
                 .validator()
                 .network()
@@ -629,7 +628,20 @@ impl Wallet {
             debug: self.inner.config.mining_opts.signet_mining_script_debug,
         };
 
-        let mut command = miner.command("generate", vec![]);
+        let mut command_args = Vec::new();
+        if let Some(target_block_interval) = target_block_interval
+            && let tip_header_time =
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(tip_header.timestamp.into())
+            && let now = std::time::SystemTime::now()
+            && let Ok(tip_age) = now.duration_since(tip_header_time)
+            && tip_age > target_block_interval
+        {
+            let next_block_time = tip_header.timestamp
+                + tip_age.as_secs().midpoint(target_block_interval.as_secs()) as u32;
+            command_args.push(format!("--set-block-time={next_block_time}"));
+        };
+
+        let mut command = miner.command("generate", command_args);
         tracing::debug!("Running signet miner: {:?}", command);
 
         let _stdout: String = command.run_utf8().await?;
