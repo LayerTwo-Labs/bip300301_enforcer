@@ -37,6 +37,7 @@ pub mod error {
         pub(super) prev_block_hash: BlockHash,
     }
 
+    #[allow(clippy::duplicated_attributes)]
     #[derive(Debug, Error, Transitive)]
     #[transitive(from(db::error::Put, db::Error), from(db::error::TryGet, db::Error))]
     pub(in crate::validator::dbs::block_hashes) enum PutBlockInfoInner {
@@ -67,6 +68,7 @@ pub mod error {
         }
     }
 
+    #[allow(clippy::duplicated_attributes)]
     #[derive(Debug, Error, Transitive)]
     #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
     pub(crate) enum LastCommonAncestor {

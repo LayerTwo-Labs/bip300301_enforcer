@@ -277,6 +277,7 @@ impl ActiveSidechainDbs {
     }
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(transitive::Transitive, Debug, Error)]
 #[transitive(
     from(env::error::CreateDb, env::Error),

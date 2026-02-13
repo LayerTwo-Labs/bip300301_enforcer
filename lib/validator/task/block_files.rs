@@ -315,7 +315,7 @@ pub fn sync_from_directory(
                 break;
             }
 
-            if iterations_without_match % 1000 == 0 {
+            if iterations_without_match.is_multiple_of(1000) {
                 tracing::debug!(
                     "Processed {} blocks without finding expected `{}`, cache size: {}, file position #{}/{}",
                     iterations_without_match,

@@ -586,13 +586,12 @@ impl Wallet {
             .validator()
             .get_header_info(&self.validator().get_mainchain_tip()?)?;
 
-        let is_about_to_difficulty_adjust = (tip_header.height as u64 + 1)
-            % self
-                .validator()
+        let is_about_to_difficulty_adjust = (tip_header.height as u64 + 1).is_multiple_of(
+            self.validator()
                 .network()
                 .params()
-                .difficulty_adjustment_interval()
-            == 0;
+                .difficulty_adjustment_interval(),
+        );
 
         // Having some issues with our own block template generation for the 50th
         // difficulty adjustment (suspiciously round number...). Cannot get it to work!

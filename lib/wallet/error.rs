@@ -5,7 +5,7 @@ use bdk_esplora::esplora_client;
 use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
 use either::Either;
-use miette::{Diagnostic, diagnostic};
+use miette::Diagnostic;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -26,6 +26,7 @@ use crate::{
 #[error("electrum error `{code}`: `{message}`")]
 pub struct Electrum {
     code: i32,
+    #[allow(unused_assignments)]
     message: String,
 }
 
