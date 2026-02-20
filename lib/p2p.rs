@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bitcoin::p2p::Magic;
 
-pub const SIGNET_MAGIC_BYTES: [u8; 4] = [0xd1, 0xf5, 0x77, 0x6b];
+pub const SIGNET_MAGIC_BYTES: [u8; 4] = [0xe4, 0x09, 0xe9, 0x68];
 
 pub const SIGNET_MINER_P2P_ADDR: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(172, 105, 148, 135), 38333);
