@@ -1,6 +1,6 @@
 //! Setup for an integration test
 
-use std::{collections::HashMap, future::Future, net::SocketAddr, path::PathBuf};
+use std::{collections::HashMap, ffi::OsStr, future::Future, net::SocketAddr, path::PathBuf};
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
@@ -251,45 +251,29 @@ impl ReservedPorts {
     }
 }
 
-/// Running tasks, aborted on drop
-pub struct Tasks {
-    // MUST be dropped before electrs and bitcoind
-    _enforcer: AbortOnDrop<()>,
-    // MUST be dropped before bitcoind
-    _electrs: AbortOnDrop<()>,
-    _bitcoind: AbortOnDrop<()>,
-}
-
-type Transport = tonic::transport::Channel;
-
-pub struct PreSetup {
-    pub bin_paths: BinPaths,
-    pub network: Network,
-    pub reserved_ports: ReservedPorts,
-
-    pub directories: Directories,
-}
-
-pub struct PostSetup {
-    pub network: Network,
-    pub mode: Mode,
-    pub bitcoin_cli: bins::BitcoinCli,
-    pub bitcoin_util: bins::BitcoinUtil,
-    // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
-    // before reserved ports are freed and temp dirs are cleared
-    pub tasks: Tasks,
-    pub signet_miner: bins::SignetMiner,
-    pub gbt_client: jsonrpsee::http_client::HttpClient,
-    pub validator_service_client: ValidatorServiceClient<Transport>,
-    pub wallet_service_client: WalletServiceClient<Transport>,
-    pub mining_address: Address,
-    pub receive_address: Address,
-    // MUST occur after tasks in order to ensure that tasks are dropped
-    // before temp dirs are cleared
-    pub directories: Directories,
-    // MUST occur after tasks in order to ensure that tasks are dropped
-    // before reserved ports are freed
-    pub reserved_ports: ReservedPorts,
+pub fn new_bitcoind(
+    bin_paths: &BinPaths,
+    data_dir: PathBuf,
+    reserved_ports: &ReservedPorts,
+    network: Network,
+    signet_setup: Option<&SignetSetup>,
+) -> Bitcoind {
+    Bitcoind {
+        path: bin_paths.bitcoind.clone(),
+        data_dir,
+        listen_port: reserved_ports.bitcoind_listen.port(),
+        network: network.into(),
+        onion_ports: None,
+        rpc_user: "drivechain".to_owned(),
+        rpc_pass: "integrationtesting".to_owned(),
+        rpc_port: reserved_ports.bitcoind_rpc.port(),
+        rpc_host: "127.0.0.1".to_owned(),
+        signet_challenge: signet_setup
+            .as_ref()
+            .map(|setup| setup.signet_challenge.clone()),
+        txindex: true,
+        zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
+    }
 }
 
 /// Waits for a TCP port to become available by attempting to connect periodically.
@@ -340,291 +324,348 @@ pub async fn wait_for_port(
     }
 }
 
+/// Running tasks, aborted on drop
+pub struct Tasks {
+    // MUST be dropped before electrs and bitcoind
+    _enforcer: AbortOnDrop<()>,
+    // MUST be dropped before bitcoind
+    _electrs: AbortOnDrop<()>,
+    _bitcoind: AbortOnDrop<()>,
+}
+
+type Transport = tonic::transport::Channel;
+
 #[derive(Clone, Debug)]
 pub struct Directories {
     pub base_dir: TempDir,
-
     pub bitcoin_dir: PathBuf,
     pub electrs_dir: PathBuf,
     pub enforcer_dir: PathBuf,
 }
 
-fn setup_directories() -> anyhow::Result<Directories> {
-    let base_dir = TempDir::new()?;
-    // leak unless explicitly allowed to cleanup
-    base_dir.leak();
+impl Directories {
+    fn new() -> anyhow::Result<Self> {
+        let base_dir = TempDir::new()?;
+        // leak unless explicitly allowed to cleanup
+        base_dir.leak();
 
-    let bitcoin_dir = base_dir.path().join("bitcoind");
+        let bitcoin_dir = base_dir.path().join("bitcoind");
 
-    let electrs_dir = base_dir.path().join("electrs");
+        let electrs_dir = base_dir.path().join("electrs");
 
-    let enforcer_dir = base_dir.path().join("enforcer");
+        let enforcer_dir = base_dir.path().join("enforcer");
 
-    for dir in [&bitcoin_dir, &electrs_dir, &enforcer_dir] {
-        std::fs::create_dir(dir)?;
-    }
-
-    Ok(Directories {
-        base_dir,
-        bitcoin_dir,
-        electrs_dir,
-        enforcer_dir,
-    })
-}
-
-pub fn new_bitcoind(
-    bin_paths: &BinPaths,
-    data_dir: PathBuf,
-    reserved_ports: &ReservedPorts,
-    network: Network,
-    signet_setup: Option<&SignetSetup>,
-) -> Bitcoind {
-    Bitcoind {
-        path: bin_paths.bitcoind.clone(),
-        data_dir,
-        listen_port: reserved_ports.bitcoind_listen.port(),
-        network: network.into(),
-        onion_ports: None,
-        rpc_user: "drivechain".to_owned(),
-        rpc_pass: "integrationtesting".to_owned(),
-        rpc_port: reserved_ports.bitcoind_rpc.port(),
-        rpc_host: "127.0.0.1".to_owned(),
-        signet_challenge: signet_setup
-            .as_ref()
-            .map(|setup| setup.signet_challenge.clone()),
-        txindex: true,
-        zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
-    }
-}
-
-pub fn new_bitcoin_cli(bitcoind: &Bitcoind, path: PathBuf) -> bins::BitcoinCli {
-    bins::BitcoinCli {
-        path,
-        network: bitcoind.network,
-        rpc_user: Some(bitcoind.rpc_user.clone()),
-        rpc_pass: Some(bitcoind.rpc_pass.clone()),
-        rpc_cookie_path: None,
-        rpc_port: bitcoind.rpc_port,
-        rpc_host: bitcoind.rpc_host.clone(),
-        rpc_wallet: None,
-    }
-}
-
-pub fn pre_setup(bin_paths: &BinPaths, network: Network) -> anyhow::Result<PreSetup> {
-    Ok(PreSetup {
-        bin_paths: bin_paths.clone(),
-        network,
-        reserved_ports: ReservedPorts::new()?,
-        directories: setup_directories()?,
-    })
-}
-
-pub async fn setup(
-    bin_paths: &BinPaths,
-    network: Network,
-    mode: Mode,
-    res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
-) -> anyhow::Result<PostSetup> {
-    tracing::info!("Running setup");
-    let reserved_ports = ReservedPorts::new()?;
-    let signet_setup = if let Network::Signet = network {
-        Some(SignetSetup::new()?)
-    } else {
-        None
-    };
-    let dirs = setup_directories()?;
-
-    tracing::debug!("Starting bitcoin node");
-    let bitcoind = new_bitcoind(
-        bin_paths,
-        dirs.bitcoin_dir.clone(),
-        &reserved_ports,
-        network,
-        signet_setup.as_ref(),
-    );
-    let bitcoind_task = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], {
-        let res_tx = res_tx.clone();
-        move |err| {
-            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+        for dir in [&bitcoin_dir, &electrs_dir, &enforcer_dir] {
+            std::fs::create_dir(dir)?;
         }
-    });
-    // wait for startup
-    sleep(std::time::Duration::from_secs(1)).await;
-    // Create a wallet and initialize it
-    let mut bitcoin_cli = new_bitcoin_cli(&bitcoind, bin_paths.bitcoin_cli.clone());
-    tracing::debug!("Creating wallet");
-    let _create_wallet_output = bitcoin_cli
-        .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
-        .run_utf8()
-        .await?;
-    bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
-    let mining_address = match signet_setup.as_ref() {
-        Some(signet_setup) => {
-            let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
-            signet_setup.signet_challenge_addr.clone()
-        }
-        None => {
-            tracing::debug!("Generating mining address");
-            let mining_addr_str = bitcoin_cli
+
+        Ok(Directories {
+            base_dir,
+            bitcoin_dir,
+            electrs_dir,
+            enforcer_dir,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct SetupOpts<
+    BitcoindArg = String,
+    EnforcerArg = String,
+    BitcoindArgs = Vec<BitcoindArg>,
+    EnforcerArgs = Vec<EnforcerArg>,
+> where
+    BitcoindArg: AsRef<OsStr>,
+    EnforcerArg: AsRef<OsStr>,
+    BitcoindArgs: IntoIterator<Item = BitcoindArg>,
+    EnforcerArgs: IntoIterator<Item = EnforcerArg>,
+{
+    pub bitcoind_args: BitcoindArgs,
+    pub enforcer_args: EnforcerArgs,
+}
+
+pub struct PostSetup {
+    pub network: Network,
+    pub mode: Mode,
+    pub bitcoin_cli: bins::BitcoinCli,
+    pub bitcoin_util: bins::BitcoinUtil,
+    // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
+    // before reserved ports are freed and temp dirs are cleared
+    pub tasks: Tasks,
+    pub signet_miner: bins::SignetMiner,
+    pub gbt_client: jsonrpsee::http_client::HttpClient,
+    pub validator_service_client: ValidatorServiceClient<Transport>,
+    pub wallet_service_client: WalletServiceClient<Transport>,
+    pub mining_address: Address,
+    pub receive_address: Address,
+    // MUST occur after tasks in order to ensure that tasks are dropped
+    // before temp dirs are cleared
+    pub directories: Directories,
+    // MUST occur after tasks in order to ensure that tasks are dropped
+    // before reserved ports are freed
+    pub reserved_ports: ReservedPorts,
+}
+
+impl PostSetup {
+    pub async fn setup<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>(
+        bin_paths: BinPaths,
+        mode: Mode,
+        network: Network,
+        reserved_ports: ReservedPorts,
+        dirs: Directories,
+        opts: SetupOpts<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> anyhow::Result<Self>
+    where
+        BitcoindArg: AsRef<OsStr>,
+        EnforcerArg: AsRef<OsStr>,
+        BitcoindArgs: IntoIterator<Item = BitcoindArg>,
+        EnforcerArgs: IntoIterator<Item = EnforcerArg>,
+    {
+        tracing::info!("Running setup");
+        let signet_setup = if let Network::Signet = network {
+            Some(SignetSetup::new()?)
+        } else {
+            None
+        };
+
+        tracing::debug!("Starting bitcoin node");
+        let bitcoind = new_bitcoind(
+            &bin_paths,
+            dirs.bitcoin_dir.clone(),
+            &reserved_ports,
+            network,
+            signet_setup.as_ref(),
+        );
+        let bitcoind_task =
+            bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, {
+                let res_tx = res_tx.clone();
+                move |err| {
+                    let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+                }
+            });
+        // wait for startup
+        sleep(std::time::Duration::from_secs(1)).await;
+        // Create a wallet and initialize it
+        let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli.clone());
+        tracing::debug!("Creating wallet");
+        let _create_wallet_output = bitcoin_cli
+            .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
+            .run_utf8()
+            .await?;
+        bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
+        let mining_address = match signet_setup.as_ref() {
+            Some(signet_setup) => {
+                let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
+                signet_setup.signet_challenge_addr.clone()
+            }
+            None => {
+                tracing::debug!("Generating mining address");
+                let mining_addr_str = bitcoin_cli
+                    .command::<String, _, String, _, _>([], "getnewaddress", [])
+                    .run_utf8()
+                    .await?;
+                mining_addr_str
+                    .parse::<bitcoin::Address<_>>()?
+                    .require_network(network.into())?
+            }
+        };
+        tracing::debug!("Mining address: {mining_address}");
+        tracing::debug!("Generating receiving address");
+        let receive_address = {
+            let receive_address_str = bitcoin_cli
                 .command::<String, _, String, _, _>([], "getnewaddress", [])
                 .run_utf8()
                 .await?;
-            mining_addr_str
-                .parse::<bitcoin::Address<_>>()?
-                .require_network(network.into())?
-        }
-    };
-    tracing::debug!("Mining address: {mining_address}");
-    tracing::debug!("Generating receiving address");
-    let receive_address = {
-        let receive_address_str = bitcoin_cli
-            .command::<String, _, String, _, _>([], "getnewaddress", [])
-            .run_utf8()
-            .await?;
-        tracing::debug!("Receiving address: {receive_address_str}");
-        receive_address_str
-            .parse::<Address<_>>()?
-            .require_network(bitcoind.network)?
-    };
+            tracing::debug!("Receiving address: {receive_address_str}");
+            receive_address_str
+                .parse::<Address<_>>()?
+                .require_network(bitcoind.network)?
+        };
 
-    let mut signet_miner = bins::SignetMiner {
-        path: bin_paths.signet_miner.clone(),
-        bitcoin_cli: bitcoin_cli.clone(),
-        bitcoin_util: bin_paths.bitcoin_util.clone(),
-        block_interval: None,
-        coinbase_recipient: Some(mining_address.clone()),
-        debug: false,
-        nbits: None,
-        getblocktemplate_command: None,
-        coinbasetxn: false,
-    };
-    if let Some(signet_setup) = signet_setup.as_ref() {
-        let () = signet_setup.calibrate_signet(&mut signet_miner).await?;
-    }
-    // Mine 1 block
-    tracing::debug!(%mining_address, "Mining 1 block");
-    match network {
-        Network::Regtest => {
-            let _output = bitcoin_cli
-                .command::<String, _, _, _, _>(
-                    [],
-                    "generatetoaddress",
-                    ["1", &mining_address.to_string()],
-                )
-                .run_utf8()
-                .await?;
+        let mut signet_miner = bins::SignetMiner {
+            path: bin_paths.signet_miner.clone(),
+            bitcoin_cli: bitcoin_cli.clone(),
+            bitcoin_util: bin_paths.bitcoin_util.clone(),
+            block_interval: None,
+            coinbase_recipient: Some(mining_address.clone()),
+            debug: false,
+            nbits: None,
+            getblocktemplate_command: None,
+            coinbasetxn: false,
+        };
+        if let Some(signet_setup) = signet_setup.as_ref() {
+            let () = signet_setup.calibrate_signet(&mut signet_miner).await?;
         }
-        Network::Signet => {
-            let mine_output = signet_miner
-                .command("generate", vec!["--address", &mining_address.to_string()])
-                .run_utf8()
-                .await?;
-            tracing::debug!("Checking that block was mined successfully");
-            let blocks: u32 = bitcoin_cli
-                .command::<String, _, String, _, _>([], "getblockcount", [])
-                .run_utf8()
-                .await?
-                .parse()?;
-            anyhow::ensure!(blocks == 1);
-            tracing::debug!("Mined 1 block: `{mine_output}`");
+        // Mine 1 block
+        tracing::debug!(%mining_address, "Mining 1 block");
+        match network {
+            Network::Regtest => {
+                let _output = bitcoin_cli
+                    .command::<String, _, _, _, _>(
+                        [],
+                        "generatetoaddress",
+                        ["1", &mining_address.to_string()],
+                    )
+                    .run_utf8()
+                    .await?;
+            }
+            Network::Signet => {
+                let mine_output = signet_miner
+                    .command("generate", vec!["--address", &mining_address.to_string()])
+                    .run_utf8()
+                    .await?;
+                tracing::debug!("Checking that block was mined successfully");
+                let blocks: u32 = bitcoin_cli
+                    .command::<String, _, String, _, _>([], "getblockcount", [])
+                    .run_utf8()
+                    .await?
+                    .parse()?;
+                anyhow::ensure!(blocks == 1);
+                tracing::debug!("Mined 1 block: `{mine_output}`");
+            }
         }
-    }
-    // Start electrs
-    tracing::debug!("Starting electrs");
-    let electrs = Electrs {
-        path: bin_paths.electrs.clone(),
-        db_dir: dirs.electrs_dir.clone(),
-        auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
-        daemon_dir: bitcoind.data_dir.join("path"),
-        daemon_rpc_port: bitcoind.rpc_port,
-        electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
-        electrum_http_port: reserved_ports.electrs_electrum_http.port(),
-        monitoring_port: reserved_ports.electrs_monitoring.port(),
-        network: bitcoind.network,
-        signet_magic: signet_setup.as_ref().map(|setup| setup.signet_magic),
-    };
-    let electrs_task = electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
-        let res_tx = res_tx.clone();
-        move |err| {
-            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-        }
-    });
-    // wait for electrs to start
-    sleep(std::time::Duration::from_secs(1)).await;
-    // Start BIP300301 Enforcer
-    tracing::debug!("Starting bip300301_enforcer");
-    let enforcer = Enforcer {
-        path: bin_paths.bip300301_enforcer.clone(),
-        data_dir: dirs.enforcer_dir.clone(),
-        enable_mempool: mode.enable_mempool(),
-        enable_wallet: true,
-        node_blocks_dir: None,
-        node_rpc_user: bitcoind.rpc_user,
-        node_rpc_pass: bitcoind.rpc_pass,
-        node_rpc_port: bitcoind.rpc_port,
-        node_zmq_sequence_port: bitcoind.zmq_sequence_port,
-        serve_grpc_port: reserved_ports.enforcer_serve_grpc.port(),
-        serve_json_rpc_port: reserved_ports.enforcer_serve_json_rpc.port(),
-        serve_rpc_port: reserved_ports.enforcer_serve_rpc.port(),
-        wallet_electrum_rpc_port: electrs.electrum_rpc_port,
-        wallet_electrum_http_port: electrs.electrum_http_port,
-    };
-    let enforcer_task = enforcer.spawn_command_with_args::<_, String, _, _, _>(
-        [(
-            "RUST_LOG",
-            "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,tonic=debug,trace",
-        )],
-        [],
-        move |err| {
-            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-        },
-    );
-    let tasks = Tasks {
-        _enforcer: enforcer_task,
-        _electrs: electrs_task,
-        _bitcoind: bitcoind_task,
-    };
-    // Wait for enforcer gRPC port to open
-    wait_for_port(
-        "127.0.0.1",
-        enforcer.serve_grpc_port,
-        Duration::from_secs(10),
-    )
-    .await
-    .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
-
-    let gbt_client = jsonrpsee::http_client::HttpClient::builder()
-        .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
-        .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
-    if signet_setup.is_some() {
-        let () = SignetSetup::configure_miner(&mut signet_miner, &dirs.base_dir, &enforcer)?;
-    }
-    let validator_service_client =
-        ValidatorServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await
-            .map_err(|err| anyhow!("failed to create validator service client: {err:#}"))?;
-    let wallet_service_client =
-        WalletServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await
-            .map_err(|err| anyhow!("failed to create wallet service client: {err:#}"))?;
-    Ok(PostSetup {
-        network,
-        mode,
-        bitcoin_cli,
-        bitcoin_util: bins::BitcoinUtil {
-            path: bin_paths.bitcoin_util.clone(),
+        // Start electrs
+        tracing::debug!("Starting electrs");
+        let electrs = Electrs {
+            path: bin_paths.electrs.clone(),
+            db_dir: dirs.electrs_dir.clone(),
+            auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
+            daemon_dir: bitcoind.data_dir.join("path"),
+            daemon_rpc_port: bitcoind.rpc_port,
+            electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
+            electrum_http_port: reserved_ports.electrs_electrum_http.port(),
+            monitoring_port: reserved_ports.electrs_monitoring.port(),
             network: bitcoind.network,
-        },
-        tasks,
-        signet_miner,
-        gbt_client,
-        validator_service_client,
-        wallet_service_client,
-        mining_address,
-        receive_address,
-        directories: dirs.clone(),
-        reserved_ports,
-    })
+            signet_magic: signet_setup.as_ref().map(|setup| setup.signet_magic),
+        };
+        let electrs_task = electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
+            let res_tx = res_tx.clone();
+            move |err| {
+                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+            }
+        });
+        // wait for electrs to start
+        sleep(std::time::Duration::from_secs(1)).await;
+        // Start BIP300301 Enforcer
+        tracing::debug!("Starting bip300301_enforcer");
+        let enforcer = Enforcer {
+            path: bin_paths.bip300301_enforcer.clone(),
+            data_dir: dirs.enforcer_dir.clone(),
+            enable_mempool: mode.enable_mempool(),
+            enable_wallet: true,
+            node_blocks_dir: None,
+            node_rpc_user: bitcoind.rpc_user,
+            node_rpc_pass: bitcoind.rpc_pass,
+            node_rpc_port: bitcoind.rpc_port,
+            node_zmq_sequence_port: bitcoind.zmq_sequence_port,
+            serve_grpc_port: reserved_ports.enforcer_serve_grpc.port(),
+            serve_json_rpc_port: reserved_ports.enforcer_serve_json_rpc.port(),
+            serve_rpc_port: reserved_ports.enforcer_serve_rpc.port(),
+            wallet_electrum_rpc_port: electrs.electrum_rpc_port,
+            wallet_electrum_http_port: electrs.electrum_http_port,
+        };
+        let enforcer_task = enforcer.spawn_command_with_args(
+            [(
+                "RUST_LOG",
+                "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,tonic=debug,trace",
+            )],
+            opts.enforcer_args,
+            move |err| {
+                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+            },
+        );
+        let tasks = Tasks {
+            _enforcer: enforcer_task,
+            _electrs: electrs_task,
+            _bitcoind: bitcoind_task,
+        };
+        // Wait for enforcer gRPC port to open
+        wait_for_port(
+            "127.0.0.1",
+            enforcer.serve_grpc_port,
+            Duration::from_secs(10),
+        )
+        .await
+        .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+
+        let gbt_client = jsonrpsee::http_client::HttpClient::builder()
+            .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
+            .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
+        if signet_setup.is_some() {
+            let () = SignetSetup::configure_miner(&mut signet_miner, &dirs.base_dir, &enforcer)?;
+        }
+        let validator_service_client = ValidatorServiceClient::connect(format!(
+            "http://127.0.0.1:{}",
+            enforcer.serve_grpc_port
+        ))
+        .await
+        .map_err(|err| anyhow!("failed to create validator service client: {err:#}"))?;
+        let wallet_service_client =
+            WalletServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
+                .await
+                .map_err(|err| anyhow!("failed to create wallet service client: {err:#}"))?;
+        Ok(PostSetup {
+            network,
+            mode,
+            bitcoin_cli,
+            bitcoin_util: bins::BitcoinUtil {
+                path: bin_paths.bitcoin_util.clone(),
+                network: bitcoind.network,
+            },
+            tasks,
+            signet_miner,
+            gbt_client,
+            validator_service_client,
+            wallet_service_client,
+            mining_address,
+            receive_address,
+            directories: dirs.clone(),
+            reserved_ports,
+        })
+    }
+}
+
+pub struct PreSetup {
+    pub bin_paths: BinPaths,
+    pub network: Network,
+    pub reserved_ports: ReservedPorts,
+    pub directories: Directories,
+}
+
+impl PreSetup {
+    pub fn new(bin_paths: BinPaths, network: Network) -> anyhow::Result<Self> {
+        Ok(PreSetup {
+            bin_paths,
+            network,
+            reserved_ports: ReservedPorts::new()?,
+            directories: Directories::new()?,
+        })
+    }
+
+    pub async fn setup<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>(
+        self,
+        mode: Mode,
+        opts: SetupOpts<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> anyhow::Result<PostSetup>
+    where
+        BitcoindArg: AsRef<OsStr>,
+        EnforcerArg: AsRef<OsStr>,
+        BitcoindArgs: IntoIterator<Item = BitcoindArg>,
+        EnforcerArgs: IntoIterator<Item = EnforcerArg>,
+    {
+        PostSetup::setup(
+            self.bin_paths,
+            mode,
+            self.network,
+            self.reserved_ports,
+            self.directories,
+            opts,
+            res_tx,
+        )
+        .await
+    }
 }
 
 pub trait Sidechain: Sized {

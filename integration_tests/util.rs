@@ -537,6 +537,19 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
+    pub fn new_bitcoin_cli(&self, path: PathBuf) -> bip300301_enforcer_lib::bins::BitcoinCli {
+        bip300301_enforcer_lib::bins::BitcoinCli {
+            path,
+            network: self.network,
+            rpc_user: Some(self.rpc_user.clone()),
+            rpc_pass: Some(self.rpc_pass.clone()),
+            rpc_cookie_path: None,
+            rpc_port: self.rpc_port,
+            rpc_host: self.rpc_host.clone(),
+            rpc_wallet: None,
+        }
+    }
+
     #[must_use]
     pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,

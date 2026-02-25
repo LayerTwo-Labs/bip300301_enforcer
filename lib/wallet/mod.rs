@@ -30,7 +30,7 @@ use bitcoin_jsonrpsee::{
 };
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{FutureExt, TryFutureExt};
+use futures::{FutureExt, TryFutureExt, TryStreamExt};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -1279,6 +1279,19 @@ impl Wallet {
         Ok(psbt)
     }
 
+    fn p2p_broadcast_addrs(&self) -> Box<dyn Iterator<Item = std::net::SocketAddr> + '_> {
+        if self.inner.validator.network() == Network::Signet
+            && self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES
+        {
+            let res = std::iter::once(crate::p2p::SIGNET_MINER_P2P_ADDR.into())
+                .chain(self.inner.config.p2p_broadcast_addr.iter().copied());
+            Box::new(res)
+        } else {
+            let res = self.inner.config.p2p_broadcast_addr.iter().copied();
+            Box::new(res)
+        }
+    }
+
     /// Creates a deposit transaction, persists it to the database, and returns the TXID.
     /// This is also known as a M5 message, in BIP300 nomenclature.
     ///
@@ -1336,17 +1349,20 @@ impl Wallet {
                 .await
                 .map_err(error::CreateDeposit::BroadcastTx)?
                 .is_some();
-        if self.inner.validator.network() == Network::Signet
-            && self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES
-        {
-            broadcast_successfully |= crate::p2p::broadcast_nonstandard_tx(
-                crate::p2p::SIGNET_MINER_P2P_ADDR.into(),
-                block_height as i32,
-                self.inner.magic,
-                tx,
-            )
-            .await
-            .map_err(error::CreateDeposit::BroadcastNonstandardTx)?;
+        let mut broadcast_results_stream = self
+            .p2p_broadcast_addrs()
+            .map(|peer_addr| {
+                crate::p2p::broadcast_nonstandard_tx(
+                    peer_addr,
+                    block_height as i32,
+                    self.inner.magic,
+                    tx.clone(),
+                )
+                .map_err(error::CreateDeposit::BroadcastNonstandardTx)
+            })
+            .collect::<futures::stream::FuturesUnordered<_>>();
+        while let Some(broadcast_success) = broadcast_results_stream.try_next().await? {
+            broadcast_successfully |= broadcast_success
         }
         if broadcast_successfully {
             tracing::info!(%txid, "Broadcast deposit transaction successfully");
@@ -1919,6 +1935,8 @@ impl Wallet {
                 wallet_write.with_mut(|wallet| {
                     tracing::trace!("build_bmm_tx: creating transaction builder");
                     let mut builder = wallet.build_tx();
+                    // OP_RETURN message MUST be first output
+                    builder.ordering(bdk_wallet::TxOrdering::Untouched);
 
                     tracing::trace!("build_bmm_tx: adding locktime {locktime}");
                     builder.nlocktime(locktime);
@@ -1971,7 +1989,7 @@ impl Wallet {
         with_connection(&connection)
     }
 
-    /// Creates a BMM request transaction. Does NOT broadcast.
+    /// Creates a BMM request transaction. Broadcasts via p2p whitelist only.
     /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
     /// request was not stored due to pre-existing request with the same
     /// `sidechain_number` and `prev_mainchain_block_hash`.
@@ -1984,7 +2002,6 @@ impl Wallet {
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<Option<bdk_wallet::bitcoin::Transaction>, error::CreateBmmRequest> {
         tracing::debug!("create_bmm_request: building transaction");
-
         let psbt = self
             .build_bmm_tx(
                 sidechain_number,
@@ -1996,22 +2013,57 @@ impl Wallet {
             .await?;
         let tx = self.sign_transaction(psbt).await?;
         tracing::info!("BMM request: PSBT signed successfully");
-        if self
+        let txid = tx.compute_txid();
+        let stored = self
             .insert_new_bmm_request(
                 sidechain_number,
                 prev_mainchain_block_hash,
                 sidechain_block_hash,
             )
-            .await?
-        {
+            .await?;
+        if stored {
             tracing::info!("BMM request: inserted new bmm request into db");
-            Ok(Some(tx))
         } else {
             tracing::warn!(
                 "BMM request: Ignored, request exists with same sidechain slot and previous block hash"
             );
-            Ok(None)
         }
+        let block_height = self
+            .inner
+            .validator
+            .get_header_info(&prev_mainchain_block_hash)?
+            .height;
+        tracing::debug!(%txid, "Broadcasting BMM request transaction...");
+        let mut broadcast_results_stream = self
+            .p2p_broadcast_addrs()
+            .map(|peer_addr| {
+                crate::p2p::broadcast_nonstandard_tx(
+                    peer_addr,
+                    block_height as i32,
+                    self.inner.magic,
+                    tx.clone(),
+                )
+                .map_err(error::CreateBmmRequestInner::BroadcastNonstandardTx)
+            })
+            .collect::<futures::stream::FuturesUnordered<_>>();
+        let mut broadcast_successfully = None;
+        while let Some(broadcast_success) = broadcast_results_stream.try_next().await? {
+            broadcast_successfully = match broadcast_successfully {
+                Some(broadcast_successfully) => Some(broadcast_successfully || broadcast_success),
+                None => Some(broadcast_success),
+            }
+        }
+        match broadcast_successfully {
+            Some(true) => {
+                tracing::info!(%txid, "Broadcast BMM request transaction successfully");
+            }
+            Some(false) => {
+                let err = error::CreateBmmRequestInner::BroadcastUnsuccessful { txid };
+                return Err(err.into());
+            }
+            None => {}
+        }
+        if stored { Ok(Some(tx)) } else { Ok(None) }
     }
 
     pub async fn get_wallet_info(&self) -> Result<WalletInfo, error::NotUnlocked> {

@@ -22,9 +22,8 @@ use crate::{
     mine::{mine, mine_check_block_events, mine_signet_check},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
-        pre_setup, setup,
     },
-    test_unconfirmed_transactions,
+    test_peer_bmm_request, test_unconfirmed_transactions,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
 
@@ -95,7 +94,7 @@ where
     AsyncTrial::new(
         name.clone(),
         Box::pin(async move {
-            let pre_setup = pre_setup(&comps.bin_paths, comps.network)?;
+            let pre_setup = PreSetup::new(comps.bin_paths.clone(), comps.network)?;
 
             register_files(&file_registry, &name, &pre_setup.directories);
 
@@ -119,9 +118,10 @@ where
         name.clone(),
         Box::pin(async move {
             let (res_tx, _) = mpsc::unbounded();
-            let post_setup = setup(&comps.bin_paths, comps.network, comps.mode, res_tx).await?;
-
-            register_files(&file_registry, &name, &post_setup.directories);
+            let pre_setup = PreSetup::new(comps.bin_paths.clone(), comps.network)?;
+            register_files(&file_registry, &name, &pre_setup.directories);
+            let setup_opts: crate::setup::SetupOpts = Default::default();
+            let post_setup = pre_setup.setup(comps.mode, setup_opts, res_tx).await?;
 
             let test_future =
                 test_fn(post_setup).instrument(tracing::info_span!("test", name = %name));
@@ -650,27 +650,29 @@ pub fn tests(
                 )
             });
 
-    let peer_bmm_request_tests =
-        [(Network::Regtest, Mode::Mempool)]
-            .iter()
-            .map(|(network, mode)| {
-                new_trial_with_setup(
-                    format!("peer_bmm_request (mode: {mode}, network: {network})"),
-                    TestSetupComponents {
-                        bin_paths: bin_paths.clone(),
-                        network: *network,
-                        mode: *mode,
-                        file_registry: file_registry.clone(),
-                        failure_collector: failure_collector.clone(),
-                    },
-                    crate::test_peer_bmm_request::test_peer_bmm_request,
-                )
-            });
+    let peer_bmm_request_trial: TestTrial = {
+        let name = test_peer_bmm_request::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future =
+                        test_peer_bmm_request::test_peer_bmm_request(bin_paths, file_registry)
+                            .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    };
     let mut async_trials = vec![];
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
-    async_trials.extend(peer_bmm_request_tests);
+    async_trials.push(peer_bmm_request_trial);
     async_trials.extend([new_trial(
         "file_based_block_parser".to_string(),
         TestSetupComponents {
