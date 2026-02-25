@@ -66,6 +66,10 @@ wildcard_imports = "deny"
 [workspace.lints.rust]
 let_underscore_drop = "deny"
 
+[patch.crates-io.bitcoin-send-tx-p2p]
+git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git"
+branch = "2026-02-28-flush-tcpstream"
+
 # temp-dir does not leak correctly after clone
 # https://gitlab.com/leonhard-llc/ops/-/issues/17
 [patch.crates-io.temp-dir]

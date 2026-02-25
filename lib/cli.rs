@@ -409,6 +409,12 @@ pub struct Config {
     /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
     pub node_zmq_addr_sequence: Option<String>,
+    /// Broadcast Deposit/Withdrawal/BMM request txs via p2p to this peer.
+    /// On L2L Signet, txs are broadcast to the signet mining server by
+    /// default.
+    /// This option can be specified multiple times.
+    #[arg(long)]
+    pub p2p_broadcast_addr: Vec<SocketAddr>,
     /// Serve RPCs such as `getblocktemplate` on this address
     #[arg(default_value_t = DEFAULT_SERVE_RPC_ADDR, long)]
     pub serve_rpc_addr: SocketAddr,

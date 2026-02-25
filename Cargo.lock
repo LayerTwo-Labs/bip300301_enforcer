@@ -455,6 +455,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-appender",
+ "tracing-log",
  "tracing-subscriber",
  "uuid",
 ]
@@ -629,8 +630,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-send-tx-p2p"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77b7d7131363292af9da72a06bf7f1b723b3200644fc6ab6b3b82d98d5f59968"
+source = "git+https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git?branch=2026-02-28-flush-tcpstream#6e1613049efa513e394c301b51641a4b498dacf5"
 dependencies = [
  "async-trait",
  "bitcoin",

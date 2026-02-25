@@ -9,7 +9,7 @@ use tokio::time::sleep;
 use tonic::Code;
 
 use crate::{
-    setup::{PreSetup, new_bitcoin_cli, new_bitcoind, wait_for_port},
+    setup::{PreSetup, new_bitcoind, wait_for_port},
     util::Enforcer,
 };
 
@@ -36,7 +36,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     // wait for startup
     sleep(std::time::Duration::from_secs(1)).await;
 
-    let bitcoin_cli = new_bitcoin_cli(&bitcoind, setup.bin_paths.bitcoin_cli.clone());
+    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli.clone());
 
     tracing::info!("Generating blocks");
     // just generate to a random regtest address. we don't actually need the coins!

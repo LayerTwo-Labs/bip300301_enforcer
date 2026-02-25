@@ -83,6 +83,7 @@ fn set_tracing_subscriber(
     log_level: tracing::Level,
     rolling_log_appender: tracing_appender::rolling::RollingFileAppender,
 ) -> miette::Result<tracing_appender::non_blocking::WorkerGuard> {
+    let () = tracing_log::LogTracer::init().into_diagnostic()?;
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),

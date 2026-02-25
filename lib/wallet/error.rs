@@ -1201,9 +1201,15 @@ impl ToStatus for BuildBmmTx {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-enum CreateBmmRequestInner {
+pub(in crate::wallet) enum CreateBmmRequestInner {
     #[error("failed to build BMM tx")]
     BuildBmmTx(#[from] BuildBmmTx),
+    #[error("failed to broadcast nonstandard tx")]
+    BroadcastNonstandardTx(#[source] bitcoin_send_tx_p2p::Error),
+    #[error("broadcast deposit transaction failed: {txid}")]
+    BroadcastUnsuccessful { txid: bitcoin::Txid },
+    #[error(transparent)]
+    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
     #[error("failed to sign BMM tx")]
@@ -1214,8 +1220,11 @@ impl ToStatus for CreateBmmRequestInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
-            Self::Rusqlite(_) => StatusBuilder::new(self),
+            Self::GetHeaderInfo(err) => err.builder(),
             Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
+            Self::BroadcastNonstandardTx(_)
+            | Self::BroadcastUnsuccessful { .. }
+            | Self::Rusqlite(_) => StatusBuilder::new(self),
         }
     }
 }
