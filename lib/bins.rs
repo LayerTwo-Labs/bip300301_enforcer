@@ -73,8 +73,9 @@ impl CommandExt for tokio::process::Command {
 pub struct BitcoinCli {
     pub path: PathBuf,
     pub network: bitcoin::Network,
-    pub rpc_user: String,
-    pub rpc_pass: String,
+    pub rpc_user: Option<String>,
+    pub rpc_pass: Option<String>,
+    pub rpc_cookie_path: Option<String>,
     pub rpc_port: u16,
     pub rpc_host: String,
     pub rpc_wallet: Option<String>,
@@ -84,11 +85,22 @@ impl BitcoinCli {
     fn default_args(&self) -> Vec<String> {
         let mut res = vec![
             format!("-chain={}", self.network.to_core_arg()),
-            format!("-rpcuser={}", self.rpc_user),
-            format!("-rpcpassword={}", self.rpc_pass),
             format!("-rpcport={}", self.rpc_port),
             format!("-rpcconnect={}", self.rpc_host),
         ];
+
+        if let Some(rpc_cookie_path) = &self.rpc_cookie_path {
+            res.push(format!("-rpccookiefile={rpc_cookie_path}"));
+        }
+
+        if let Some(rpc_user) = &self.rpc_user {
+            res.push(format!("-rpcuser={rpc_user}"));
+        }
+
+        if let Some(rpc_pass) = &self.rpc_pass {
+            res.push(format!("-rpcpassword={rpc_pass}"));
+        }
+
         if let Some(rpc_wallet) = &self.rpc_wallet {
             res.push(format!("-rpcwallet={rpc_wallet}"))
         }
