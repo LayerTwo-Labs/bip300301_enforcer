@@ -401,8 +401,9 @@ pub fn new_bitcoin_cli(bitcoind: &Bitcoind, path: PathBuf) -> bins::BitcoinCli {
     bins::BitcoinCli {
         path,
         network: bitcoind.network,
-        rpc_user: bitcoind.rpc_user.clone(),
-        rpc_pass: bitcoind.rpc_pass.clone(),
+        rpc_user: Some(bitcoind.rpc_user.clone()),
+        rpc_pass: Some(bitcoind.rpc_pass.clone()),
+        rpc_cookie_path: None,
         rpc_port: bitcoind.rpc_port,
         rpc_host: bitcoind.rpc_host.clone(),
         rpc_wallet: None,
