@@ -34,7 +34,7 @@ pub async fn broadcast_nonstandard_tx(
 pub fn compute_signet_magic(signet_challenge: &bitcoin::Script) -> Magic {
     use bitcoin::hashes::{Hash as _, HashEngine as _, sha256d};
     let mut hasher = sha256d::Hash::engine();
-    hasher.input(&[0x25]);
+    hasher.input(&[signet_challenge.len() as u8]);
     hasher.input(signet_challenge.as_bytes());
     let hash = sha256d::Hash::from_engine(hasher);
     Magic::from_bytes(hash[..=3].try_into().unwrap())
