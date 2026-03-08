@@ -1,24 +1,9 @@
 # Requirements
 
-1. Bitcoin Core, with ZMQ support. This needs be be running with the following
-   flags:
+1. Bitcoin Core, with ZMQ support. For information on running this on the global
+   signet, see [drivechain.info/dev.txt](https://drivechain.info/dev.txt)
 
-   ```
-   user=user
-   password=password
-   signetblocktime=60
-   signetchallenge=00141f61d57873d70d28bd28b3c9f9d6bf818b5a0d6a
-   acceptnonstdtxn=1 # Important! Otherwise Core rejects OP_DRIVECHAIN TXs
-   addnode=node.signet.drivechain.info
-
-   # this can also be set to a different address, as long
-   # as you set the CLI arg for bip300301_enforcer
-   zmqpubsequence=tcp://0.0.0.0:29000
-   txindex=1
-   rest=1
-   ```
-
-1. Rustc & Cargo, version 1.85.0 or higher. Installing via Rustup is
+1. Rustc & Cargo, version 1.88.0 or higher. Installing via Rustup is
    recommended.
 
 # Getting started
