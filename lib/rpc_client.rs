@@ -112,12 +112,18 @@ where
         Err(err) => {
             const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
                 "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
-            tracing::error!("failed to broadcast tx: {:#}", ErrorChain::new(&err));
             match err {
-                ClientError::Call(err) if err.message() == OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG => {
+                // We used to check the exact error message. Looks like this slightly varies across versions. Therefore
+                // use a substring check.
+                ClientError::Call(err)
+                    if err.message().contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG) =>
+                {
                     Ok(None)
                 }
-                err => Err(err),
+                err => {
+                    tracing::error!("failed to broadcast tx: {:#}", ErrorChain::new(&err));
+                    Err(err)
+                }
             }
         }
     }
