@@ -31,6 +31,7 @@ pub async fn broadcast_nonstandard_tx(
     }
 }
 
+// https://github.com/kallewoof/bips/blob/master/bip-0325.mediawiki#message-start
 pub fn compute_signet_magic(signet_challenge: &bitcoin::Script) -> Magic {
     use bitcoin::hashes::{Hash as _, HashEngine as _, sha256d};
     let mut hasher = sha256d::Hash::engine();
@@ -38,4 +39,29 @@ pub fn compute_signet_magic(signet_challenge: &bitcoin::Script) -> Magic {
     hasher.input(signet_challenge.as_bytes());
     let hash = sha256d::Hash::from_engine(hasher);
     Magic::from_bytes(hash[..=3].try_into().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // from the BIP325 example
+    #[test]
+    fn test_bip_compute_signet_magic() {
+        let signet_challenge = bitcoin::ScriptBuf::from_hex(
+            "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be43051ae",
+        )
+        .unwrap();
+        let magic = compute_signet_magic(signet_challenge.as_script());
+        assert_eq!(magic, Magic::from_bytes([0x7e, 0xc6, 0x53, 0xa5]));
+    }
+
+    // drivechain signet challenge
+    #[test]
+    fn test_drivechain_magic() {
+        let signet_challenge =
+            bitcoin::ScriptBuf::from_hex("a91484fa7c2460891fe5212cb08432e21a4207909aa987").unwrap();
+        let magic = compute_signet_magic(signet_challenge.as_script());
+        assert_eq!(magic, Magic::from_bytes([0xe4, 0x09, 0xe9, 0x68]));
+    }
 }
