@@ -663,8 +663,11 @@ impl ToStatus for CreateDepositPsbt {
 pub enum CreateDeposit {
     #[error("failed to broadcast tx")]
     BroadcastTx(#[source] jsonrpsee::core::ClientError),
-    #[error("failed to broadcast nonstandard tx")]
-    BroadcastNonstandardTx(#[source] bitcoin_send_tx_p2p::Error),
+    #[error("failed to broadcast nonstandard tx to {peer_addr}")]
+    BroadcastNonstandardTx {
+        peer_addr: std::net::SocketAddr,
+        source: bitcoin_send_tx_p2p::Error,
+    },
     #[error("broadcast deposit transaction failed: {txid}")]
     BroadcastUnsuccessful { txid: bitcoin::Txid },
     #[error("failed to convert sidechain address to PushBytesBuf")]
@@ -683,7 +686,7 @@ impl ToStatus for CreateDeposit {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BroadcastTx(_)
-            | Self::BroadcastNonstandardTx(_)
+            | Self::BroadcastNonstandardTx { .. }
             | Self::BroadcastUnsuccessful { .. }
             | Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
             Self::Psbt(err) => err.builder(),

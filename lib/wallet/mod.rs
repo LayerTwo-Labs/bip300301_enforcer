@@ -1280,16 +1280,36 @@ impl Wallet {
     }
 
     fn p2p_broadcast_addrs(&self) -> Box<dyn Iterator<Item = std::net::SocketAddr> + '_> {
-        if self.inner.validator.network() == Network::Signet
-            && self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES
-        {
-            let res = std::iter::once(crate::p2p::SIGNET_MINER_P2P_ADDR.into())
-                .chain(self.inner.config.p2p_broadcast_addr.iter().copied());
-            Box::new(res)
-        } else {
-            let res = self.inner.config.p2p_broadcast_addr.iter().copied();
-            Box::new(res)
-        }
+        let default_addrs = match self.inner.validator.network() {
+            Network::Signet if self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES => {
+                let addr: std::net::SocketAddr = crate::p2p::SIGNET_MINER_P2P_ADDR.into();
+
+                tracing::debug!("Using default P2P broadcast address for signet: {:?}", addr);
+                vec![addr]
+            }
+
+            Network::Signet => {
+                tracing::debug!(
+                    network = %self.inner.validator.network(),
+                    magic = %self.inner.magic,
+                    "No default P2P broadcast addresses for signet with non-matching magic",
+                );
+                vec![]
+            }
+            _ => {
+                tracing::debug!(
+                    network = %self.inner.validator.network(),
+                    "No default P2P broadcast addresses for network",
+                );
+                vec![]
+            }
+        };
+
+        Box::new(
+            default_addrs
+                .into_iter()
+                .chain(self.inner.config.p2p_broadcast_addr.iter().copied()),
+        )
     }
 
     /// Creates a deposit transaction, persists it to the database, and returns the TXID.
@@ -1343,12 +1363,19 @@ impl Wallet {
             let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
             hex::encode(tx_bytes)
         });
-        tracing::debug!(%txid, "Broadcasting deposit transaction...");
+        tracing::debug!(%txid, "Attempting to broadcast deposit transaction via RPC...");
         let mut broadcast_successfully: bool =
             crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
                 .await
                 .map_err(error::CreateDeposit::BroadcastTx)?
                 .is_some();
+
+        if self.p2p_broadcast_addrs().count() > 0 {
+            tracing::debug!(%txid, "Attempting to broadcast deposit transaction via P2P to {} peer(s)...", self.p2p_broadcast_addrs().count());
+        } else {
+            tracing::warn!(%txid, "No P2P peers configured, skipping P2P attempt of failed deposit transaction broadcast");
+        }
+
         let mut broadcast_results_stream = self
             .p2p_broadcast_addrs()
             .map(|peer_addr| {
@@ -1358,10 +1385,15 @@ impl Wallet {
                     self.inner.magic,
                     tx.clone(),
                 )
-                .map_err(error::CreateDeposit::BroadcastNonstandardTx)
+                .map_ok(move |result| (peer_addr, result))
+                .map_err(move |source| {
+                    error::CreateDeposit::BroadcastNonstandardTx { peer_addr, source }
+                })
             })
             .collect::<futures::stream::FuturesUnordered<_>>();
-        while let Some(broadcast_success) = broadcast_results_stream.try_next().await? {
+        while let Some((peer_addr, broadcast_success)) = broadcast_results_stream.try_next().await?
+        {
+            tracing::debug!(%txid, "Broadcast deposit transaction via P2P to {peer_addr} successfully: {broadcast_success}");
             broadcast_successfully |= broadcast_success
         }
         if broadcast_successfully {
