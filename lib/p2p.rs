@@ -9,6 +9,16 @@ pub const SIGNET_MAGIC_BYTES: [u8; 4] = [0xe4, 0x09, 0xe9, 0x68];
 pub const SIGNET_MINER_P2P_ADDR: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(172, 105, 148, 135), 38333);
 
+pub const fn default_p2p_broadcast_addr(
+    network: bitcoin::Network,
+    magic_bytes: [u8; 4],
+) -> Option<SocketAddrV4> {
+    match (network, magic_bytes) {
+        (bitcoin::Network::Signet, SIGNET_MAGIC_BYTES) => Some(SIGNET_MINER_P2P_ADDR),
+        (_, _) => None,
+    }
+}
+
 /// Broadcasts a non-standard transaction directly to a specified node via
 /// p2p.
 /// Returns `true` if submitted successfully, `false` on timeout.

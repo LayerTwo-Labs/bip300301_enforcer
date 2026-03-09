@@ -1280,36 +1280,34 @@ impl Wallet {
     }
 
     fn p2p_broadcast_addrs(&self) -> Box<dyn Iterator<Item = std::net::SocketAddr> + '_> {
-        let default_addrs = match self.inner.validator.network() {
-            Network::Signet if self.inner.magic.as_ref() == crate::p2p::SIGNET_MAGIC_BYTES => {
-                let addr: std::net::SocketAddr = crate::p2p::SIGNET_MINER_P2P_ADDR.into();
-
-                tracing::debug!("Using default P2P broadcast address for signet: {:?}", addr);
-                vec![addr]
+        let network = self.inner.validator.network();
+        let magic = self.inner.magic;
+        let p2p_broadcast_addrs = self.inner.config.p2p_broadcast_addr.iter().copied();
+        match crate::p2p::default_p2p_broadcast_addr(network, magic.to_bytes()) {
+            Some(default_addr) => {
+                if magic.to_bytes() == crate::p2p::SIGNET_MAGIC_BYTES {
+                    tracing::debug!(
+                        "Using default P2P broadcast address for signet: {default_addr:?}"
+                    );
+                    let res = std::iter::once(default_addr.into()).chain(p2p_broadcast_addrs);
+                    Box::new(res)
+                } else {
+                    tracing::debug!(
+                        %network,
+                        %magic,
+                        "No default P2P broadcast addresses for signet with non-matching magic",
+                    );
+                    Box::new(p2p_broadcast_addrs)
+                }
             }
-
-            Network::Signet => {
+            None => {
                 tracing::debug!(
-                    network = %self.inner.validator.network(),
-                    magic = %self.inner.magic,
-                    "No default P2P broadcast addresses for signet with non-matching magic",
-                );
-                vec![]
-            }
-            _ => {
-                tracing::debug!(
-                    network = %self.inner.validator.network(),
+                    %network,
                     "No default P2P broadcast addresses for network",
                 );
-                vec![]
+                Box::new(p2p_broadcast_addrs)
             }
-        };
-
-        Box::new(
-            default_addrs
-                .into_iter()
-                .chain(self.inner.config.p2p_broadcast_addr.iter().copied()),
-        )
+        }
     }
 
     /// Creates a deposit transaction, persists it to the database, and returns the TXID.
