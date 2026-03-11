@@ -24,7 +24,6 @@ use bip300301_enforcer_lib::{
 use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
-use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
 use either::Either;
 use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
@@ -43,6 +42,7 @@ use tower_http::{
 use tracing::{Instrument, instrument};
 use wallet::Wallet;
 
+mod error;
 mod file_descriptors;
 mod logging;
 
@@ -177,24 +177,11 @@ async fn spawn_json_rpc_server(
     Ok(handle)
 }
 
-#[derive(Debug, Diagnostic, Error)]
-enum GrpcServerError {
-    #[error("unable to serve gRPC at `{addr}`")]
-    #[diagnostic(code(grpc_server::serve))]
-    Serve {
-        addr: SocketAddr,
-        source: tonic::transport::Error,
-    },
-    #[error("unable to build reflection service")]
-    #[diagnostic(code(grpc_server::reflection))]
-    Reflection(#[from] tonic_reflection::server::Error),
-}
-
 async fn run_grpc_server(
     validator: Either<Validator, Wallet>,
     cancel: CancellationToken,
     addr: SocketAddr,
-) -> Result<(), GrpcServerError> {
+) -> Result<(), error::GrpcServer> {
     // Ordering here matters! Order here is from official docs on request IDs tracings
     // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
     let tracer = ServiceBuilder::new()
@@ -273,14 +260,14 @@ async fn run_grpc_server(
         .add_service(
             reflection_service_builder
                 .build_v1()
-                .map_err(GrpcServerError::Reflection)?,
+                .map_err(error::GrpcServer::Reflection)?,
         )
         .add_service(health_service);
 
     server
         .serve_with_shutdown(addr, cancel.clone().cancelled())
         .await
-        .map_err(|err| GrpcServerError::Serve { addr, source: err })
+        .map_err(|err| error::GrpcServer::Serve { addr, source: err })
 }
 
 async fn spawn_gbt_server<RpcClient>(
@@ -378,45 +365,14 @@ async fn is_address_port_open(addr: &str) -> Result<bool, std::io::Error> {
     }
 }
 
-#[derive(educe::Educe, Diagnostic, Error)]
-#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
-enum MempoolTaskError<Enforcer>
-where
-    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
-{
-    #[error("mempool initial sync error")]
-    InitialSync(#[source] InitialSyncMempoolError<Enforcer>),
-    #[error("mempool task sync error")]
-    SyncTask(#[source] SyncTaskError<Enforcer>),
-    #[error("failed to check if ZMQ address is reachable: failed to connect to {addr}")]
-    ZmqCheck {
-        addr: String,
-        source: std::io::Error,
-    },
-    #[error("ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}")]
-    ZmqNotReachable { zmq_addr_sequence: String },
-}
-
-#[derive(educe::Educe, Diagnostic, Error)]
-#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
-enum TaskError<Enforcer>
-where
-    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
-{
-    #[error("CUSF enforcer task w/mempool error")]
-    Mempool(#[from] MempoolTaskError<Enforcer>),
-    #[error("CUSF enforcer task w/o mempool error")]
-    NoMempool(#[from] cusf_enforcer_mempool::cusf_enforcer::TaskError<Enforcer>),
-}
-
 async fn sync_mempool<Enforcer, RpcClient>(
     mut enforcer: Enforcer,
     network: bitcoin::Network,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
-    err_tx: oneshot::Sender<MempoolTaskError<Enforcer>>,
+    err_tx: oneshot::Sender<error::MempoolTask<Enforcer>>,
     cancel: CancellationToken,
-) -> Result<cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>, MempoolTaskError<Enforcer>>
+) -> Result<cusf_enforcer_mempool::mempool::MempoolSync<Enforcer>, error::MempoolTask<Enforcer>>
 where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + Send + Sync + 'static,
     RpcClient: bitcoin_jsonrpsee::client::MainClient + Send + Sync + 'static,
@@ -426,13 +382,13 @@ where
     match is_address_port_open(zmq_addr_sequence).await {
         Ok(true) => (),
         Ok(false) => {
-            let err = MempoolTaskError::ZmqNotReachable {
+            let err = error::MempoolTask::ZmqNotReachable {
                 zmq_addr_sequence: zmq_addr_sequence.to_owned(),
             };
             return Err(err);
         }
         Err(err) => {
-            let err = MempoolTaskError::ZmqCheck {
+            let err = error::MempoolTask::ZmqCheck {
                 addr: zmq_addr_sequence.to_owned(),
                 source: err,
             };
@@ -453,7 +409,7 @@ where
     let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
         Ok(res) => res,
         Err(err) => {
-            let err = MempoolTaskError::InitialSync(err);
+            let err = error::MempoolTask::InitialSync(err);
             tracing::error!("{:#}", ErrorChain::new(&err));
             return Err(err);
         }
@@ -466,7 +422,7 @@ where
         rpc_client,
         sequence_stream,
         |err| async move {
-            let err = MempoolTaskError::SyncTask(err);
+            let err = error::MempoolTask::SyncTask(err);
             let _send_err: Result<(), _> = err_tx.send(err);
         },
     );
@@ -474,28 +430,20 @@ where
     Ok(mempool)
 }
 
-#[derive(Debug, Diagnostic, Error)]
-enum EnforcerTaskErr {
-    #[error(transparent)]
-    MempoolValidator(#[from] MempoolTaskError<Validator>),
-    #[error(transparent)]
-    MempoolWallet(#[from] MempoolTaskError<Wallet>),
-    #[error(transparent)]
-    NoMempool(#[from] TaskError<Either<Validator, Wallet>>),
-}
-
 enum EnforcerTaskErrRx {
-    MempoolValidator(oneshot::Receiver<MempoolTaskError<Validator>>),
-    MempoolWallet(oneshot::Receiver<MempoolTaskError<Wallet>>),
-    NoMempool(oneshot::Receiver<TaskError<Either<Validator, Wallet>>>),
+    MempoolValidator(oneshot::Receiver<error::MempoolTask<Validator>>),
+    MempoolWallet(oneshot::Receiver<error::MempoolTask<Wallet>>),
+    NoMempool(oneshot::Receiver<error::Task<Either<Validator, Wallet>>>),
 }
 
 impl EnforcerTaskErrRx {
-    async fn receive(self) -> Result<EnforcerTaskErr, oneshot::Canceled> {
+    async fn receive(self) -> Result<error::EnforcerTask, oneshot::Canceled> {
         match self {
-            Self::MempoolValidator(err_rx) => err_rx.await.map(EnforcerTaskErr::MempoolValidator),
-            Self::MempoolWallet(err_rx) => err_rx.await.map(EnforcerTaskErr::MempoolWallet),
-            Self::NoMempool(err_rx) => err_rx.await.map(EnforcerTaskErr::NoMempool),
+            Self::MempoolValidator(err_rx) => {
+                err_rx.await.map(error::EnforcerTask::MempoolValidator)
+            }
+            Self::MempoolWallet(err_rx) => err_rx.await.map(error::EnforcerTask::MempoolWallet),
+            Self::NoMempool(err_rx) => err_rx.await.map(error::EnforcerTask::NoMempool),
         }
     }
 }
@@ -503,7 +451,7 @@ impl EnforcerTaskErrRx {
 /// Error receivers for main task
 struct ErrRxs {
     enforcer_task: EnforcerTaskErrRx,
-    grpc_server: oneshot::Receiver<GrpcServerError>,
+    grpc_server: oneshot::Receiver<error::GrpcServer>,
     cancel: CancellationToken,
 }
 
@@ -575,7 +523,7 @@ async fn spawn_task(
                 );
 
                 if let Err(err) = task.await {
-                    let err = TaskError::NoMempool(err);
+                    let err = error::Task::NoMempool(err);
                     let _send_err: Result<(), _> = enforcer_task_err_tx.send(err);
                 }
                 Ok(())
