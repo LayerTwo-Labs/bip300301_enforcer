@@ -46,9 +46,21 @@ pub fn set_tracing_subscriber(
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),
             ("bip300301", log_level),
-            ("cusf_enforcer_mempool", log_level),
-            ("jsonrpsee_core::tracing", log_level),
             ("bip300301_enforcer", log_level),
+            ("cusf_enforcer_mempool", log_level),
+            (
+                "h2",
+                saturating_pred_level(saturating_pred_level(log_level)),
+            ),
+            (
+                "hyper_util",
+                saturating_pred_level(saturating_pred_level(log_level)),
+            ),
+            ("jsonrpsee_core::tracing", log_level),
+            (
+                "rustls",
+                saturating_pred_level(saturating_pred_level(log_level)),
+            ),
         ]);
         let directives_str = match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
             Ok(env_directives) => format!("{default_directives_str},{env_directives}"),
