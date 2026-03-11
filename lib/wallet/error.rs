@@ -779,9 +779,12 @@ pub enum SqliteError {
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum ConnectBlock {
-    #[error("failed connecting block to BDK chain")]
+    #[error("failed connecting block at height {block_height} to BDK chain")]
     #[diagnostic(code(connect_block_error))]
-    BdkConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
+    BdkConnect {
+        block_height: u32,
+        source: bdk_wallet::chain::local_chain::CannotConnectError,
+    },
     #[error(transparent)]
     ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
