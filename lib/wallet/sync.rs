@@ -60,7 +60,7 @@ impl WalletInner {
         block: &bitcoin::Block,
         block_height: u32,
         block_info: &crate::types::BlockInfo,
-    ) -> Result<(), error::ConnectBlock> {
+    ) -> Result<Result<(), bdk_chain::local_chain::CannotConnectError>, error::ConnectBlock> {
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
         let mut wallet_write = self.write_wallet().await?;
@@ -87,7 +87,10 @@ impl WalletInner {
         let mut database = self.bdk_db.lock().await;
         tracing::debug!("applying block to BDK wallet");
 
-        let () = wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height))?;
+        match wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height)) {
+            Ok(()) => (),
+            Err(err) => return Ok(Err(err)),
+        }
         let persisted_changed = wallet_write
             .with_mut(|wallet| wallet.persist_async(&mut database))
             .await
@@ -102,7 +105,7 @@ impl WalletInner {
             }
         );
         drop(wallet_write);
-        Ok(())
+        Ok(Ok(()))
     }
 
     pub(in crate::wallet) async fn set_last_synced_now(&self) {

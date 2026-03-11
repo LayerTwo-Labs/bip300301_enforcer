@@ -161,17 +161,14 @@ impl CusfEnforcer for Wallet {
             // We're therefore not checking here if the block is connect to the current active
             // chain.
 
-            let () = match self
+            match self
                 .inner
                 .handle_connect_block(&block_for_this_iteration, block_height, block_info)
-                .await
+                .await?
             {
-                Ok(_) => Ok(()),
-
+                Ok(()) => (),
                 // Try the recommended fixup - and then go back to the start of the loop
-                Err(error::ConnectBlock::BdkConnect(
-                    bdk_chain::local_chain::CannotConnectError { try_include_height },
-                )) => {
+                Err(bdk_chain::local_chain::CannotConnectError { try_include_height }) => {
                     // If we just pass in the recommended include height we iterate forever.
                     // BDK uses a different indexing scheme than we/Core does?
                     let try_include_height = try_include_height + 1;
@@ -185,8 +182,7 @@ impl CusfEnforcer for Wallet {
 
                     continue;
                 }
-                err => err,
-            }?;
+            }
 
             processed_blocks += 1;
 

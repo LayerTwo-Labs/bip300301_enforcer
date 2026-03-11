@@ -2152,8 +2152,8 @@ impl Wallet {
         Ok(m6id)
     }
 
-    /// Connect a missing block to the BDK chain. This is a recursive function that will
-    /// retry if we get a 'nested' alert from BDK, about further missing ancestors.
+    /// Connect missing blocks to the BDK chain. Retries if we get a 'nested'
+    /// alert from BDK, about further missing ancestors.
     async fn connect_missing_block(
         &mut self,
         try_include_height: u32,
@@ -2163,73 +2163,97 @@ impl Wallet {
             client::{GetBlockClient as _, U8Witness},
         };
 
-        let try_include_hash = self
-            .inner
-            .main_client
-            .getblockhash(try_include_height as usize)
-            .await
-            .map_err(|err| {
-                error::ConnectBlock::GetBlockHash(error::BitcoinCoreRPC {
-                    method: "getblockhash".to_string(),
-                    error: err,
-                })
-            })?;
+        struct TryInclude {
+            block_height: u32,
+            block: Option<bitcoin::Block>,
+        }
 
-        let try_include_block = self
-            .inner
-            .main_client
-            .get_block(try_include_hash, U8Witness::<0>)
-            .await
-            .map_err(|err| {
-                error::ConnectBlock::GetBlock(error::BitcoinCoreRPC {
-                    method: "getblock".to_string(),
-                    error: err,
-                })
-            })?;
+        // stack of block heights / blocks to connect
+        let mut try_includes = vec![TryInclude {
+            block_height: try_include_height,
+            block: None,
+        }];
 
-        let infos = self
-            .inner
-            .validator
-            .get_block_infos(&try_include_block.0.block_hash(), 0)?;
-
-        assert_eq!(infos.len(), 1);
-
-        let (header_info, block_info) = infos.head;
-
-        tracing::debug!(
-            "connecting missing block {} at height {}",
-            try_include_block.0.block_hash(),
-            header_info.height
-        );
-
-        match self
-            .inner
-            .handle_connect_block(&try_include_block.0, header_info.height, &block_info)
-            .await
-        {
-            Ok(_) => Ok(()),
-            // We can receive 'nested' alerts from BDK, about further missing ancestors. We therefore
-            // recurse, but make sure to only do so if the recommended try_include_height is /below/
-            // what we just tried. Otherwise we'll just loop forever.
-            Err(error::ConnectBlock::BdkConnect(
-                bdk_wallet::chain::local_chain::CannotConnectError { try_include_height },
-            )) if try_include_height < header_info.height => {
-                tracing::info!(
-                    "recursing to connect missing block at height {}",
-                    try_include_height
-                );
-
-                // Need to box the recursive call to satisfy the compiler
-                Box::pin(self.connect_missing_block(try_include_height)).await
-            }
-            err => err,
-        }?;
-
-        tracing::debug!(
-            "connected missing block {} at height {}",
-            try_include_block.0.block_hash(),
-            header_info.height
-        );
+        while let Some(try_include) = try_includes.last_mut() {
+            let TryInclude {
+                block_height,
+                block,
+            } = try_include;
+            let block = match block {
+                Some(block) => block,
+                None => {
+                    let block_hash = self
+                        .inner
+                        .main_client
+                        .getblockhash(try_include_height as usize)
+                        .await
+                        .map_err(|err| {
+                            error::ConnectBlock::GetBlockHash(error::BitcoinCoreRPC {
+                                method: "getblockhash".to_string(),
+                                error: err,
+                            })
+                        })?;
+                    block.insert(
+                        self.inner
+                            .main_client
+                            .get_block(block_hash, U8Witness::<0>)
+                            .await
+                            .map_err(|err| {
+                                error::ConnectBlock::GetBlock(error::BitcoinCoreRPC {
+                                    method: "getblock".to_string(),
+                                    error: err,
+                                })
+                            })?
+                            .0,
+                    )
+                }
+            };
+            let block_hash = block.block_hash();
+            let infos = self.inner.validator.get_block_infos(&block_hash, 0)?;
+            assert_eq!(infos.len(), 1);
+            let (_header_info, block_info) = infos.head;
+            tracing::debug!(
+                "connecting missing block {} at height {}",
+                block_hash,
+                block_height,
+            );
+            match self
+                .inner
+                .handle_connect_block(block, *block_height, &block_info)
+                .await?
+            {
+                Ok(()) => {
+                    tracing::debug!(
+                        "connected missing block {} at height {}",
+                        block_hash,
+                        block_height
+                    );
+                    try_includes.pop();
+                }
+                // We can receive 'nested' alerts from BDK, about further missing ancestors. We therefore
+                // recurse, but make sure to only do so if the recommended try_include_height is /below/
+                // what we just tried. Otherwise we'll just loop forever.
+                Err(
+                    err @ bdk_wallet::chain::local_chain::CannotConnectError { try_include_height },
+                ) => {
+                    if try_include_height < *block_height {
+                        tracing::debug!(
+                            "adding missing block at height {} to stack",
+                            try_include_height
+                        );
+                        try_includes.push(TryInclude {
+                            block_height: try_include_height,
+                            block: None,
+                        });
+                    } else {
+                        return Err(error::ConnectBlock::BdkConnect {
+                            block_height: *block_height,
+                            source: err,
+                        });
+                    }
+                }
+            };
+        }
 
         Ok(())
     }
