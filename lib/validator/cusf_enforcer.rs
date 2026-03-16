@@ -394,7 +394,7 @@ impl CusfEnforcer for Validator {
             _ = shutdown_signal => {
                 cancel.cancel();
                 *self.header_sync_progress_rx.write() = None;
-                Ok(())
+                Err(SyncError(crate::validator::task::error::Sync::Shutdown))
             }
         }
     }
