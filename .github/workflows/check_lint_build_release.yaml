@@ -117,6 +117,16 @@ jobs:
           git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
           popd
 
+      - name: Download bitcoin unpatched
+        run: |
+          pushd ..
+          wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
+          tar -xf bitcoin-30.2-x86_64-linux-gnu.tar.gz
+          rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
+          mv bitcoin-30.2/bin bitcoin-unpatched-bins
+          rm -r bitcoin-30.2
+          popd
+
       - name: Cache electrs binary
         id: cache-electrs
         uses: actions/cache@v4
@@ -154,6 +164,7 @@ jobs:
         run: |
           export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
+          export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'

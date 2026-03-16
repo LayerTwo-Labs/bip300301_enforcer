@@ -1,6 +1,12 @@
 //! Setup for an integration test
 
-use std::{collections::HashMap, ffi::OsStr, future::Future, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    ffi::OsStr,
+    future::Future,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
@@ -252,14 +258,14 @@ impl ReservedPorts {
 }
 
 pub fn new_bitcoind(
-    bin_paths: &BinPaths,
+    bitcoind_path: PathBuf,
     data_dir: PathBuf,
     reserved_ports: &ReservedPorts,
     network: Network,
     signet_setup: Option<&SignetSetup>,
 ) -> Bitcoind {
     Bitcoind {
-        path: bin_paths.bitcoind.clone(),
+        path: bitcoind_path,
         data_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
         network: network.into(),
@@ -368,6 +374,20 @@ impl Directories {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum BitcoindKind {
+    #[default]
+    Patched,
+    Unpatched,
+}
+
+fn bitcoind_path(bin_paths: &BinPaths, bitcoind_kind: BitcoindKind) -> &Path {
+    match bitcoind_kind {
+        BitcoindKind::Patched => &bin_paths.bitcoind,
+        BitcoindKind::Unpatched => &bin_paths.bitcoind_unpatched,
+    }
+}
+
 #[derive(Default)]
 pub struct SetupOpts<
     BitcoindArg = String,
@@ -381,6 +401,7 @@ pub struct SetupOpts<
     EnforcerArgs: IntoIterator<Item = EnforcerArg>,
 {
     pub bitcoind_args: BitcoindArgs,
+    pub bitcoind_kind: BitcoindKind,
     pub enforcer_args: EnforcerArgs,
 }
 
@@ -431,7 +452,7 @@ impl PostSetup {
 
         tracing::debug!("Starting bitcoin node");
         let bitcoind = new_bitcoind(
-            &bin_paths,
+            bitcoind_path(&bin_paths, opts.bitcoind_kind).to_owned(),
             dirs.bitcoin_dir.clone(),
             &reserved_ports,
             network,

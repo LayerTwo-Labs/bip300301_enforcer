@@ -17,7 +17,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     let (res_tx, _) = mpsc::unbounded::<anyhow::Result<()>>();
 
     let bitcoind = new_bitcoind(
-        &setup.bin_paths,
+        setup.bin_paths.bitcoind,
         setup.directories.bitcoin_dir.clone(),
         &setup.reserved_ports,
         setup.network,

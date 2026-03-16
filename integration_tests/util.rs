@@ -110,6 +110,7 @@ pub fn get_env_var_or<K: AsRef<OsStr>>(key: K, default: &str) -> Result<String, 
 #[derive(Clone, Debug)]
 pub struct BinPaths {
     pub bitcoind: PathBuf,
+    pub bitcoind_unpatched: PathBuf,
     pub bitcoin_cli: PathBuf,
     pub bitcoin_util: PathBuf,
     pub bip300301_enforcer: PathBuf,
@@ -122,6 +123,7 @@ impl BinPaths {
     pub fn from_env() -> Result<Self, VarError> {
         Ok(Self {
             bitcoind: get_env_var("BITCOIND")?.into(),
+            bitcoind_unpatched: get_env_var("BITCOIND_UNPATCHED")?.into(),
             bitcoin_cli: get_env_var("BITCOIN_CLI")?.into(),
             bitcoin_util: get_env_var("BITCOIN_UTIL")?.into(),
             bip300301_enforcer: get_env_var_or(
