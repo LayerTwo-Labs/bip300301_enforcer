@@ -17,7 +17,7 @@ use tracing::Instrument as _;
 use crate::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     mine,
-    setup::{DummySidechain, Mode, Network, SetupOpts, Sidechain},
+    setup::{BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain},
     util::{self, BinPaths, FileDumpConfig, TestFileRegistry},
 };
 
@@ -104,6 +104,7 @@ impl PreSetup {
             )];
             let setup_opts: SetupOpts = SetupOpts {
                 bitcoind_args: Vec::new(),
+                bitcoind_kind: BitcoindKind::Unpatched,
                 enforcer_args,
             };
             self.sender
@@ -120,6 +121,7 @@ impl PreSetup {
             ];
             let setup_opts: SetupOpts<_> = SetupOpts {
                 bitcoind_args,
+                bitcoind_kind: BitcoindKind::Patched,
                 enforcer_args: Vec::new(),
             };
             self.miner
