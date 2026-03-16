@@ -788,7 +788,12 @@ impl Wallet {
                         %tick,
                     );
                     let guard = span.enter();
-                    if let Err(err) = self.inner.sync().await {
+                    if self.inner.last_sync.read().await.is_none() {
+                        // Initial sync is incomplete, nothing to do
+                        tracing::debug!(
+                            "waiting for initial wallet sync to complete"
+                        );
+                    } else if let Err(err) = self.inner.sync().await {
                         tracing::error!("wallet sync error: {:#}", ErrorChain::new(&err));
                     }
                     drop(guard);
