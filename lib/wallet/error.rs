@@ -778,46 +778,120 @@ pub enum SqliteError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum ConnectBlock {
-    #[error("failed connecting block at height {block_height} to BDK chain")]
-    #[diagnostic(code(connect_block_error))]
-    BdkConnect {
-        block_height: u32,
-        source: bdk_wallet::chain::local_chain::CannotConnectError,
-    },
-    #[error(transparent)]
-    ConnectBlock(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
-    #[error(transparent)]
-    GetBlockInfo(#[from] validator::GetBlockInfoError),
-    #[error(transparent)]
-    GetBlockInfos(#[from] validator::GetBlockInfosError),
-    #[error("unable to fetch block from mainchain")]
-    #[diagnostic(code(fetch_block_error))]
-    GetBlock(#[source] BitcoinCoreRPC),
-    #[error("unable to fetch block hash from mainchain")]
-    #[diagnostic(code(fetch_block_hash_error))]
-    GetBlockHash(#[source] BitcoinCoreRPC),
-    #[error("unable to fetch missing block")]
-    #[diagnostic(code(fetch_block_error))]
-    FetchBlock(#[source] BitcoinCoreRPC),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+pub(in crate::wallet) enum HandleConnectBlockInner {
     #[error("rusqlite error")]
     Sqlite(#[from] SqliteError),
     #[error(transparent)]
     WalletNotUnlocked(#[from] NotUnlocked),
 }
 
-impl From<tokio_rusqlite::Error> for ConnectBlock {
+impl From<tokio_rusqlite::Error> for HandleConnectBlockInner {
     fn from(error: tokio_rusqlite::Error) -> Self {
         Self::Sqlite(SqliteError::TokioRusqlite(error))
     }
 }
 
-impl From<rusqlite::Error> for ConnectBlock {
+impl From<rusqlite::Error> for HandleConnectBlockInner {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(SqliteError::Rusqlite(error))
     }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct HandleConnectBlock(HandleConnectBlockInner);
+
+impl<Err> From<Err> for HandleConnectBlock
+where
+    HandleConnectBlockInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub(in crate::wallet) enum ConnectMissingBlockInner {
+    #[error("failed connecting block at height {block_height} to BDK chain")]
+    #[diagnostic(code(connect_block_error))]
+    BdkConnect {
+        block_height: u32,
+        source: bdk_wallet::chain::local_chain::CannotConnectError,
+    },
+    #[error("unable to fetch block from mainchain")]
+    #[diagnostic(code(fetch_block_error))]
+    GetBlock(#[source] BitcoinCoreRPC),
+    #[error(transparent)]
+    GetBlockInfos(#[from] validator::GetBlockInfosError),
+    #[error("unable to fetch block hash from mainchain")]
+    #[diagnostic(code(fetch_block_hash_error))]
+    GetBlockHash(#[source] BitcoinCoreRPC),
+    #[error("failed to handle connecting block to wallet")]
+    HandleConnectBlock(#[from] HandleConnectBlock),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct ConnectMissingBlock(ConnectMissingBlockInner);
+
+impl<Err> From<Err> for ConnectMissingBlock
+where
+    ConnectMissingBlockInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub(in crate::wallet) enum SyncWalletToTipInner {
+    #[error("failed to connect missing block to wallet")]
+    ConnectMissingBlock(#[from] ConnectMissingBlock),
+    #[error("unable to fetch block from mainchain")]
+    #[diagnostic(code(fetch_block_error))]
+    GetBlock(#[source] BitcoinCoreRPC),
+    #[error(transparent)]
+    GetBlockInfos(#[from] validator::GetBlockInfosError),
+    #[error(transparent)]
+    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+    #[error("failed to handle connecting block to wallet")]
+    HandleConnectBlock(#[from] HandleConnectBlock),
+    #[error(transparent)]
+    WalletNotUnlocked(#[from] NotUnlocked),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct SyncWalletToTip(SyncWalletToTipInner);
+
+impl<Err> From<Err> for SyncWalletToTip
+where
+    SyncWalletToTipInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum InitialSync {
+    #[error("received shutdown signal")]
+    Shutdown,
+    #[error(transparent)]
+    Validator(#[from] <Validator as CusfEnforcer>::SyncError),
+    #[error(transparent)]
+    Wallet(#[from] SyncWalletToTip),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum ConnectBlock {
+    #[error(transparent)]
+    Validator(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
+    #[error(transparent)]
+    Wallet(#[from] SyncWalletToTip),
 }
 
 #[derive(Debug, Diagnostic, Error)]
