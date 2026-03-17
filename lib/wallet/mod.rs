@@ -2162,7 +2162,7 @@ impl Wallet {
     async fn connect_missing_block(
         &mut self,
         try_include_height: u32,
-    ) -> std::result::Result<(), error::ConnectBlock> {
+    ) -> std::result::Result<(), error::ConnectMissingBlock> {
         use bitcoin_jsonrpsee::{
             MainClient as _,
             client::{GetBlockClient as _, U8Witness},
@@ -2193,7 +2193,7 @@ impl Wallet {
                         .getblockhash(try_include_height as usize)
                         .await
                         .map_err(|err| {
-                            error::ConnectBlock::GetBlockHash(error::BitcoinCoreRPC {
+                            error::ConnectMissingBlockInner::GetBlockHash(error::BitcoinCoreRPC {
                                 method: "getblockhash".to_string(),
                                 error: err,
                             })
@@ -2204,7 +2204,7 @@ impl Wallet {
                             .get_block(block_hash, U8Witness::<0>)
                             .await
                             .map_err(|err| {
-                                error::ConnectBlock::GetBlock(error::BitcoinCoreRPC {
+                                error::ConnectMissingBlockInner::GetBlock(error::BitcoinCoreRPC {
                                     method: "getblock".to_string(),
                                     error: err,
                                 })
@@ -2251,10 +2251,11 @@ impl Wallet {
                             block: None,
                         });
                     } else {
-                        return Err(error::ConnectBlock::BdkConnect {
+                        return Err(error::ConnectMissingBlockInner::BdkConnect {
                             block_height: *block_height,
                             source: err,
-                        });
+                        }
+                        .into());
                     }
                 }
             };
