@@ -6,16 +6,15 @@ use async_lock::RwLockWriteGuard;
 use bdk_chain::bdk_core;
 use bdk_electrum::electrum_client::ElectrumApi;
 use bdk_esplora::EsploraAsyncExt as _;
-use either::Either::{self, Left, Right};
+use futures::TryFutureExt;
 use tokio::time::Instant;
 use tracing::instrument;
 
-use super::{ElectrumClient, EsploraClient};
 use crate::{
     cli::WalletSyncSource,
     types::WithdrawalBundleEventKind,
     wallet::{
-        BdkWallet, Persistence, WalletInner, error,
+        BdkWallet, ChainSourceClient, Persistence, WalletInner, error,
         util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
     },
 };
@@ -131,7 +130,7 @@ impl WalletInner {
                 Ok(wallet_read) => wallet_read,
                 // "Accepted" errors, that aren't really errors in this case.
                 Err(error::NotUnlocked) => {
-                    tracing::trace!("sync: skipping sync due to wallet error");
+                    tracing::trace!("skipping sync due to wallet error");
                     return Ok(None);
                 }
             }
@@ -146,8 +145,14 @@ impl WalletInner {
             outpoints = request.progress().outpoints_remaining,
             "Requesting sync via chain source"
         );
-        let (source, update) = match &self.chain_source {
-            Either::Left(electrum_client) => {
+        let Some(chain_source_client) = &self.chain_source_client else {
+            // This should be checked above, so we never get into this branch.
+            // However, handle it gracefully.
+            tracing::info!("no sync source client, aborting sync");
+            return Ok(None);
+        };
+        let (chain_source, update) = match chain_source_client {
+            ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 5;
                 const FETCH_PREV_TXOUTS: bool = false;
                 (
@@ -155,21 +160,26 @@ impl WalletInner {
                     electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
                 )
             }
-
-            Either::Right(Either::Left(esplora_client)) => (
+            ChainSourceClient::Esplora(esplora_client) => (
                 "esplora",
                 esplora_client
                     .sync(request, ESPLORA_PARALLEL_REQUESTS)
                     .await?,
             ),
-            // This should be checked above, so we never get into this branch. However, handle
-            // it gracefully.
-            Either::Right(Either::Right(_)) => {
-                tracing::info!("`no-sync` sync source aborting",);
-                return Ok(None);
-            }
         };
-        tracing::trace!("Fetched update from {source}, applying update");
+        tracing::trace!("Fetched update from {chain_source}");
+        if let Some(chain_update) = update.chain_update {
+            // The wallet chain should never be updated here.
+            // Sync should only ever update txs
+            tracing::debug!(
+                checkpoint_block_hash = %chain_update.hash(),
+                checkpoint_height = chain_update.height(),
+                "Aborting wallet sync to new checkpoint",
+            );
+            return Ok(None);
+        }
+
+        tracing::trace!("applying update");
         // Upgrade wallet lock
         let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
         wallet_write.with_mut(|wallet| wallet.apply_update(update))?;
@@ -186,26 +196,28 @@ impl WalletInner {
 
     async fn address_has_txs(
         &self,
-        chain_source: Either<&ElectrumClient, &EsploraClient>,
+        chain_source_client: &ChainSourceClient,
         address: &bitcoin::Address,
-    ) -> miette::Result<bool, error::FullScan> {
-        let res = match &chain_source {
-            Either::Left(electrum_client) => electrum_client
+    ) -> miette::Result<bool, error::full_scan::CheckAddressTransactions> {
+        let res = match chain_source_client {
+            ChainSourceClient::Electrum(electrum_client) => !electrum_client
                 .inner
                 .script_get_history(&address.script_pubkey())
-                .map(|txs| !txs.is_empty())
-                .map_err(Left),
-
-            Either::Right(esplora_client) => esplora_client
+                .map_err(|err| error::full_scan::CheckAddressTransactions {
+                    address: address.clone(),
+                    source: err.into(),
+                })?
+                .is_empty(),
+            ChainSourceClient::Esplora(esplora_client) => !esplora_client
                 .get_address_txs(address, None)
-                .await
-                .map(|txs| !txs.is_empty())
-                .map_err(Right),
+                .map_err(|err| error::full_scan::CheckAddressTransactions {
+                    address: address.clone(),
+                    source: err.into(),
+                })
+                .await?
+                .is_empty(),
         };
-        res.map_err(|err| error::FullScan::CheckAddressTransactions {
-            address: address.clone(),
-            error: err,
-        })
+        Ok(res)
     }
 
     async fn get_chain_checkpoint(
@@ -253,16 +265,12 @@ impl WalletInner {
     ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
         tracing::info!("starting wallet full scan");
 
-        let chain_source = match &self.chain_source {
-            Either::Left(electrum) => Either::Left(electrum),
-            Either::Right(Either::Left(esplora)) => Either::Right(esplora),
+        let Some(chain_source_client) = &self.chain_source_client else {
             // This should be picked up earlier, by never invoking `full_scan` with
             // a disabled sync source
-            Either::Right(Either::Right(_disabled)) => {
-                return Err(error::FullScan::InvalidSyncSource {
-                    sync_source: WalletSyncSource::Disabled,
-                });
-            }
+            return Err(error::FullScan::InvalidSyncSource {
+                sync_source: WalletSyncSource::Disabled,
+            });
         };
 
         let mut start = SystemTime::now();
@@ -280,7 +288,7 @@ impl WalletInner {
             // First find upper bound by incrementing by 1000 until we find unused
             loop {
                 let address = wallet_read.peek_address(keychain, last_used_index);
-                let has_txs = self.address_has_txs(chain_source, &address).await?;
+                let has_txs = self.address_has_txs(chain_source_client, &address).await?;
 
                 if !has_txs {
                     break;
@@ -295,7 +303,7 @@ impl WalletInner {
             while low < high {
                 let mid = low + (high - low) / 2;
                 let address = wallet_read.peek_address(keychain, mid);
-                let has_txs = self.address_has_txs(chain_source, &address).await?;
+                let has_txs = self.address_has_txs(chain_source_client, &address).await?;
 
                 if !has_txs {
                     high = mid;
@@ -331,19 +339,21 @@ impl WalletInner {
             .start_sync_with_revealed_spks()
             .chain_tip(checkpoint);
 
-        let update = match chain_source {
-            Either::Left(electrum_client) => {
+        let update = match chain_source_client {
+            ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 100;
                 const FETCH_PREV_TXOUTS: bool = true;
                 electrum_client
                     .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
-                    .map_err(error::FullScan::ElectrumSync)?
+                    .map_err(error::ChainSourceClient::Electrum)?
             }
 
-            Either::Right(esplora_client) => esplora_client
-                .sync(request, ESPLORA_PARALLEL_REQUESTS)
-                .await
-                .map_err(|err| error::FullScan::EsploraSync(*err))?,
+            ChainSourceClient::Esplora(esplora_client) => {
+                esplora_client
+                    .sync(request, ESPLORA_PARALLEL_REQUESTS)
+                    .map_err(|err| error::ChainSourceClient::Esplora(*err))
+                    .await?
+            }
         };
 
         tracing::info!(
@@ -395,5 +405,3 @@ impl WalletInner {
         }
     }
 }
-
-pub struct NoSyncClient {}

@@ -1,16 +1,13 @@
 use std::{fmt::Debug, path::PathBuf};
 
-use bdk_chain::CheckPoint;
 use bdk_esplora::esplora_client;
 use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
-use either::Either;
 use miette::Diagnostic;
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
-    cli::WalletSyncSource,
     errors::ErrorChain,
     messages::CoinbaseMessagesError,
     proto::{StatusBuilder, ToStatus},
@@ -370,6 +367,14 @@ pub enum InitElectrumClient {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum InitChainSourceClient {
+    #[error("failed to initialize electrum client")]
+    Electrum(#[from] InitElectrumClient),
+    #[error("failed to initialize esplora client")]
+    Esplora(#[from] InitEsploraClient),
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum InitDbConnection {
     #[error(transparent)]
     Migration(#[from] rusqlite_migration::Error),
@@ -461,10 +466,8 @@ impl ToStatus for CreateNewWallet {
 pub enum InitWallet {
     #[error("failed to initialize DB connection")]
     InitDbConnection(#[from] InitDbConnection),
-    #[error("failed to initialize electrum client")]
-    InitElectrumClient(#[from] InitElectrumClient),
-    #[error("failed to initialize esplora client")]
-    InitEsploraClient(#[from] InitEsploraClient),
+    #[error(transparent)]
+    InitChainSourceClient(#[from] InitChainSourceClient),
     #[error("failed to initialize wallet from mnemonic")]
     InitFromMnemonic(Box<InitWalletFromMnemonic>),
     #[error("no signet challenge found")]
@@ -484,42 +487,64 @@ impl From<InitWalletFromMnemonic> for InitWallet {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum FullScan {
-    #[error(transparent)]
-    WalletNotUnlocked(#[from] NotUnlocked),
-
-    #[error("failed to check for bitcoin address transactions")]
-    #[diagnostic(code(check_address_transactions))]
-    CheckAddressTransactions {
-        address: bitcoin::Address,
-        error: Either<bdk_electrum::electrum_client::Error, bdk_esplora::esplora_client::Error>,
-    },
-
-    #[error(transparent)]
-    ListHeaders(#[from] crate::validator::ListHeadersError),
-
-    #[error("unable to create checkpoint from headers{}", .last_successful_header.as_ref().map_or(String::new(), |cp| format!(", last successful header at height {}", cp.height())))]
-    #[diagnostic(code(create_checkpoint_from_headers))]
-    CreateCheckPointFromHeaders {
-        last_successful_header: Option<CheckPoint>,
-    },
-
-    #[error(transparent)]
-    EsploraSync(#[from] bdk_esplora::esplora_client::Error),
-
-    #[error(transparent)]
-    ElectrumSync(#[from] bdk_electrum::electrum_client::Error),
-
-    #[error(transparent)]
-    CannotConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
-
-    #[error("unable to persist wallet post scan")]
-    PersistWallet(#[source] SqliteError),
-
-    #[error("chain sync source does not support full scan: {:?}", .sync_source)]
-    #[diagnostic(code(invalid_sync_source))]
-    InvalidSyncSource { sync_source: WalletSyncSource },
+#[non_exhaustive]
+pub enum ChainSourceClient {
+    #[error("electrum client error")]
+    Electrum(#[from] bdk_electrum::electrum_client::Error),
+    #[error("esplora client error")]
+    Esplora(#[from] bdk_esplora::esplora_client::Error),
 }
+
+pub mod full_scan {
+    use miette::Diagnostic;
+    use thiserror::Error;
+
+    use crate::wallet::{
+        WalletSyncSource,
+        error::{ChainSourceClient, NotUnlocked, SqliteError},
+    };
+
+    #[derive(Debug, Diagnostic, Error)]
+    #[diagnostic(code(check_address_transactions))]
+    #[error("failed to check for bitcoin address transactions")]
+    pub struct CheckAddressTransactions {
+        pub(in crate::wallet) address: bitcoin::Address,
+        pub(in crate::wallet) source: ChainSourceClient,
+    }
+
+    #[derive(Debug, Diagnostic, Error)]
+    pub enum Error {
+        #[error(transparent)]
+        WalletNotUnlocked(#[from] NotUnlocked),
+
+        #[error(transparent)]
+        ChainSourceClient(#[from] ChainSourceClient),
+
+        #[error(transparent)]
+        CheckAddressTransactions(#[from] CheckAddressTransactions),
+
+        #[error(transparent)]
+        ListHeaders(#[from] crate::validator::ListHeadersError),
+
+        #[error("unable to create checkpoint from headers{}", .last_successful_header.as_ref().map_or(String::new(), |cp| format!(", last successful header at height {}", cp.height())))]
+        #[diagnostic(code(create_checkpoint_from_headers))]
+        CreateCheckPointFromHeaders {
+            last_successful_header: Option<bdk_chain::CheckPoint>,
+        },
+
+        #[error(transparent)]
+        CannotConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
+
+        #[error("unable to persist wallet post scan")]
+        PersistWallet(#[source] SqliteError),
+
+        #[error("chain sync source does not support full scan: {:?}", .sync_source)]
+        #[diagnostic(code(invalid_sync_source))]
+        InvalidSyncSource { sync_source: WalletSyncSource },
+    }
+}
+
+pub use self::full_scan::Error as FullScan;
 
 #[derive(Debug, Diagnostic, Error)]
 #[error("Bitcoin Core RPC error (`{method}`)")]
