@@ -51,7 +51,6 @@ use crate::{
     wallet::{
         error::WalletInitialization,
         mnemonic::{EncryptedMnemonic, new_mnemonic},
-        sync::NoSyncClient,
         util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
     },
 };
@@ -71,7 +70,12 @@ type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
-type ChainSource = Either<ElectrumClient, Either<EsploraClient, NoSyncClient>>;
+
+#[non_exhaustive]
+enum ChainSourceClient {
+    Electrum(Box<ElectrumClient>),
+    Esplora(EsploraClient),
+}
 
 const fn default_esplora_url(network: Network) -> Option<&'static str> {
     match network {
@@ -108,7 +112,7 @@ struct WalletInner {
     bdk_db: tokio::sync::Mutex<Persistence>,
     // Persistence for things /we/ care about. Wallet seed, M* messages, ++.
     self_db: tokio::sync::Mutex<rusqlite::Connection>,
-    chain_source: ChainSource,
+    chain_source_client: Option<ChainSourceClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
@@ -179,6 +183,23 @@ impl WalletInner {
             });
         }
         Ok(BdkElectrumClient::new(electrum_client))
+    }
+
+    async fn init_chain_source_client(
+        config: &WalletConfig,
+        network: Network,
+    ) -> Result<Option<ChainSourceClient>, error::InitChainSourceClient> {
+        match config.sync_source {
+            WalletSyncSource::Electrum => {
+                let electrum_client = Self::init_electrum_client(config, network)?;
+                Ok(Some(ChainSourceClient::Electrum(Box::new(electrum_client))))
+            }
+            WalletSyncSource::Esplora => {
+                let esplora_client = Self::init_esplora_client(config, network).await?;
+                Ok(Some(ChainSourceClient::Esplora(esplora_client)))
+            }
+            WalletSyncSource::Disabled => Ok(None),
+        }
     }
 
     fn init_db_connection(
@@ -321,18 +342,8 @@ impl WalletInner {
             .await
             .map_err(error::InitWallet::OpenConnection)?;
 
-        let chain_source = match config.wallet_opts.sync_source {
-            WalletSyncSource::Electrum => {
-                let electrum_client = Self::init_electrum_client(&config.wallet_opts, network)?;
-                Either::Left(electrum_client)
-            }
-            WalletSyncSource::Esplora => {
-                let esplora_client =
-                    Self::init_esplora_client(&config.wallet_opts, network).await?;
-                Either::Right(Either::Left(esplora_client))
-            }
-            WalletSyncSource::Disabled => Either::Right(Either::Right(NoSyncClient {})),
-        };
+        let chain_source_client =
+            Self::init_chain_source_client(&config.wallet_opts, network).await?;
         let db_connection = Self::init_db_connection(data_dir)?;
 
         // If we:
@@ -369,7 +380,7 @@ impl WalletInner {
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             self_db: tokio::sync::Mutex::new(db_connection),
-            chain_source,
+            chain_source_client,
             last_sync: async_lock::RwLock::new(None),
         })
     }

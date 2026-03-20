@@ -690,7 +690,7 @@ impl Validator {
             .collect()
             .map_err(db::error::Iter::from)?;
 
-        res.sort_by(|(first_height, _), (second_height, _)| first_height.cmp(second_height));
+        res.sort_by_key(|(height, _)| *height);
 
         debug_assert!(
             res.clone()
