@@ -523,11 +523,11 @@ where
 }
 
 #[allow(clippy::significant_drop_tightening, reason = "false positive")]
-async fn deposit_withdraw_roundtrip_task<S>(
+pub async fn deposit_withdraw_roundtrip_task<S>(
     post_setup: &mut PostSetup,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     sidechain_init: S::Init,
-) -> anyhow::Result<()>
+) -> anyhow::Result<S>
 where
     S: Sidechain,
 {
@@ -585,8 +585,7 @@ where
     )
     .await?;
     tracing::info!("Withdrawal succeeded");
-    drop(sidechain);
-    Ok(())
+    Ok(sidechain)
 }
 
 /// Test a deposit-withdraw round-trip.
@@ -603,7 +602,9 @@ where
     S::Init: Send + 'static,
 {
     let (res_tx, _) = mpsc::unbounded();
-    deposit_withdraw_roundtrip_task::<S>(&mut post_setup, res_tx, sidechain_init).await
+    let _sidechain: S =
+        deposit_withdraw_roundtrip_task::<S>(&mut post_setup, res_tx, sidechain_init).await?;
+    Ok(())
 }
 
 pub fn tests(
