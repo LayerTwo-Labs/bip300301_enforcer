@@ -31,7 +31,7 @@ use tokio::{
     time::{Duration, sleep, timeout},
 };
 
-use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer};
+use crate::util::{BinPaths, Bitcoind, Electrs, Enforcer, GracefulShutdownHandle};
 
 #[derive(strum::Display, Clone, Copy, Debug)]
 pub enum Network {
@@ -331,12 +331,32 @@ pub async fn wait_for_port(
 }
 
 /// Running tasks, aborted on drop
+#[must_use]
 pub struct Tasks {
     // MUST be dropped before electrs and bitcoind
-    _enforcer: AbortOnDrop<()>,
+    enforcer: GracefulShutdownHandle<()>,
     // MUST be dropped before bitcoind
-    _electrs: AbortOnDrop<()>,
-    _bitcoind: AbortOnDrop<()>,
+    electrs: GracefulShutdownHandle<()>,
+    bitcoind: GracefulShutdownHandle<()>,
+}
+
+impl Tasks {
+    /// Attempt to shutdown gracefully, waiting up to `timeout_duration` for
+    /// each task.
+    pub async fn graceful_shutdown(
+        self,
+        timeout_duration: Duration,
+        signal: nix::sys::signal::Signal,
+    ) {
+        let Self {
+            enforcer,
+            electrs,
+            bitcoind,
+        } = self;
+        enforcer.graceful_shutdown(timeout_duration, signal).await;
+        electrs.graceful_shutdown(timeout_duration, signal).await;
+        bitcoind.graceful_shutdown(timeout_duration, signal).await;
+    }
 }
 
 type Transport = tonic::transport::Channel;
@@ -428,6 +448,29 @@ pub struct PostSetup {
 }
 
 impl PostSetup {
+    pub async fn graceful_shutdown(
+        self,
+        timeout_duration: Duration,
+        signal: nix::sys::signal::Signal,
+        cleanup: bool,
+    ) -> Result<(), std::io::Error> {
+        let Self {
+            tasks,
+            directories,
+            reserved_ports: _reserved_ports,
+            ..
+        } = self;
+        tasks.graceful_shutdown(timeout_duration, signal).await;
+        if cleanup {
+            tracing::info!("Removing {}", directories.base_dir.path().display(),);
+            // Wait for tasks to die
+            sleep(Duration::from_secs(1)).await;
+            directories.base_dir.cleanup()
+        } else {
+            Ok(())
+        }
+    }
+
     pub async fn setup<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>(
         bin_paths: BinPaths,
         mode: Mode,
@@ -597,9 +640,9 @@ impl PostSetup {
             },
         );
         let tasks = Tasks {
-            _enforcer: enforcer_task,
-            _electrs: electrs_task,
-            _bitcoind: bitcoind_task,
+            enforcer: enforcer_task,
+            electrs: electrs_task,
+            bitcoind: bitcoind_task,
         };
         // Wait for enforcer gRPC port to open
         wait_for_port(

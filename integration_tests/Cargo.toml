@@ -19,18 +19,20 @@ futures = { workspace = true }
 hex = { workspace = true }
 indicatif = { version = "0.18.3", features = ["futures"] }
 jsonrpsee = { workspace = true }
-thiserror = { workspace = true }
 libtest-mimic = "0.8.1"
 miniscript = "12.3.0"
+nix = { version = "0.31.2", features = ["process", "signal"] }
 reserve-port = "2.0.1"
 serde_json = "1.0.128"
 strum = { version = "0.27.2", features = ["derive"] }
 temp-dir = "0.2.0"
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-indicatif = "0.3.14"
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 parking_lot = { workspace = true }
 
 [dev-dependencies]

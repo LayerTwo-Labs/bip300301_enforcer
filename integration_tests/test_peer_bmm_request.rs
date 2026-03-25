@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt,
@@ -11,14 +11,16 @@ use bip300301_enforcer_lib::{
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
+use nix::sys::signal::Signal as NixSignal;
 use tokio::time::sleep;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument as _;
 
 use crate::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     mine,
     setup::{BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain},
-    util::{self, BinPaths, FileDumpConfig, TestFileRegistry},
+    util::{BinPaths, FileDumpConfig, TestFileRegistry},
 };
 
 struct Directories<'a> {
@@ -74,6 +76,25 @@ struct PostSetup {
     miner: crate::setup::PostSetup,
     /// Sidechain process that will be sending the BMM request
     sender: crate::setup::PostSetup,
+}
+
+impl PostSetup {
+    async fn graceful_shutdown(
+        self,
+        timeout_duration: Duration,
+        signal: NixSignal,
+        cleanup: bool,
+    ) -> Result<(), std::io::Error> {
+        let Self { miner, sender } = self;
+        let (res0, res1) = futures::future::join(
+            miner.graceful_shutdown(timeout_duration, signal, cleanup),
+            sender.graceful_shutdown(timeout_duration, signal, cleanup),
+        )
+        .await;
+        let () = res0?;
+        let () = res1?;
+        Ok(())
+    }
 }
 
 struct PreSetup {
@@ -144,7 +165,10 @@ impl PreSetup {
     }
 }
 
-async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
+const SHUTDOWN_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
+const SHUTDOWN_SIGNAL: NixSignal = NixSignal::SIGINT;
+
+async fn test_peer_bmm_request_task(post_setup: &mut PostSetup) -> anyhow::Result<()> {
     tracing::info!("Setup successfully");
     let () = propose_sidechain::<DummySidechain>(&mut post_setup.miner).await?;
     tracing::info!("Proposed sidechain successfully");
@@ -176,7 +200,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     };
     let () = crate::mine::mine::<DummySidechain>(&mut post_setup.miner, 1, None).await?;
     // Wait for sender to receive block
-    sleep(std::time::Duration::from_secs(1)).await;
+    sleep(Duration::from_secs(1)).await;
     let sender_balance = post_setup
         .sender
         .wallet_service_client
@@ -228,7 +252,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     tracing::info!(%bmm_request_txid, "Created BMM request tx successfully");
     // Wait for mempool inclusion / p2p broadcast.
     // This can take >5s sometimes, for unknown reasons.
-    sleep(std::time::Duration::from_secs(10)).await;
+    sleep(Duration::from_secs(10)).await;
     let mempool_entry = post_setup
         .miner
         .bitcoin_cli
@@ -252,17 +276,6 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     )
     .await?;
     tracing::info!("Included BMM request tx successfully");
-    tracing::info!(
-        "Removing {}, {}",
-        post_setup.miner.directories.base_dir.path().display(),
-        post_setup.sender.directories.base_dir.path().display()
-    );
-    drop(post_setup.miner.tasks);
-    drop(post_setup.sender.tasks);
-    // Wait for tasks to die
-    sleep(std::time::Duration::from_secs(1)).await;
-    post_setup.miner.directories.base_dir.cleanup()?;
-    post_setup.sender.directories.base_dir.cleanup()?;
     Ok(())
 }
 
@@ -275,17 +288,27 @@ pub async fn test_peer_bmm_request(
     file_registry: TestFileRegistry,
 ) -> anyhow::Result<()> {
     let (res_tx, mut res_rx) = mpsc::unbounded();
-    let post_setup = PreSetup::new(bin_paths, &file_registry)?
+    let mut post_setup = PreSetup::new(bin_paths, &file_registry)?
         .setup(res_tx.clone())
         .await?;
-    let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
+    let test_handle = tokio::task::spawn({
         async move {
-            let res = test_peer_bmm_request_task(post_setup).await;
+            let res = test_peer_bmm_request_task(&mut post_setup).await;
+            match post_setup
+                .graceful_shutdown(SHUTDOWN_TIMEOUT_DURATION, SHUTDOWN_SIGNAL, res.is_ok())
+                .await
+            {
+                Ok(()) => (),
+                Err(err) => {
+                    let err = anyhow::Error::from(err);
+                    tracing::error!("{err:#}")
+                }
+            };
             let _send_err: Result<(), _> = res_tx.unbounded_send(res);
         }
         .in_current_span()
-    })
-    .into();
+    });
+    let _test_handle = AbortOnDropHandle::new(test_handle);
     res_rx
         .next()
         .await

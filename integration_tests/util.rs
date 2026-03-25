@@ -6,9 +6,13 @@ use std::{
     sync::Arc,
 };
 
-use futures::TryFutureExt as _;
+use futures::{channel::oneshot, future::TryFutureExt as _};
+use nix::{
+    sys::signal::{Signal as NixSignal, kill as nix_kill},
+    unistd::Pid,
+};
 use thiserror::Error;
-use tokio::task::JoinHandle;
+use tokio_util::task::AbortOnDropHandle;
 
 /// Information about a failed test
 #[derive(Clone, Debug)]
@@ -362,40 +366,6 @@ pub fn format_test_output_files(test_name: &str, files: &[FileWithConfig]) -> St
     output
 }
 
-/// Wrapper around `JoinHandle` that aborts the task on drop
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct AbortOnDrop<T>(JoinHandle<T>);
-
-impl<T> AbortOnDrop<T> {
-    // TODO: is this OK? Claude dreamed it up!
-    pub fn into_inner(self) -> JoinHandle<T> {
-        let this = std::mem::ManuallyDrop::new(self);
-        // SAFETY: We wrapped self in ManuallyDrop, so Drop won't run
-        unsafe { std::ptr::read(&this.0) }
-    }
-}
-
-impl<T> std::ops::Deref for AbortOnDrop<T> {
-    type Target = JoinHandle<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort()
-    }
-}
-
-impl<T> From<JoinHandle<T>> for AbortOnDrop<T> {
-    fn from(task: JoinHandle<T>) -> Self {
-        Self(task)
-    }
-}
-
 fn open_file_or_create_new(path: &std::path::Path) -> Result<std::fs::File, std::io::Error> {
     std::fs::File::create_new(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
@@ -406,13 +376,20 @@ fn open_file_or_create_new(path: &std::path::Path) -> Result<std::fs::File, std:
     })
 }
 
-/// Run command with args, dumping stderr/stdout to `dir` on exit
+/// Run command with args.
+/// Dumps stderr/stdout to `dir` on exit.
+///
+/// If the `signal_rx` future completes before the command,
+/// the signal will be sent to the command process.
+/// It is ok to drop the sender corresponding to `signal_rx` without sending
+/// any signals.
 pub fn await_command_with_args<Cmd, Env, Arg, Envs, Args>(
+    signal_rx: oneshot::Receiver<NixSignal>,
     dir: &std::path::Path,
     command: Cmd,
     envs: Envs,
     args: Args,
-) -> impl Future<Output = anyhow::Error> + 'static
+) -> impl Future<Output = anyhow::Result<()>> + 'static
 where
     Cmd: AsRef<OsStr>,
     Arg: AsRef<OsStr>,
@@ -432,9 +409,9 @@ where
             Ok(stderr_file) => stderr_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
-                return anyhow::anyhow!(
+                return Err(anyhow::anyhow!(
                     "error creating stderr file for command `{command}`: `{err:#}`"
-                );
+                ));
             }
         };
         cmd.stderr(std::process::Stdio::from(stderr_file));
@@ -442,9 +419,9 @@ where
             Ok(stdout_file) => stdout_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
-                return anyhow::anyhow!(
+                return Err(anyhow::anyhow!(
                     "error creating stdout file for command `{command}`: `{err:#}`"
-                );
+                ));
             }
         };
         cmd.stdout(std::process::Stdio::from(stdout_file));
@@ -457,38 +434,98 @@ where
             Ok(cmd) => cmd,
             Err(err) => {
                 let err = anyhow::Error::from(err);
-                return anyhow::anyhow!("Spawning command {command} failed: `{err:#}`");
+                return Err(anyhow::anyhow!(
+                    "Spawning command {command} failed: `{err:#}`"
+                ));
             }
         };
 
         tracing::debug!("Waiting for `{command}` to finish");
-        let exit_status = match cmd.wait().await {
+        let (exit_status, signal_sent) = tokio::select! {
+            signal = signal_rx => {
+                'exit_status: {
+                    let signal = match signal {
+                        Ok(signal) => signal,
+                        Err(_) => break 'exit_status (cmd.wait().await, false)
+                    };
+                    let Some(pid) = cmd.id() else {
+                        break 'exit_status (cmd.wait().await, false)
+                    };
+                    let pid = Pid::from_raw(pid as i32);
+                    match nix_kill(pid, signal) {
+                        Ok(()) => (cmd.wait().await, true),
+                        Err(err) => return Err(anyhow::Error::from(err)),
+                    }
+                }
+            }
+            exit_status = cmd.wait() => (exit_status, false)
+        };
+        let exit_status = match exit_status {
             Ok(exit_status) => exit_status,
             Err(err) => {
                 let err = anyhow::Error::from(err);
-                return anyhow::anyhow!("Command {command} failed: `{err:#}`",);
+                return Err(anyhow::anyhow!("Command {command} failed: `{err:#}`"));
             }
         };
-        tracing::error!(
-            message = format!(
-                "Command `{command}` exited with status `{}`!",
-                exit_status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_owned())
-            ),
-            stdout_file = stdout_fp.to_string_lossy().to_string(),
-            stderr_file = stderr_fp.to_string_lossy().to_string(),
-        );
+        if signal_sent {
+            tracing::info!(
+                message = format!(
+                    "Command `{command}` exited with status `{}`!",
+                    exit_status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or("unknown".to_owned())
+                ),
+                stdout_file = stdout_fp.to_string_lossy().to_string(),
+                stderr_file = stderr_fp.to_string_lossy().to_string(),
+            );
+            Ok(())
+        } else {
+            tracing::error!(
+                message = format!(
+                    "Command `{command}` exited with status `{}`!",
+                    exit_status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or("unknown".to_owned())
+                ),
+                stdout_file = stdout_fp.to_string_lossy().to_string(),
+                stderr_file = stderr_fp.to_string_lossy().to_string(),
+            );
+            let mut msg = format!("Command `{command}` finished: `{exit_status}`");
 
-        let mut msg = format!("Command `{command}` finished: `{exit_status}`");
-
-        if let Ok(stderr) = std::fs::read_to_string(stderr_fp).map(|s| s.trim().to_owned())
-            && !stderr.is_empty()
-        {
-            msg.push_str(&format!("\nStderr:\n{stderr}"));
+            if let Ok(stderr) = std::fs::read_to_string(stderr_fp).map(|s| s.trim().to_owned())
+                && !stderr.is_empty()
+            {
+                msg.push_str(&format!("\nStderr:\n{stderr}"));
+            }
+            Err(anyhow::anyhow!(msg))
         }
-        anyhow::anyhow!(msg)
+    }
+}
+
+/// Handle to a task that can be shutdown gracefully, or aborted on drop
+#[must_use]
+pub struct GracefulShutdownHandle<T> {
+    signal_tx: oneshot::Sender<NixSignal>,
+    inner: AbortOnDropHandle<T>,
+}
+
+impl<T> GracefulShutdownHandle<T> {
+    pub fn into_inner(self) -> AbortOnDropHandle<T> {
+        self.inner
+    }
+
+    /// Returns `None` if the task was killed after `timeout_duration`
+    pub async fn graceful_shutdown(
+        self,
+        timeout_duration: tokio::time::Duration,
+        signal: NixSignal,
+    ) -> Option<Result<T, tokio::task::JoinError>> {
+        let _: Result<(), NixSignal> = self.signal_tx.send(signal);
+        tokio::time::timeout(timeout_duration, self.inner)
+            .await
+            .ok()
     }
 }
 
@@ -501,7 +538,7 @@ pub fn spawn_command_with_args<Cmd, Env, Arg, Envs, Args, F>(
     envs: Envs,
     args: Args,
     err_handler: F,
-) -> AbortOnDrop<()>
+) -> GracefulShutdownHandle<()>
 where
     Cmd: AsRef<OsStr>,
     Arg: AsRef<OsStr>,
@@ -510,14 +547,22 @@ where
     Args: IntoIterator<Item = Arg>,
     F: FnOnce(anyhow::Error) + Send + 'static,
 {
-    let fut = await_command_with_args(dir, command, envs, args);
-    tokio::task::spawn(async {
+    let (signal_tx, signal_rx) = oneshot::channel();
+    let fut = await_command_with_args(signal_rx, dir, command, envs, args);
+    let handle = tokio::task::spawn(async {
         use tracing::Instrument as _;
-        let err = fut.in_current_span().await;
-        tracing::error!("Command failed with error: {err:#}");
-        err_handler(err)
-    })
-    .into()
+        match fut.in_current_span().await {
+            Ok(()) => (),
+            Err(err) => {
+                tracing::error!("Command failed with error: {err:#}");
+                err_handler(err)
+            }
+        };
+    });
+    GracefulShutdownHandle {
+        signal_tx,
+        inner: AbortOnDropHandle::new(handle),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -552,13 +597,12 @@ impl Bitcoind {
         }
     }
 
-    #[must_use]
     pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
         args: Args,
         err_handler: F,
-    ) -> AbortOnDrop<()>
+    ) -> GracefulShutdownHandle<()>
     where
         Arg: AsRef<OsStr>,
         Env: AsRef<OsStr>,
@@ -624,7 +668,7 @@ impl Electrs {
         envs: Envs,
         args: Args,
         err_handler: F,
-    ) -> AbortOnDrop<()>
+    ) -> GracefulShutdownHandle<()>
     where
         Arg: AsRef<OsStr>,
         Env: AsRef<OsStr>,
@@ -675,13 +719,12 @@ pub struct Enforcer {
 }
 
 impl Enforcer {
-    #[must_use]
     pub fn spawn_command_with_args<Env, Arg, Envs, Args, F>(
         &self,
         envs: Envs,
         args: Args,
         err_handler: F,
-    ) -> AbortOnDrop<()>
+    ) -> GracefulShutdownHandle<()>
     where
         Arg: AsRef<OsStr>,
         Env: AsRef<OsStr>,
