@@ -1115,6 +1115,8 @@ pub enum GenerateSignetBlock {
     GetSignetMinerPath(#[from] GetSignetMinerPath),
     #[error(transparent)]
     Mine(#[from] crate::bins::CommandError),
+    #[error("signet miner subprocess timed out")]
+    Timeout { duration: tokio::time::Duration },
 }
 
 impl ToStatus for GenerateSignetBlock {
@@ -1125,6 +1127,7 @@ impl ToStatus for GenerateSignetBlock {
             Self::GetMainchainTip(err) => err.builder(),
             Self::GetSignetMinerPath(err) => err.builder(),
             Self::Mine(err) => err.builder(),
+            Self::Timeout { .. } => StatusBuilder::new(self),
         }
     }
 }
