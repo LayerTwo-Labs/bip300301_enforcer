@@ -316,7 +316,12 @@ where
         .layer(propagate_request_id_layer())
         .into_inner();
 
-    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
+    let http_middleware = tower::ServiceBuilder::new()
+        // Limit the gbt_server to 1 concurrent request, preventing runaway
+        // callers (e.g. a stuck signet miner subprocess) from hammering
+        // the endpoint with parallel requests.
+        .layer(tower::limit::ConcurrencyLimitLayer::new(1))
+        .layer(tracer);
     let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
 
     use cusf_enforcer_mempool::server::RpcServer;
