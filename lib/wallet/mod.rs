@@ -115,6 +115,8 @@ struct WalletInner {
     chain_source_client: Option<ChainSourceClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
+    /// Limits GenerateBlocks to one concurrent call at a time.
+    generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl WalletInner {
@@ -382,6 +384,7 @@ impl WalletInner {
             self_db: tokio::sync::Mutex::new(db_connection),
             chain_source_client,
             last_sync: async_lock::RwLock::new(None),
+            generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
@@ -843,6 +846,10 @@ impl Wallet {
 
     pub fn validator(&self) -> &Validator {
         &self.inner.validator
+    }
+
+    pub fn generate_blocks_semaphore(&self) -> &Arc<tokio::sync::Semaphore> {
+        &self.inner.generate_blocks_semaphore
     }
 
     /// Returns pending sidechain proposals from the wallet. These are not yet
