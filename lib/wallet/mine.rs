@@ -541,6 +541,7 @@ impl Wallet {
 
                 let mut command = Command::new("mkdir");
                 command.args(["-p", &dir.to_string_lossy()]);
+                command.kill_on_drop(true); // important: avoid lingering mining processes that may loop forever with new requests
                 command
                     .run_utf8()
                     .await
@@ -643,7 +644,18 @@ impl Wallet {
         let mut command = miner.command("generate", command_args);
         tracing::debug!("Running signet miner: {:?}", command);
 
-        let _stdout: String = command.run_utf8().await?;
+        const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(120);
+        let _stdout: String = tokio::time::timeout(SIGNET_MINER_TIMEOUT, command.run_utf8())
+            .await
+            .map_err(|_elapsed| {
+                tracing::error!(
+                    "signet miner subprocess timed out after {}s",
+                    SIGNET_MINER_TIMEOUT.as_secs()
+                );
+                error::GenerateSignetBlock::Timeout {
+                    duration: SIGNET_MINER_TIMEOUT,
+                }
+            })??;
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
