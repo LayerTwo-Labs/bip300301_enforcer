@@ -237,6 +237,16 @@ impl WalletService for crate::wallet::Wallet {
             tonic::Status::invalid_argument("must provide a positive number of blocks")
         })?;
 
+        // Only allow one GenerateBlocks call at a time. Concurrent callers
+        // will get a rate-limited error instead of queuing up.
+        let permit = self
+            .generate_blocks_semaphore()
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                tonic::Status::resource_exhausted("GenerateBlocks is already in progress")
+            })?;
+
         self.verify_can_mine(count)
             .await
             .map_err(|err| err.builder().to_status())?;
@@ -252,6 +262,13 @@ impl WalletService for crate::wallet::Wallet {
                     tracing::error!("{:#}", ErrorChain::new(&err));
                     Err(err.builder().to_status())
                 }
+            })
+            // Hold the permit for the lifetime of the stream, so that
+            // the semaphore is released when the stream completes or is
+            // dropped.
+            .map(move |item| {
+                let _permit = &permit;
+                item
             })
             .boxed();
         Ok(tonic::Response::new(stream))
