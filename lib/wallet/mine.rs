@@ -642,6 +642,8 @@ impl Wallet {
         };
 
         let mut command = miner.command("generate", command_args);
+        // Important: avoid lingering mining processes that may loop forever with new requests
+        command.kill_on_drop(true);
         tracing::debug!("Running signet miner: {:?}", command);
 
         const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(120);
