@@ -735,13 +735,18 @@ impl Wallet {
     where
         Ref: std::borrow::Borrow<Self>,
     {
-        tracing::info!("Generate: creating {} block(s)", count);
-        stream::try_unfold((this, count.get()), move |(this, remaining)| async move {
-            if remaining == 0 {
+        tracing::info!(count, "generating blocks");
+        stream::try_unfold((this, 0), move |(this, mut generated)| async move {
+            if generated == count.get() {
                 Ok(None)
             } else {
+                let mut remaining = count.get() - generated;
+                tracing::trace!(generated, remaining, "generating block",);
                 let block_hash = this.borrow().generate_block(ack_all_proposals).await?;
-                Ok(Some((block_hash, (this, remaining - 1))))
+                generated += 1;
+                remaining -= 1;
+                tracing::trace!(generated, remaining, "generated block",);
+                Ok(Some((block_hash, (this, generated))))
             }
         })
         .fuse()
