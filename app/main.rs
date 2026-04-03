@@ -335,10 +335,12 @@ where
     Ok(handle)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_gbt_server<RpcClient>(
     mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
     network_info: bitcoin_jsonrpsee::client::NetworkInfo,
+    cached_template_lifetime: Option<Duration>,
     sample_block_template: bitcoin_jsonrpsee::client::BlockTemplate,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<Wallet>,
     rpc_client: RpcClient,
@@ -353,6 +355,7 @@ where
         network,
         network_info,
         rpc_client,
+        cached_template_lifetime,
         sample_block_template,
     )
     .into_diagnostic()?;
@@ -651,10 +654,14 @@ async fn spawn_task(
                     }
                 };
 
+                let gbt_cache_lifetime = cli
+                    .gbt_cache_lifetime_s
+                    .map(|secs| Duration::from_secs(secs.get()));
                 let server_handle = start_gbt_server(
                     mining_reward_address,
                     network,
                     network_info,
+                    gbt_cache_lifetime,
                     sample_block_template,
                     mempool,
                     mainchain_client,

@@ -1,6 +1,7 @@
 use std::{
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
+    num::NonZeroU64,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -399,6 +400,9 @@ pub struct Config {
     pub enable_mempool: bool,
     #[command(flatten)]
     pub logger_opts: LoggerConfig,
+    /// GBT cache lifetime, in seconds
+    #[arg(long)]
+    pub gbt_cache_lifetime_s: Option<NonZeroU64>,
     #[command(flatten)]
     pub mining_opts: MiningConfig,
     #[command(flatten)]
