@@ -647,7 +647,7 @@ impl Wallet {
         tracing::debug!("Running signet miner: {:?}", command);
 
         const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(120);
-        let _stdout: String = tokio::time::timeout(SIGNET_MINER_TIMEOUT, command.run_utf8())
+        let stdout = tokio::time::timeout(SIGNET_MINER_TIMEOUT, command.run_utf8())
             .await
             .map_err(|_elapsed| {
                 tracing::error!(
@@ -658,6 +658,8 @@ impl Wallet {
                     duration: SIGNET_MINER_TIMEOUT,
                 }
             })??;
+
+        tracing::debug!("Signet miner output: {stdout}");
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
