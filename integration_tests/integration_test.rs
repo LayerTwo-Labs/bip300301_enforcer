@@ -14,6 +14,7 @@ use bip300301_enforcer_lib::{
 };
 use bitcoin::Amount;
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _, channel::mpsc};
+use nix::sys::signal::Signal as NixSignal;
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument as _;
@@ -602,9 +603,20 @@ where
     S::Init: Send + 'static,
 {
     let (res_tx, _) = mpsc::unbounded();
-    let _sidechain: S =
-        deposit_withdraw_roundtrip_task::<S>(&mut post_setup, res_tx, sidechain_init).await?;
-    Ok(())
+    let res = deposit_withdraw_roundtrip_task::<S>(&mut post_setup, res_tx, sidechain_init).await;
+    const SHUTDOWN_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
+    const SHUTDOWN_SIGNAL: NixSignal = NixSignal::SIGINT;
+    match post_setup
+        .graceful_shutdown(SHUTDOWN_TIMEOUT_DURATION, SHUTDOWN_SIGNAL, res.is_ok())
+        .await
+    {
+        Ok(()) => (),
+        Err(err) => {
+            let err = anyhow::Error::from(err);
+            tracing::error!("{err:#}");
+        }
+    }
+    res.map(|_sidechain| ())
 }
 
 pub fn tests(
