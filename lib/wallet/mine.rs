@@ -644,10 +644,50 @@ impl Wallet {
         let mut command = miner.command("generate", command_args);
         // Important: avoid lingering mining processes that may loop forever with new requests
         command.kill_on_drop(true);
+
+        // We want to stream stdout/stderr as they come in, for investigating hanging processes.
+        command.stdout(std::process::Stdio::piped());
+        command.stderr(std::process::Stdio::piped());
         tracing::debug!("Running signet miner: {:?}", command);
 
-        const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(120);
-        let _stdout: String = tokio::time::timeout(SIGNET_MINER_TIMEOUT, command.run_utf8())
+        let start = std::time::Instant::now();
+        let mut child = command.spawn().map_err(bins::CommandError::from)?;
+
+        let stdout_pipe = child.stdout.take().expect("stdout was piped");
+        let stderr_pipe = child.stderr.take().expect("stderr was piped");
+
+        use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+        let stdout_task = tokio::spawn(async move {
+            let reader = BufReader::new(stdout_pipe);
+            let mut lines = reader.lines();
+            let mut collected = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(target: "signet_miner::stdout", "{line}");
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                collected.push_str(&line);
+            }
+            collected
+        });
+
+        let stderr_task = tokio::spawn(async move {
+            let reader = BufReader::new(stderr_pipe);
+            let mut lines = reader.lines();
+            let mut collected = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::warn!(target: "signet_miner::stderr", "{line}");
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                collected.push_str(&line);
+            }
+            collected
+        });
+
+        const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(10);
+        let status = tokio::time::timeout(SIGNET_MINER_TIMEOUT, child.wait())
             .await
             .map_err(|_elapsed| {
                 tracing::error!(
@@ -657,7 +697,25 @@ impl Wallet {
                 error::GenerateSignetBlock::Timeout {
                     duration: SIGNET_MINER_TIMEOUT,
                 }
-            })??;
+            })?
+            .map_err(bins::CommandError::from)?;
+
+        // Stdout+stderr is already streamed above, so don't need to log it again
+        let _stdout = stdout_task.await.unwrap_or_default();
+        let stderr = stderr_task.await.unwrap_or_default();
+
+        let duration = start.elapsed();
+
+        tracing::debug!("Signet miner finished in {duration:?}: '{status}'");
+
+        if stderr.contains("WARNING submitblock returned bad-diffbits") {
+            let err_msg = "block rejected: bad-diffbits";
+            return Err(bins::CommandError::Stderr(err_msg.to_string().into_bytes()).into());
+        }
+
+        if !status.success() {
+            return Err(bins::CommandError::Stderr(stderr.into_bytes()).into());
+        }
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
