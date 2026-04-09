@@ -13,7 +13,7 @@ use bitcoin::{
 };
 use either::Either;
 use fallible_iterator::FallibleIterator;
-use fatality::Split as _;
+use fatality::{Fatality as _, Split as _};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
     client::BatchResponse,
@@ -597,13 +597,8 @@ fn handle_transaction(
         accepted_bmm_requests,
         prev_mainchain_block_hash,
     )
-    .map_err(|err| match err.split() {
-        Ok(just_for_info) => {
-            tracing::warn!("Non-fatal error handling M8: {just_for_info:#}");
-            error::HandleTransaction::M8(just_for_info.into())
-        }
-        Err(err) => error::HandleTransaction::M8(err.into()),
-    })? {
+    .map_err(error::HandleTransaction::M8)?
+    {
         tracing::trace!(
             "Handled valid M8 BMM request in tx `{}`",
             transaction.compute_txid()
@@ -792,7 +787,7 @@ pub(in crate::validator) fn connect_block(
     let prev_mainchain_block_hash = block.header.prev_blockhash;
     let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
     'connect_txs: for transaction in &block.txdata[1..] {
-        let Some((tx_event, diff)) = tx_diffs.rotxn(|rotxn, dbs| {
+        let result = match tx_diffs.rotxn(|rotxn, dbs| {
             handle_transaction(
                 rotxn,
                 dbs,
@@ -800,8 +795,20 @@ pub(in crate::validator) fn connect_block(
                 &prev_mainchain_block_hash,
                 transaction,
             )
-        })?
-        else {
+        }) {
+            Ok(result) => result,
+            Err(err) => {
+                if err.is_fatal() {
+                    return Err(err.into());
+                }
+                tracing::warn!(
+                    "Non-fatal error handling tx `{}`: {err:#}",
+                    transaction.compute_txid()
+                );
+                continue 'connect_txs;
+            }
+        };
+        let Some((tx_event, diff)) = result else {
             continue 'connect_txs;
         };
         let () = tx_diffs.apply(diff)?;
