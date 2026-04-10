@@ -76,9 +76,9 @@ impl Wallet {
     ) -> Result<(), error::GenerateCoinbaseTxouts> {
         let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
         tracing::debug!(
-            message = "Extending coinbase txouts",
-            ack_all_proposals = ack_all_proposals,
-            mainchain_tip = hex::encode(mainchain_tip.as_byte_array()),
+            ack_all_proposals,
+            %mainchain_tip,
+            "Extending coinbase txouts",
         );
 
         // This is a list of pending sidechain proposals from /our/ wallet, fetched from
