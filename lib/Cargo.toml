@@ -82,6 +82,9 @@ default = ["rustls"]
 openssl = ["bdk_electrum/use-openssl"]
 rustls = ["bdk_electrum/use-rustls"]
 
+[dev-dependencies]
+temp-dir = "0.2.0"
+
 [lints]
 workspace = true
 

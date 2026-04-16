@@ -710,6 +710,25 @@ pub struct M8BmmRequest {
 impl M8BmmRequest {
     pub const TAG: [u8; 3] = [0x00, 0xBF, 0x00];
 
+    /// Build the OP_RETURN script for an M8 BMM request.
+    /// Argument order matches the on-wire layout:
+    /// `TAG sidechain_number sidechain_block_hash prev_mainchain_block_hash`.
+    pub fn script_pubkey(
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: BmmCommitment,
+        prev_mainchain_block_hash: BlockHash,
+    ) -> Result<ScriptBuf, bitcoin::script::PushBytesError> {
+        let message = [
+            &Self::TAG[..],
+            &[sidechain_number.into()],
+            sidechain_block_hash.0.as_slice(),
+            &prev_mainchain_block_hash.to_byte_array(),
+        ]
+        .concat();
+        let bytes = PushBytesBuf::try_from(message)?;
+        Ok(ScriptBuf::new_op_return(&bytes))
+    }
+
     pub fn parse(input: &[u8]) -> IResult<&[u8], Self> {
         const HEADER_LENGTH: u8 = 3;
         const SIDECHAIN_NUMBER_LENGTH: u8 = 1;
@@ -998,5 +1017,227 @@ mod tests {
             (&proposal.description).try_into().expect("Failed to parse");
 
         assert_eq!(parsed, declaration);
+    }
+
+    // ── M8 script_pubkey roundtrip ──
+
+    #[test]
+    fn m8_script_pubkey_roundtrip() {
+        for n in [0u8, 1, 127, 255] {
+            let sc = SidechainNumber(n);
+            let sc_block_hash = BmmCommitment([n; 32]);
+            let prev_hash = BlockHash::from_byte_array([n.wrapping_add(1); 32]);
+
+            let script = M8BmmRequest::script_pubkey(sc, sc_block_hash, prev_hash).unwrap();
+            let bytes = script.to_bytes();
+            let (rest, parsed) = M8BmmRequest::parse(&bytes).unwrap();
+
+            assert!(rest.is_empty(), "sc {n}: unexpected trailing bytes");
+            assert_eq!(parsed.sidechain_number, sc);
+            assert_eq!(parsed.sidechain_block_hash, sc_block_hash);
+            assert_eq!(parsed.prev_mainchain_block_hash, prev_hash);
+        }
+    }
+
+    // ── parse_op_drivechain / op_drivechain_script roundtrip ──
+
+    #[test]
+    fn op_drivechain_script_roundtrip() {
+        use crate::types::op_drivechain_script;
+
+        for n in [0u8, 1, 42, 255] {
+            let sc = SidechainNumber(n);
+            let script = op_drivechain_script(sc);
+            let bytes = script.to_bytes();
+            let (_rest, parsed_sc) = parse_op_drivechain(&bytes).unwrap();
+            assert_eq!(parsed_sc, sc, "sidechain number mismatch for {n}");
+        }
+    }
+
+    #[test]
+    fn parse_op_drivechain_rejects_invalid_scripts() {
+        // Empty input
+        assert!(parse_op_drivechain(&[]).is_err());
+        // Just OP_RETURN (wrong opcode)
+        assert!(parse_op_drivechain(&[OP_RETURN.to_u8(), 0x01, 0x00]).is_err());
+        // Missing OP_TRUE at end
+        assert!(
+            parse_op_drivechain(&[OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8(), 0x01]).is_err()
+        );
+    }
+
+    // ── try_parse_op_return_address ──
+
+    #[test]
+    fn try_parse_op_return_address_valid() {
+        let address_bytes = b"hello_sidechain";
+        let script =
+            ScriptBuf::new_op_return(PushBytesBuf::try_from(address_bytes.to_vec()).unwrap());
+        let result = try_parse_op_return_address(&script);
+        assert_eq!(result.unwrap(), address_bytes);
+    }
+
+    #[test]
+    fn try_parse_op_return_address_empty_push() {
+        let script = ScriptBuf::new_op_return(PushBytesBuf::try_from(vec![]).unwrap());
+        let result = try_parse_op_return_address(&script);
+        assert_eq!(result.unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn try_parse_op_return_address_not_op_return() {
+        // A P2PKH-ish script — not OP_RETURN
+        let script = ScriptBuf::from_bytes(vec![0x76, 0xa9, 0x14]);
+        assert!(try_parse_op_return_address(&script).is_none());
+    }
+
+    #[test]
+    fn try_parse_op_return_address_extra_instructions() {
+        // OP_RETURN <push> <push> — rejected because of the extra instruction
+        use bitcoin::script::Builder;
+        let script = Builder::new()
+            .push_opcode(OP_RETURN)
+            .push_slice([1, 2, 3])
+            .push_slice([4, 5, 6])
+            .into_script();
+        assert!(try_parse_op_return_address(&script).is_none());
+    }
+
+    // ── create_m5_deposit_output ──
+
+    #[test]
+    fn create_m5_deposit_output_value_and_script() {
+        // Non-zero starting balance
+        let sc = SidechainNumber(3);
+        let output = create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000));
+        assert_eq!(output.value, Amount::from_sat(6_000));
+        let bytes = output.script_pubkey.to_bytes();
+        let (_, parsed_sc) = parse_op_drivechain(&bytes).unwrap();
+        assert_eq!(parsed_sc, sc);
+
+        // Zero starting balance
+        let output =
+            create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100));
+        assert_eq!(output.value, Amount::from_sat(100));
+    }
+
+    // ── compute_m6id ──
+
+    /// Build a minimal M6-shaped transaction: 1 input + OP_DRIVECHAIN treasury
+    /// output at index 0 + payout outputs.
+    fn build_m6_tx(
+        sidechain_number: SidechainNumber,
+        new_treasury_value: Amount,
+        payouts: &[Amount],
+    ) -> Transaction {
+        let mut output = vec![TxOut {
+            script_pubkey: crate::types::op_drivechain_script(sidechain_number),
+            value: new_treasury_value,
+        }];
+        output.extend(payouts.iter().map(|value| TxOut {
+            script_pubkey: ScriptBuf::new(),
+            value: *value,
+        }));
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn::default()],
+            output,
+        }
+    }
+
+    #[test]
+    fn compute_m6id_valid_inputs() {
+        let sc = SidechainNumber(1);
+        // Standard case with non-zero fee
+        let (m6id, parsed_sc) = compute_m6id(
+            build_m6_tx(sc, Amount::from_sat(6_000), &[Amount::from_sat(3_000)]),
+            Amount::from_sat(10_000),
+        )
+        .unwrap();
+        assert_eq!(parsed_sc, sc);
+        assert_ne!(m6id.0, bitcoin::Txid::all_zeros());
+
+        // Zero fee (old = new + payouts) is valid
+        assert!(
+            compute_m6id(
+                build_m6_tx(sc, Amount::from_sat(3_000), &[Amount::from_sat(2_000)]),
+                Amount::from_sat(5_000),
+            )
+            .is_ok()
+        );
+
+        // Multiple payouts
+        assert!(
+            compute_m6id(
+                build_m6_tx(
+                    sc,
+                    Amount::from_sat(4_000),
+                    &[
+                        Amount::from_sat(1_000),
+                        Amount::from_sat(2_000),
+                        Amount::from_sat(500),
+                    ],
+                ),
+                Amount::from_sat(10_000),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn compute_m6id_is_deterministic_and_treasury_sensitive() {
+        // Same tx + same treasury → same M6id
+        let tx1 = build_m6_tx(
+            SidechainNumber(1),
+            Amount::from_sat(5_000),
+            &[Amount::from_sat(2_000)],
+        );
+        let (id1, _) = compute_m6id(tx1.clone(), Amount::from_sat(8_000)).unwrap();
+        let (id1_again, _) = compute_m6id(tx1.clone(), Amount::from_sat(8_000)).unwrap();
+        assert_eq!(id1, id1_again);
+
+        // Different old_treasury → different fee → different M6id
+        let (id2, _) = compute_m6id(tx1, Amount::from_sat(9_000)).unwrap();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn compute_m6id_rejects_invalid_inputs() {
+        let sc = SidechainNumber(1);
+        let valid_tx = || build_m6_tx(sc, Amount::from_sat(5_000), &[Amount::from_sat(1_000)]);
+        let tx_with = |f: fn(&mut Transaction)| {
+            let mut tx = valid_tx();
+            f(&mut tx);
+            tx
+        };
+
+        // No outputs → MissingTreasuryOutput
+        assert!(compute_m6id(tx_with(|t| t.output.clear()), Amount::from_sat(1_000)).is_err());
+
+        // No inputs → MissingTreasuryInput
+        assert!(compute_m6id(tx_with(|t| t.input.clear()), Amount::from_sat(2_000)).is_err());
+
+        // Multiple inputs → ManyInputs
+        assert!(
+            compute_m6id(
+                tx_with(|t| t.input.push(bitcoin::TxIn::default())),
+                Amount::from_sat(7_000),
+            )
+            .is_err()
+        );
+
+        // First output isn't OP_DRIVECHAIN → InvalidSpk
+        assert!(
+            compute_m6id(
+                tx_with(|t| t.output[0].script_pubkey = ScriptBuf::new()),
+                Amount::from_sat(2_000),
+            )
+            .is_err()
+        );
+
+        // Spend > old treasury → InsufficientTreasury
+        let overspending = build_m6_tx(sc, Amount::from_sat(5_000), &[Amount::from_sat(3_000)]);
+        assert!(compute_m6id(overspending, Amount::from_sat(7_000)).is_err());
     }
 }

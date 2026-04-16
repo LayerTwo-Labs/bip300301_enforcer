@@ -545,6 +545,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sneed",
+ "temp-dir",
  "thiserror 2.0.16",
  "tokio",
  "tokio-rusqlite",

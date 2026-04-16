@@ -94,7 +94,7 @@ impl Diff for AckSidechain {
         } else {
             dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?
         };
-        sidechain.status.vote_count -= 1;
+        sidechain.status.vote_count = sidechain.status.vote_count.saturating_sub(1);
         dbs.proposal_id_to_sidechain
             .put(rwtxn, &self.id, &sidechain)?;
         Ok(())
@@ -186,7 +186,8 @@ impl Diff for AckBundles {
                         rwtxn,
                         sidechain_number,
                         |pending_withdrawals| {
-                            pending_withdrawals[m6id].vote_count -= 1;
+                            pending_withdrawals[m6id].vote_count =
+                                pending_withdrawals[m6id].vote_count.saturating_sub(1);
                         },
                     )?;
                 }
@@ -511,5 +512,233 @@ where
         let () = diff.apply(self.rwtxn, self.dbs, self.height)?;
         self.diffs.push(diff);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use bitcoin::{Txid, hashes::Hash as _};
+
+    use super::*;
+    use crate::{
+        types::{M6id, SidechainNumber},
+        validator::test_utils::{create_test_dbs, test_sidechain},
+    };
+
+    fn test_m6id(byte: u8) -> M6id {
+        M6id(Txid::from_byte_array([byte; 32]))
+    }
+
+    #[test]
+    fn ack_sidechain_apply_undo_roundtrip_and_saturating_undo() {
+        let (_dir, dbs) = create_test_dbs();
+        let mut rwtxn = dbs.write_txn().unwrap();
+
+        let sidechain = test_sidechain(1, 100);
+        let proposal_id = sidechain.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &proposal_id, &sidechain)
+            .unwrap();
+
+        let diff = AckSidechain {
+            id: proposal_id,
+            activated: false,
+        };
+
+        // Apply: 0 → 1
+        diff.apply(&mut rwtxn, &dbs, 101).unwrap();
+        let s = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .unwrap();
+        assert_eq!(s.status.vote_count, 1);
+
+        // Undo: 1 → 0
+        diff.undo(&mut rwtxn, &dbs).unwrap();
+        let s = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .unwrap();
+        assert_eq!(s.status.vote_count, 0);
+
+        // Undo again at 0: should saturate, not panic
+        diff.undo(&mut rwtxn, &dbs).unwrap();
+        let s = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .unwrap();
+        assert_eq!(s.status.vote_count, 0);
+    }
+
+    #[test]
+    fn ack_bundles_upvote_apply_undo_roundtrip() {
+        let (_dir, dbs) = create_test_dbs();
+        let mut rwtxn = dbs.write_txn().unwrap();
+
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .unwrap();
+
+        let m6id = test_m6id(0xBB);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .unwrap();
+
+        let diff = AckBundles({
+            let mut map = HashMap::new();
+            map.insert(sc, AckBundleAction::Upvote { m6id });
+            map
+        });
+
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1).unwrap();
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .unwrap();
+        assert_eq!(pending[&m6id].vote_count, 1);
+
+        diff.undo(&mut rwtxn, &dbs.active_sidechains).unwrap();
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .unwrap();
+        assert_eq!(pending[&m6id].vote_count, 0);
+    }
+
+    #[test]
+    fn ack_bundles_alarm_apply_undo_roundtrip() {
+        let (_dir, dbs) = create_test_dbs();
+        let mut rwtxn = dbs.write_txn().unwrap();
+
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .unwrap();
+
+        let m6id_a = test_m6id(0xAA);
+        let m6id_b = test_m6id(0xBB);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id_a, 0)
+            .unwrap();
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id_b, 0)
+            .unwrap();
+
+        // Set initial vote counts
+        for (m6id, count) in [(m6id_a, 3u16), (m6id_b, 1)] {
+            dbs.active_sidechains
+                .with_pending_withdrawal_entry(&mut rwtxn, &sc, m6id, |entry| {
+                    if let ordermap::map::Entry::Occupied(mut e) = entry {
+                        e.get_mut().vote_count = count;
+                    }
+                })
+                .unwrap();
+        }
+
+        let diff = AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                AckBundleAction::Alarm {
+                    positive_votes_proposals: HashSet::from([m6id_a, m6id_b]),
+                },
+            );
+            map
+        });
+
+        // Apply alarm: 3→2, 1→0
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1).unwrap();
+        let p = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .unwrap();
+        assert_eq!(p[&m6id_a].vote_count, 2);
+        assert_eq!(p[&m6id_b].vote_count, 0);
+
+        // Undo: 2→3, 0→1
+        diff.undo(&mut rwtxn, &dbs.active_sidechains).unwrap();
+        let p = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .unwrap();
+        assert_eq!(p[&m6id_a].vote_count, 3);
+        assert_eq!(p[&m6id_b].vote_count, 1);
+    }
+
+    #[test]
+    fn upvote_then_alarm_then_undo_upvote_does_not_crash() {
+        let (_dir, dbs) = create_test_dbs();
+        let mut rwtxn = dbs.write_txn().unwrap();
+
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .unwrap();
+
+        let m6id = test_m6id(0xCC);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .unwrap();
+
+        // Upvote: 0 → 1
+        let upvote_diff = AckBundles({
+            let mut map = HashMap::new();
+            map.insert(sc, AckBundleAction::Upvote { m6id });
+            map
+        });
+        upvote_diff
+            .apply(&mut rwtxn, &dbs.active_sidechains, 1)
+            .unwrap();
+        assert_eq!(
+            dbs.active_sidechains
+                .pending_m6ids()
+                .get(&rwtxn, &sc)
+                .unwrap()[&m6id]
+                .vote_count,
+            1
+        );
+
+        // Alarm: 1 → 0
+        let alarm_diff = AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                AckBundleAction::Alarm {
+                    positive_votes_proposals: HashSet::from([m6id]),
+                },
+            );
+            map
+        });
+        alarm_diff
+            .apply(&mut rwtxn, &dbs.active_sidechains, 2)
+            .unwrap();
+        assert_eq!(
+            dbs.active_sidechains
+                .pending_m6ids()
+                .get(&rwtxn, &sc)
+                .unwrap()[&m6id]
+                .vote_count,
+            0
+        );
+
+        // Undo upvote at vote_count=0: saturates to 0 instead of panic
+        upvote_diff
+            .undo(&mut rwtxn, &dbs.active_sidechains)
+            .unwrap();
+        assert_eq!(
+            dbs.active_sidechains
+                .pending_m6ids()
+                .get(&rwtxn, &sc)
+                .unwrap()[&m6id]
+                .vote_count,
+            0
+        );
     }
 }
