@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sneed::{RoTxn, RwTxn, db};
+use thiserror::Error;
+use transitive::Transitive;
 
 use crate::{
     types::{Ctip, M6id, PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposalId},
@@ -15,9 +17,54 @@ pub(in crate::validator) trait Diff {
     /// The DBs that the diff applies to
     type Dbs;
 
-    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error>;
+    type ApplyError;
+    type UndoError;
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error>;
+    fn apply(
+        &self,
+        rwtxn: &mut RwTxn,
+        dbs: &Self::Dbs,
+        height: u32,
+    ) -> Result<(), Self::ApplyError>;
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), Self::UndoError>;
+}
+
+/// Errors that can occur when undoing a block diff.
+///
+/// A `VoteCountUnderflow` indicates the block being disconnected — or some
+/// inconsistency between the block and the state — would have driven a
+/// vote count below zero. Treat as an invalid block, not corrupt state.
+#[derive(Debug, Error, Transitive)]
+#[transitive(
+    from(db::error::Delete, db::Error),
+    from(db::error::Get, db::Error),
+    from(db::error::Put, db::Error),
+    from(db::error::TryGet, db::Error)
+)]
+pub(in crate::validator) enum UndoError {
+    #[error(transparent)]
+    Db(Box<db::Error>),
+    #[error(
+        "vote count underflow on undo for sidechain proposal slot `{}`",
+        .sidechain_number.0
+    )]
+    SidechainVoteCountUnderflow { sidechain_number: SidechainNumber },
+    #[error(
+        "vote count underflow on undo for sidechain `{}` m6id `{}`",
+        .sidechain_number.0,
+        .m6id.0
+    )]
+    BundleVoteCountUnderflow {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    },
+}
+
+impl From<db::Error> for UndoError {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -29,6 +76,8 @@ pub struct NewSidechainProposal {
 
 impl Diff for NewSidechainProposal {
     type Dbs = dbs::ProposalIdToSidechain;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
         dbs.put(rwtxn, &self.id, &self.sidechain)?;
@@ -56,6 +105,8 @@ pub struct AckSidechain {
 
 impl Diff for AckSidechain {
     type Dbs = dbs::Dbs;
+    type ApplyError = db::Error;
+    type UndoError = UndoError;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
         let mut sidechain = dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?;
@@ -80,7 +131,7 @@ impl Diff for AckSidechain {
         Ok(())
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
         let mut sidechain = if self.activated {
             let mut sidechain = dbs
                 .active_sidechains
@@ -94,7 +145,11 @@ impl Diff for AckSidechain {
         } else {
             dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?
         };
-        sidechain.status.vote_count = sidechain.status.vote_count.saturating_sub(1);
+        sidechain.status.vote_count = sidechain.status.vote_count.checked_sub(1).ok_or(
+            UndoError::SidechainVoteCountUnderflow {
+                sidechain_number: self.id.sidechain_number,
+            },
+        )?;
         dbs.proposal_id_to_sidechain
             .put(rwtxn, &self.id, &sidechain)?;
         Ok(())
@@ -110,6 +165,8 @@ pub struct ProposeBundle {
 
 impl Diff for ProposeBundle {
     type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
         let () = dbs.put_pending_m6id(rwtxn, &self.sidechain_number, self.m6id, height)?;
@@ -140,6 +197,8 @@ pub struct AckBundles(pub HashMap<SidechainNumber, AckBundleAction>);
 
 impl Diff for AckBundles {
     type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = UndoError;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
         for (sidechain_number, bundle_action) in &self.0 {
@@ -163,7 +222,7 @@ impl Diff for AckBundles {
         Ok(())
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
         for (sidechain_number, bundle_action) in &self.0 {
             match bundle_action {
                 AckBundleAction::Alarm {
@@ -182,14 +241,21 @@ impl Diff for AckBundles {
                     )?;
                 }
                 AckBundleAction::Upvote { m6id } => {
-                    let () = dbs.with_pending_withdrawals(
+                    let undo_result = dbs.with_pending_withdrawals(
                         rwtxn,
                         sidechain_number,
-                        |pending_withdrawals| {
-                            pending_withdrawals[m6id].vote_count =
-                                pending_withdrawals[m6id].vote_count.saturating_sub(1);
+                        |pending_withdrawals| -> Result<(), UndoError> {
+                            let entry = &mut pending_withdrawals[m6id];
+                            entry.vote_count = entry.vote_count.checked_sub(1).ok_or(
+                                UndoError::BundleVoteCountUnderflow {
+                                    sidechain_number: *sidechain_number,
+                                    m6id: *m6id,
+                                },
+                            )?;
+                            Ok(())
                         },
                     )?;
+                    undo_result?;
                 }
             }
         }
@@ -208,6 +274,8 @@ pub enum CoinbaseMsg {
 
 impl Diff for CoinbaseMsg {
     type Dbs = dbs::Dbs;
+    type ApplyError = db::Error;
+    type UndoError = UndoError;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
         match self {
@@ -227,7 +295,7 @@ impl Diff for CoinbaseMsg {
         Ok(())
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
         match self {
             Self::AckBundles(diff) => {
                 let () = diff.undo(rwtxn, &dbs.active_sidechains)?;
@@ -253,6 +321,8 @@ pub struct FailedProposals(pub HashMap<SidechainProposalId, Sidechain>);
 
 impl Diff for FailedProposals {
     type Dbs = dbs::ProposalIdToSidechain;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
         for failed_proposal_id in self.0.keys() {
@@ -276,6 +346,8 @@ pub struct FailedM6ids(pub HashMap<SidechainNumber, BTreeMap<usize, (M6id, Pendi
 
 impl Diff for FailedM6ids {
     type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
         fn remove_failed_withdrawals(
@@ -366,6 +438,8 @@ pub struct Coinbase {
 
 impl Diff for Coinbase {
     type Dbs = dbs::Dbs;
+    type ApplyError = db::Error;
+    type UndoError = UndoError;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
         let Self {
@@ -381,7 +455,7 @@ impl Diff for Coinbase {
         Ok(())
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
         let Self {
             msgs,
             failed_proposals,
@@ -406,6 +480,8 @@ pub struct Tx {
 
 impl Diff for Tx {
     type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
         let Self {
@@ -449,6 +525,8 @@ pub struct Block {
 
 impl Diff for Block {
     type Dbs = dbs::Dbs;
+    type ApplyError = db::Error;
+    type UndoError = UndoError;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
         let Self { coinbase, txs } = self;
@@ -459,7 +537,7 @@ impl Diff for Block {
         Ok(())
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
         let Self { coinbase, txs } = self;
         for tx in txs.iter().rev() {
             let () = tx.undo(rwtxn, &dbs.active_sidechains)?;
@@ -508,7 +586,7 @@ where
     }
 
     /// Apply a diff
-    pub fn apply(&mut self, diff: D) -> Result<(), db::Error> {
+    pub fn apply(&mut self, diff: D) -> Result<(), D::ApplyError> {
         let () = diff.apply(self.rwtxn, self.dbs, self.height)?;
         self.diffs.push(diff);
         Ok(())
@@ -520,6 +598,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use bitcoin::{Txid, hashes::Hash as _};
+    use miette::{IntoDiagnostic, Result};
 
     use super::*;
     use crate::{
@@ -532,60 +611,60 @@ mod tests {
     }
 
     #[test]
-    fn ack_sidechain_apply_undo_roundtrip_and_saturating_undo() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn ack_sidechain_apply_undo_roundtrip_and_underflow_error() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
         let sidechain = test_sidechain(1, 100);
         let proposal_id = sidechain.proposal.compute_id();
         dbs.proposal_id_to_sidechain
             .put(&mut rwtxn, &proposal_id, &sidechain)
-            .unwrap();
+            .into_diagnostic()?;
 
         let diff = AckSidechain {
             id: proposal_id,
             activated: false,
         };
 
-        // Apply: 0 → 1
-        diff.apply(&mut rwtxn, &dbs, 101).unwrap();
+        diff.apply(&mut rwtxn, &dbs, 101).into_diagnostic()?;
         let s = dbs
             .proposal_id_to_sidechain
             .get(&rwtxn, &proposal_id)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(s.status.vote_count, 1);
 
-        // Undo: 1 → 0
-        diff.undo(&mut rwtxn, &dbs).unwrap();
+        diff.undo(&mut rwtxn, &dbs).into_diagnostic()?;
         let s = dbs
             .proposal_id_to_sidechain
             .get(&rwtxn, &proposal_id)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(s.status.vote_count, 0);
 
-        // Undo again at 0: should saturate, not panic
-        diff.undo(&mut rwtxn, &dbs).unwrap();
-        let s = dbs
-            .proposal_id_to_sidechain
-            .get(&rwtxn, &proposal_id)
-            .unwrap();
-        assert_eq!(s.status.vote_count, 0);
+        let err = diff
+            .undo(&mut rwtxn, &dbs)
+            .expect_err("undo at vote_count=0 must error");
+        assert!(matches!(
+            err,
+            UndoError::SidechainVoteCountUnderflow { sidechain_number }
+                if sidechain_number == proposal_id.sidechain_number
+        ));
+        Ok(())
     }
 
     #[test]
-    fn ack_bundles_upvote_apply_undo_roundtrip() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn ack_bundles_upvote_apply_undo_roundtrip() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .unwrap();
+            .into_diagnostic()?;
 
         let m6id = test_m6id(0xBB);
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
-            .unwrap();
+            .into_diagnostic()?;
 
         let diff = AckBundles({
             let mut map = HashMap::new();
@@ -593,43 +672,45 @@ mod tests {
             map
         });
 
-        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1).unwrap();
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1)
+            .into_diagnostic()?;
         let pending = dbs
             .active_sidechains
             .pending_m6ids()
             .get(&rwtxn, &sc)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(pending[&m6id].vote_count, 1);
 
-        diff.undo(&mut rwtxn, &dbs.active_sidechains).unwrap();
+        diff.undo(&mut rwtxn, &dbs.active_sidechains)
+            .into_diagnostic()?;
         let pending = dbs
             .active_sidechains
             .pending_m6ids()
             .get(&rwtxn, &sc)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(pending[&m6id].vote_count, 0);
+        Ok(())
     }
 
     #[test]
-    fn ack_bundles_alarm_apply_undo_roundtrip() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn ack_bundles_alarm_apply_undo_roundtrip() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .unwrap();
+            .into_diagnostic()?;
 
         let m6id_a = test_m6id(0xAA);
         let m6id_b = test_m6id(0xBB);
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id_a, 0)
-            .unwrap();
+            .into_diagnostic()?;
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id_b, 0)
-            .unwrap();
+            .into_diagnostic()?;
 
-        // Set initial vote counts
         for (m6id, count) in [(m6id_a, 3u16), (m6id_b, 1)] {
             dbs.active_sidechains
                 .with_pending_withdrawal_entry(&mut rwtxn, &sc, m6id, |entry| {
@@ -637,7 +718,7 @@ mod tests {
                         e.get_mut().vote_count = count;
                     }
                 })
-                .unwrap();
+                .into_diagnostic()?;
         }
 
         let diff = AckBundles({
@@ -651,43 +732,43 @@ mod tests {
             map
         });
 
-        // Apply alarm: 3→2, 1→0
-        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1).unwrap();
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1)
+            .into_diagnostic()?;
         let p = dbs
             .active_sidechains
             .pending_m6ids()
             .get(&rwtxn, &sc)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(p[&m6id_a].vote_count, 2);
         assert_eq!(p[&m6id_b].vote_count, 0);
 
-        // Undo: 2→3, 0→1
-        diff.undo(&mut rwtxn, &dbs.active_sidechains).unwrap();
+        diff.undo(&mut rwtxn, &dbs.active_sidechains)
+            .into_diagnostic()?;
         let p = dbs
             .active_sidechains
             .pending_m6ids()
             .get(&rwtxn, &sc)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(p[&m6id_a].vote_count, 3);
         assert_eq!(p[&m6id_b].vote_count, 1);
+        Ok(())
     }
 
     #[test]
-    fn upvote_then_alarm_then_undo_upvote_does_not_crash() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn upvote_then_alarm_then_undo_upvote_errors_on_underflow() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .unwrap();
+            .into_diagnostic()?;
 
         let m6id = test_m6id(0xCC);
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
-            .unwrap();
+            .into_diagnostic()?;
 
-        // Upvote: 0 → 1
         let upvote_diff = AckBundles({
             let mut map = HashMap::new();
             map.insert(sc, AckBundleAction::Upvote { m6id });
@@ -695,17 +776,16 @@ mod tests {
         });
         upvote_diff
             .apply(&mut rwtxn, &dbs.active_sidechains, 1)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(
             dbs.active_sidechains
                 .pending_m6ids()
                 .get(&rwtxn, &sc)
-                .unwrap()[&m6id]
+                .into_diagnostic()?[&m6id]
                 .vote_count,
             1
         );
 
-        // Alarm: 1 → 0
         let alarm_diff = AckBundles({
             let mut map = HashMap::new();
             map.insert(
@@ -718,27 +798,26 @@ mod tests {
         });
         alarm_diff
             .apply(&mut rwtxn, &dbs.active_sidechains, 2)
-            .unwrap();
+            .into_diagnostic()?;
         assert_eq!(
             dbs.active_sidechains
                 .pending_m6ids()
                 .get(&rwtxn, &sc)
-                .unwrap()[&m6id]
+                .into_diagnostic()?[&m6id]
                 .vote_count,
             0
         );
 
-        // Undo upvote at vote_count=0: saturates to 0 instead of panic
-        upvote_diff
+        let err = upvote_diff
             .undo(&mut rwtxn, &dbs.active_sidechains)
-            .unwrap();
-        assert_eq!(
-            dbs.active_sidechains
-                .pending_m6ids()
-                .get(&rwtxn, &sc)
-                .unwrap()[&m6id]
-                .vote_count,
-            0
-        );
+            .expect_err("undo at vote_count=0 must error");
+        assert!(matches!(
+            err,
+            UndoError::BundleVoteCountUnderflow {
+                sidechain_number,
+                m6id: err_m6id,
+            } if sidechain_number == sc && err_m6id == m6id
+        ));
+        Ok(())
     }
 }

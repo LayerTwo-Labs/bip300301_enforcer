@@ -293,6 +293,8 @@ pub(in crate::validator) enum DisconnectBlock {
         block_hash: bitcoin::BlockHash,
         tip_hash: bitcoin::BlockHash,
     },
+    #[error(transparent)]
+    Undo(#[from] dbs::diff::UndoError),
 }
 
 impl From<db::Error> for DisconnectBlock {
