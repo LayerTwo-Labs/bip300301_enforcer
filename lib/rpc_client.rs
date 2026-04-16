@@ -112,12 +112,17 @@ where
         Err(err) => {
             const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
                 "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
+            // Bitcoind v30.0 changed the error message
+            const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0: &str =
+                "mempool-script-verify-flag-failed (NOPx reserved for soft-fork upgrades)";
+            fn contains_op_drivechain_not_supported(msg: &str) -> bool {
+                msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG)
+                    || msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0)
+            }
             match err {
                 // We used to check the exact error message. Looks like this slightly varies across versions. Therefore
                 // use a substring check.
-                ClientError::Call(err)
-                    if err.message().contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG) =>
-                {
+                ClientError::Call(err) if contains_op_drivechain_not_supported(err.message()) => {
                     Ok(None)
                 }
                 err => {
