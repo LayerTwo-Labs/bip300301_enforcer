@@ -1450,6 +1450,7 @@ mod tests {
     };
     use fatality::Fatality as _;
     use hashlink::LinkedHashMap;
+    use miette::{IntoDiagnostic, Result};
 
     use super::*;
     use crate::{
@@ -1527,13 +1528,14 @@ mod tests {
     // ── handle_m8 ──
 
     #[test]
-    fn handle_m8_non_m8_tx_returns_false() {
+    fn handle_m8_non_m8_tx_returns_false() -> Result<()> {
         let prev_hash = dummy_block_hash(0xAA);
-        assert!(!handle_m8(&build_plain_tx(), None, &prev_hash).unwrap());
+        assert!(!handle_m8(&build_plain_tx(), None, &prev_hash).into_diagnostic()?);
+        Ok(())
     }
 
     #[test]
-    fn handle_m8_valid_request_accepted() {
+    fn handle_m8_valid_request_accepted() -> Result<()> {
         let sc = SidechainNumber(1);
         let prev_hash = dummy_block_hash(0xAA);
         let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
@@ -1541,7 +1543,8 @@ mod tests {
         let mut accepted: BmmCommitments = LinkedHashMap::new();
         accepted.insert(sc, BmmCommitment([0x42; 32]));
 
-        assert!(handle_m8(&tx, Some(&accepted), &prev_hash).unwrap());
+        assert!(handle_m8(&tx, Some(&accepted), &prev_hash).into_diagnostic()?);
+        Ok(())
     }
 
     #[test]
@@ -1550,47 +1553,45 @@ mod tests {
         let prev_hash = dummy_block_hash(0xAA);
         let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
 
-        // Not in accepted list → NotAcceptedByMiners
         let empty: BmmCommitments = LinkedHashMap::new();
-        let err = handle_m8(&tx, Some(&empty), &prev_hash).unwrap_err();
+        let err =
+            handle_m8(&tx, Some(&empty), &prev_hash).expect_err("empty accepted list must reject");
         assert!(matches!(err, error::HandleM8::NotAcceptedByMiners));
         assert!(!err.is_fatal());
 
-        // Wrong commitment hash → NotAcceptedByMiners
         let mut wrong: BmmCommitments = LinkedHashMap::new();
         wrong.insert(sc, BmmCommitment([0xFF; 32]));
-        let err = handle_m8(&tx, Some(&wrong), &prev_hash).unwrap_err();
+        let err =
+            handle_m8(&tx, Some(&wrong), &prev_hash).expect_err("wrong commitment must reject");
         assert!(matches!(err, error::HandleM8::NotAcceptedByMiners));
 
-        // Wrong prev_hash → BmmRequestExpired
-        let err = handle_m8(&tx, None, &dummy_block_hash(0xBB)).unwrap_err();
+        let err =
+            handle_m8(&tx, None, &dummy_block_hash(0xBB)).expect_err("wrong prev_hash must reject");
         assert!(matches!(err, error::HandleM8::BmmRequestExpired));
         assert!(!err.is_fatal());
     }
 
     #[test]
-    fn handle_m8_none_accepted_only_checks_expiry() {
+    fn handle_m8_none_accepted_only_checks_expiry() -> Result<()> {
         let sc = SidechainNumber(1);
         let prev_hash = dummy_block_hash(0xAA);
         let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
 
-        // Matching prev_hash, no accepted list → Ok(true)
-        assert!(handle_m8(&tx, None, &prev_hash).unwrap());
-        // Wrong prev_hash → expired
+        assert!(handle_m8(&tx, None, &prev_hash).into_diagnostic()?);
         assert!(handle_m8(&tx, None, &dummy_block_hash(0xBB)).is_err());
+        Ok(())
     }
 
     // ── handle_transaction ──
 
     #[test]
-    fn handle_transaction_m8_errors_propagate_as_non_fatal() {
-        let (_dir, dbs) = create_test_dbs();
-        let rotxn = dbs.read_txn().unwrap();
+    fn handle_transaction_m8_errors_propagate_as_non_fatal() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         let prev_hash = dummy_block_hash(0xAA);
         let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
 
-        // Not accepted → non-fatal error
         let empty: BmmCommitments = LinkedHashMap::new();
         let err = handle_transaction(
             &rotxn,
@@ -1599,10 +1600,9 @@ mod tests {
             &prev_hash,
             &tx,
         )
-        .unwrap_err();
+        .expect_err("not-accepted M8 must error");
         assert!(!err.is_fatal());
 
-        // Expired → non-fatal error
         let err = handle_transaction(
             &rotxn,
             &dbs.active_sidechains,
@@ -1610,14 +1610,15 @@ mod tests {
             &dummy_block_hash(0xBB),
             &tx,
         )
-        .unwrap_err();
+        .expect_err("expired M8 must error");
         assert!(!err.is_fatal());
+        Ok(())
     }
 
     #[test]
-    fn handle_transaction_valid_m8_returns_none() {
-        let (_dir, dbs) = create_test_dbs();
-        let rotxn = dbs.read_txn().unwrap();
+    fn handle_transaction_valid_m8_returns_none() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         let prev_hash = dummy_block_hash(0xAA);
         let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
@@ -1632,8 +1633,9 @@ mod tests {
             &prev_hash,
             &tx,
         )
-        .unwrap();
+        .into_diagnostic()?;
         assert!(result.is_none(), "valid M8 should not produce a tx event");
+        Ok(())
     }
 
     // ── connect_block ──
@@ -1670,9 +1672,9 @@ mod tests {
     }
 
     #[test]
-    fn connect_block_skips_non_fatal_tx_errors() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn connect_block_skips_non_fatal_tx_errors() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let prev_hash = BlockHash::all_zeros();
 
         // M8 request with no matching M7 in coinbase → non-fatal error
@@ -1681,74 +1683,80 @@ mod tests {
 
         dbs.block_hashes
             .put_headers(&mut rwtxn, &[(block.header, 0)])
-            .unwrap();
+            .into_diagnostic()?;
 
         assert!(
             connect_block(&mut rwtxn, &dbs, &block).is_ok(),
             "connect_block should succeed despite non-fatal M8 error"
         );
+        Ok(())
     }
 
     #[test]
-    fn connect_then_disconnect_restores_db_state() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn connect_then_disconnect_restores_db_state() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let prev_hash = BlockHash::all_zeros();
         let block = build_test_block(prev_hash, vec![]);
         let block_hash = block.header.block_hash();
 
         dbs.block_hashes
             .put_headers(&mut rwtxn, &[(block.header, 0)])
-            .unwrap();
+            .into_diagnostic()?;
         assert!(
             dbs.current_chain_tip
                 .try_get(&rwtxn, &())
-                .unwrap()
+                .into_diagnostic()?
                 .is_none()
         );
 
         let (event_tx, _) = async_broadcast::broadcast(16);
-        let _event = connect_block(&mut rwtxn, &dbs, &block).unwrap();
+        let _event = connect_block(&mut rwtxn, &dbs, &block).into_diagnostic()?;
         assert_eq!(
-            dbs.current_chain_tip.try_get(&rwtxn, &()).unwrap(),
+            dbs.current_chain_tip
+                .try_get(&rwtxn, &())
+                .into_diagnostic()?,
             Some(block_hash)
         );
 
-        disconnect_block(&mut rwtxn, &dbs, &event_tx, block_hash).unwrap();
+        disconnect_block(&mut rwtxn, &dbs, &event_tx, block_hash).into_diagnostic()?;
         assert!(
             dbs.current_chain_tip
                 .try_get(&rwtxn, &())
-                .unwrap()
+                .into_diagnostic()?
                 .is_none()
         );
+        Ok(())
     }
 
     // ── handle_m5_m6 ──
 
     #[test]
-    fn handle_m5_m6_plain_tx_returns_none() {
-        let (_dir, dbs) = create_test_dbs();
-        let rotxn = dbs.read_txn().unwrap();
+    fn handle_m5_m6_plain_tx_returns_none() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
         assert!(
             handle_m5_m6(
                 &rotxn,
                 &dbs.active_sidechains,
                 Cow::Borrowed(&build_plain_tx())
             )
-            .unwrap()
+            .into_diagnostic()?
             .is_none()
         );
+        Ok(())
     }
 
     #[test]
-    fn handle_m5_m6_deposit_no_existing_ctip() {
-        let (_dir, dbs) = create_test_dbs();
-        let rotxn = dbs.read_txn().unwrap();
+    fn handle_m5_m6_deposit_no_existing_ctip() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         let deposit_amount = Amount::from_sat(10_000);
         let tx = build_m5_deposit_tx(sc, OutPoint::default(), Amount::ZERO, deposit_amount);
 
-        let result = handle_m5_m6(&rotxn, &dbs.active_sidechains, Cow::Borrowed(&tx)).unwrap();
+        let result =
+            handle_m5_m6(&rotxn, &dbs.active_sidechains, Cow::Borrowed(&tx)).into_diagnostic()?;
         let Some((Either::Left(deposit), diff)) = result else {
             panic!("expected M5 deposit");
         };
@@ -1757,12 +1765,13 @@ mod tests {
         assert_eq!(deposit.value, deposit_amount);
         assert_eq!(deposit.address, b"sidechain_address");
         assert_eq!(diff.new_ctip.value, deposit_amount);
+        Ok(())
     }
 
     #[test]
-    fn handle_m5_m6_deposit_with_existing_ctip() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m5_m6_deposit_with_existing_ctip() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         let old_outpoint = OutPoint {
             txid: Txid::from_byte_array([0x11; 32]),
@@ -1778,24 +1787,25 @@ mod tests {
                     value: old_value,
                 },
             )
-            .unwrap();
+            .into_diagnostic()?;
 
         let deposit_amount = Amount::from_sat(3_000);
         let tx = build_m5_deposit_tx(sc, old_outpoint, old_value, deposit_amount);
 
         let Some((Either::Left(deposit), diff)) =
-            handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx)).unwrap()
+            handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx)).into_diagnostic()?
         else {
             panic!("expected M5 deposit");
         };
         assert_eq!(deposit.value, deposit_amount);
         assert_eq!(diff.new_ctip.value, old_value + deposit_amount);
+        Ok(())
     }
 
     #[test]
-    fn handle_m5_m6_old_ctip_unspent() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m5_m6_old_ctip_unspent() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_ctip(
@@ -1809,60 +1819,59 @@ mod tests {
                     value: Amount::from_sat(5_000),
                 },
             )
-            .unwrap();
+            .into_diagnostic()?;
 
-        // Tx spends a different outpoint → error
         let tx = build_m5_deposit_tx(
             sc,
             OutPoint::default(),
             Amount::from_sat(5_000),
             Amount::from_sat(1_000),
         );
-        let err = handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx)).unwrap_err();
+        let err = handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx))
+            .expect_err("spending wrong outpoint must error");
         assert!(matches!(err, error::HandleM5M6::OldCtipUnspent { .. }));
+        Ok(())
     }
 
     // ── handle_m1 ──
 
     #[test]
-    fn handle_m1_new_and_duplicate() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m1_new_and_duplicate() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
         let proposal = SidechainProposal {
             sidechain_number: SidechainNumber(1),
             description: SidechainDescription(vec![0x00, 0x01, b'x']),
         };
 
-        // New proposal → produces diff
         let diff = handle_m1_propose_sidechain(&rwtxn, &dbs, proposal.clone(), 100)
-            .unwrap()
+            .into_diagnostic()?
             .expect("new proposal should produce a diff");
         assert_eq!(diff.sidechain.proposal, proposal);
         assert_eq!(diff.sidechain.status.proposal_height, 100);
 
-        // Store it, then propose same again → ignored
         dbs.proposal_id_to_sidechain
             .put(&mut rwtxn, &diff.id, &diff.sidechain)
-            .unwrap();
-        let result = handle_m1_propose_sidechain(&rwtxn, &dbs, proposal, 200).unwrap();
+            .into_diagnostic()?;
+        let result = handle_m1_propose_sidechain(&rwtxn, &dbs, proposal, 200).into_diagnostic()?;
         assert!(result.is_none(), "duplicate proposal should be ignored");
+        Ok(())
     }
 
     // ── handle_m2 ──
 
     #[test]
-    fn handle_m2_activation_thresholds() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m2_activation_thresholds() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
         let mut sidechain = test_sidechain(1, 100);
         let proposal_id = sidechain.proposal.compute_id();
 
-        // 1 vote: should not activate
         dbs.proposal_id_to_sidechain
             .put(&mut rwtxn, &proposal_id, &sidechain)
-            .unwrap();
+            .into_diagnostic()?;
         let diff = handle_m2_ack_sidechain(
             &rwtxn,
             &dbs,
@@ -1870,14 +1879,13 @@ mod tests {
             proposal_id.sidechain_number,
             proposal_id.description_hash,
         )
-        .unwrap();
+        .into_diagnostic()?;
         assert!(!diff.activated, "1 vote should not activate");
 
-        // At threshold: should activate (vote_count will become threshold + 1)
         sidechain.status.vote_count = UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD;
         dbs.proposal_id_to_sidechain
             .put(&mut rwtxn, &proposal_id, &sidechain)
-            .unwrap();
+            .into_diagnostic()?;
         let diff = handle_m2_ack_sidechain(
             &rwtxn,
             &dbs,
@@ -1885,16 +1893,15 @@ mod tests {
             proposal_id.sidechain_number,
             proposal_id.description_hash,
         )
-        .unwrap();
+        .into_diagnostic()?;
         assert!(
             diff.activated,
             "vote_count > threshold within max age should activate"
         );
 
-        // Same vote count but too old: should NOT activate
         dbs.proposal_id_to_sidechain
             .put(&mut rwtxn, &proposal_id, &sidechain)
-            .unwrap();
+            .into_diagnostic()?;
         let diff = handle_m2_ack_sidechain(
             &rwtxn,
             &dbs,
@@ -1902,17 +1909,18 @@ mod tests {
             proposal_id.sidechain_number,
             proposal_id.description_hash,
         )
-        .unwrap();
+        .into_diagnostic()?;
         assert!(
             !diff.activated,
             "proposal exceeding max age should not activate"
         );
+        Ok(())
     }
 
     #[test]
-    fn handle_m2_missing_proposal() {
-        let (_dir, dbs) = create_test_dbs();
-        let rotxn = dbs.read_txn().unwrap();
+    fn handle_m2_missing_proposal() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
         let err = handle_m2_ack_sidechain(
             &rotxn,
             &dbs,
@@ -1920,73 +1928,75 @@ mod tests {
             SidechainNumber(99),
             bitcoin::hashes::sha256d::Hash::all_zeros(),
         )
-        .unwrap_err();
+        .expect_err("missing proposal must error");
         assert!(matches!(
             err,
             error::HandleM2AckSidechain::MissingProposal { .. }
         ));
+        Ok(())
     }
 
     // ── handle_m4_votes ──
 
     #[test]
-    fn handle_m4_votes_abstain_and_upvote() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m4_votes_abstain_and_upvote() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .unwrap();
+            .into_diagnostic()?;
 
-        // ABSTAIN → no actions
-        let diff = handle_m4_votes(&rwtxn, &dbs, &[M4AckBundles::ABSTAIN_TWO_BYTES]).unwrap();
+        let diff =
+            handle_m4_votes(&rwtxn, &dbs, &[M4AckBundles::ABSTAIN_TWO_BYTES]).into_diagnostic()?;
         assert!(diff.0.is_empty());
 
-        // Add pending M6id, upvote it
         let m6id = M6id(Txid::from_byte_array([0xAA; 32]));
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
-            .unwrap();
-        let diff = handle_m4_votes(&rwtxn, &dbs, &[0]).unwrap();
+            .into_diagnostic()?;
+        let diff = handle_m4_votes(&rwtxn, &dbs, &[0]).into_diagnostic()?;
         assert!(diff.0.contains_key(&sc));
+        Ok(())
     }
 
     #[test]
-    fn handle_m4_votes_alarm() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m4_votes_alarm() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .unwrap();
+            .into_diagnostic()?;
 
         let m6id = M6id(Txid::from_byte_array([0xAA; 32]));
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
-            .unwrap();
+            .into_diagnostic()?;
         dbs.active_sidechains
             .with_pending_withdrawal_entry(&mut rwtxn, &sc, m6id, |entry| {
                 if let ordermap::map::Entry::Occupied(mut e) = entry {
                     e.get_mut().vote_count = 3;
                 }
             })
-            .unwrap();
+            .into_diagnostic()?;
 
-        let diff = handle_m4_votes(&rwtxn, &dbs, &[M4AckBundles::ALARM_TWO_BYTES]).unwrap();
+        let diff =
+            handle_m4_votes(&rwtxn, &dbs, &[M4AckBundles::ALARM_TWO_BYTES]).into_diagnostic()?;
         assert!(diff.0.contains_key(&sc));
+        Ok(())
     }
 
     #[test]
-    fn handle_m4_votes_errors() {
-        let (_dir, dbs) = create_test_dbs();
-        let mut rwtxn = dbs.write_txn().unwrap();
+    fn handle_m4_votes_errors() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
         dbs.active_sidechains
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .unwrap();
+            .into_diagnostic()?;
 
-        // Wrong number of votes
-        let err = handle_m4_votes(&rwtxn, &dbs, &[0, 0]).unwrap_err();
+        let err = handle_m4_votes(&rwtxn, &dbs, &[0, 0]).expect_err("wrong vote count must error");
         assert!(matches!(
             err,
             error::HandleM4Votes::InvalidVotes {
@@ -1995,8 +2005,9 @@ mod tests {
             }
         ));
 
-        // Out-of-bounds index (no pending M6ids)
-        let err = handle_m4_votes(&rwtxn, &dbs, &[0]).unwrap_err();
+        let err =
+            handle_m4_votes(&rwtxn, &dbs, &[0]).expect_err("upvote with no pending must error");
         assert!(matches!(err, error::HandleM4Votes::UpvoteFailed { .. }));
+        Ok(())
     }
 }

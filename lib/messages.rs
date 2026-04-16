@@ -946,6 +946,8 @@ pub fn create_sidechain_proposal(
 #[cfg(test)]
 mod tests {
 
+    use miette::IntoDiagnostic;
+
     use super::*;
     use crate::types::SidechainProposal;
 
@@ -1022,36 +1024,41 @@ mod tests {
     // ── M8 script_pubkey roundtrip ──
 
     #[test]
-    fn m8_script_pubkey_roundtrip() {
+    fn m8_script_pubkey_roundtrip() -> miette::Result<()> {
         for n in [0u8, 1, 127, 255] {
             let sc = SidechainNumber(n);
             let sc_block_hash = BmmCommitment([n; 32]);
             let prev_hash = BlockHash::from_byte_array([n.wrapping_add(1); 32]);
 
-            let script = M8BmmRequest::script_pubkey(sc, sc_block_hash, prev_hash).unwrap();
+            let script =
+                M8BmmRequest::script_pubkey(sc, sc_block_hash, prev_hash).into_diagnostic()?;
             let bytes = script.to_bytes();
-            let (rest, parsed) = M8BmmRequest::parse(&bytes).unwrap();
+            let (rest, parsed) = M8BmmRequest::parse(&bytes)
+                .map_err(|err| miette::miette!("parse failed for sc {n}: {err}"))?;
 
             assert!(rest.is_empty(), "sc {n}: unexpected trailing bytes");
             assert_eq!(parsed.sidechain_number, sc);
             assert_eq!(parsed.sidechain_block_hash, sc_block_hash);
             assert_eq!(parsed.prev_mainchain_block_hash, prev_hash);
         }
+        Ok(())
     }
 
     // ── parse_op_drivechain / op_drivechain_script roundtrip ──
 
     #[test]
-    fn op_drivechain_script_roundtrip() {
+    fn op_drivechain_script_roundtrip() -> miette::Result<()> {
         use crate::types::op_drivechain_script;
 
         for n in [0u8, 1, 42, 255] {
             let sc = SidechainNumber(n);
             let script = op_drivechain_script(sc);
             let bytes = script.to_bytes();
-            let (_rest, parsed_sc) = parse_op_drivechain(&bytes).unwrap();
+            let (_rest, parsed_sc) = parse_op_drivechain(&bytes)
+                .map_err(|err| miette::miette!("parse failed for sc {n}: {err}"))?;
             assert_eq!(parsed_sc, sc, "sidechain number mismatch for {n}");
         }
+        Ok(())
     }
 
     #[test]
@@ -1069,19 +1076,24 @@ mod tests {
     // ── try_parse_op_return_address ──
 
     #[test]
-    fn try_parse_op_return_address_valid() {
+    fn try_parse_op_return_address_valid() -> miette::Result<()> {
         let address_bytes = b"hello_sidechain";
-        let script =
-            ScriptBuf::new_op_return(PushBytesBuf::try_from(address_bytes.to_vec()).unwrap());
-        let result = try_parse_op_return_address(&script);
-        assert_eq!(result.unwrap(), address_bytes);
+        let script = ScriptBuf::new_op_return(
+            PushBytesBuf::try_from(address_bytes.to_vec()).into_diagnostic()?,
+        );
+        let result = try_parse_op_return_address(&script)
+            .ok_or_else(|| miette::miette!("expected Some address bytes"))?;
+        assert_eq!(result, address_bytes);
+        Ok(())
     }
 
     #[test]
-    fn try_parse_op_return_address_empty_push() {
-        let script = ScriptBuf::new_op_return(PushBytesBuf::try_from(vec![]).unwrap());
-        let result = try_parse_op_return_address(&script);
-        assert_eq!(result.unwrap(), Vec::<u8>::new());
+    fn try_parse_op_return_address_empty_push() -> miette::Result<()> {
+        let script = ScriptBuf::new_op_return(PushBytesBuf::try_from(vec![]).into_diagnostic()?);
+        let result = try_parse_op_return_address(&script)
+            .ok_or_else(|| miette::miette!("expected Some empty bytes"))?;
+        assert_eq!(result, Vec::<u8>::new());
+        Ok(())
     }
 
     #[test]
@@ -1106,19 +1118,19 @@ mod tests {
     // ── create_m5_deposit_output ──
 
     #[test]
-    fn create_m5_deposit_output_value_and_script() {
-        // Non-zero starting balance
+    fn create_m5_deposit_output_value_and_script() -> miette::Result<()> {
         let sc = SidechainNumber(3);
         let output = create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000));
         assert_eq!(output.value, Amount::from_sat(6_000));
         let bytes = output.script_pubkey.to_bytes();
-        let (_, parsed_sc) = parse_op_drivechain(&bytes).unwrap();
+        let (_, parsed_sc) =
+            parse_op_drivechain(&bytes).map_err(|err| miette::miette!("parse failed: {err}"))?;
         assert_eq!(parsed_sc, sc);
 
-        // Zero starting balance
         let output =
             create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100));
         assert_eq!(output.value, Amount::from_sat(100));
+        Ok(())
     }
 
     // ── compute_m6id ──
@@ -1147,14 +1159,14 @@ mod tests {
     }
 
     #[test]
-    fn compute_m6id_valid_inputs() {
+    fn compute_m6id_valid_inputs() -> miette::Result<()> {
         let sc = SidechainNumber(1);
         // Standard case with non-zero fee
         let (m6id, parsed_sc) = compute_m6id(
             build_m6_tx(sc, Amount::from_sat(6_000), &[Amount::from_sat(3_000)]),
             Amount::from_sat(10_000),
         )
-        .unwrap();
+        .into_diagnostic()?;
         assert_eq!(parsed_sc, sc);
         assert_ne!(m6id.0, bitcoin::Txid::all_zeros());
 
@@ -1183,23 +1195,24 @@ mod tests {
             )
             .is_ok()
         );
+        Ok(())
     }
 
     #[test]
-    fn compute_m6id_is_deterministic_and_treasury_sensitive() {
-        // Same tx + same treasury → same M6id
+    fn compute_m6id_is_deterministic_and_treasury_sensitive() -> miette::Result<()> {
         let tx1 = build_m6_tx(
             SidechainNumber(1),
             Amount::from_sat(5_000),
             &[Amount::from_sat(2_000)],
         );
-        let (id1, _) = compute_m6id(tx1.clone(), Amount::from_sat(8_000)).unwrap();
-        let (id1_again, _) = compute_m6id(tx1.clone(), Amount::from_sat(8_000)).unwrap();
+        let (id1, _) = compute_m6id(tx1.clone(), Amount::from_sat(8_000)).into_diagnostic()?;
+        let (id1_again, _) =
+            compute_m6id(tx1.clone(), Amount::from_sat(8_000)).into_diagnostic()?;
         assert_eq!(id1, id1_again);
 
-        // Different old_treasury → different fee → different M6id
-        let (id2, _) = compute_m6id(tx1, Amount::from_sat(9_000)).unwrap();
+        let (id2, _) = compute_m6id(tx1, Amount::from_sat(9_000)).into_diagnostic()?;
         assert_ne!(id1, id2);
+        Ok(())
     }
 
     #[test]
