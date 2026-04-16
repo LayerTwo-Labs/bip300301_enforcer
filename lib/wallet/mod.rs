@@ -1950,15 +1950,11 @@ impl Wallet {
         prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
         sidechain_block_hash: BmmCommitment,
     ) -> Result<bdk_wallet::bitcoin::ScriptBuf, bitcoin::script::PushBytesError> {
-        let message = [
-            &M8BmmRequest::TAG[..],
-            &[sidechain_number.into()],
-            sidechain_block_hash.0.as_slice(),
-            &prev_mainchain_block_hash.to_byte_array(),
-        ]
-        .concat();
-        let bytes = bdk_wallet::bitcoin::script::PushBytesBuf::try_from(message)?;
-        Ok(bdk_wallet::bitcoin::ScriptBuf::new_op_return(&bytes))
+        M8BmmRequest::script_pubkey(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+        )
     }
 
     #[allow(
