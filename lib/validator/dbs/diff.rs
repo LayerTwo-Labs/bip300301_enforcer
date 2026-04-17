@@ -45,16 +45,9 @@ pub(in crate::validator) trait Diff {
 pub(in crate::validator) enum UndoError {
     #[error(transparent)]
     Db(Box<db::Error>),
-    #[error(
-        "vote count underflow on undo for sidechain proposal slot `{}`",
-        .sidechain_number.0
-    )]
+    #[error("vote count underflow on undo for sidechain proposal slot `{sidechain_number}`")]
     SidechainVoteCountUnderflow { sidechain_number: SidechainNumber },
-    #[error(
-        "vote count underflow on undo for sidechain `{}` m6id `{}`",
-        .sidechain_number.0,
-        .m6id.0
-    )]
+    #[error("vote count underflow on undo for sidechain `{sidechain_number}` m6id `{m6id}`")]
     BundleVoteCountUnderflow {
         sidechain_number: SidechainNumber,
         m6id: M6id,
@@ -241,7 +234,7 @@ impl Diff for AckBundles {
                     )?;
                 }
                 AckBundleAction::Upvote { m6id } => {
-                    let undo_result = dbs.with_pending_withdrawals(
+                    let () = dbs.with_pending_withdrawals(
                         rwtxn,
                         sidechain_number,
                         |pending_withdrawals| -> Result<(), UndoError> {
@@ -254,8 +247,7 @@ impl Diff for AckBundles {
                             )?;
                             Ok(())
                         },
-                    )?;
-                    undo_result?;
+                    )??;
                 }
             }
         }

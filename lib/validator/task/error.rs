@@ -129,6 +129,7 @@ pub(in crate::validator) enum HandleM4AckBundles {
 #[derive(Transitive)]
 #[fatality(splitable)]
 #[transitive(
+    from(db::error::Get, db::Error),
     from(db::error::IterInit, db::Error),
     from(db::error::IterItem, db::Error),
     from(db::error::TryGet, db::Error)
