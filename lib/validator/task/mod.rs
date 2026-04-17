@@ -309,18 +309,11 @@ fn handle_failed_m6ids(
     for sidechain_number in active_sidechains {
         // Invariant: `put_sidechain` always creates a corresponding
         // `pending_m6ids` entry, so every active sidechain must have one.
-        // Missing entry indicates DB corruption (partial write, external
-        // tampering, etc.) and is unrecoverable without resyncing.
+        // A missing entry indicates DB corruption and is unrecoverable without resyncing.
         let pending_m6ids = dbs
             .active_sidechains
             .pending_m6ids()
-            .try_get(rotxn, &sidechain_number)?
-            .unwrap_or_else(|| {
-                panic!(
-                    "DB corruption: active sidechain {sidechain_number} has no \
-                     pending_m6ids entry (violates put_sidechain invariant)"
-                )
-            });
+            .get(rotxn, &sidechain_number)?;
         let failed = pending_m6ids
             .into_iter()
             .enumerate()
