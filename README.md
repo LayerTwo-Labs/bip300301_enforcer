@@ -6,6 +6,13 @@
 1. Rustc & Cargo, version 1.88.0 or higher. Installing via Rustup is
    recommended.
 
+## Supported Bitcoin Core versions
+
+The enforcer supports running against the 3 latest major versions of Bitcoin
+Core. `getnetworkinfo` is queried at startup and refuses to run against an
+unsupported Bitcoin Core version. The supported set lives in
+[`lib/version.rs`](./lib/version.rs); see `--help` for the override flags.
+
 # Getting started
 
 Building/running:

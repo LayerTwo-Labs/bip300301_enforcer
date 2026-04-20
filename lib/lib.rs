@@ -10,4 +10,5 @@ pub mod rpc_client;
 pub mod server;
 pub mod types;
 pub mod validator;
+pub mod version;
 pub mod wallet;

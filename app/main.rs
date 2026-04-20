@@ -19,6 +19,7 @@ use bip300301_enforcer_lib::{
         Validator,
         main_rest_client::{MainRestClient, MainRestClientError},
     },
+    version,
     wallet::{self, error::BitcoinCoreRPC},
 };
 use bitcoin::ScriptBuf;
@@ -879,6 +880,28 @@ async fn main() -> Result<()> {
         blocks = %info.blocks,
         "Connected to mainchain client",
     );
+
+    // Verify we're talking to a supported Bitcoin Core version.
+    let detected_version = version::check_bitcoin_core_version(
+        &mainchain_client,
+        cli.bitcoin_core_expected_version,
+        cli.bitcoin_core_skip_version_check,
+    )
+    .await?;
+    if cli.bitcoin_core_skip_version_check {
+        tracing::warn!(
+            version = detected_version.version,
+            subversion = %detected_version.subversion,
+            "Bitcoin Core version check skipped (--bitcoin-core-skip-version-check)"
+        );
+    } else {
+        tracing::info!(
+            version = detected_version.version,
+            subversion = %detected_version.subversion,
+            major = detected_version.major,
+            "Bitcoin Core version accepted"
+        );
+    }
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which
