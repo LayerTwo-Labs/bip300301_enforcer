@@ -435,6 +435,20 @@ pub struct Config {
     /// after syncing to the tip. Can be used for benchmarking sync speeds.
     #[arg(long)]
     pub exit_after_sync: Option<u32>,
+
+    /// Assert that the connected Bitcoin Core node is running this major
+    /// version (e.g. `30`). If not set, the enforcer accepts any major in
+    /// its built-in list of supported versions.
+    #[arg(long)]
+    pub bitcoin_core_expected_version: Option<u32>,
+
+    /// Skip the Bitcoin Core version compatibility check at startup.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "bitcoin_core_expected_version"
+    )]
+    pub bitcoin_core_skip_version_check: bool,
 }
 
 impl Config {

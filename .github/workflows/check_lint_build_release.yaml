@@ -93,31 +93,93 @@ jobs:
         run: |
           cargo clippy --all-targets
 
-  integration-test:
-    name: Integration test
+  # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs` and emits
+  # the integration-test matrix. Keeping the list of stock versions in
+  # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
+  # matrix can't drift — a unit test (`ci_versions_match_majors`) asserts
+  # the two are consistent.
+  compute-integration-matrix:
+    name: Compute integration-test matrix
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse CI_BITCOIN_CORE_VERSIONS from lib/version.rs
+        id: build
+        run: |
+          set -euo pipefail
+          VERSIONS=$(grep -oE '"[0-9]+\.[0-9]+"' lib/version.rs | tr -d '"')
+          COUNT=$(printf '%s\n' "$VERSIONS" | grep -c . || true)
+          if [ "$COUNT" -ne 3 ]; then
+            echo "expected 3 versions in lib/version.rs, found $COUNT:" >&2
+            printf '%s\n' "$VERSIONS" >&2
+            exit 1
+          fi
+          for v in $VERSIONS; do
+            if ! echo "$v" | grep -qE '^[0-9]+\.[0-9]+$'; then
+              echo "invalid version in lib/version.rs: '$v'" >&2
+              exit 1
+            fi
+          done
+          ITEMS='{"flavor":"patched"}'
+          for v in $VERSIONS; do
+            ITEMS="$ITEMS,{\"flavor\":\"stock\",\"version\":\"$v\"}"
+          done
+          MATRIX="{\"include\":[${ITEMS}]}"
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "$MATRIX"
+
+  integration-test:
+    name:
+      Integration test (${{ matrix.flavor == 'patched' && 'bitcoin-patched' ||
+      format('Bitcoin Core {0}', matrix.version) }})
+    needs: compute-integration-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.compute-integration-matrix.outputs.matrix) }}
     env:
       ELECTRS_VERSION: v3.2.0
     steps:
-      - name: Download latest bitcoin-patched
+      - name: Download Bitcoin Core (patched)
+        if: matrix.flavor == 'patched'
         run: |
           pushd ..
           wget https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
           unzip L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
           rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-patched-bins
-          chmod +x bitcoin-patched-bins/bitcoind
-          chmod +x bitcoin-patched-bins/bitcoin-cli
-          chmod +x bitcoin-patched-bins/bitcoin-util
+          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-bins
+          chmod +x bitcoin-bins/bitcoind
+          chmod +x bitcoin-bins/bitcoin-cli
+          chmod +x bitcoin-bins/bitcoin-util
           popd
 
-      - name: Checkout bitcoin-patched for signet miner script
+      - name: Download Bitcoin Core (stock ${{ matrix.version }})
+        if: matrix.flavor == 'stock'
         run: |
           pushd ..
-          git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
+          VERSION='${{ matrix.version }}'
+          TARBALL="bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
+          wget "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/${TARBALL}"
+          tar -xf "${TARBALL}"
+          rm "${TARBALL}"
+          mv "bitcoin-${VERSION}/bin" bitcoin-bins
+          rm -r "bitcoin-${VERSION}"
+          chmod +x bitcoin-bins/bitcoind
+          chmod +x bitcoin-bins/bitcoin-cli
+          chmod +x bitcoin-bins/bitcoin-util
           popd
 
-      - name: Download bitcoin unpatched
+      - name:
+          Download stock Bitcoin Core 30.2 (BITCOIND_UNPATCHED for mixed-version
+          tests)
+        # `test_peer_bmm_request` exercises a cross-binary p2p path via
+        # `BITCOIND_UNPATCHED`. For the stock matrix we reuse the same
+        # stock binary; for the patched job we still want a stock 30.2
+        # alongside the patched binaries.
+        if: matrix.flavor == 'patched'
         run: |
           pushd ..
           wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
@@ -125,6 +187,19 @@ jobs:
           rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
           mv bitcoin-30.2/bin bitcoin-unpatched-bins
           rm -r bitcoin-30.2
+          popd
+
+      - name: Checkout bitcoin-patched for signet miner script
+        # The enforcer itself auto-downloads the miner script at runtime
+        # (see `lib/wallet/mine.rs::get_signet_miner_path`), but the
+        # integration test harness drives mining externally and still
+        # requires `SIGNET_MINER` to point at the script. Stock Bitcoin
+        # Core tarballs don't ship `contrib/signet/miner`, and the
+        # patched variant's `--getblocktemplate-command` support is what
+        # our signet tests rely on — so we fetch it here for both flavors.
+        run: |
+          pushd ..
+          git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
           popd
 
       - name: Cache electrs binary
@@ -160,16 +235,26 @@ jobs:
         run: cargo build
 
       - name: Run integration tests
-        id: runIntegrationTests
+        # Stock Bitcoin Core rejects drivechain deposit transactions with
+        # `mempool-script-verify-flag-failed (NOPx reserved for soft-fork
+        # upgrades)` — the consensus rules repurposing those opcodes only
+        # live in bitcoin-patched — so we skip `deposit_withdraw_roundtrip`
+        # on stock. The remaining tests exercise RPC, block-parser, p2p,
+        # and mempool integration with upstream Bitcoin Core.
         run: |
           export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
-          export BITCOIND='../bitcoin-patched-bins/bitcoind'
-          export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
-          export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
-          export BITCOIN_UTIL='../bitcoin-patched-bins/bitcoin-util'
+          export BITCOIND='../bitcoin-bins/bitcoind'
+          export BITCOIN_CLI='../bitcoin-bins/bitcoin-cli'
+          export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
-          cargo run --example integration_tests
+          if [ '${{ matrix.flavor }}' = 'patched' ]; then
+            export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
+            cargo run --example integration_tests
+          else
+            export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
+            cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip
+          fi
 
   test-build-release:
     strategy:
