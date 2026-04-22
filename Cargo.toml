@@ -21,7 +21,7 @@ clap = { version = "4.5.60", default-features = false }
 either = "1.13.0"
 futures = "0.3.32"
 hex = "0.4.3"
-jsonrpsee = { version = "0.25.1" }
+jsonrpsee = { version = "0.26.0" }
 miette = { version = "7.1.0", default-features = false }
 parking_lot = { version = "0.12.3" }
 reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
@@ -38,11 +38,11 @@ tracing-subscriber = "0.3.23"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
-rev = "b21948fb434b8fd76bc6a2deeeb2133e7bd78a63"
+rev = "db1fdfd5ecddfc7855cd872546b47429cb29a0bf"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "d365cb9ed5596fee93144d8fb447156e2226b14a"
+rev = "47c4309848216bfbd15b9d0733d9cf39e8e7b9d4"
 
 [workspace.dependencies.educe]
 version = "0.6.0"
