@@ -21,7 +21,7 @@ clap = { version = "4.5.60", default-features = false }
 either = "1.13.0"
 futures = "0.3.32"
 hex = "0.4.3"
-jsonrpsee = { version = "0.25.1" }
+jsonrpsee = { version = "0.26.0" }
 miette = { version = "7.1.0", default-features = false }
 parking_lot = { version = "0.12.3" }
 reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
