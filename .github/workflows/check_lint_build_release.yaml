@@ -324,7 +324,7 @@ jobs:
           cp target/${{ matrix.name }}/release/bip300301_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
 
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.APP_DIRNAME }}
           if-no-files-found: error
