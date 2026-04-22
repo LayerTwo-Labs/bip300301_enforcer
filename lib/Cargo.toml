@@ -44,7 +44,7 @@ jiff = { version = "0.2.4", default-features = false }
 jsonrpsee = { workspace = true, features = ["client"] }
 miette = { workspace = true, features = ["derive"] }
 nom = "8.0.0"
-nonempty = "0.11.0"
+nonempty = "0.12.0"
 ordermap = { version = "1.0.0", features = ["serde"] }
 ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
