@@ -61,7 +61,7 @@ jobs:
           echo "rust-version=$RUST_VERSION" >> $GITHUB_OUTPUT
 
       - name: Build (and maybe push) Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           # Only push if this is not a PR from a fork
           # prettier-ignore
