@@ -27,7 +27,7 @@ parking_lot = { version = "0.12.3" }
 reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
 serde = { version = "1.0.219" }
 # pinned due to a bug in fatality
-thiserror = "=2.0.16"
+thiserror = "=2.0.18"
 tokio = { version = "1.50.0", default-features = false }
 tokio-stream = "0.1.15"
 tokio-util = "0.7.18"
