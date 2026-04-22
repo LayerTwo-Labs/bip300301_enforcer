@@ -15,7 +15,7 @@ jobs:
     name: Check Prettier
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check Prettier formatting
         uses: actionsx/prettier@v3
@@ -26,7 +26,7 @@ jobs:
     name: Check Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # nightly is needed for formatting imports correctly
       - name: Install latest nightly toolchain
@@ -48,7 +48,7 @@ jobs:
     name: Check Clippy (nightly)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
@@ -104,7 +104,7 @@ jobs:
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Parse CI_BITCOIN_CORE_VERSIONS from lib/version.rs
         id: build
@@ -216,7 +216,7 @@ jobs:
           cd ${{ runner.temp }}/electrs
           cargo build --locked --release
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
@@ -283,7 +283,7 @@ jobs:
       contents: write
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
