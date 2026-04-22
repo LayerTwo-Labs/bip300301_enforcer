@@ -75,7 +75,7 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 transitive = "1.2.0"
 url = "2.5.4"
 uuid = "1.12.1"
-zeromq = "0.4.1"
+zeromq = "0.5.0"
 
 [features]
 default = ["rustls"]
