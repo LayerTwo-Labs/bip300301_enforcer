@@ -1,9 +1,13 @@
+use std::io::IsTerminal as _;
+
 use bip300301_enforcer_integration_tests::{
     integration_test,
     util::{BinPaths, TestFailureCollector, TestFileRegistry},
 };
 use clap::Parser;
-use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
+use tracing_subscriber::{
+    filter as tracing_filter, fmt::writer::BoxMakeWriter, layer::SubscriberExt,
+};
 
 #[derive(Parser)]
 struct Cli {
@@ -55,12 +59,22 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
         };
         tracing_filter::EnvFilter::builder().parse(directives_str)?
     };
-    let indicatif_layer = tracing_indicatif::IndicatifLayer::new();
+    // Only attach the indicatif progress-bar layer when stderr is a TTY.
+    // In non-TTY environments (e.g. CI) tracing-indicatif 0.3 has a bug
+    // that leads to a panic.
+    // See https://github.com/emersonford/tracing-indicatif/issues/24.
+    let (indicatif_layer, stderr_writer) = if std::io::stderr().is_terminal() {
+        let layer = tracing_indicatif::IndicatifLayer::new();
+        let writer = BoxMakeWriter::new(layer.get_stderr_writer());
+        (Some(layer), writer)
+    } else {
+        (None, BoxMakeWriter::new(std::io::stderr))
+    };
     let stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_file(false)
         .with_line_number(false)
-        .with_writer(indicatif_layer.get_stderr_writer());
+        .with_writer(stderr_writer);
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
         .with(stdout_layer)
