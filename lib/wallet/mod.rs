@@ -280,7 +280,7 @@ impl WalletInner {
         let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
 
         let xpriv = extended_key
-            .into_xprv(network)
+            .into_xprv(network.into())
             .ok_or(error::InitWalletFromMnemonic::DeriveXpriv)?;
 
         // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
