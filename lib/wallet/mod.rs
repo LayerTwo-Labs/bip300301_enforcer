@@ -1124,7 +1124,7 @@ impl Wallet {
             let key = {
                 use rand::RngCore;
                 let mut bytes = vec![0u8; <sha256::Hash as Hash>::Engine::BLOCK_SIZE];
-                rand::thread_rng().fill_bytes(&mut bytes);
+                rand::rng().fill_bytes(&mut bytes);
                 bytes
             };
             HmacEngine::<sha256::Hash>::new(&key)
