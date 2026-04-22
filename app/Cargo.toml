@@ -25,16 +25,16 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
-tonic-health = "0.14.2"
-tonic-reflection = "0.14.2"
+tonic-health = "0.14.5"
+tonic-reflection = "0.14.5"
 # needs to line up with jsonrpsee tower version...
-tower = "0.5.2"
+tower = "0.5.3"
 tower-http = { version = "0.6.1", features = ["trace", "request-id"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-log = "0.2.0"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-uuid = "1.12.1"
+uuid = "1.23.1"
 
 [features]
 default = ["rustls"]
