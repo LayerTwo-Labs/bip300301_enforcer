@@ -332,7 +332,7 @@ jobs:
             release/${{ env.APP_FILENAME }}
 
       - name: Release
-        uses: softprops/action-gh-release@v2.0.2
+        uses: softprops/action-gh-release@v3.0.0
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
