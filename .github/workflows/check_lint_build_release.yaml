@@ -93,6 +93,21 @@ jobs:
         run: |
           cargo clippy --all-targets
 
+  check-unused-deps:
+    name: Check unused deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-shear
+        run: cargo binstall --no-confirm cargo-shear
+
+      - name: Check for unused dependencies
+        run: cargo shear --deny-warnings
+
   # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs` and emits
   # the integration-test matrix. Keeping the list of stock versions in
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
