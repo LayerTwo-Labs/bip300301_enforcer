@@ -52,8 +52,11 @@ const UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS: u16 = 5;
 const UNUSED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD: u16 =
     UNUSED_SIDECHAIN_SLOT_PROPOSAL_MAX_AGE - UNUSED_SIDECHAIN_SLOT_ACTIVATION_MAX_FAILS;
 
-/// Returns `Some` if the sidechain proposal does not already exist
-// See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m1-1
+/// BIP 300 M1 (Propose New Sidechain). Returns `Some` if the proposal is
+/// novel; re-proposals of an existing `(slot, description_hash)` are ignored
+/// so miners cannot reset vote counts.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m1-propose-new-sidechain>
 fn handle_m1_propose_sidechain(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -92,7 +95,10 @@ fn handle_m1_propose_sidechain(
     Ok(Some(diff))
 }
 
-// See https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-1
+/// BIP 300 M2 (ACK Proposal). Increments the proposal's vote count and
+/// activates it if it has crossed the threshold within the age window.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-ack-proposal>
 fn handle_m2_ack_sidechain(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -146,6 +152,10 @@ fn handle_m2_ack_sidechain(
     Ok(diff)
 }
 
+/// BIP 300 M2 failure path: removes sidechain proposals whose age has
+/// exceeded the max proposal age. 
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-ack-proposal>
 fn handle_failed_sidechain_proposals(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -176,6 +186,10 @@ fn handle_failed_sidechain_proposals(
     Ok(diff::FailedProposals(failed_proposals))
 }
 
+/// BIP 300 M3 (Propose Bundle). Adds a new pending withdrawal bundle for an
+/// active sidechain; rejects proposals for inactive slots.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m3-propose-bundle>
 fn handle_m3_propose_bundle(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -197,6 +211,10 @@ fn handle_m3_propose_bundle(
     }
 }
 
+/// Core M4 upvote resolver: for each active sidechain, interprets the vote
+/// value (index into pending bundles, ABSTAIN `0xFFFF`, or ALARM `0xFFFE`).
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
 fn handle_m4_votes(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -261,6 +279,11 @@ fn handle_m4_votes(
     Ok(diff)
 }
 
+/// BIP 300 M4 (ACK Bundle) dispatcher across the four encoding versions:
+/// OneByte (0x01), TwoBytes (0x02), LeadingBy50 (0x03), RepeatPrevious
+/// (0x00).
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
 fn handle_m4_ack_bundles(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -290,7 +313,10 @@ fn handle_m4_ack_bundles(
     }
 }
 
-/// Returns failed M6IDs with sidechain numbers
+/// BIP 300 M6 failure path: removes pending withdrawal bundles whose age
+/// has exceeded `WITHDRAWAL_BUNDLE_MAX_AGE`.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m6-withdrawal-bundle>
 fn handle_failed_m6ids(
     rotxn: &RoTxn,
     dbs: &Dbs,
@@ -333,7 +359,10 @@ fn handle_failed_m6ids(
 /// Deposit or (sidechain_id, m6id, sequence_number)
 type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, M6id, u64)>;
 
-/// Returns (sidechain_id, m6id, info) for the withdrawal
+/// BIP 300 M6 (Withdrawal Bundle): validates that the tx matches an approved
+/// pending bundle with sufficient vote count and returns its metadata.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m6-withdrawal-bundle>
 fn handle_m6(
     rotxn: &RoTxn,
     dbs: &ActiveSidechainDbs,
@@ -356,6 +385,13 @@ fn handle_m6(
     }
 }
 
+/// BIP 300 M5 (Deposit) / M6 (Withdrawal Bundle) dispatcher. A tx whose
+/// first output is an OP_DRIVECHAIN treasury UTXO is classified by
+/// comparing the new treasury value to the previous one: a larger value
+/// is an M5 deposit, a smaller value is an M6 withdrawal bundle.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m5-deposit>
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m6-withdrawal-bundle>
 fn handle_m5_m6(
     rotxn: &RoTxn,
     dbs: &ActiveSidechainDbs,
@@ -462,9 +498,14 @@ fn handle_m5_m6(
     }
 }
 
-/// Handles a (potential) M8 BMM request.
-/// Returns `true` if this is a valid BMM request, `HandleM8Error::Jfyi` if
-/// this is an invalid BMM request, and `false` if this is not a BMM request.
+/// BIP 301 M8 (BMM Request). Validates that an M8 transaction matches an
+/// accepted BMM commitment (via M7) and references the current mainchain
+/// tip as its `prev_mainchain_block_hash`.
+///
+/// Returns `true` if the tx is a valid BMM request, a non-fatal
+/// `HandleM8` error if invalid, and `false` if the tx is not an M8 at all.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request>
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: Option<&BmmCommitments>,
@@ -492,6 +533,11 @@ enum CoinbaseMessageEvent {
     WithdrawalBundle(WithdrawalBundleEvent),
 }
 
+/// Dispatches a single coinbase OP_RETURN message to its handler. M1/M2/M3/M4
+/// are BIP 300; M7 is BIP 301.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md>
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m7-bmm-accept>
 fn handle_coinbase_message(
     rotxn: &RoTxn,
     dbs: &Dbs,
