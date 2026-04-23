@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use bitcoin::{Amount, OutPoint};
+use fallible_iterator::FallibleIterator;
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
 use sneed::{DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey, db, env, rwtxn};
@@ -82,6 +83,17 @@ impl ActiveSidechainDbs {
         &self,
     ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>> {
         &self.sidechain
+    }
+
+    /// All active sidechain numbers, collected.  
+    pub fn numbers(&self, rotxn: &RoTxn) -> Result<Vec<SidechainNumber>, db::Error> {
+        let numbers = self
+            .sidechain
+            .lazy_decode()
+            .iter(rotxn)?
+            .map(|(n, _)| Ok(n))
+            .collect()?;
+        Ok(numbers)
     }
 
     pub fn slot_sequence_to_treasury_utxo(

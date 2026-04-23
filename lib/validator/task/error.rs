@@ -8,7 +8,7 @@ use transitive::Transitive;
 use crate::{
     errors::Splittable,
     messages::CoinbaseMessagesError,
-    types::SidechainNumber,
+    types::{M6id, SidechainNumber},
     validator::{dbs, main_rest_client::MainRestClientError, parse_block_files},
 };
 
@@ -122,11 +122,31 @@ impl From<db::Error> for HandleM4Votes {
     }
 }
 
-#[derive(Debug, Error, Fatality, Split)]
+#[allow(clippy::duplicated_attributes)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
+#[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM4AckBundles {
     #[error("Error handling M4 Votes")]
     #[fatal(forward)]
     Votes(#[from] HandleM4Votes),
+    #[error(transparent)]
+    #[fatal(true)]
+    Db(Box<db::Error>),
+    #[error(
+        "M4 RepeatPrevious upvotes bundle {m6id} for sidechain {sidechain_number} that is no longer pending"
+    )]
+    #[fatal(false)]
+    RepeatPreviousUpvotesMissingBundle {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    },
+}
+
+impl From<db::Error> for HandleM4AckBundles {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 #[allow(clippy::duplicated_attributes)]
