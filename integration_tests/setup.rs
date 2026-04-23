@@ -89,7 +89,7 @@ impl SignetSetup {
     async fn init_bitcoind_wallet(&self, bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
         tracing::debug!("Importing secret key");
         let mining_descriptor = {
-            use miniscript;
+            use bdk_wallet::miniscript;
             let descriptor = bdk_wallet::descriptor!(wpkh(self.secret_key))?;
             descriptor.0.to_string_with_secret(&descriptor.1)
         };
