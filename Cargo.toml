@@ -26,6 +26,8 @@ miette = { version = "7.1.0", default-features = false }
 parking_lot = { version = "0.12.3" }
 reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
 serde = { version = "1.0.219" }
+serde_json = "1.0.149"
+temp-dir = "0.2.0"
 # pinned due to a bug in fatality
 thiserror = "=2.0.16"
 tokio = { version = "1.50.0", default-features = false }
@@ -35,6 +37,7 @@ tonic = "0.14.5"
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.23"
+uuid = "1.23.1"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
