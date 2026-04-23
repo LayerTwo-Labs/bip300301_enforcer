@@ -175,11 +175,23 @@ impl Diff for ProposeBundle {
 #[derive(Debug, Deserialize, Serialize)]
 pub enum AckBundleAction {
     Alarm {
+        /// Pending bundles that had `vote_count > 0` at apply time. Undo
+        /// restores by `+= 1` against this set. Excluding 0-voted bundles
+        /// keeps apply/undo symmetric under `saturating_sub`.
         positive_votes_proposals: HashSet<M6id>,
     },
     Upvote {
         /// MUST not have max votes before applying
         m6id: M6id,
+        /// Other pending bundles in the same sidechain that had `vote_count > 0`
+        /// at apply time and were decremented per BIP 300: "Any bundle which
+        /// fails to receive a vote, is downvoted (and loses 1 ACK)".
+        ///
+        /// Spec-wise ALL other bundles are downvoted, but apply's
+        /// `saturating_sub(1)` leaves a 0-voted bundle at 0 regardless. Listing
+        /// only positive-vote bundles preserves apply/undo symmetry: undo
+        /// unconditionally `+= 1`s these, so a 0-voted bundle must not appear.
+        downvoted_others: Vec<M6id>,
     },
 }
 
@@ -201,12 +213,20 @@ impl Diff for AckBundles {
                 } => {
                     let () = dbs.alarm_pending_m6ds(rwtxn, sidechain_number)?;
                 }
-                AckBundleAction::Upvote { m6id } => {
+                AckBundleAction::Upvote {
+                    m6id,
+                    downvoted_others,
+                } => {
                     let () = dbs.with_pending_withdrawals(
                         rwtxn,
                         sidechain_number,
                         |pending_withdrawals| {
                             pending_withdrawals[m6id].vote_count += 1;
+                            for other in downvoted_others {
+                                if let Some(info) = pending_withdrawals.get_mut(other) {
+                                    info.vote_count = info.vote_count.saturating_sub(1);
+                                }
+                            }
                         },
                     )?;
                 }
@@ -233,7 +253,10 @@ impl Diff for AckBundles {
                         },
                     )?;
                 }
-                AckBundleAction::Upvote { m6id } => {
+                AckBundleAction::Upvote {
+                    m6id,
+                    downvoted_others,
+                } => {
                     let () = dbs.with_pending_withdrawals(
                         rwtxn,
                         sidechain_number,
@@ -245,6 +268,11 @@ impl Diff for AckBundles {
                                     m6id: *m6id,
                                 },
                             )?;
+                            for other in downvoted_others {
+                                if let Some(info) = pending_withdrawals.get_mut(other) {
+                                    info.vote_count += 1;
+                                }
+                            }
                             Ok(())
                         },
                     )??;
@@ -589,18 +617,13 @@ where
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use bitcoin::{Txid, hashes::Hash as _};
     use miette::{IntoDiagnostic, Result};
 
     use super::*;
     use crate::{
-        types::{M6id, SidechainNumber},
-        validator::test_utils::{create_test_dbs, test_sidechain},
+        types::SidechainNumber,
+        validator::test_utils::{create_test_dbs, test_m6id, test_sidechain},
     };
-
-    fn test_m6id(byte: u8) -> M6id {
-        M6id(Txid::from_byte_array([byte; 32]))
-    }
 
     #[test]
     fn ack_sidechain_apply_undo_roundtrip_and_underflow_error() -> Result<()> {
@@ -660,7 +683,13 @@ mod tests {
 
         let diff = AckBundles({
             let mut map = HashMap::new();
-            map.insert(sc, AckBundleAction::Upvote { m6id });
+            map.insert(
+                sc,
+                AckBundleAction::Upvote {
+                    m6id,
+                    downvoted_others: Vec::new(),
+                },
+            );
             map
         });
 
@@ -763,7 +792,13 @@ mod tests {
 
         let upvote_diff = AckBundles({
             let mut map = HashMap::new();
-            map.insert(sc, AckBundleAction::Upvote { m6id });
+            map.insert(
+                sc,
+                AckBundleAction::Upvote {
+                    m6id,
+                    downvoted_others: Vec::new(),
+                },
+            );
             map
         });
         upvote_diff

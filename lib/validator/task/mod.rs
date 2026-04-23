@@ -36,7 +36,7 @@ use crate::{
         WithdrawalBundleEvent, WithdrawalBundleEventKind,
     },
     validator::dbs::{
-        ActiveSidechainDbs, Dbs,
+        ActiveSidechainDbs, Dbs, PendingM6ids,
         diff::{self, Diff},
     },
 };
@@ -153,7 +153,7 @@ fn handle_m2_ack_sidechain(
 }
 
 /// BIP 300 M2 failure path: removes sidechain proposals whose age has
-/// exceeded the max proposal age. 
+/// exceeded the max proposal age.
 ///
 /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-ack-proposal>
 fn handle_failed_sidechain_proposals(
@@ -220,12 +220,7 @@ fn handle_m4_votes(
     dbs: &Dbs,
     upvotes: &[u16],
 ) -> Result<diff::AckBundles, error::HandleM4Votes> {
-    let active_sidechains: Vec<_> = dbs
-        .active_sidechains
-        .sidechain()
-        .iter(rotxn)?
-        .map(|(sidechain_number, _)| Ok(sidechain_number))
-        .collect()?;
+    let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
     if upvotes.len() != active_sidechains.len() {
         return Err(error::HandleM4Votes::InvalidVotes {
             expected: active_sidechains.len(),
@@ -244,16 +239,7 @@ fn handle_m4_votes(
             .pending_m6ids()
             .get(rotxn, &sidechain_number)?;
         if vote == M4AckBundles::ALARM_TWO_BYTES {
-            let positive_votes_proposals = pending_withdrawals
-                .into_iter()
-                .filter_map(|(m6id, info)| {
-                    if info.vote_count > 0 {
-                        Some(m6id)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<HashSet<_>>();
+            let positive_votes_proposals = positive_votes_proposals_for_alarm(&pending_withdrawals);
             if !positive_votes_proposals.is_empty() {
                 diff.0.insert(
                     sidechain_number,
@@ -264,9 +250,16 @@ fn handle_m4_votes(
             }
         } else if let Some((m6id, info)) = pending_withdrawals.get_index(vote as usize) {
             if info.vote_count < u16::MAX {
+                let upvote_target = *m6id;
                 diff.0.insert(
                     sidechain_number,
-                    diff::AckBundleAction::Upvote { m6id: *m6id },
+                    diff::AckBundleAction::Upvote {
+                        m6id: upvote_target,
+                        downvoted_others: downvoted_others_for_upvote(
+                            &pending_withdrawals,
+                            upvote_target,
+                        ),
+                    },
                 );
             }
         } else {
@@ -279,6 +272,148 @@ fn handle_m4_votes(
     Ok(diff)
 }
 
+fn downvoted_others_for_upvote(pending: &PendingM6ids, upvote_target: M6id) -> Vec<M6id> {
+    pending
+        .iter()
+        .filter_map(|(m6id, info)| (*m6id != upvote_target && info.vote_count > 0).then_some(*m6id))
+        .collect()
+}
+
+fn positive_votes_proposals_for_alarm(pending: &PendingM6ids) -> HashSet<M6id> {
+    pending
+        .iter()
+        .filter_map(|(m6id, info)| (info.vote_count > 0).then_some(*m6id))
+        .collect()
+}
+
+/// Vote margin for the M4 `LeadingBy50` encoding: a bundle must be
+/// leading its rivals by at least this many votes to be upvoted.
+const LEADING_BY_50_MARGIN: u16 = 50;
+
+/// BIP 300 M4 version 0x03 (LeadingBy50): for each active sidechain, upvote
+/// the single bundle whose `vote_count` exceeds the next-highest rival's by
+/// at least `LEADING_BY_50_MARGIN`. A sidechain's sole bundle counts as
+/// leading an implicit zero-vote rival.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
+fn handle_m4_leading_by_50(
+    rotxn: &RoTxn,
+    dbs: &Dbs,
+) -> Result<diff::AckBundles, error::HandleM4Votes> {
+    let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
+
+    let mut diff = diff::AckBundles::default();
+    for sidechain_number in active_sidechains {
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(rotxn, &sidechain_number)?;
+
+        let mut by_votes: Vec<(M6id, u16)> =
+            pending.iter().map(|(m, i)| (*m, i.vote_count)).collect();
+        by_votes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
+        let Some(&(leader_m6id, lead_votes)) = by_votes.first() else {
+            continue;
+        };
+        let second_highest = by_votes.get(1).map_or(0, |(_, v)| *v);
+
+        if lead_votes.saturating_sub(second_highest) >= LEADING_BY_50_MARGIN
+            && lead_votes < u16::MAX
+        {
+            diff.0.insert(
+                sidechain_number,
+                diff::AckBundleAction::Upvote {
+                    m6id: leader_m6id,
+                    downvoted_others: downvoted_others_for_upvote(&pending, leader_m6id),
+                },
+            );
+        }
+    }
+    Ok(diff)
+}
+
+/// BIP 300 M4 version 0x00 (RepeatPrevious): "sets this block's M4 equal to
+/// the previous block's M4". Re-derived against the *current* pending state
+/// (not cloned verbatim); see
+/// [`diff::AckBundleAction::Upvote::downvoted_others`] and
+/// [`diff::AckBundleAction::Alarm::positive_votes_proposals`] for why the
+/// auxiliary sets must be recomputed.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
+fn handle_m4_repeat_previous(
+    rotxn: &RoTxn,
+    dbs: &Dbs,
+    prev_block_hash: BlockHash,
+) -> Result<diff::AckBundles, error::HandleM4AckBundles> {
+    // First block post-genesis: `connect_block` accepts `parent == all_zeros`,
+    // and there is no stored diff to repeat. Treat as "no prior M4" — empty diff.
+    if prev_block_hash == BlockHash::all_zeros() {
+        return Ok(diff::AckBundles::default());
+    }
+
+    let prev_diff = dbs.block_hashes.diff().get(rotxn, &prev_block_hash)?;
+
+    // At most one AckBundles entry can exist per block (enforced by
+    // `CoinbaseMessages::push` rejecting duplicate M4s).
+    let Some(prev_ack_bundles) = prev_diff.coinbase.msgs.iter().find_map(|msg| match msg {
+        diff::CoinbaseMsg::AckBundles(ab) => Some(ab),
+        _ => None,
+    }) else {
+        // Previous block had no effective M4 (either absent, or abstain-only).
+        // Repeating that means no actions for this block.
+        return Ok(diff::AckBundles::default());
+    };
+
+    let mut rebuilt = diff::AckBundles::default();
+    for (sidechain_number, action) in &prev_ack_bundles.0 {
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(rotxn, sidechain_number)?;
+        match action {
+            diff::AckBundleAction::Upvote { m6id, .. } => {
+                let target = *m6id;
+                let Some(info) = pending.get(&target) else {
+                    return Err(
+                        error::HandleM4AckBundles::RepeatPreviousUpvotesMissingBundle {
+                            sidechain_number: *sidechain_number,
+                            m6id: target,
+                        },
+                    );
+                };
+                // Mirror `handle_m4_votes`: a saturated target silently
+                // yields no upvote rather than overflowing on apply.
+                if info.vote_count == u16::MAX {
+                    continue;
+                }
+                rebuilt.0.insert(
+                    *sidechain_number,
+                    diff::AckBundleAction::Upvote {
+                        m6id: target,
+                        downvoted_others: downvoted_others_for_upvote(&pending, target),
+                    },
+                );
+            }
+            diff::AckBundleAction::Alarm { .. } => {
+                // Alarm applies to all pending in the sidechain; per-m6id
+                // existence doesn't matter. Recompute the positive-vote set
+                // against current state.
+                let positive_votes_proposals = positive_votes_proposals_for_alarm(&pending);
+                if !positive_votes_proposals.is_empty() {
+                    rebuilt.0.insert(
+                        *sidechain_number,
+                        diff::AckBundleAction::Alarm {
+                            positive_votes_proposals,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    Ok(rebuilt)
+}
+
 /// BIP 300 M4 (ACK Bundle) dispatcher across the four encoding versions:
 /// OneByte (0x01), TwoBytes (0x02), LeadingBy50 (0x03), RepeatPrevious
 /// (0x00).
@@ -287,15 +422,14 @@ fn handle_m4_votes(
 fn handle_m4_ack_bundles(
     rotxn: &RoTxn,
     dbs: &Dbs,
+    prev_block_hash: BlockHash,
     m4: &M4AckBundles,
 ) -> Result<diff::AckBundles, error::HandleM4AckBundles> {
     match m4 {
         M4AckBundles::LeadingBy50 => {
-            todo!();
+            handle_m4_leading_by_50(rotxn, dbs).map_err(error::HandleM4AckBundles::from)
         }
-        M4AckBundles::RepeatPrevious => {
-            todo!();
-        }
+        M4AckBundles::RepeatPrevious => handle_m4_repeat_previous(rotxn, dbs, prev_block_hash),
         M4AckBundles::OneByte { upvotes } => {
             let upvotes: Vec<u16> = upvotes
                 .iter()
@@ -322,13 +456,7 @@ fn handle_failed_m6ids(
     dbs: &Dbs,
     block_height: u32,
 ) -> Result<diff::FailedM6ids, error::HandleFailedM6Ids> {
-    let active_sidechains: Vec<_> = dbs
-        .active_sidechains
-        .sidechain()
-        .lazy_decode()
-        .iter(rotxn)?
-        .map(|(sidechain_number, _)| Ok(sidechain_number))
-        .collect()?;
+    let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
 
     let mut failed_m6ids = HashMap::<_, BTreeMap<_, _>>::new();
 
@@ -542,6 +670,7 @@ fn handle_coinbase_message(
     rotxn: &RoTxn,
     dbs: &Dbs,
     height: u32,
+    prev_block_hash: BlockHash,
     accepted_bmm_requests: &mut BmmCommitments,
     message: CoinbaseMessage,
 ) -> Result<(Option<CoinbaseMessageEvent>, Option<diff::CoinbaseMsg>), error::ConnectBlock> {
@@ -594,7 +723,7 @@ fn handle_coinbase_message(
             Ok((Some(event), Some(diff::CoinbaseMsg::ProposeBundle(diff))))
         }
         CoinbaseMessage::M4AckBundles(m4) => {
-            let diff = handle_m4_ack_bundles(rotxn, dbs, &m4)?;
+            let diff = handle_m4_ack_bundles(rotxn, dbs, prev_block_hash, &m4)?;
             let diff = if diff.0.is_empty() {
                 None
             } else {
@@ -780,7 +909,14 @@ pub(in crate::validator) fn connect_block(
     let m4_exists = coinbase_messages.m4_exists();
     for (message, _vout) in coinbase_messages {
         let (event, diff) = coinbase_msg_diffs.rotxn(|rotxn, dbs| {
-            handle_coinbase_message(rotxn, dbs, height, &mut accepted_bmm_requests, message)
+            handle_coinbase_message(
+                rotxn,
+                dbs,
+                height,
+                parent,
+                &mut accepted_bmm_requests,
+                message,
+            )
         })?;
         match event {
             Some(CoinbaseMessageEvent::NewSidechainProposal { sidechain }) => {
@@ -806,7 +942,7 @@ pub(in crate::validator) fn connect_block(
             let active_sidechains_count = dbs.active_sidechains.sidechain().len(rotxn)?;
             let upvotes = vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
             let m4 = M4AckBundles::OneByte { upvotes };
-            let diff = handle_m4_ack_bundles(rotxn, dbs, &m4)?;
+            let diff = handle_m4_ack_bundles(rotxn, dbs, parent, &m4)?;
             Ok::<_, error::ConnectBlock>(diff)
         })?;
         if !diff.0.is_empty() {
@@ -1489,7 +1625,7 @@ mod tests {
     };
     use fatality::Fatality as _;
     use hashlink::LinkedHashMap;
-    use miette::{IntoDiagnostic, Result};
+    use miette::{IntoDiagnostic, Result, bail};
 
     use super::*;
     use crate::{
@@ -1498,7 +1634,7 @@ mod tests {
             BmmCommitment, BmmCommitments, Ctip, M6id, SidechainDescription, SidechainNumber,
             SidechainProposal,
         },
-        validator::test_utils::{create_test_dbs, test_sidechain},
+        validator::test_utils::{create_test_dbs, test_block_header, test_m6id, test_sidechain},
     };
 
     fn build_m8_tx(
@@ -1990,7 +2126,7 @@ mod tests {
             handle_m4_votes(&rwtxn, &dbs, &[M4AckBundles::ABSTAIN_TWO_BYTES]).into_diagnostic()?;
         assert!(diff.0.is_empty());
 
-        let m6id = M6id(Txid::from_byte_array([0xAA; 32]));
+        let m6id = test_m6id(0xAA);
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
             .into_diagnostic()?;
@@ -2008,7 +2144,7 @@ mod tests {
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
             .into_diagnostic()?;
 
-        let m6id = M6id(Txid::from_byte_array([0xAA; 32]));
+        let m6id = test_m6id(0xAA);
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
             .into_diagnostic()?;
@@ -2047,6 +2183,570 @@ mod tests {
         let err =
             handle_m4_votes(&rwtxn, &dbs, &[0]).expect_err("upvote with no pending must error");
         assert!(matches!(err, error::HandleM4Votes::UpvoteFailed { .. }));
+        Ok(())
+    }
+
+    /// BIP 300: bundles in the same sidechain that didn't receive a vote get
+    /// -1. Verifies the diff records non-leader bundles with vote_count > 0
+    /// in `downvoted_others`, and apply/undo are symmetric.
+    #[test]
+    fn handle_m4_votes_upvote_downvotes_other_positive_bundles() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let target = test_m6id(0xAA);
+        let other_positive = test_m6id(0xBB);
+        let other_zero = test_m6id(0xCC);
+        for m6id in [target, other_positive, other_zero] {
+            dbs.active_sidechains
+                .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+                .into_diagnostic()?;
+        }
+        set_vote_count(&mut rwtxn, &dbs, &sc, target, 2);
+        set_vote_count(&mut rwtxn, &dbs, &sc, other_positive, 3);
+
+        // Upvote target (index 0). Spec: target +1; other_positive -1;
+        // other_zero unchanged (saturating at 0).
+        let diff = handle_m4_votes(&rwtxn, &dbs, &[0]).into_diagnostic()?;
+        let Some(diff::AckBundleAction::Upvote {
+            m6id,
+            downvoted_others,
+        }) = diff.0.get(&sc)
+        else {
+            bail!("expected Upvote action");
+        };
+        assert_eq!(*m6id, target);
+        assert_eq!(downvoted_others, &vec![other_positive]);
+
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 1)
+            .into_diagnostic()?;
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .into_diagnostic()?;
+        assert_eq!(pending[&target].vote_count, 3);
+        assert_eq!(pending[&other_positive].vote_count, 2);
+        assert_eq!(pending[&other_zero].vote_count, 0);
+
+        // Undo restores original state.
+        diff.undo(&mut rwtxn, &dbs.active_sidechains)
+            .into_diagnostic()?;
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .into_diagnostic()?;
+        assert_eq!(pending[&target].vote_count, 2);
+        assert_eq!(pending[&other_positive].vote_count, 3);
+        assert_eq!(pending[&other_zero].vote_count, 0);
+        Ok(())
+    }
+
+    // ── handle_m4_ack_bundles: LeadingBy50 & RepeatPrevious ──
+
+    fn set_vote_count(rwtxn: &mut RwTxn, dbs: &Dbs, sc: &SidechainNumber, m6id: M6id, count: u16) {
+        dbs.active_sidechains
+            .with_pending_withdrawal_entry(rwtxn, sc, m6id, |entry| {
+                let ordermap::map::Entry::Occupied(mut e) = entry else {
+                    panic!("expected pending m6id");
+                };
+                e.get_mut().vote_count = count;
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn handle_m4_leading_by_50_margin() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let leader = test_m6id(0xAA);
+        let rival = test_m6id(0xBB);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, leader, 0)
+            .into_diagnostic()?;
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, rival, 0)
+            .into_diagnostic()?;
+
+        // Lead of 49 → no upvote
+        set_vote_count(&mut rwtxn, &dbs, &sc, leader, 60);
+        set_vote_count(&mut rwtxn, &dbs, &sc, rival, 11);
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty(), "lead of 49 should not trigger upvote");
+
+        // Lead of exactly 50 → upvote leader
+        set_vote_count(&mut rwtxn, &dbs, &sc, rival, 10);
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(matches!(
+            diff.0.get(&sc),
+            Some(diff::AckBundleAction::Upvote { m6id, .. }) if *m6id == leader
+        ));
+
+        // Tied top → no upvote
+        set_vote_count(&mut rwtxn, &dbs, &sc, leader, 100);
+        set_vote_count(&mut rwtxn, &dbs, &sc, rival, 100);
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty(), "ties should not trigger upvote");
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m4_leading_by_50_single_bundle_treats_no_rival_as_zero() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let m6id = test_m6id(0xAA);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .into_diagnostic()?;
+
+        // vote_count 49, no rival → lead = 49 (vs implicit 0) → no upvote
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 49);
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty());
+
+        // vote_count 50 → lead = 50 → upvote
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 50);
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(matches!(
+            diff.0.get(&sc),
+            Some(diff::AckBundleAction::Upvote { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m4_leading_by_50_empty_cases() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        // No sidechains → empty diff
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty());
+
+        // Active sidechain but no pending m6ids → no action for that sidechain
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m4_leading_by_50_skips_saturated_leader() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let m6id = test_m6id(0xAA);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .into_diagnostic()?;
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, u16::MAX);
+
+        // Leader already at u16::MAX → no further upvote
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty());
+        Ok(())
+    }
+
+    // ── handle_m4_ack_bundles: RepeatPrevious (end-to-end) ──
+
+    /// Store a fabricated block diff (with `prev_blockhash` as its parent)
+    /// so RepeatPrevious resolution can find it. Returns the resulting block
+    /// hash, since it's derived from the header contents.
+    fn store_block_diff(
+        rwtxn: &mut RwTxn,
+        dbs: &Dbs,
+        prev_blockhash: BlockHash,
+        ack_bundles: Option<diff::AckBundles>,
+    ) -> BlockHash {
+        let header = test_block_header(prev_blockhash);
+        let block_hash = header.block_hash();
+        dbs.block_hashes.put_headers(rwtxn, &[(header, 0)]).unwrap();
+
+        let msgs: Vec<diff::CoinbaseMsg> = ack_bundles
+            .map(|ab| vec![diff::CoinbaseMsg::AckBundles(ab)])
+            .unwrap_or_default();
+        let block_diff = diff::Block {
+            coinbase: diff::Coinbase {
+                msgs,
+                failed_proposals: diff::FailedProposals(HashMap::new()),
+                failed_m6ids: diff::FailedM6ids(HashMap::new()),
+            },
+            txs: Vec::new(),
+        };
+        let block_info = BlockInfo {
+            bmm_commitments: LinkedHashMap::new(),
+            coinbase_txid: Txid::all_zeros(),
+            events: Vec::new(),
+        };
+        dbs.block_hashes
+            .put_block_info(rwtxn, &block_hash, &block_info, &block_diff)
+            .unwrap();
+        block_hash
+    }
+
+    #[test]
+    fn handle_m4_repeat_previous_copies_prior_upvote() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let m6id = test_m6id(0xAA);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .into_diagnostic()?;
+
+        // Store a previous block whose AckBundles upvoted m6id
+        let prior = diff::AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                diff::AckBundleAction::Upvote {
+                    m6id,
+                    downvoted_others: Vec::new(),
+                },
+            );
+            map
+        });
+        let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
+
+        let diff = handle_m4_ack_bundles(&rwtxn, &dbs, prev_hash, &M4AckBundles::RepeatPrevious)
+            .into_diagnostic()?;
+        assert!(matches!(
+            diff.0.get(&sc),
+            Some(diff::AckBundleAction::Upvote { m6id: m, .. }) if *m == m6id
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m4_repeat_previous_empty_when_no_prior_m4() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        // Previous block has no AckBundles stored
+        let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), None);
+
+        let diff = handle_m4_ack_bundles(&rwtxn, &dbs, prev_hash, &M4AckBundles::RepeatPrevious)
+            .into_diagnostic()?;
+        assert!(
+            diff.0.is_empty(),
+            "no prior M4 (or all-abstain) should resolve to empty diff"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m4_repeat_previous_rejects_when_bundle_gone() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        // Note: m6id is *not* put as pending — simulating the case where the
+        // bundle was executed/failed between blocks.
+        let missing_m6id = test_m6id(0xCC);
+
+        let prior = diff::AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                diff::AckBundleAction::Upvote {
+                    m6id: missing_m6id,
+                    downvoted_others: Vec::new(),
+                },
+            );
+            map
+        });
+        let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
+
+        let err = handle_m4_ack_bundles(&rwtxn, &dbs, prev_hash, &M4AckBundles::RepeatPrevious)
+            .expect_err("missing bundle must error");
+        assert!(matches!(
+            err,
+            error::HandleM4AckBundles::RepeatPreviousUpvotesMissingBundle { .. }
+        ));
+        assert!(!err.is_fatal(),);
+        Ok(())
+    }
+
+    /// regression guard: RepeatPrevious must **not** clone
+    /// `downvoted_others` verbatim from the prior block's diff. That set is
+    /// "bundles with vote_count > 0 at apply time" — recorded for the prior
+    /// block's state. If a rival bundle was decremented to 0 by the prior
+    /// block, apply's `saturating_sub(1)` would no-op at 0 while undo's
+    /// `+= 1` would spuriously lift it to 1, breaking apply/undo symmetry.
+    ///
+    /// The fix: recompute `downvoted_others` against current pending state.
+    /// This test verifies the rebuilt set matches the current state, not
+    /// the stored set.
+    #[test]
+    fn handle_m4_repeat_previous_rebuilds_downvoted_others_against_current_state() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let target = test_m6id(0xAA);
+        let rival_now_zero = test_m6id(0xBB);
+        let rival_still_positive = test_m6id(0xCC);
+        for m6id in [target, rival_now_zero, rival_still_positive] {
+            dbs.active_sidechains
+                .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+                .into_diagnostic()?;
+        }
+        // Current state: target=1, rival_now_zero=0, rival_still_positive=2.
+        set_vote_count(&mut rwtxn, &dbs, &sc, target, 1);
+        set_vote_count(&mut rwtxn, &dbs, &sc, rival_still_positive, 2);
+
+        // Prior diff listed BOTH rivals in downvoted_others (simulating the
+        // state before rival_now_zero was decremented to 0).
+        let stale = diff::AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                diff::AckBundleAction::Upvote {
+                    m6id: target,
+                    downvoted_others: vec![rival_now_zero, rival_still_positive],
+                },
+            );
+            map
+        });
+        let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(stale));
+
+        let rebuilt = handle_m4_ack_bundles(&rwtxn, &dbs, prev_hash, &M4AckBundles::RepeatPrevious)
+            .into_diagnostic()?;
+        let Some(diff::AckBundleAction::Upvote {
+            m6id,
+            downvoted_others,
+        }) = rebuilt.0.get(&sc)
+        else {
+            bail!("expected Upvote action");
+        };
+        assert_eq!(*m6id, target);
+        assert_eq!(
+            downvoted_others,
+            &vec![rival_still_positive],
+            "stale rival_now_zero must be excluded; only currently-positive rivals survive"
+        );
+        Ok(())
+    }
+
+    /// regression guard: prior block's Alarm
+    /// recorded `positive_votes_proposals` matching its pre-apply state.
+    /// On the current block's RepeatPrevious, the set must be recomputed
+    /// against current pending, otherwise Alarm apply/undo desynchronizes
+    /// (apply no-ops on 0-voted bundles, undo bumps them to 1).
+    #[test]
+    fn handle_m4_repeat_previous_rebuilds_positive_votes_against_current_state() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let a = test_m6id(0xAA);
+        let b = test_m6id(0xBB);
+        for m6id in [a, b] {
+            dbs.active_sidechains
+                .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+                .into_diagnostic()?;
+        }
+        // Current state: a=0, b=3. Stale prior set claimed both were positive.
+        set_vote_count(&mut rwtxn, &dbs, &sc, b, 3);
+        let stale = diff::AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                diff::AckBundleAction::Alarm {
+                    positive_votes_proposals: HashSet::from([a, b]),
+                },
+            );
+            map
+        });
+        let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(stale));
+
+        let rebuilt = handle_m4_ack_bundles(&rwtxn, &dbs, prev_hash, &M4AckBundles::RepeatPrevious)
+            .into_diagnostic()?;
+        let Some(diff::AckBundleAction::Alarm {
+            positive_votes_proposals,
+        }) = rebuilt.0.get(&sc)
+        else {
+            bail!("expected Alarm action");
+        };
+        assert_eq!(
+            positive_votes_proposals,
+            &HashSet::from([b]),
+            "stale zero-voted bundle must be excluded from rebuilt Alarm set"
+        );
+        Ok(())
+    }
+
+    /// Liveness guard: the first block post-genesis has
+    /// `prev_block_hash == all_zeros()` with no stored diff. A miner who
+    /// uses `RepeatPrevious` there is spec-compliant, so the handler must
+    /// return an empty diff, not panic.
+    #[test]
+    fn handle_m4_repeat_previous_genesis_parent_yields_empty_diff() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::RepeatPrevious,
+        )
+        .into_diagnostic()?;
+        assert!(diff.0.is_empty());
+        Ok(())
+    }
+
+    /// Overflow guard: if the prior block upvoted a bundle that is now at
+    /// u16::MAX in the current pending state, RepeatPrevious must skip the
+    /// upvote instead of overflowing at apply time (`vote_count += 1`).
+    /// Mirrors `handle_m4_votes`'s `if info.vote_count < u16::MAX` gate.
+    #[test]
+    fn handle_m4_repeat_previous_skips_saturated_target() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let m6id = test_m6id(0xAA);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .into_diagnostic()?;
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, u16::MAX);
+
+        let prior = diff::AckBundles({
+            let mut map = HashMap::new();
+            map.insert(
+                sc,
+                diff::AckBundleAction::Upvote {
+                    m6id,
+                    downvoted_others: Vec::new(),
+                },
+            );
+            map
+        });
+        let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
+
+        let diff = handle_m4_ack_bundles(&rwtxn, &dbs, prev_hash, &M4AckBundles::RepeatPrevious)
+            .into_diagnostic()?;
+        assert!(
+            diff.0.is_empty(),
+            "saturated target must not produce an overflow-prone Upvote diff"
+        );
+        Ok(())
+    }
+
+    /// Two bundles share second place while a third leads by 50 over them
+    /// — spec threshold is "leading by ≥ 50 vs next-highest rival", so the
+    /// leader wins regardless of ties behind it.
+    #[test]
+    fn handle_m4_leading_by_50_leader_wins_over_tied_second_place() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let leader = test_m6id(0xAA);
+        let tied_a = test_m6id(0xBB);
+        let tied_b = test_m6id(0xCC);
+        for m in [leader, tied_a, tied_b] {
+            dbs.active_sidechains
+                .put_pending_m6id(&mut rwtxn, &sc, m, 0)
+                .into_diagnostic()?;
+        }
+        set_vote_count(&mut rwtxn, &dbs, &sc, leader, 120);
+        set_vote_count(&mut rwtxn, &dbs, &sc, tied_a, 60);
+        set_vote_count(&mut rwtxn, &dbs, &sc, tied_b, 60);
+
+        let diff = handle_m4_ack_bundles(
+            &rwtxn,
+            &dbs,
+            BlockHash::all_zeros(),
+            &M4AckBundles::LeadingBy50,
+        )
+        .into_diagnostic()?;
+        assert!(matches!(
+            diff.0.get(&sc),
+            Some(diff::AckBundleAction::Upvote { m6id, .. }) if *m6id == leader
+        ));
         Ok(())
     }
 }
