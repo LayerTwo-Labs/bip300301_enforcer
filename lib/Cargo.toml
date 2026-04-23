@@ -23,16 +23,13 @@ bdk_esplora = { version = "0.22.2", default-features = false, features = [
     "async-https-rustls",
 ] }
 bdk_wallet = { workspace = true, features = ["keys-bip39", "rusqlite"] }
-bincode = "1.3.3"
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
 bitcoin-send-tx-p2p = "0.3.0"
-blake3 = "1.8.4"
 byteorder = "1.5.0"
 clap = { workspace = true, features = ["derive", "string", "std"] }
 cusf-enforcer-mempool = { workspace = true }
 derive_more = { version = "2.0.1", features = ["debug", "display"] }
-educe = { workspace = true }
 either = { workspace = true }
 fallible-iterator = "0.3.0"
 fatality = "0.1.1"
@@ -51,15 +48,13 @@ parking_lot = { workspace = true, features = ["send_guard"] }
 prost = "0.14.3"
 prost-types = "0.14.3"
 rand = "0.9.2"
-regex = "1.12.3"
 reqwest = { workspace = true }
 # needs to line up with BDK version
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 rusqlite_migration = "1.0.0"
 rusty-leveldb = "4.0.0"
 serde = { workspace = true, features = ["derive"] }
-serde_json = "1.0.149"
-serde_path_to_error = "0.1.16"
+serde_json = { workspace = true }
 sneed = { version = "0.0.19", features = ["observe"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
@@ -74,7 +69,7 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 transitive = "1.2.0"
 url = "2.5.8"
-uuid = "1.23.1"
+uuid = { workspace = true }
 zeromq = "0.5.0"
 
 [features]
@@ -83,7 +78,7 @@ openssl = ["bdk_electrum/use-openssl"]
 rustls = ["bdk_electrum/use-rustls"]
 
 [dev-dependencies]
-temp-dir = "0.2.0"
+temp-dir = { workspace = true }
 
 [lints]
 workspace = true
@@ -91,3 +86,8 @@ workspace = true
 [lib]
 name = "bip300301_enforcer_lib"
 path = "lib.rs"
+doctest = false
+
+[package.metadata.cargo-shear]
+# Used by tonic-prost-build generated code in OUT_DIR, which cargo-shear can't see.
+ignored = ["tonic-prost"]

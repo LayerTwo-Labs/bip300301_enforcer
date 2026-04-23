@@ -19,8 +19,6 @@ http = "1.2.0"
 jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy"] }
 reqwest = { workspace = true }
-rusty-leveldb = "4.0.0"
-serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-util = { workspace = true }
@@ -34,7 +32,7 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-log = "0.2.0"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-uuid = "1.23.1"
+uuid = { workspace = true }
 
 [features]
 default = ["rustls"]
