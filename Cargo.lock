@@ -485,7 +485,6 @@ dependencies = [
  "indicatif",
  "jsonrpsee",
  "libtest-mimic",
- "miniscript",
  "parking_lot",
  "reserve-port",
  "serde_json",
