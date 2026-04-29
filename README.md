@@ -18,7 +18,7 @@ unsupported Bitcoin Core version. The supported set lives in
 Building/running:
 
 ```bash
-# Check out git submodules
+# Check out git submodules (includes cusf_sidechain_proto for .proto sources)
 $ git submodule update --init --recursive
 # Compiles the project
 $ cargo build
@@ -42,6 +42,11 @@ $ buf curl  --http2-prior-knowledge --protocol grpc \
   "network": "NETWORK_SIGNET"
 }
 ```
+
+## Follow-ups (maintainers)
+
+- **Push:** Use a GitHub account with write access to **LayerTwo-Labs**; a `403` on `git push` is a credentials or remote URL issue.
+- **Protos:** After moving the **`cusf_sidechain_proto`** submodule forward, run **`cargo test --workspace --all-features`** (or the same checks CI runs) before merging.
 
 # Interacting with the enforcer
 
