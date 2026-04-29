@@ -46,12 +46,12 @@ impl EncryptedMnemonic {
         mnemonic: &Mnemonic,
         password: &str,
     ) -> Result<Self, error::EncryptMnemonic> {
-        use rand::TryRngCore;
+        use rand::TryRng;
 
-        // `rand::rngs::OsRng` rather than aes_gcm's re-exported `OsRng`, since
-        // the latter only implements rand_core 0.6 traits, not rand 0.9's.
+        // `rand::rngs::SysRng` rather than aes_gcm's re-exported `OsRng`, since
+        // the latter only implements rand_core 0.6 traits, not rand 0.10's.
         let mut key_salt = [0u8; 16];
-        rand::rngs::OsRng.try_fill_bytes(&mut key_salt)?;
+        rand::rngs::SysRng.try_fill_bytes(&mut key_salt)?;
 
         let key_bytes = stretch_password(password, &key_salt)?;
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);

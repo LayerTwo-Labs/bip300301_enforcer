@@ -47,7 +47,7 @@ ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
 prost = "0.14.3"
 prost-types = "0.14.3"
-rand = "0.9.2"
+rand = "0.10.1"
 reqwest = { workspace = true }
 # needs to line up with BDK version
 rusqlite = { version = "0.31.0", features = ["bundled"] }

@@ -279,7 +279,7 @@ pub enum EncryptMnemonic {
     #[error("failed to encrypt mnemonic")]
     Encrypt(#[from] aes_gcm::Error),
     #[error("failed to read from OS RNG")]
-    OsRng(#[from] rand::rand_core::OsError),
+    SysRng(#[from] rand::rngs::SysError),
     #[error(transparent)]
     StretchPassword(#[from] StretchPassword),
 }
@@ -287,7 +287,7 @@ pub enum EncryptMnemonic {
 impl ToStatus for EncryptMnemonic {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::Encrypt(_) | Self::OsRng(_) => StatusBuilder::new(self),
+            Self::Encrypt(_) | Self::SysRng(_) => StatusBuilder::new(self),
             Self::StretchPassword(err) => err.builder(),
         }
     }

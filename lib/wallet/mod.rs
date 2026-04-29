@@ -1122,7 +1122,7 @@ impl Wallet {
         use bitcoin::hashes::{Hash, Hmac, HmacEngine};
         let hmac_engine = || {
             let key = {
-                use rand::RngCore;
+                use rand::Rng;
                 let mut bytes = vec![0u8; <sha256::Hash as Hash>::Engine::BLOCK_SIZE];
                 rand::rng().fill_bytes(&mut bytes);
                 bytes
