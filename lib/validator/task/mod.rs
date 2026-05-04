@@ -1796,6 +1796,105 @@ mod tests {
     }
 
     #[test]
+    fn handle_m5_m6_withdrawal_without_pending_bundle_is_fatal() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        let old_ctip_outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_ctip_outpoint,
+                    value: Amount::from_sat(5_000),
+                },
+            )
+            .into_diagnostic()?;
+
+        // Withdrawal-shape tx: 1 input spending old ctip, output[0] is a new
+        // treasury UTXO with strictly smaller value.
+        let new_treasury = TxOut {
+            script_pubkey: ScriptBuf::from_bytes(vec![
+                bitcoin::opcodes::all::OP_NOP5.to_u8(),
+                bitcoin::opcodes::all::OP_PUSHBYTES_1.to_u8(),
+                sc.0,
+                bitcoin::opcodes::OP_TRUE.to_u8(),
+            ]),
+            value: Amount::from_sat(4_000),
+        };
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: old_ctip_outpoint,
+                ..TxIn::default()
+            }],
+            output: vec![new_treasury],
+        };
+
+        let err = handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx))
+            .expect_err("withdrawal without a pending bundle must error");
+        assert!(matches!(err, error::HandleM5M6::InvalidM6));
+        assert!(err.is_fatal());
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m5_m6_withdrawal_with_invalid_m6_structure_is_fatal() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        let old_ctip_outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_ctip_outpoint,
+                    value: Amount::from_sat(5_000),
+                },
+            )
+            .into_diagnostic()?;
+
+        let new_treasury = TxOut {
+            script_pubkey: ScriptBuf::from_bytes(vec![
+                bitcoin::opcodes::all::OP_NOP5.to_u8(),
+                bitcoin::opcodes::all::OP_PUSHBYTES_1.to_u8(),
+                sc.0,
+                bitcoin::opcodes::OP_TRUE.to_u8(),
+            ]),
+            value: Amount::from_sat(4_000),
+        };
+        // T_n (4_000) + P_total (2_000) > T_n-1 (5_000)
+        let payout = TxOut {
+            script_pubkey: ScriptBuf::new(),
+            value: Amount::from_sat(2_000),
+        };
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: old_ctip_outpoint,
+                ..TxIn::default()
+            }],
+            output: vec![new_treasury, payout],
+        };
+
+        let err = handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx))
+            .expect_err("structurally invalid M6 must error");
+        assert!(matches!(err, error::HandleM5M6::M6id(_)));
+        assert!(err.is_fatal());
+        Ok(())
+    }
+
+    #[test]
     fn handle_m5_m6_old_ctip_unspent_is_fatal() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;

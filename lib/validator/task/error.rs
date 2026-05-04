@@ -153,9 +153,16 @@ pub(in crate::validator) enum HandleM5M6 {
     #[error(transparent)]
     #[fatal]
     Db(Box<db::Error>),
+    /// BIP 300 M6: a tx that spends a treasury UTXO and creates a smaller new
+    /// treasury UTXO MUST be invalid unless its M6ID matches a sufficiently-voted
+    /// pending bundle.
     #[error("Invalid M6")]
+    #[fatal]
     InvalidM6,
+    /// BIP 300 M6: a tx that spends a treasury UTXO and creates a smaller new treasury
+    /// UTXO MUST be a structurally-valid M6.
     #[error(transparent)]
+    #[fatal]
     M6id(#[from] crate::messages::M6idError),
     /// BIP 300 M5: If the treasury UTXO for sidechain slot `S` exists and
     /// a transaction creates a new treasury UTXO for `S` without spending
