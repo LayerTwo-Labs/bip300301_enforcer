@@ -171,8 +171,12 @@ impl From<db::Error> for HandleM5M6 {
 pub(in crate::validator) enum HandleM8 {
     #[error("BMM request expired")]
     BmmRequestExpired,
-    #[error("Cannot include BMM request; not accepted by miners")]
-    NotAcceptedByMiners,
+    /// BIP 301 spec ("Validation Rules"): a block containing an M8
+    /// transaction without the corresponding M7 output (matching `S` and `H`)
+    /// MUST be considered invalid.
+    #[error("M8 BMM request has no corresponding M7 in the same block")]
+    #[fatal]
+    NoCorrespondingM7,
 }
 
 #[fatality(splitable)]

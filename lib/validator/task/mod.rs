@@ -462,9 +462,10 @@ fn handle_m5_m6(
     }
 }
 
-/// Handles a (potential) M8 BMM request.
-/// Returns `true` if this is a valid BMM request, `HandleM8Error::Jfyi` if
-/// this is an invalid BMM request, and `false` if this is not a BMM request.
+/// Validate a (potential) M8 BMM request.
+/// Returns `Ok(true)` for a valid M8, `Ok(false)` if the tx is not an M8 at
+/// all, and `Err` if the tx parses as an M8 but fails validation. The error
+/// is fatal for spec violations (no corresponding M7) and non-fatal otherwise.
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: Option<&BmmCommitments>,
@@ -478,7 +479,7 @@ fn handle_m8(
             .get(&bmm_request.sidechain_number)
             .is_none_or(|commitment| *commitment != bmm_request.sidechain_block_hash)
     {
-        Err(error::HandleM8::NotAcceptedByMiners)
+        Err(error::HandleM8::NoCorrespondingM7)
     } else if bmm_request.prev_mainchain_block_hash != *prev_mainchain_block_hash {
         Err(error::HandleM8::BmmRequestExpired)
     } else {
@@ -1541,7 +1542,9 @@ mod tests {
     }
 
     #[test]
-    fn handle_m8_rejection_cases_are_non_fatal() {
+    fn handle_m8_no_corresponding_m7_is_fatal() {
+        // Spec (BIP 301, "Validation Rules"): a block containing an M8 without
+        // the corresponding M7 MUST be considered invalid.
         let sc = SidechainNumber(1);
         let prev_hash = dummy_block_hash(0xAA);
         let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
@@ -1549,14 +1552,25 @@ mod tests {
         let empty: BmmCommitments = LinkedHashMap::new();
         let err =
             handle_m8(&tx, Some(&empty), &prev_hash).expect_err("empty accepted list must reject");
-        assert!(matches!(err, error::HandleM8::NotAcceptedByMiners));
-        assert!(!err.is_fatal());
+        assert!(matches!(err, error::HandleM8::NoCorrespondingM7));
+        assert!(err.is_fatal());
 
         let mut wrong: BmmCommitments = LinkedHashMap::new();
         wrong.insert(sc, BmmCommitment([0xFF; 32]));
         let err =
             handle_m8(&tx, Some(&wrong), &prev_hash).expect_err("wrong commitment must reject");
-        assert!(matches!(err, error::HandleM8::NotAcceptedByMiners));
+        assert!(matches!(err, error::HandleM8::NoCorrespondingM7));
+        assert!(err.is_fatal());
+    }
+
+    #[test]
+    fn handle_m8_expired_request_is_non_fatal() {
+        // The spec does not mandate any behavior when M8.prev_mainchain_block_hash
+        // does not match the actual previous mainchain block, so we keep this
+        // a non-fatal/skip-the-tx outcome rather than invalidating the block.
+        let sc = SidechainNumber(1);
+        let prev_hash = dummy_block_hash(0xAA);
+        let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
 
         let err =
             handle_m8(&tx, None, &dummy_block_hash(0xBB)).expect_err("wrong prev_hash must reject");
@@ -1578,7 +1592,7 @@ mod tests {
     // ── handle_transaction ──
 
     #[test]
-    fn handle_transaction_m8_errors_propagate_as_non_fatal() -> Result<()> {
+    fn handle_transaction_m8_no_corresponding_m7_propagates_as_fatal() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let rotxn = dbs.read_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
@@ -1594,7 +1608,17 @@ mod tests {
             &tx,
         )
         .expect_err("not-accepted M8 must error");
-        assert!(!err.is_fatal());
+        assert!(err.is_fatal());
+        Ok(())
+    }
+
+    #[test]
+    fn handle_transaction_m8_expired_propagates_as_non_fatal() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        let prev_hash = dummy_block_hash(0xAA);
+        let tx = build_m8_tx(sc, [0x42; 32], prev_hash);
 
         let err = handle_transaction(
             &rotxn,
@@ -1665,12 +1689,13 @@ mod tests {
     }
 
     #[test]
-    fn connect_block_skips_non_fatal_tx_errors() -> Result<()> {
+    fn connect_block_rejects_m8_without_matching_m7() -> Result<()> {
+        // BIP 301 ("Validation Rules"): a block containing an M8 without the
+        // corresponding M7 in the coinbase MUST be considered invalid.
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let prev_hash = BlockHash::all_zeros();
 
-        // M8 request with no matching M7 in coinbase → non-fatal error
         let m8_tx = build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash);
         let block = build_test_block(prev_hash, vec![m8_tx]);
 
@@ -1678,10 +1703,14 @@ mod tests {
             .put_headers(&mut rwtxn, &[(block.header, 0)])
             .into_diagnostic()?;
 
-        assert!(
-            connect_block(&mut rwtxn, &dbs, &block).is_ok(),
-            "connect_block should succeed despite non-fatal M8 error"
-        );
+        let err = connect_block(&mut rwtxn, &dbs, &block)
+            .expect_err("M8 without matching M7 must invalidate the block");
+        assert!(matches!(
+            err,
+            error::ConnectBlock::Transaction(error::HandleTransaction::M8(
+                error::HandleM8::NoCorrespondingM7,
+            )),
+        ));
         Ok(())
     }
 
