@@ -157,7 +157,12 @@ pub(in crate::validator) enum HandleM5M6 {
     InvalidM6,
     #[error(transparent)]
     M6id(#[from] crate::messages::M6idError),
+    /// BIP 300 M5: If the treasury UTXO for sidechain slot `S` exists and
+    /// a transaction creates a new treasury UTXO for `S` without spending
+    /// the already existing treasury UTXO, then this transaction MUST be
+    /// considered invalid.
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
+    #[fatal]
     OldCtipUnspent { sidechain_number: SidechainNumber },
 }
 

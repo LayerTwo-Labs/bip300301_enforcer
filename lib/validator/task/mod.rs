@@ -1796,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_m5_m6_old_ctip_unspent() -> Result<()> {
+    fn handle_m5_m6_old_ctip_unspent_is_fatal() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
@@ -1823,6 +1823,7 @@ mod tests {
         let err = handle_m5_m6(&rwtxn, &dbs.active_sidechains, Cow::Borrowed(&tx))
             .expect_err("spending wrong outpoint must error");
         assert!(matches!(err, error::HandleM5M6::OldCtipUnspent { .. }));
+        assert!(err.is_fatal());
         Ok(())
     }
 
