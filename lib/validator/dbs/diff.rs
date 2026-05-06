@@ -35,6 +35,7 @@ pub(in crate::validator) trait Diff {
 /// A `VoteCountUnderflow` indicates the block being disconnected — or some
 /// inconsistency between the block and the state — would have driven a
 /// vote count below zero. Treat as an invalid block, not corrupt state.
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::error::Delete, db::Error),
