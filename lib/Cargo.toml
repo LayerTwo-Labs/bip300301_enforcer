@@ -6,71 +6,68 @@ publish.workspace = true
 version.workspace = true
 
 [build-dependencies]
-prost = "0.14.3"
-prost-build = "0.14.3"
-protox = "0.9.0"
-tonic-prost-build = "0.14.5"
+prost = { workspace = true }
+prost-build = { workspace = true }
+protox = { workspace = true }
+tonic-prost-build = { workspace = true }
 
 [dependencies]
-aes-gcm = { version = "0.10.3", features = ["std"] }
-argon2 = { version = "0.5.3", features = ["std"] }
-async-broadcast = "0.7.1"
-async-lock = "3.4.0"
-bdk_chain = "0.23.3"
-bdk_electrum = { version = "0.23.2", default-features = false }
-bdk_esplora = { version = "0.22.2", default-features = false, features = [
-    "tokio",
-    "async-https-rustls",
-] }
+aes-gcm = { workspace = true, features = ["std"] }
+argon2 = { workspace = true, features = ["std"] }
+async-broadcast = { workspace = true }
+async-lock = { workspace = true }
+bdk_chain = { workspace = true }
+bdk_electrum = { workspace = true }
+bdk_esplora = { workspace = true, features = ["tokio", "async-https-rustls"] }
 bdk_wallet = { workspace = true, features = ["keys-bip39", "rusqlite"] }
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
-bitcoin-send-tx-p2p = "0.3.0"
-byteorder = "1.5.0"
+bitcoin-send-tx-p2p = { workspace = true }
+byteorder = { workspace = true }
 clap = { workspace = true, features = ["derive", "string", "std"] }
 cusf-enforcer-mempool = { workspace = true }
-derive_more = { version = "2.0.1", features = ["debug", "display"] }
+derive_more = { workspace = true, features = ["debug", "display"] }
 either = { workspace = true }
-fallible-iterator = "0.3.0"
-fatality = "0.1.1"
+fallible-iterator = { workspace = true }
+fatality = { workspace = true }
 futures = { workspace = true }
-hashlink = { version = "0.11.0", features = ["serde_impl"] }
-heed-types = "0.21.0"
+hashlink = { workspace = true, features = ["serde_impl"] }
+heed-types = { workspace = true }
 hex = { workspace = true }
-jiff = { version = "0.2.23", default-features = false }
+jiff = { workspace = true }
 jsonrpsee = { workspace = true, features = ["client"] }
 miette = { workspace = true, features = ["derive"] }
-nom = "8.0.0"
-nonempty = "0.12.0"
-ordermap = { version = "1.2.0", features = ["serde"] }
+nom = { workspace = true }
+nonempty = { workspace = true }
+ordermap = { workspace = true, features = ["serde"] }
 ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
-prost = "0.14.3"
-prost-types = "0.14.3"
-rand = "0.10.1"
+prost = { workspace = true }
+prost-types = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 # needs to line up with BDK version
-rusqlite = { version = "0.31.0", features = ["bundled"] }
-rusqlite_migration = "1.0.0"
-rusty-leveldb = "4.0.0"
+rusqlite = { workspace = true, features = ["bundled"] }
+rusqlite_migration = { workspace = true }
+rusty-leveldb = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sneed = { version = "0.0.19", features = ["observe"] }
+sneed = { workspace = true, features = ["observe"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 # Latest version (0.6.0) introduces a non-compatible libsqlite3-sys version
-tokio-rusqlite = "0.5.1"
+tokio-rusqlite = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
-tonic-prost = "0.14.5"
+tonic-prost = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
-transitive = "1.2.0"
-url = "2.5.8"
+transitive = { workspace = true }
+url = { workspace = true }
 uuid = { workspace = true }
-zeromq = "0.5.0"
+zeromq = { workspace = true }
 
 [features]
 default = ["rustls"]

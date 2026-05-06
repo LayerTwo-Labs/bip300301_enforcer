@@ -15,29 +15,79 @@ publish = false
 version = "0.3.4"
 
 [workspace.dependencies]
-bdk_wallet = { version = "3.0.0" }
+aes-gcm = "0.10.3"
+anyhow = "1.0.102"
+argon2 = "0.5.3"
+async-broadcast = "0.7.1"
+async-lock = "3.4.0"
+bdk_chain = "0.23.3"
+bdk_electrum = { version = "0.23.2", default-features = false }
+bdk_wallet = "3.0.0"
+bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.6"
+bitcoin-send-tx-p2p = "0.3.0"
+byteorder = "1.5.0"
+cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
+derive_more = "2.0.1"
+dotenvy = "0.15.7"
 either = "1.13.0"
+fallible-iterator = "0.3.0"
+fatality = "0.1.1"
 futures = "0.3.32"
+hashlink = "0.11.0"
+heed-types = "0.21.0"
 hex = "0.4.3"
-jsonrpsee = { version = "0.26.0" }
+http = "1.2.0"
+indicatif = "0.18.4"
+jiff = { version = "0.2.23", default-features = false }
+jsonrpsee = "0.26.0"
+libtest-mimic = "0.8.2"
 miette = { version = "7.1.0", default-features = false }
-parking_lot = { version = "0.12.3" }
+nom = "8.0.0"
+nonempty = "0.12.0"
+ordermap = "1.2.0"
+parking_lot = "0.12.3"
+prost = "0.14.3"
+prost-build = "0.14.3"
+prost-types = "0.14.3"
+protox = "0.9.0"
+rand = "0.10.1"
 reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
-serde = { version = "1.0.219" }
+reserve-port = "2.3.0"
+# needs to line up with BDK version
+rusqlite = "0.31.0"
+rusqlite_migration = "1.0.0"
+rusty-leveldb = "4.0.0"
+serde = "1.0.219"
 serde_json = "1.0.149"
+sneed = "0.0.19"
+strum = "0.28.0"
 temp-dir = "0.2.0"
 # pinned due to a bug in fatality
 thiserror = "=2.0.16"
 tokio = { version = "1.50.0", default-features = false }
+# Latest version (0.6.0) introduces a non-compatible libsqlite3-sys version
+tokio-rusqlite = "0.5.1"
 tokio-stream = "0.1.15"
 tokio-util = "0.7.18"
 tonic = "0.14.5"
+tonic-health = "0.14.5"
+tonic-prost = "0.14.5"
+tonic-prost-build = "0.14.5"
+tonic-reflection = "0.14.5"
+# needs to line up with jsonrpsee tower version...
+tower = "0.5.3"
+tower-http = "0.6.1"
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
+tracing-indicatif = "0.3.14"
+tracing-log = "0.2.0"
 tracing-subscriber = "0.3.23"
+transitive = "1.2.0"
+url = "2.5.8"
 uuid = "1.23.1"
+zeromq = "0.5.0"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"

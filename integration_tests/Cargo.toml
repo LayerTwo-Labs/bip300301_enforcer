@@ -6,29 +6,29 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = { workspace = true }
 bdk_wallet = { workspace = true }
 bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin-jsonrpsee = { workspace = true }
 bitcoin = { workspace = true }
-cfg-if = "1.0.0"
+cfg-if = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
-dotenvy = "0.15.7"
+dotenvy = { workspace = true }
 either = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-indicatif = { version = "0.18.4", features = ["futures"] }
+indicatif = { workspace = true, features = ["futures"] }
 jsonrpsee = { workspace = true }
 thiserror = { workspace = true }
-libtest-mimic = "0.8.2"
-reserve-port = "2.3.0"
+libtest-mimic = { workspace = true }
+reserve-port = { workspace = true }
 serde_json = { workspace = true }
-strum = { version = "0.28.0", features = ["derive"] }
+strum = { workspace = true, features = ["derive"] }
 temp-dir = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-tracing-indicatif = "0.3.14"
+tracing-indicatif = { workspace = true }
 tokio-stream = { workspace = true }
 parking_lot = { workspace = true }
 
