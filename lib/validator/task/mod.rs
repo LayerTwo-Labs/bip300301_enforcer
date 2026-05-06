@@ -12,8 +12,8 @@ use bitcoin::{
     hashes::{Hash as _, sha256d},
 };
 use either::Either;
+use error_fatality::{Fatality as _, Split as _};
 use fallible_iterator::FallibleIterator;
-use fatality::{Fatality as _, Split as _};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
     client::BatchResponse,
@@ -22,7 +22,6 @@ use jsonrpsee::core::{
 use sneed::{RoTxn, RwTxn, db};
 use tokio_util::sync::CancellationToken;
 
-use super::main_rest_client::MainRestClient;
 use crate::{
     messages::{
         CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
@@ -35,9 +34,12 @@ use crate::{
         SidechainProposalStatus, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD, WITHDRAWAL_BUNDLE_MAX_AGE,
         WithdrawalBundleEvent, WithdrawalBundleEventKind,
     },
-    validator::dbs::{
-        ActiveSidechainDbs, Dbs,
-        diff::{self, Diff},
+    validator::{
+        dbs::{
+            ActiveSidechainDbs, Dbs,
+            diff::{self, Diff},
+        },
+        main_rest_client::MainRestClient,
     },
 };
 
@@ -1441,7 +1443,7 @@ mod tests {
     use bitcoin::{
         Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, hashes::Hash as _,
     };
-    use fatality::Fatality as _;
+    use error_fatality::Fatality as _;
     use hashlink::LinkedHashMap;
     use miette::{IntoDiagnostic, Result};
 

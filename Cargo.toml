@@ -32,8 +32,8 @@ clap = { version = "4.5.60", default-features = false }
 derive_more = "2.0.1"
 dotenvy = "0.15.7"
 either = "1.13.0"
+error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"
-fatality = "0.1.1"
 futures = "0.3.32"
 hashlink = "0.11.0"
 heed-types = "0.21.0"
@@ -64,8 +64,7 @@ serde_json = "1.0.149"
 sneed = "0.0.19"
 strum = "0.28.0"
 temp-dir = "0.2.0"
-# pinned due to a bug in fatality
-thiserror = "=2.0.16"
+thiserror = "2.0.18"
 tokio = { version = "1.50.0", default-features = false }
 # Latest version (0.6.0) introduces a non-compatible libsqlite3-sys version
 tokio-rusqlite = "0.5.1"
@@ -95,7 +94,7 @@ rev = "db1fdfd5ecddfc7855cd872546b47429cb29a0bf"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "47c4309848216bfbd15b9d0733d9cf39e8e7b9d4"
+rev = "b2efa1a916c4d71ea5f3437e3aa3d5e6c6fc2df8"
 
 [workspace.dependencies.educe]
 version = "0.6.0"

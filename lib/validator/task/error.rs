@@ -1,6 +1,6 @@
 use bitcoin::hashes::sha256d;
 use bitcoin_jsonrpsee::jsonrpsee;
-use fatality::fatality;
+use error_fatality::{Fatality, Split};
 use sneed::{db, env, rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
@@ -12,19 +12,19 @@ use crate::{
     validator::{dbs, main_rest_client::MainRestClientError, parse_block_files},
 };
 
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split)]
 pub(in crate::validator) enum HandleM1ProposeSidechain {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     DbPut(#[from] db::error::Put),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     DbTryGet(#[from] db::error::TryGet),
 }
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Delete, db::Error),
     from(db::error::Put, db::Error),
@@ -32,9 +32,10 @@ pub(in crate::validator) enum HandleM1ProposeSidechain {
 )]
 pub(in crate::validator) enum HandleM2AckSidechain {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
     #[error("Missing sidechain proposal for slot `{sidechain_slot}`: `{description_hash}`")]
+    #[fatal(false)]
     MissingProposal {
         sidechain_slot: SidechainNumber,
         description_hash: sha256d::Hash,
@@ -48,8 +49,8 @@ impl From<db::Error> for HandleM2AckSidechain {
 }
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Delete, db::Error),
     from(db::error::Iter, db::Error),
@@ -57,7 +58,7 @@ impl From<db::Error> for HandleM2AckSidechain {
 )]
 pub(in crate::validator) enum HandleFailedSidechainProposals {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
 }
 
@@ -67,17 +68,18 @@ impl From<db::Error> for HandleFailedSidechainProposals {
     }
 }
 
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM3ProposeBundle {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
     #[error(
         "Cannot propose bundle; sidechain slot {} is inactive",
         .sidechain_number.0
     )]
+    #[fatal(false)]
     InactiveSidechain { sidechain_number: SidechainNumber },
 }
 
@@ -88,8 +90,8 @@ impl From<db::Error> for HandleM3ProposeBundle {
 }
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Get, db::Error),
     from(db::error::IterInit, db::Error),
@@ -97,15 +99,17 @@ impl From<db::Error> for HandleM3ProposeBundle {
 )]
 pub(in crate::validator) enum HandleM4Votes {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
     #[error("Invalid votes: expected {expected}, but found {len}")]
+    #[fatal(false)]
     InvalidVotes { expected: usize, len: usize },
     #[error(
         "No pending withdrawal for sidechain `{}` at index `{}`",
         .sidechain_number,
         .index
     )]
+    #[fatal(false)]
     UpvoteFailed {
         sidechain_number: SidechainNumber,
         index: u16,
@@ -118,7 +122,7 @@ impl From<db::Error> for HandleM4Votes {
     }
 }
 
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split)]
 pub(in crate::validator) enum HandleM4AckBundles {
     #[error("Error handling M4 Votes")]
     #[fatal(forward)]
@@ -126,8 +130,8 @@ pub(in crate::validator) enum HandleM4AckBundles {
 }
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Get, db::Error),
     from(db::error::IterInit, db::Error),
@@ -136,7 +140,7 @@ pub(in crate::validator) enum HandleM4AckBundles {
 )]
 pub(in crate::validator) enum HandleFailedM6Ids {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
 }
 
@@ -146,23 +150,25 @@ impl From<db::Error> for HandleFailedM6Ids {
     }
 }
 
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM5M6 {
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
     #[error("Invalid M6")]
+    #[fatal(false)]
     InvalidM6,
     #[error(transparent)]
+    #[fatal(false)]
     M6id(#[from] crate::messages::M6idError),
     /// BIP 300 M5: If the treasury UTXO for sidechain slot `S` exists and
     /// a transaction creates a new treasury UTXO for `S` without spending
     /// the already existing treasury UTXO, then this transaction MUST be
     /// considered invalid.
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
-    #[fatal]
+    #[fatal(true)]
     OldCtipUnspent { sidechain_number: SidechainNumber },
 }
 
@@ -172,15 +178,17 @@ impl From<db::Error> for HandleM5M6 {
     }
 }
 
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split)]
 pub(in crate::validator) enum HandleM8 {
     #[error("BMM request expired")]
+    #[fatal(false)]
     BmmRequestExpired,
     #[error("Cannot include BMM request; not accepted by miners")]
+    #[fatal(false)]
     NotAcceptedByMiners,
 }
 
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split)]
 pub(in crate::validator) enum HandleTransaction {
     #[error("Error handling M5/M6")]
     #[fatal(forward)]
@@ -201,7 +209,7 @@ pub(in crate::validator::task) enum ValidateTransactionInner {
     #[error("No chain tip")]
     NoChainTip,
     #[error(transparent)]
-    Transaction(#[from] <HandleTransaction as fatality::Split>::Fatal),
+    Transaction(#[from] <HandleTransaction as Split>::Fatal),
 }
 
 impl From<db::Error> for ValidateTransactionInner {
@@ -225,8 +233,8 @@ where
 }
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Delete, db::Error),
     from(db::error::First, db::Error),
@@ -237,15 +245,17 @@ where
 )]
 pub(in crate::validator) enum ConnectBlock {
     #[error("Block parent `{parent}` does not match tip `{tip}` at height {tip_height}")]
+    #[fatal(false)]
     BlockParent {
         parent: bitcoin::BlockHash,
         tip: bitcoin::BlockHash,
         tip_height: u32,
     },
     #[error(transparent)]
+    #[fatal(false)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(Box<db::Error>),
     #[error("Error handling failed M6IDs")]
     #[fatal(forward)]
@@ -266,9 +276,10 @@ pub(in crate::validator) enum ConnectBlock {
     #[fatal(forward)]
     M4AckBundles(#[from] HandleM4AckBundles),
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
+    #[fatal(false)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     PutBlockInfo(#[from] dbs::block_hash_dbs_error::PutBlockInfo),
     #[error(transparent)]
     #[fatal(forward)]
@@ -310,8 +321,8 @@ impl From<db::Error> for DisconnectBlock {
 }
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Get, db::Error),
     from(db::error::Put, db::Error),
@@ -320,70 +331,69 @@ impl From<db::Error> for DisconnectBlock {
     from(env::error::WriteTxn, env::Error)
 )]
 pub(in crate::validator) enum Sync {
+    #[error("Batch JSON RPC error: {}", .errors.join(", "))]
+    #[fatal(true)]
+    BatchJsonRpc { errors: Vec<String> },
+    #[error(transparent)]
+    #[fatal(true)]
+    BlockDirectoryParser(#[from] parse_block_files::BlockDirectoryParserError),
+    #[error("failed to set byte offset in block file parser")]
+    #[fatal(true)]
+    BlockFileParserSetOffset(#[source] std::io::Error),
     #[error("Block not in active chain: `{block_hash}`")]
-    #[fatal]
+    #[fatal(true)]
     BlockNotInActiveChain { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     CommitWriteTxn(#[from] rwtxn::error::Commit),
     #[error(transparent)]
     #[fatal(forward)]
     ConnectBlock(Box<Splittable<ConnectBlock>>),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(#[from] db::Error),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(false)]
+    Decode(#[from] bitcoin::consensus::encode::Error),
+    #[error(transparent)]
+    #[fatal(true)]
     DisconnectBlock(#[from] DisconnectBlock),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Env(#[from] env::Error),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
+    FetchBlockIndex(#[from] parse_block_files::FetchBlockIndexError),
+    #[error(transparent)]
+    #[fatal(true)]
     GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
     #[error("Header sync already in progress")]
+    #[fatal(false)]
     HeaderSyncInProgress,
+    #[error(transparent)]
+    #[fatal(false)]
+    Hex(#[from] hex::FromHexError),
     #[error("JSON RPC error (`{method}`)")]
-    #[fatal]
+    #[fatal(true)]
     JsonRpc {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
-    #[error("Batch JSON RPC error: {}", .errors.join(", "))]
-    #[fatal]
-    BatchJsonRpc { errors: Vec<String> },
     #[error("JSON serialization error")]
-    #[fatal]
+    #[fatal(true)]
     JsonSerialize(#[source] serde_json::Error),
     #[error(transparent)]
-    DecodeError(#[from] bitcoin::consensus::encode::Error),
-    #[error(transparent)]
-    HexError(#[from] hex::FromHexError),
-    #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
+    ParseBlockFiles(#[from] parse_block_files::ParseBlockFileError),
+    #[error(transparent)]
+    #[fatal(true)]
     Rest(#[from] MainRestClientError),
     #[error("Shutdown signal received")]
-    #[fatal]
+    #[fatal(true)]
     Shutdown,
-
-    #[error(transparent)]
-    #[fatal]
-    ParseBlockFiles(#[from] parse_block_files::ParseBlockFileError),
-
-    #[error(transparent)]
-    #[fatal]
-    BlockDirectoryParser(#[from] parse_block_files::BlockDirectoryParserError),
-
-    #[error(transparent)]
-    #[fatal]
-    FetchBlockIndex(#[from] parse_block_files::FetchBlockIndexError),
-
-    #[error("failed to set byte offset in block file parser")]
-    #[fatal]
-    BlockFileParserSetOffset(#[source] std::io::Error),
 }
 
 impl From<ConnectBlock> for Sync {
@@ -397,7 +407,7 @@ pub(in crate::validator::task) enum FatalInner {
     #[error(transparent)]
     DisconnectBlock(#[from] DisconnectBlock),
     #[error(transparent)]
-    Sync(#[from] <Sync as fatality::Split>::Fatal),
+    Sync(#[from] <Sync as Split>::Fatal),
     #[error(transparent)]
     WriteTxn(#[from] env::error::WriteTxn),
     #[error(transparent)]

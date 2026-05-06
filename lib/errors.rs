@@ -1,6 +1,6 @@
 //! Utility types and functions for errors
 
-use fatality::{Fatality, Split};
+use error_fatality::{Fatality, Split};
 use thiserror::Error;
 
 /// Display an error with causes.

@@ -9,8 +9,8 @@ use std::{
 use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer, TxAcceptAction};
+use error_fatality::{Nested as _, Split};
 use fallible_iterator::FallibleIterator;
-use fatality::Nested as _;
 use futures::TryFutureExt as _;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
@@ -38,7 +38,7 @@ enum ConnectBlockErrorInner {
     #[error(transparent)]
     CommitWriteTxn(#[from] rwtxn::error::Commit),
     #[error(transparent)]
-    ConnectBlock(#[from] Box<<task::error::ConnectBlock as fatality::Split>::Fatal>),
+    ConnectBlock(#[from] Box<<task::error::ConnectBlock as Split>::Fatal>),
     #[error(transparent)]
     DbPut(#[from] db::error::Put),
     #[error(transparent)]
@@ -57,8 +57,8 @@ impl From<db::error::Range> for ConnectBlockErrorInner {
     }
 }
 
-impl From<<task::error::ConnectBlock as fatality::Split>::Fatal> for ConnectBlockErrorInner {
-    fn from(err: <task::error::ConnectBlock as fatality::Split>::Fatal) -> Self {
+impl From<<task::error::ConnectBlock as Split>::Fatal> for ConnectBlockErrorInner {
+    fn from(err: <task::error::ConnectBlock as Split>::Fatal) -> Self {
         Self::from(Box::new(err))
     }
 }
@@ -156,7 +156,7 @@ impl<'a> ParentChildRwTxn<'a> {
 #[derive(Debug, Error)]
 enum RejectReason {
     #[error(transparent)]
-    ConnectBlock(#[from] <task::error::ConnectBlock as fatality::Split>::Jfyi),
+    ConnectBlock(#[from] <task::error::ConnectBlock as Split>::Jfyi),
     #[error("Missing parent (`{parent}`) height for block hash `{block_hash}`")]
     MissingParentHeight {
         block_hash: BlockHash,

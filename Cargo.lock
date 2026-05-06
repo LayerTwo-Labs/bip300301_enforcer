@@ -443,7 +443,7 @@ dependencies = [
  "jsonrpsee",
  "miette",
  "reqwest 0.13.2",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tonic",
@@ -482,7 +482,7 @@ dependencies = [
  "serde_json",
  "strum 0.28.0",
  "temp-dir",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -511,8 +511,8 @@ dependencies = [
  "cusf-enforcer-mempool",
  "derive_more",
  "either",
+ "error-fatality",
  "fallible-iterator",
- "fatality",
  "futures",
  "hashlink 0.11.0",
  "heed-types",
@@ -538,7 +538,7 @@ dependencies = [
  "serde_json",
  "sneed",
  "temp-dir",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rusqlite",
  "tokio-stream",
@@ -616,7 +616,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -961,7 +961,7 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.3.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=47c4309848216bfbd15b9d0733d9cf39e8e7b9d4#47c4309848216bfbd15b9d0733d9cf39e8e7b9d4"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=b2efa1a916c4d71ea5f3437e3aa3d5e6c6fc2df8#b2efa1a916c4d71ea5f3437e3aa3d5e6c6fc2df8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -978,7 +978,7 @@ dependencies = [
  "lending-iterator",
  "nonempty",
  "parking_lot",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "typewit",
@@ -1196,6 +1196,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-fatality"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99b78eb9ee8e254c354f891236faf9d7c9d3487d1b0812e5ac43771a6cc961ba"
+dependencies = [
+ "error-fatality-proc-macro",
+]
+
+[[package]]
+name = "error-fatality-proc-macro"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b54fffc4f227e5930422d75cbc04a00a3fb22c7289d0872f705a24d56c6d3a3"
+dependencies = [
+ "expander",
+ "indexmap",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "escape8259"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1298,30 +1321,6 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-
-[[package]]
-name = "fatality"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec6f82451ff7f0568c6181287189126d492b5654e30a788add08027b6363d019"
-dependencies = [
- "fatality-proc-macro",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "fatality-proc-macro"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb42427514b063d97ce21d5199f36c0c307d981434a6be32582bc79fe5bd2303"
-dependencies = [
- "expander",
- "indexmap",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
 
 [[package]]
 name = "file-guard"
@@ -2261,7 +2260,7 @@ dependencies = [
  "rustls-pki-types",
  "rustls-platform-verifier",
  "soketto",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -2289,7 +2288,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tower",
@@ -2314,7 +2313,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tower",
  "url",
@@ -2352,7 +2351,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soketto",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2369,7 +2368,7 @@ dependencies = [
  "http",
  "serde",
  "serde_json",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3190,7 +3189,7 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "protox-parse",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3202,7 +3201,7 @@ dependencies = [
  "logos",
  "miette",
  "prost-types",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3239,7 +3238,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "web-time",
@@ -3260,7 +3259,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
  "tinyvec",
  "tracing",
  "web-time",
@@ -3499,7 +3498,7 @@ version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21918d6644020c6f6ef1993242989bf6d4952d2e025617744f184c02df51c356"
 dependencies = [
- "thiserror 2.0.16",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4170,11 +4169,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.16"
+version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3467d614147380f2e4e374161426ff399c91084acd2363eaf549172b3d5e60c0"
+checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
 dependencies = [
- "thiserror-impl 2.0.16",
+ "thiserror-impl 2.0.18",
 ]
 
 [[package]]
@@ -4190,9 +4189,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.16"
+version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5e1be1c48b9172ee610da68fd9cd2770e7a4056cb3fc98710ee6906f0c7960"
+checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
 dependencies = [
  "proc-macro2",
  "quote",
