@@ -2,6 +2,7 @@ pub mod integration_test;
 pub mod mine;
 pub mod setup;
 mod test_file_based_block_parser;
+mod test_invalid_block;
 mod test_peer_bmm_request;
 mod test_unconfirmed_transactions;
 pub mod util;

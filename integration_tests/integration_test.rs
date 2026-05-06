@@ -685,6 +685,17 @@ pub fn tests(
         },
         crate::test_file_based_block_parser::test_file_based_block_parser,
     )]);
+    async_trials.push(new_trial_with_setup(
+        "invalid_block".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_invalid_block::test_invalid_block,
+    ));
 
     async_trials
 }
