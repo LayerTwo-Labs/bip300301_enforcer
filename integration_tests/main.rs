@@ -84,7 +84,20 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<std::process::ExitCode> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(code) => code,
+        Err(err) => {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("Error: {err:#}");
+            }
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<std::process::ExitCode> {
     // Parse command line arguments
     let args = Cli::parse();
     let () = set_tracing_subscriber(tracing::Level::DEBUG)?;
