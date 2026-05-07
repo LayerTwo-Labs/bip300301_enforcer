@@ -205,7 +205,14 @@ impl CusfEnforcer for Wallet {
         // First, connect the block to the validator.
         let res = self.inner.validator.clone().connect_block(block).await?;
         tracing::trace!("validator finished processing block");
-        let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
+        // Skip wallet sync if the validator rejected the block. The validator
+        // aborts the child rwtxn on `Reject`, so block info is not persisted —
+        // `sync_wallet_to_tip` would fail in `get_block_infos` and bubble an
+        // error up that prevents the standalone driver from issuing
+        // `invalidateblock` to bitcoind.
+        if matches!(res, ConnectBlockAction::Accept { .. }) {
+            let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
+        }
         Ok(res)
     }
 
