@@ -16,5 +16,5 @@ fmt:
 test-it *args='':
     #!/usr/bin/env bash
     cargo build
-    env BIP300301_ENFORCER_INTEGRATION_TEST_ENV='{{ justfile_directory() }}/integrationstests.env' \
+    env BIP300301_ENFORCER_INTEGRATION_TEST_ENV='{{ justfile_directory() }}/integrationtests.env' \
         cargo run --example integration_tests -- {{ args }}
