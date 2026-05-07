@@ -6,7 +6,6 @@ use std::{
     sync::Arc,
 };
 
-use futures::TryFutureExt as _;
 use thiserror::Error;
 use tokio::task::JoinHandle;
 
@@ -271,26 +270,17 @@ impl<Fut> AsyncTrial<Fut> {
                 // Use spawn_blocking to avoid nested runtime issues
                 std::thread::spawn(move || {
                     rt_handle.block_on(async {
-                        let result = self.test.map_err(libtest_mimic::Failed::from).await;
-
-                        // Collect failure information instead of immediately printing
-                        if result.is_err() {
-                            let files = file_registry.get_files(&test_name);
-
-                            let error_message = match &result {
-                                Err(failed) => format!("{failed:?}"),
-                                Ok(_) => "Unknown error".to_string(),
-                            };
-
-                            let failure = TestFailure {
+                        let result = self.test.await;
+                        if let Err(err) = &result {
+                            // Alternate Display gives anyhow's chained
+                            // "top: cause: root" form without a backtrace.
+                            failure_collector.add_failure(TestFailure {
                                 test_name: test_name.clone(),
-                                error_message,
-                                output_files: files,
-                            };
-
-                            failure_collector.add_failure(failure);
+                                error_message: format!("{err:#}"),
+                                output_files: file_registry.get_files(&test_name),
+                            });
                         }
-                        result
+                        result.map_err(libtest_mimic::Failed::from)
                     })
                 })
                 .join()
