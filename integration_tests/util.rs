@@ -107,33 +107,40 @@ pub fn get_env_var_or<K: AsRef<OsStr>>(key: K, default: &str) -> Result<String, 
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct BinPaths {
-    pub bitcoind: PathBuf,
-    pub bitcoind_unpatched: PathBuf,
-    pub bitcoin_cli: PathBuf,
-    pub bitcoin_util: PathBuf,
-    pub bip300301_enforcer: PathBuf,
-    pub electrs: PathBuf,
-    pub signet_miner: PathBuf,
-}
+#[derive(Clone, Debug, Default)]
+pub struct BinPaths;
 
 impl BinPaths {
-    /// Read from environment variables
-    pub fn from_env() -> Result<Self, VarError> {
-        Ok(Self {
-            bitcoind: get_env_var("BITCOIND")?.into(),
-            bitcoind_unpatched: get_env_var("BITCOIND_UNPATCHED")?.into(),
-            bitcoin_cli: get_env_var("BITCOIN_CLI")?.into(),
-            bitcoin_util: get_env_var("BITCOIN_UTIL")?.into(),
-            bip300301_enforcer: get_env_var_or(
-                "BIP300301_ENFORCER",
-                "./target/debug/bip300301_enforcer",
-            )?
-            .into(),
-            electrs: get_env_var("ELECTRS")?.into(),
-            signet_miner: get_env_var("SIGNET_MINER")?.into(),
-        })
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn bitcoind(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var("BITCOIND")?.into())
+    }
+
+    pub fn bitcoind_unpatched(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var("BITCOIND_UNPATCHED")?.into())
+    }
+
+    pub fn bitcoin_cli(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var("BITCOIN_CLI")?.into())
+    }
+
+    pub fn bitcoin_util(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var("BITCOIN_UTIL")?.into())
+    }
+
+    pub fn bip300301_enforcer(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var_or("BIP300301_ENFORCER", "./target/debug/bip300301_enforcer")?.into())
+    }
+
+    pub fn electrs(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var("ELECTRS")?.into())
+    }
+
+    pub fn signet_miner(&self) -> Result<PathBuf, VarError> {
+        Ok(get_env_var("SIGNET_MINER")?.into())
     }
 }
 

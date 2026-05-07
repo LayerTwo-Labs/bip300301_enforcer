@@ -17,7 +17,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     let (res_tx, _) = mpsc::unbounded::<anyhow::Result<()>>();
 
     let bitcoind = new_bitcoind(
-        setup.bin_paths.bitcoind,
+        setup.bin_paths.bitcoind()?,
         setup.directories.bitcoin_dir.clone(),
         &setup.reserved_ports,
         setup.network,
@@ -36,7 +36,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     // wait for startup
     sleep(std::time::Duration::from_secs(1)).await;
 
-    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli.clone());
+    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?);
 
     tracing::info!("Generating blocks");
     // just generate to a random regtest address. we don't actually need the coins!
@@ -72,7 +72,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     sleep(std::time::Duration::from_secs(1)).await;
 
     let enforcer = Enforcer {
-        path: setup.bin_paths.bip300301_enforcer.clone(),
+        path: setup.bin_paths.bip300301_enforcer()?,
         data_dir: setup.directories.enforcer_dir.clone(),
         enable_mempool: false,
         enable_wallet: false,

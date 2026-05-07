@@ -119,16 +119,17 @@ async fn run() -> anyhow::Result<std::process::ExitCode> {
     let file_registry = TestFileRegistry::new();
     let failure_collector = TestFailureCollector::new();
 
+    // Binary paths are resolved lazily on first access for tests or
+    // subcommands that need them, pushing out any errors until
+    // they're actually necessary
+    let bin_paths = BinPaths::new();
+
     // Create a list of tests
     let mut tests = Vec::<libtest_mimic::Trial>::new();
     tests.extend(
-        integration_test::tests(
-            &BinPaths::from_env()?,
-            file_registry,
-            failure_collector.clone(),
-        )
-        .into_iter()
-        .map(|trial| trial.run_blocking(rt_handle.clone())),
+        integration_test::tests(&bin_paths, file_registry, failure_collector.clone())
+            .into_iter()
+            .map(|trial| trial.run_blocking(rt_handle.clone())),
     );
 
     // Run all tests and collect the exit code

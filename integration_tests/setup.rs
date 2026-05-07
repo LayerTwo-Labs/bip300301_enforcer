@@ -1,12 +1,6 @@
 //! Setup for an integration test
 
-use std::{
-    collections::HashMap,
-    ffi::OsStr,
-    future::Future,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, ffi::OsStr, future::Future, net::SocketAddr, path::PathBuf};
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
@@ -381,10 +375,13 @@ pub enum BitcoindKind {
     Unpatched,
 }
 
-fn bitcoind_path(bin_paths: &BinPaths, bitcoind_kind: BitcoindKind) -> &Path {
+fn bitcoind_path(
+    bin_paths: &BinPaths,
+    bitcoind_kind: BitcoindKind,
+) -> Result<PathBuf, crate::util::VarError> {
     match bitcoind_kind {
-        BitcoindKind::Patched => &bin_paths.bitcoind,
-        BitcoindKind::Unpatched => &bin_paths.bitcoind_unpatched,
+        BitcoindKind::Patched => bin_paths.bitcoind(),
+        BitcoindKind::Unpatched => bin_paths.bitcoind_unpatched(),
     }
 }
 
@@ -452,7 +449,7 @@ impl PostSetup {
 
         tracing::debug!("Starting bitcoin node");
         let bitcoind = new_bitcoind(
-            bitcoind_path(&bin_paths, opts.bitcoind_kind).to_owned(),
+            bitcoind_path(&bin_paths, opts.bitcoind_kind)?,
             dirs.bitcoin_dir.clone(),
             &reserved_ports,
             network,
@@ -468,7 +465,7 @@ impl PostSetup {
         // wait for startup
         sleep(std::time::Duration::from_secs(1)).await;
         // Create a wallet and initialize it
-        let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli.clone());
+        let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?);
         tracing::debug!("Creating wallet");
         let _create_wallet_output = bitcoin_cli
             .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
@@ -505,9 +502,9 @@ impl PostSetup {
         };
 
         let mut signet_miner = bins::SignetMiner {
-            path: bin_paths.signet_miner.clone(),
+            path: bin_paths.signet_miner()?,
             bitcoin_cli: bitcoin_cli.clone(),
-            bitcoin_util: bin_paths.bitcoin_util.clone(),
+            bitcoin_util: bin_paths.bitcoin_util()?,
             block_interval: None,
             coinbase_recipient: Some(mining_address.clone()),
             debug: false,
@@ -549,7 +546,7 @@ impl PostSetup {
         // Start electrs
         tracing::debug!("Starting electrs");
         let electrs = Electrs {
-            path: bin_paths.electrs.clone(),
+            path: bin_paths.electrs()?,
             db_dir: dirs.electrs_dir.clone(),
             auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
             daemon_dir: bitcoind.data_dir.join("path"),
@@ -571,7 +568,7 @@ impl PostSetup {
         // Start BIP300301 Enforcer
         tracing::debug!("Starting bip300301_enforcer");
         let enforcer = Enforcer {
-            path: bin_paths.bip300301_enforcer.clone(),
+            path: bin_paths.bip300301_enforcer()?,
             data_dir: dirs.enforcer_dir.clone(),
             enable_mempool: mode.enable_mempool(),
             enable_wallet: true,
@@ -631,7 +628,7 @@ impl PostSetup {
             mode,
             bitcoin_cli,
             bitcoin_util: bins::BitcoinUtil {
-                path: bin_paths.bitcoin_util.clone(),
+                path: bin_paths.bitcoin_util()?,
                 network: bitcoind.network,
             },
             tasks,
