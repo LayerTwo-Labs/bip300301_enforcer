@@ -354,7 +354,7 @@ impl Dbs {
         })
     }
 
-    pub fn read_txn(&self) -> Result<RoTxn<'_>, env::error::ReadTxn> {
+    pub fn read_txn(&self) -> Result<RoTxn<'_, heed::WithTls>, env::error::ReadTxn> {
         self.env.read_txn()
     }
 
