@@ -176,7 +176,7 @@ pub fn sync_from_directory(
     let mut pending_blocks: Vec<Block> = vec![];
 
     let target_end_height = dbs.block_hashes.height().get(
-        &dbs.read_txn()?,
+        &*dbs.read_txn()?,
         missing_blocks.first().expect("missing blocks is empty"),
     )?;
 

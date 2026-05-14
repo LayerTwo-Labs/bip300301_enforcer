@@ -32,6 +32,7 @@ error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }
 futures = { workspace = true }
 hashlink = { workspace = true, features = ["serde_impl"] }
+heed = { workspace = true }
 heed-types = { workspace = true }
 hex = { workspace = true }
 jiff = { workspace = true }
