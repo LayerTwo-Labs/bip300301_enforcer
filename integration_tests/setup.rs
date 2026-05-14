@@ -1,8 +1,13 @@
 //! Setup for an integration test
 
 use std::{
-    borrow::Borrow, collections::HashMap, ffi::OsStr, future::Future, net::SocketAddr,
+    borrow::Borrow,
+    collections::HashMap,
+    ffi::OsStr,
+    future::Future,
+    net::SocketAddr,
     path::PathBuf,
+    sync::{Arc, LazyLock},
 };
 
 use anyhow::anyhow;
@@ -28,7 +33,7 @@ use tokio::{
     time::{Duration, sleep, timeout},
 };
 
-use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer};
+use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer, VarError};
 
 #[derive(strum::Display, Clone, Copy, Debug)]
 pub enum Network {
@@ -405,15 +410,18 @@ pub struct SetupOpts<
     pub enforcer_args: EnforcerArgs,
 }
 
+type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
+
 pub struct PostSetup {
     pub network: Network,
     pub mode: Mode,
     pub bitcoin_cli: bins::BitcoinCli,
-    pub bitcoin_util: bins::BitcoinUtil,
+    bitcoin_util: LazyLockBoxedSend<Result<bins::BitcoinUtil, Arc<VarError>>>,
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
     pub tasks: Tasks,
-    pub signet_miner: bins::SignetMiner,
+    /// Always `Some(_)` if `network == Network::Signet`, `None` otherwise
+    pub signet_miner: Option<bins::SignetMiner>,
     pub gbt_client: jsonrpsee::http_client::HttpClient,
     pub validator_service_client: ValidatorServiceClient<Transport>,
     pub wallet_service_client: WalletServiceClient<Transport>,
@@ -428,6 +436,10 @@ pub struct PostSetup {
 }
 
 impl PostSetup {
+    pub fn bitcoin_util(&self) -> Result<&bins::BitcoinUtil, Arc<VarError>> {
+        self.bitcoin_util.as_ref().map_err(|err| err.clone())
+    }
+
     pub async fn setup<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>(
         bin_paths: &BinPaths,
         mode: Mode,
@@ -503,48 +515,47 @@ impl PostSetup {
                 .parse::<Address<_>>()?
                 .require_network(bitcoind.network)?
         };
-
-        let mut signet_miner = bins::SignetMiner {
-            path: bin_paths.signet_miner()?.clone(),
-            bitcoin_cli: bitcoin_cli.clone(),
-            bitcoin_util: bin_paths.bitcoin_util()?.clone(),
-            block_interval: None,
-            coinbase_recipient: Some(mining_address.clone()),
-            debug: false,
-            nbits: None,
-            getblocktemplate_command: None,
-            coinbasetxn: false,
-        };
-        if let Some(signet_setup) = signet_setup.as_ref() {
+        let mut signet_miner = if let Some(signet_setup) = signet_setup.as_ref() {
+            let mut signet_miner = bins::SignetMiner {
+                path: bin_paths.signet_miner()?.clone(),
+                bitcoin_cli: bitcoin_cli.clone(),
+                bitcoin_util: bin_paths.bitcoin_util()?.clone(),
+                block_interval: None,
+                coinbase_recipient: Some(mining_address.clone()),
+                debug: false,
+                nbits: None,
+                getblocktemplate_command: None,
+                coinbasetxn: false,
+            };
             let () = signet_setup.calibrate_signet(&mut signet_miner).await?;
-        }
+            Some(signet_miner)
+        } else {
+            None
+        };
         // Mine 1 block
         tracing::debug!(%mining_address, "Mining 1 block");
-        match network {
-            Network::Regtest => {
-                let _output = bitcoin_cli
-                    .command::<String, _, _, _, _>(
-                        [],
-                        "generatetoaddress",
-                        ["1", &mining_address.to_string()],
-                    )
-                    .run_utf8()
-                    .await?;
-            }
-            Network::Signet => {
-                let mine_output = signet_miner
-                    .command("generate", vec!["--address", &mining_address.to_string()])
-                    .run_utf8()
-                    .await?;
-                tracing::debug!("Checking that block was mined successfully");
-                let blocks: u32 = bitcoin_cli
-                    .command::<String, _, String, _, _>([], "getblockcount", [])
-                    .run_utf8()
-                    .await?
-                    .parse()?;
-                anyhow::ensure!(blocks == 1);
-                tracing::debug!("Mined 1 block: `{mine_output}`");
-            }
+        if let Some(signet_miner) = signet_miner.as_ref() {
+            let mine_output = signet_miner
+                .command("generate", vec!["--address", &mining_address.to_string()])
+                .run_utf8()
+                .await?;
+            tracing::debug!("Checking that block was mined successfully");
+            let blocks: u32 = bitcoin_cli
+                .command::<String, _, String, _, _>([], "getblockcount", [])
+                .run_utf8()
+                .await?
+                .parse()?;
+            anyhow::ensure!(blocks == 1);
+            tracing::debug!("Mined 1 block: `{mine_output}`");
+        } else {
+            let _output = bitcoin_cli
+                .command::<String, _, _, _, _>(
+                    [],
+                    "generatetoaddress",
+                    ["1", &mining_address.to_string()],
+                )
+                .run_utf8()
+                .await?;
         }
         // Start electrs
         tracing::debug!("Starting electrs");
@@ -613,8 +624,8 @@ impl PostSetup {
         let gbt_client = jsonrpsee::http_client::HttpClient::builder()
             .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
             .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
-        if signet_setup.is_some() {
-            let () = SignetSetup::configure_miner(&mut signet_miner, &dirs.base_dir, &enforcer)?;
+        if let Some(signet_miner) = signet_miner.as_mut() {
+            let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }
         let validator_service_client = ValidatorServiceClient::connect(format!(
             "http://127.0.0.1:{}",
@@ -626,14 +637,20 @@ impl PostSetup {
             WalletServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
                 .await
                 .map_err(|err| anyhow!("failed to create wallet service client: {err:#}"))?;
+        let bitcoin_util = {
+            let path = match bin_paths.bitcoin_util() {
+                Ok(path) => Ok(path.clone()),
+                Err(err) => Err(Arc::new(err)),
+            };
+            let network = bitcoind.network;
+            let closure = move || path.map(|path| bins::BitcoinUtil { path, network });
+            LazyLock::new(Box::new(closure) as Box<_>)
+        };
         Ok(PostSetup {
             network,
             mode,
             bitcoin_cli,
-            bitcoin_util: bins::BitcoinUtil {
-                path: bin_paths.bitcoin_util()?.clone(),
-                network: bitcoind.network,
-            },
+            bitcoin_util,
             tasks,
             signet_miner,
             gbt_client,

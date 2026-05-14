@@ -190,7 +190,7 @@ async fn mine_block_with_duplicate_m4(post_setup: &PostSetup) -> anyhow::Result<
         nonce: 0,
     };
     let header_hex = post_setup
-        .bitcoin_util
+        .bitcoin_util()?
         .command::<String, _, _, _, _>([], "grind", [serialize_hex(&header)])
         .run_utf8()
         .await?;
