@@ -1,5 +1,7 @@
 //! Mining utilities
 
+use std::sync::Arc;
+
 use bip300301_enforcer_lib::{
     bins::{CommandError, CommandExt, SignetMiner},
     proto::{
@@ -16,7 +18,10 @@ use either::Either;
 use futures::TryStreamExt as _;
 use thiserror::Error;
 
-use crate::setup::{MiningMode, Network, PostSetup, Sidechain};
+use crate::{
+    setup::{MiningMode, Network, PostSetup, Sidechain},
+    util::VarError,
+};
 
 /// Mine a single signet block
 async fn mine_single_signet(
@@ -58,6 +63,8 @@ pub enum MineGbtError {
     SubmitBlock { err_msg: String },
     #[error(transparent)]
     ValidatorClient(#[from] tonic::Status),
+    #[error(transparent)]
+    Var(#[from] Arc<VarError>),
 }
 
 async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, MineGbtError> {
@@ -92,7 +99,7 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
     };
     tracing::debug!("Mining header");
     let header_hex = post_setup
-        .bitcoin_util
+        .bitcoin_util()?
         .command::<String, _, _, _, _>(
             [],
             "grind",
@@ -135,6 +142,8 @@ pub enum MineSignetError {
     Command(#[from] CommandError),
     #[error("Expected block event")]
     NoBlockEvent,
+    #[error("Signet miner not configured")]
+    NoSignetMiner,
     #[error(transparent)]
     ValidatorClient(#[from] tonic::Status),
 }
@@ -150,6 +159,10 @@ where
     S: Sidechain,
 {
     use proto::mainchain::subscribe_events_response::event::Event;
+    let signet_miner = post_setup
+        .signet_miner
+        .as_ref()
+        .ok_or(either::Left(MineSignetError::NoSignetMiner))?;
     let mut stream = post_setup
         .validator_service_client
         .subscribe_events(SubscribeEventsRequest {
@@ -159,7 +172,7 @@ where
         .map_err(|err| Either::Left(err.into()))?
         .into_inner();
     for _ in 0..blocks {
-        let () = mine_single_signet(&post_setup.signet_miner, &post_setup.mining_address)
+        let () = mine_single_signet(signet_miner, &post_setup.mining_address)
             .await
             .map_err(|err| Either::Left(err.into()))?;
         let Some(resp) = stream
