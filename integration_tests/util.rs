@@ -3,7 +3,7 @@ use std::{
     ffi::{OsStr, OsString},
     future::Future,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use thiserror::Error;
@@ -91,55 +91,129 @@ impl VarError {
 }
 
 /// Fetches the environment variable key from the current process
-pub fn get_env_var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
-    dotenvy::var(&key).map_err(|err| VarError::new(key.as_ref().to_string_lossy(), err))
+pub fn get_env_var<K, T>(key: K) -> Result<T, VarError>
+where
+    K: AsRef<OsStr>,
+    T: From<String>,
+{
+    match dotenvy::var(&key) {
+        Ok(var) => Ok(T::from(var)),
+        Err(err) => Err(VarError::new(key.as_ref().to_string_lossy(), err)),
+    }
 }
 
-pub fn get_env_var_or<K: AsRef<OsStr>>(key: K, default: &str) -> Result<String, VarError> {
+pub fn get_env_var_or<K, T, D>(key: K, default: D) -> Result<T, VarError>
+where
+    K: AsRef<OsStr>,
+    T: From<D> + From<String>,
+{
     match get_env_var(&key) {
         Ok(val) => Ok(val),
         Err(VarError {
             err: dotenvy::Error::EnvVar(std::env::VarError::NotPresent),
             ..
-        }) => Ok(default.to_string()),
+        }) => Ok(T::from(default)),
         Err(err) => Err(err),
     }
 }
 
+mod private {
+    pub trait Sealed {}
+}
+
+pub trait OnceLockExt: private::Sealed {
+    type Value;
+
+    fn get_or_try_init<E, F>(&self, f: F) -> Result<&Self::Value, E>
+    where
+        F: FnOnce() -> Result<Self::Value, E>;
+
+    fn get_or_try_init_from_env<K>(&self, key: K) -> Result<&Self::Value, VarError>
+    where
+        K: AsRef<OsStr>,
+        Self::Value: From<String>,
+    {
+        self.get_or_try_init(|| get_env_var(key))
+    }
+
+    fn get_or_try_init_from_env_or<K, D>(
+        &self,
+        key: K,
+        default: D,
+    ) -> Result<&Self::Value, VarError>
+    where
+        K: AsRef<OsStr>,
+        Self::Value: From<D> + From<String>,
+    {
+        self.get_or_try_init(|| get_env_var_or(key, default))
+    }
+}
+
+impl<T> private::Sealed for OnceLock<T> {}
+
+impl<T> OnceLockExt for OnceLock<T> {
+    type Value = T;
+
+    fn get_or_try_init<E, F>(&self, f: F) -> Result<&Self::Value, E>
+    where
+        F: FnOnce() -> Result<Self::Value, E>,
+    {
+        // TODO: use [`OnceLock::get_or_try_init`] once stabilized
+        // see https://github.com/rust-lang/rust/issues/109737
+        if let Some(res) = self.get() {
+            Ok(res)
+        } else {
+            let value = f()?;
+            let res = self.get_or_init(|| value);
+            Ok(res)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct BinPaths;
+pub struct BinPaths {
+    bitcoind: OnceLock<PathBuf>,
+    bitcoind_unpatched: OnceLock<PathBuf>,
+    bitcoin_cli: OnceLock<PathBuf>,
+    bitcoin_util: OnceLock<PathBuf>,
+    bip300301_enforcer: OnceLock<PathBuf>,
+    electrs: OnceLock<PathBuf>,
+    signet_miner: OnceLock<PathBuf>,
+}
 
 impl BinPaths {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    pub fn bitcoind(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var("BITCOIND")?.into())
+    pub fn bitcoind(&self) -> Result<&PathBuf, VarError> {
+        self.bitcoind.get_or_try_init_from_env("BITCOIND")
     }
 
-    pub fn bitcoind_unpatched(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var("BITCOIND_UNPATCHED")?.into())
+    pub fn bitcoind_unpatched(&self) -> Result<&PathBuf, VarError> {
+        self.bitcoind_unpatched
+            .get_or_try_init_from_env("BITCOIND_UNPATCHED")
     }
 
-    pub fn bitcoin_cli(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var("BITCOIN_CLI")?.into())
+    pub fn bitcoin_cli(&self) -> Result<&PathBuf, VarError> {
+        self.bitcoin_cli.get_or_try_init_from_env("BITCOIN_CLI")
     }
 
-    pub fn bitcoin_util(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var("BITCOIN_UTIL")?.into())
+    pub fn bitcoin_util(&self) -> Result<&PathBuf, VarError> {
+        self.bitcoin_util.get_or_try_init_from_env("BITCOIN_UTIL")
     }
 
-    pub fn bip300301_enforcer(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var_or("BIP300301_ENFORCER", "./target/debug/bip300301_enforcer")?.into())
+    pub fn bip300301_enforcer(&self) -> Result<&PathBuf, VarError> {
+        self.bip300301_enforcer
+            .get_or_try_init_from_env_or("BIP300301_ENFORCER", "./target/debug/bip300301_enforcer")
     }
 
-    pub fn electrs(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var("ELECTRS")?.into())
+    pub fn electrs(&self) -> Result<&PathBuf, VarError> {
+        self.electrs.get_or_try_init_from_env("ELECTRS")
     }
 
-    pub fn signet_miner(&self) -> Result<PathBuf, VarError> {
-        Ok(get_env_var("SIGNET_MINER")?.into())
+    pub fn signet_miner(&self) -> Result<&PathBuf, VarError> {
+        self.signet_miner.get_or_try_init_from_env("SIGNET_MINER")
     }
 }
 
