@@ -1073,6 +1073,15 @@ pub(in crate::validator) fn disconnect_block(
     event_tx: &Sender<Event>,
     block_hash: BlockHash,
 ) -> Result<(), error::DisconnectBlock> {
+    // Absence of a stored diff means we rejected the block. Nothing do to on our end!
+    let Some(diff) = dbs.block_hashes.diff().try_get(rwtxn, &block_hash)? else {
+        tracing::trace!(
+            %block_hash,
+            "disconnect_block: block was rejected, treating as no-op"
+        );
+        return Ok(());
+    };
+
     if let Some(tip_hash) = dbs.current_chain_tip.try_get(rwtxn, &())?
         && tip_hash != block_hash
     {
@@ -1082,7 +1091,6 @@ pub(in crate::validator) fn disconnect_block(
         });
     }
     let header_info = dbs.block_hashes.get_header_info(rwtxn, &block_hash)?;
-    let diff = dbs.block_hashes.diff().get(rwtxn, &block_hash)?;
     let () = diff.undo(rwtxn, dbs)?;
     if header_info.prev_block_hash != BlockHash::all_zeros() {
         dbs.current_chain_tip
