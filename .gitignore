@@ -1,4 +1,5 @@
 /target
+/.integration-deps
 bip300301_enforcer.mdb
 datadir
 sync_analysis
