@@ -315,6 +315,9 @@ jobs:
         with:
           key: ${{ matrix.name }}
 
+      - name: Install Rust toolchain
+        run: rustup install
+
       - name: Install windows-specific deps
         run: sudo apt install mingw-w64 nasm
         if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
