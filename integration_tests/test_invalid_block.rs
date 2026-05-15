@@ -1,16 +1,16 @@
-//! Verifies that the enforcer rejects a block whose coinbase carries a
-//! BIP-300 rule violation. Specifically: two M4 (ack-bundles) messages,
-//! which `CoinbaseMessages::push` rejects with `DuplicateM4`.
+use std::{path::Path, time::Duration};
 
-use std::time::Duration;
-
-use bip300301_enforcer_lib::{bins::CommandExt as _, messages::M4AckBundles};
+use bip300301_enforcer_lib::{
+    bins::CommandExt as _,
+    messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept},
+    types::{BmmCommitment, SidechainDescription},
+};
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
     TxMerkleNode, TxOut, Witness,
     block::Header,
     consensus::encode::{deserialize_hex, serialize_hex},
-    hashes::Hash as _,
+    hashes::{Hash as _, sha256d},
     script::{Builder as ScriptBuilder, PushBytesBuf},
     transaction::Version,
 };
@@ -23,6 +23,89 @@ use crate::{
     setup::{DummySidechain, PostSetup, Sidechain},
 };
 
+struct BadBlockCase {
+    name: &'static str,
+    extra_coinbase_outputs: fn() -> anyhow::Result<Vec<TxOut>>,
+    expected_log_contains: &'static str,
+}
+
+const CASES: &[BadBlockCase] = &[
+    BadBlockCase {
+        name: "duplicate_m1",
+        extra_coinbase_outputs: duplicate_m1_outputs,
+        expected_log_contains: "rejecting block: M1 sidechain proposal for slot",
+    },
+    BadBlockCase {
+        name: "duplicate_m2",
+        extra_coinbase_outputs: duplicate_m2_outputs,
+        expected_log_contains: "rejecting block: M2 that acks proposal for slot",
+    },
+    BadBlockCase {
+        name: "duplicate_m4",
+        extra_coinbase_outputs: duplicate_m4_outputs,
+        expected_log_contains: "rejecting block: M4 already included at index",
+    },
+    BadBlockCase {
+        name: "duplicate_m7",
+        extra_coinbase_outputs: duplicate_m7_outputs,
+        expected_log_contains: "rejecting block: M7 for slot",
+    },
+];
+
+fn duplicate_m1_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let proposal = M1ProposeSidechain {
+        sidechain_number: DummySidechain::SIDECHAIN_NUMBER,
+        description: SidechainDescription(b"duplicate-m1 test".to_vec()),
+    };
+    let m1_a: ScriptBuf = ScriptBuf::try_from(M1ProposeSidechain {
+        sidechain_number: proposal.sidechain_number,
+        description: proposal.description.clone(),
+    })?;
+    let m1_b: ScriptBuf = proposal.try_into()?;
+    Ok(vec![zero_value(m1_a), zero_value(m1_b)])
+}
+
+fn duplicate_m2_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let m2_a: ScriptBuf = M2AckSidechain {
+        sidechain_number: DummySidechain::SIDECHAIN_NUMBER,
+        description_hash: sha256d::Hash::from_byte_array([0xAA; 32]),
+    }
+    .try_into()?;
+    let m2_b: ScriptBuf = M2AckSidechain {
+        sidechain_number: DummySidechain::SIDECHAIN_NUMBER,
+        description_hash: sha256d::Hash::from_byte_array([0xBB; 32]),
+    }
+    .try_into()?;
+    Ok(vec![zero_value(m2_a), zero_value(m2_b)])
+}
+
+fn duplicate_m4_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let m4_a: ScriptBuf = M4AckBundles::OneByte {
+        upvotes: vec![0x00],
+    }
+    .try_into()?;
+    let m4_b: ScriptBuf = M4AckBundles::OneByte {
+        upvotes: vec![0x01],
+    }
+    .try_into()?;
+    Ok(vec![zero_value(m4_a), zero_value(m4_b)])
+}
+
+fn duplicate_m7_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let slot = DummySidechain::SIDECHAIN_NUMBER;
+    let m7_a: ScriptBuf = M7BmmAccept {
+        sidechain_number: slot,
+        sidechain_block_hash: BmmCommitment([0xAA; 32]),
+    }
+    .try_into()?;
+    let m7_b: ScriptBuf = M7BmmAccept {
+        sidechain_number: slot,
+        sidechain_block_hash: BmmCommitment([0xBB; 32]),
+    }
+    .try_into()?;
+    Ok(vec![zero_value(m7_a), zero_value(m7_b)])
+}
+
 pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
     let mut _sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
@@ -30,85 +113,61 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
     propose_sidechain::<DummySidechain>(&mut post_setup).await?;
     activate_sidechain::<DummySidechain>(&mut post_setup).await?;
     fund_enforcer::<DummySidechain>(&mut post_setup).await?;
-    // `fund_enforcer` mines 100 blocks in a burst; their timestamps end up
-    // ahead of wall clock, so a block mined now would be rejected as
-    // `time-too-old`. Wait until wall clock surpasses median-time-past.
     wait_past_mtp(&post_setup).await?;
 
-    let pre_mine_tip: BlockHash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .parse()?;
-    tracing::info!(%pre_mine_tip, "pre-mine tip");
-
-    let bad_block_hash = mine_block_with_duplicate_m4(&post_setup).await?;
-    tracing::info!(%bad_block_hash, "submitted block with duplicate M4");
-
-    poll_until_tip(&post_setup, pre_mine_tip, Duration::from_secs(10)).await?;
-
-    let chaintips_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getchaintips", [])
-        .run_utf8()
-        .await?;
-    let chaintips: Vec<serde_json::Value> = serde_json::from_str(&chaintips_json)?;
-    let bad_tip_status = chaintips
-        .iter()
-        .find(|tip| {
-            tip.get("hash")
-                .and_then(|h| h.as_str())
-                .and_then(|h| h.parse::<BlockHash>().ok())
-                == Some(bad_block_hash)
-        })
-        .and_then(|tip| tip.get("status"))
-        .and_then(|s| s.as_str());
-    anyhow::ensure!(
-        bad_tip_status == Some("invalid"),
-        "expected bad block status `invalid`, got {bad_tip_status:?}"
-    );
-
-    // `tracing` writes to stdout in the integration-test enforcer config.
     let stdout_path = post_setup.directories.enforcer_dir.join("stdout.txt");
-    let stdout_contents = std::fs::read_to_string(&stdout_path)?;
-    anyhow::ensure!(
-        stdout_contents.contains("rejecting block: M4 already included at index"),
-        "enforcer stdout at `{}` did not contain the duplicate-M4 rejection log",
-        stdout_path.display()
-    );
 
+    let mut failures = Vec::new();
+    for case in CASES {
+        match run_case(&post_setup, case, &stdout_path).await {
+            Ok(()) => tracing::info!(case = case.name, "case passed"),
+            Err(err) => {
+                tracing::error!(case = case.name, "case failed: {err:#}");
+                failures.push(format!("{}: {err:#}", case.name));
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "invalid_block cases failed:\n  - {}",
+            failures.join("\n  - ")
+        );
+    }
     Ok(())
 }
 
-/// Block-template fields we read from bitcoind's `getblocktemplate`. The test
-/// talks to bitcoind directly (not via the enforcer's GBT proxy) because the
-/// proxy is disabled in `Mode::NoMempool`.
-#[derive(Deserialize)]
-struct BlockTemplate {
-    previousblockhash: BlockHash,
-    version: i32,
-    #[serde(deserialize_with = "deserialize_bits")]
-    bits: CompactTarget,
-    height: u32,
-    coinbasevalue: u64,
-    mintime: u32,
-    curtime: u32,
-    #[serde(default)]
-    transactions: Vec<serde_json::Value>,
+async fn run_case(
+    post_setup: &PostSetup,
+    case: &BadBlockCase,
+    stdout_path: &Path,
+) -> anyhow::Result<()> {
+    let bad_block_hash = submit_invalid_block(post_setup, case).await?;
+    tracing::info!(case = case.name, %bad_block_hash, "submitted bad block");
+
+    // Poll `getchaintips` for the bad block to show `status="invalid"`.
+    // Tip-based polling is unreliable here because the test environment
+    // background-mines valid blocks every ~10s, so the tip may advance past
+    // (rather than revert to) the pre-submit hash even when our block is
+    // correctly invalidated.
+    poll_until_chaintip_invalid(post_setup, bad_block_hash, Duration::from_secs(10)).await?;
+
+    // Each case's expected substring uniquely identifies a single message
+    // type (M1/M2/M4/M7), so cross-case collisions are impossible — no need
+    // to slice per case.
+    let stdout_contents = std::fs::read_to_string(stdout_path)?;
+    anyhow::ensure!(
+        stdout_contents.contains(case.expected_log_contains),
+        "enforcer log did not contain `{}`",
+        case.expected_log_contains
+    );
+    Ok(())
 }
 
-fn deserialize_bits<'de, D: serde::Deserializer<'de>>(de: D) -> Result<CompactTarget, D::Error> {
-    let hex = String::deserialize(de)?;
-    u32::from_str_radix(&hex, 16)
-        .map(CompactTarget::from_consensus)
-        .map_err(serde::de::Error::custom)
-}
-
-/// Build a block with a hand-rolled coinbase containing two M4 OP_RETURN
-/// outputs, grind its PoW, and submit it. Returns the block hash bitcoind
-/// accepted at consensus (the enforcer should subsequently invalidate).
-async fn mine_block_with_duplicate_m4(post_setup: &PostSetup) -> anyhow::Result<BlockHash> {
+async fn submit_invalid_block(
+    post_setup: &PostSetup,
+    case: &BadBlockCase,
+) -> anyhow::Result<BlockHash> {
     let template_json = post_setup
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "getblocktemplate", [r#"{"rules":["segwit"]}"#])
@@ -144,40 +203,22 @@ async fn mine_block_with_duplicate_m4(post_setup: &PostSetup) -> anyhow::Result<
         ScriptBuf::new_op_return(payload)
     };
 
-    // Two M4 OP_RETURN outputs with different upvote payloads — the second
-    // hits `CoinbaseMessages::push`'s `DuplicateM4` check (lib/messages.rs:506)
-    // regardless of contents.
-    let m4_a: ScriptBuf = M4AckBundles::OneByte {
-        upvotes: vec![0x00],
-    }
-    .try_into()?;
-    let m4_b: ScriptBuf = M4AckBundles::OneByte {
-        upvotes: vec![0x01],
-    }
-    .try_into()?;
-
+    let mut outputs = vec![
+        TxOut {
+            script_pubkey: post_setup.mining_address.script_pubkey(),
+            value: Amount::from_sat(template.coinbasevalue),
+        },
+        TxOut {
+            script_pubkey: witness_commit_script,
+            value: Amount::ZERO,
+        },
+    ];
+    outputs.extend((case.extra_coinbase_outputs)()?);
     let coinbase = Transaction {
         version: Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
         input: vec![coinbase_input],
-        output: vec![
-            TxOut {
-                script_pubkey: post_setup.mining_address.script_pubkey(),
-                value: Amount::from_sat(template.coinbasevalue),
-            },
-            TxOut {
-                script_pubkey: witness_commit_script,
-                value: Amount::ZERO,
-            },
-            TxOut {
-                script_pubkey: m4_a,
-                value: Amount::ZERO,
-            },
-            TxOut {
-                script_pubkey: m4_b,
-                value: Amount::ZERO,
-            },
-        ],
+        output: outputs,
     };
 
     let merkle_root = TxMerkleNode::from(coinbase.compute_txid().to_raw_hash());
@@ -201,10 +242,9 @@ async fn mine_block_with_duplicate_m4(post_setup: &PostSetup) -> anyhow::Result<
         txdata: vec![coinbase],
     };
     let block_hash = block.block_hash();
-    let block_hex = serialize_hex(&block);
     let submit_resp = post_setup
         .bitcoin_cli
-        .command::<String, _, _, _, _>([], "submitblock", [block_hex])
+        .command::<String, _, _, _, _>([], "submitblock", [serialize_hex(&block)])
         .run_utf8()
         .await?;
     anyhow::ensure!(
@@ -213,6 +253,37 @@ async fn mine_block_with_duplicate_m4(post_setup: &PostSetup) -> anyhow::Result<
     );
 
     Ok(block_hash)
+}
+
+fn zero_value(script_pubkey: ScriptBuf) -> TxOut {
+    TxOut {
+        script_pubkey,
+        value: Amount::ZERO,
+    }
+}
+
+/// Block-template fields we read from bitcoind's `getblocktemplate`. The test
+/// talks to bitcoind directly (not via the enforcer's GBT proxy) because the
+/// proxy is disabled in `Mode::NoMempool`.
+#[derive(Deserialize)]
+struct BlockTemplate {
+    previousblockhash: BlockHash,
+    version: i32,
+    #[serde(deserialize_with = "deserialize_bits")]
+    bits: CompactTarget,
+    height: u32,
+    coinbasevalue: u64,
+    mintime: u32,
+    curtime: u32,
+    #[serde(default)]
+    transactions: Vec<serde_json::Value>,
+}
+
+fn deserialize_bits<'de, D: serde::Deserializer<'de>>(de: D) -> Result<CompactTarget, D::Error> {
+    let hex = String::deserialize(de)?;
+    u32::from_str_radix(&hex, 16)
+        .map(CompactTarget::from_consensus)
+        .map_err(serde::de::Error::custom)
 }
 
 async fn wait_past_mtp(post_setup: &PostSetup) -> anyhow::Result<()> {
@@ -240,27 +311,32 @@ async fn wait_past_mtp(post_setup: &PostSetup) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn poll_until_tip(
+async fn poll_until_chaintip_invalid(
     post_setup: &PostSetup,
-    expected: BlockHash,
+    block_hash: BlockHash,
     timeout: Duration,
 ) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
+    let target = block_hash.to_string();
     loop {
-        let tip: BlockHash = post_setup
+        let chaintips_json = post_setup
             .bitcoin_cli
-            .command::<String, _, String, _, _>([], "getbestblockhash", [])
+            .command::<String, _, String, _, _>([], "getchaintips", [])
             .run_utf8()
-            .await?
-            .parse()?;
-        if tip == expected {
-            return Ok(());
+            .await?;
+        let chaintips: Vec<serde_json::Value> = serde_json::from_str(&chaintips_json)?;
+        let status = chaintips
+            .iter()
+            .find(|tip| tip.get("hash").and_then(|h| h.as_str()) == Some(&target))
+            .and_then(|tip| tip.get("status"))
+            .and_then(|s| s.as_str());
+        match status {
+            Some("invalid") => return Ok(()),
+            _ if tokio::time::Instant::now() >= deadline => anyhow::bail!(
+                "timed out waiting for `{block_hash}` to be marked invalid in chaintips; \
+                 last status: {status:?}"
+            ),
+            _ => sleep(Duration::from_millis(200)).await,
         }
-        if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!(
-                "timed out waiting for tip to revert to `{expected}`; current tip is `{tip}`"
-            );
-        }
-        sleep(Duration::from_millis(200)).await;
     }
 }
