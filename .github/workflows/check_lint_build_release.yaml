@@ -103,7 +103,9 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install cargo-shear
-        run: cargo binstall --no-confirm cargo-shear
+        # Pinned: cargo-shear >= 1.12.0 pulls in deps requiring rustc 1.91,
+        # but our toolchain is 1.88.0
+        run: cargo binstall --no-confirm cargo-shear@1.11.2
 
       - name: Check for unused dependencies
         run: cargo shear --deny-warnings
