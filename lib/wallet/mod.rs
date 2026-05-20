@@ -168,7 +168,7 @@ impl WalletInner {
 
         tracing::debug!(%electrum_url, "creating electrum client");
         // Apply a reasonably short timeout to prevent the wallet from hanging
-        let timeout = 5;
+        let timeout = std::time::Duration::from_secs(5);
         let config = electrum_client::ConfigBuilder::new()
             .timeout(Some(timeout))
             .build();
