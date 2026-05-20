@@ -78,7 +78,7 @@ tonic-prost-build = "0.14.6"
 tonic-reflection = "0.14.6"
 # needs to line up with jsonrpsee tower version...
 tower = "0.5.3"
-tower-http = "0.6.10"
+tower-http = "0.6.11"
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-indicatif = "0.3.14"
