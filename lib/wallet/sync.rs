@@ -115,7 +115,6 @@ impl WalletInner {
     /// Sync the wallet, returning a write guard on last_sync, wallet, and database
     /// if wallet was not locked.
     /// Does not commit changes.
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync_lock(
         &self,
     ) -> Result<Option<SyncWriteGuard<'_>>, error::WalletSync> {
@@ -259,7 +258,7 @@ impl WalletInner {
     }
 
     // TODO: is this actually correct? Need help from the Rust grownups!
-    #[allow(clippy::significant_drop_tightening, reason = "false positive")]
+    #[expect(clippy::significant_drop_tightening, reason = "false positive")]
     pub(in crate::wallet) async fn full_scan(
         &self,
     ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
@@ -388,7 +387,6 @@ impl WalletInner {
     }
 
     /// Sync the wallet if the wallet is not locked, committing changes
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     pub(in crate::wallet) async fn sync(&self) -> Result<(), error::WalletSync> {
         match self.sync_lock().await? {
             Some(sync_write) => {

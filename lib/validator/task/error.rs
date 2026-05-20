@@ -22,7 +22,6 @@ pub(in crate::validator) enum HandleM1ProposeSidechain {
     DbTryGet(#[from] db::error::TryGet),
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
@@ -48,7 +47,6 @@ impl From<db::Error> for HandleM2AckSidechain {
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
@@ -89,7 +87,6 @@ impl From<db::Error> for HandleM3ProposeBundle {
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
@@ -122,7 +119,6 @@ impl From<db::Error> for HandleM4Votes {
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
@@ -149,7 +145,6 @@ impl From<db::Error> for HandleM4AckBundles {
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
@@ -218,7 +213,6 @@ pub(in crate::validator) enum HandleTransaction {
     M8(#[from] HandleM8),
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator::task) enum ValidateTransactionInner {
@@ -252,7 +246,6 @@ where
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
@@ -312,7 +305,6 @@ impl From<db::Error> for ConnectBlock {
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::error::Delete, db::Error),
@@ -340,7 +332,6 @@ impl From<db::Error> for DisconnectBlock {
     }
 }
 
-#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
@@ -419,33 +410,5 @@ pub(in crate::validator) enum Sync {
 impl From<ConnectBlock> for Sync {
     fn from(err: ConnectBlock) -> Self {
         Self::ConnectBlock(Box::new(Splittable(err)))
-    }
-}
-
-#[derive(Debug, Error)]
-pub(in crate::validator::task) enum FatalInner {
-    #[error(transparent)]
-    DisconnectBlock(#[from] DisconnectBlock),
-    #[error(transparent)]
-    Sync(#[from] <Sync as Split>::Fatal),
-    #[error(transparent)]
-    WriteTxn(#[from] env::error::WriteTxn),
-    #[error(transparent)]
-    Zmq(#[from] zeromq::ZmqError),
-    #[error(transparent)]
-    ZmqSequenceStream(#[from] cusf_enforcer_mempool::zmq::SequenceStreamError),
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct Fatal(FatalInner);
-
-impl<E> From<E> for Fatal
-where
-    FatalInner: From<E>,
-{
-    fn from(err: E) -> Self {
-        Self(err.into())
     }
 }

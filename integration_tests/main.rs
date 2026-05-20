@@ -88,7 +88,7 @@ async fn main() -> std::process::ExitCode {
     match run().await {
         Ok(code) => code,
         Err(err) => {
-            #[allow(clippy::print_stderr)]
+            #[expect(clippy::print_stderr)]
             {
                 eprintln!("Error: {err:#}");
             }

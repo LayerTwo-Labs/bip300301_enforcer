@@ -23,7 +23,6 @@ use crate::{
 #[error("electrum error `{code}`: `{message}`")]
 pub struct Electrum {
     code: i32,
-    #[allow(unused_assignments)]
     message: String,
 }
 

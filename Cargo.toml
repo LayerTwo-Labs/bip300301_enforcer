@@ -108,6 +108,7 @@ rev = "ea82b33947f60c511dac6eb3815b6af3f6c3f555"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+allow_attributes = "deny"
 assertions_on_result_states = "allow"
 let_unit_value = "allow"
 print_stderr = "deny"
@@ -118,6 +119,7 @@ wildcard_imports = "deny"
 
 [workspace.lints.rust]
 let_underscore_drop = "deny"
+unfulfilled_lint_expectations = "deny"
 
 [patch.crates-io.bitcoin-send-tx-p2p]
 git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git"

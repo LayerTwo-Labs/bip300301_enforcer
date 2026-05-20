@@ -391,7 +391,6 @@ impl WalletInner {
     /// Warn if lock takes this long to acquire
     const LOCK_WARN_DURATION: Duration = Duration::from_secs(1);
 
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     async fn read_wallet(&self) -> Result<RwLockReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
         use futures::future::{Either, select};
         tracing::trace!("wallet: acquiring read lock");
@@ -414,7 +413,6 @@ impl WalletInner {
     }
 
     /// Obtain an upgradable read lock on the inner wallet
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     async fn read_wallet_upgradable(
         &self,
     ) -> Result<RwLockUpgradableReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
@@ -438,7 +436,6 @@ impl WalletInner {
         RwLockUpgradableReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
     }
 
-    #[allow(clippy::significant_drop_in_scrutinee, reason = "false positive")]
     async fn write_wallet(
         &self,
     ) -> Result<RwLockWriteGuardSome<'_, BdkWallet>, error::NotUnlocked> {
@@ -817,7 +814,6 @@ impl Wallet {
         }
     }
 
-    #[allow(clippy::result_large_err)]
     pub(crate) fn parse_checked_address(
         &self,
         address: &str,
@@ -1217,10 +1213,6 @@ impl Wallet {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "false positive for `bitcoin_wallet`"
-    )]
     async fn create_deposit_psbt(
         &self,
         op_drivechain_output: bdk_wallet::bitcoin::TxOut,
@@ -1437,7 +1429,7 @@ impl Wallet {
         Ok((balance, has_synced))
     }
 
-    #[allow(
+    #[expect(
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
     )]
@@ -1678,10 +1670,6 @@ impl Wallet {
             .collect()
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "false positive for `bitcoin_wallet`"
-    )]
     async fn create_send_psbt(
         &self,
         destinations: HashMap<bitcoin::Address, Amount>,
@@ -1844,7 +1832,7 @@ impl Wallet {
         Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
 
-    #[allow(
+    #[expect(
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
     )]
@@ -1883,7 +1871,7 @@ impl Wallet {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     async fn get_sidechain_ctip(
         &self,
         sidechain_number: SidechainNumber,
@@ -1957,10 +1945,6 @@ impl Wallet {
         )
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "false positive for `bitcoin_wallet`"
-    )]
     async fn build_bmm_tx(
         &self,
         sidechain_number: SidechainNumber,
@@ -2133,7 +2117,7 @@ impl Wallet {
         })
     }
 
-    #[allow(clippy::significant_drop_tightening)]
+    #[expect(clippy::significant_drop_tightening)]
     pub async fn get_new_address(
         &self,
     ) -> Result<bdk_wallet::bitcoin::Address, error::GetNewAddress> {

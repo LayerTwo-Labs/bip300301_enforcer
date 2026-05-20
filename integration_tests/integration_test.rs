@@ -522,7 +522,6 @@ where
     Ok(())
 }
 
-#[allow(clippy::significant_drop_tightening, reason = "false positive")]
 pub async fn deposit_withdraw_roundtrip_task<S>(
     post_setup: &mut PostSetup,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,

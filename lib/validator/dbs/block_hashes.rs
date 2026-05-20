@@ -37,7 +37,6 @@ pub mod error {
         pub(super) prev_block_hash: BlockHash,
     }
 
-    #[allow(clippy::duplicated_attributes)]
     #[derive(Debug, Error, Transitive)]
     #[transitive(from(db::error::Put, db::Error), from(db::error::TryGet, db::Error))]
     pub(in crate::validator::dbs::block_hashes) enum PutBlockInfoInner {
@@ -68,7 +67,6 @@ pub mod error {
         }
     }
 
-    #[allow(clippy::duplicated_attributes)]
     #[derive(Debug, Error, Transitive)]
     #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
     pub(crate) enum LastCommonAncestor {
@@ -151,7 +149,7 @@ pub struct BlockHashDbs {
     // Used for determining conflicts for mempool txs.
     // Maps block hash and sidechain number to a set of txids and their h*
     // commitments.
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     seen_bmm_request_txs: DatabaseDup<
         SerdeBincode<(BlockHash, SidechainNumber)>,
         SerdeBincode<(Txid, BmmCommitment)>,

@@ -810,7 +810,6 @@ impl DummySidechain {
     }
 
     /// Extract withdrawal bundle events from block info events
-    #[allow(clippy::result_large_err)]
     fn extract_withdrawal_bundle_event(
         block_event: proto::mainchain::block_info::Event,
     ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, tonic::Status> {
