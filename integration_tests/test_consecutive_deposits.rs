@@ -29,13 +29,13 @@ async fn create_deposit(
     let deposit_txid = post_setup
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
-            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            address: Some(sidechain_address.to_owned()),
-            value_sats: Some(DEPOSIT_AMOUNT.to_sat()),
-            fee_sats: Some(DEPOSIT_FEE.to_sat()),
+            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            address: proto::wrap_string(sidechain_address),
+            value_sats: proto::wrap_u64(DEPOSIT_AMOUNT.to_sat()),
+            fee_sats: proto::wrap_u64(DEPOSIT_FEE.to_sat()),
         })
         .await?
-        .into_inner()
+        .into_owned()
         .txid
         .ok_or_else(|| proto::Error::missing_field::<CreateDepositTransactionResponse>("txid"))?
         .decode::<CreateDepositTransactionResponse, _>("txid")?;
@@ -56,7 +56,7 @@ async fn unspent_output_count(post_setup: &mut PostSetup) -> anyhow::Result<usiz
         .wallet_service_client
         .list_unspent_outputs(ListUnspentOutputsRequest {})
         .await?
-        .into_inner();
+        .into_owned();
     Ok(utxos.outputs.len())
 }
 
@@ -89,7 +89,7 @@ async fn consolidate_to_single_utxo(post_setup: &mut PostSetup) -> anyhow::Resul
             .wallet_service_client
             .create_new_address(CreateNewAddressRequest {})
             .await?
-            .into_inner()
+            .into_owned()
             .address;
         let _drain = post_setup
             .wallet_service_client

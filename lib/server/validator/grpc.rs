@@ -1,7 +1,8 @@
 use bitcoin::{Amount, BlockHash, Transaction, TxOut, absolute::Height, hashes::Hash};
+use buffa::MessageField;
+use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use futures::{StreamExt as _, stream::BoxStream};
 use miette::IntoDiagnostic as _;
-use tonic::{Request, Response, Status};
 
 use crate::{
     convert,
@@ -13,7 +14,7 @@ use crate::{
             GetBlockHeaderInfoRequest, GetBlockHeaderInfoResponse, GetBlockInfoRequest,
             GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
             GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
-            GetCoinbasePsbtRequest, GetCoinbasePsbtResponse, GetCtipRequest, GetCtipResponse,
+            GetCoinbasePSBTRequest, GetCoinbasePSBTResponse, GetCtipRequest, GetCtipResponse,
             GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
             GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
             StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
@@ -21,150 +22,146 @@ use crate::{
             get_block_info_response, get_bmm_h_star_commitment_response,
             get_chain_info_response::Bip300Constants, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo, validator_service_server::ValidatorService,
+            get_sidechains_response::SidechainInfo,
         },
+        mainchain_service::ValidatorService,
+        wrap_u32,
     },
-    server::{invalid_field_value, missing_field, validator::Server},
-    types::{SidechainNumber, Thresholds},
+    server::{internal_err, missing_field, parse_sidechain_id, validator::Server},
+    types::Thresholds,
 };
 
-#[tonic::async_trait]
+#[expect(refining_impl_trait_reachable)]
 impl ValidatorService for Server {
     async fn get_block_header_info(
         &self,
-        request: tonic::Request<GetBlockHeaderInfoRequest>,
-    ) -> Result<tonic::Response<GetBlockHeaderInfoResponse>, tonic::Status> {
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetBlockHeaderInfoRequest>,
+    ) -> ServiceResult<GetBlockHeaderInfoResponse> {
+        use crate::proto::mainchain::GetBlockHeaderInfoRequest;
         let GetBlockHeaderInfoRequest {
             block_hash,
             max_ancestors,
-        } = request.into_inner();
+            ..
+        } = request.to_owned_message();
         let block_hash = block_hash
+            .into_option()
             .ok_or_else(|| missing_field::<GetBlockHeaderInfoRequest>("block_hash"))?
-            .decode_tonic::<GetBlockHeaderInfoRequest, _>("block_hash")?;
+            .decode_status::<GetBlockHeaderInfoRequest, _>("block_hash")?;
+        let max_ancestors = max_ancestors.unwrap_or(0) as usize;
         let resp = match self
             .validator
-            .try_get_header_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
-            .map_err(|err| tonic::Status::from_error(Box::new(err)))?
+            .try_get_header_infos(&block_hash, max_ancestors)
+            .map_err(internal_err)?
         {
-            Some(header_infos) => GetBlockHeaderInfoResponse {
-                header_infos: header_infos
-                    .into_iter()
-                    .map(|header_info| header_info.into())
-                    .collect(),
+            Some(infos) => GetBlockHeaderInfoResponse {
+                header_infos: infos.into_iter().map(Into::into).collect(),
             },
-            None => GetBlockHeaderInfoResponse {
-                header_infos: Vec::new(),
-            },
+            None => GetBlockHeaderInfoResponse::default(),
         };
-        Ok(tonic::Response::new(resp))
+        Ok(Response::new(resp))
     }
 
     async fn get_block_info(
         &self,
-        request: tonic::Request<GetBlockInfoRequest>,
-    ) -> Result<tonic::Response<GetBlockInfoResponse>, tonic::Status> {
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetBlockInfoRequest>,
+    ) -> ServiceResult<GetBlockInfoResponse> {
+        use crate::proto::mainchain::GetBlockInfoRequest;
         let GetBlockInfoRequest {
             block_hash,
             sidechain_id,
             max_ancestors,
-        } = request.into_inner();
+            ..
+        } = request.to_owned_message();
         let block_hash = block_hash
+            .into_option()
             .ok_or_else(|| missing_field::<GetBlockInfoRequest>("block_hash"))?
-            .decode_tonic::<GetBlockInfoRequest, _>("block_hash")?;
-        let sidechain_id = {
-            let raw_id =
-                sidechain_id.ok_or_else(|| missing_field::<GetBlockInfoRequest>("sidechain_id"))?;
-
-            SidechainNumber::try_from(raw_id).map_err(|err| {
-                invalid_field_value::<GetBlockInfoRequest, _>(
-                    "sidechain_id",
-                    &raw_id.to_string(),
-                    err,
-                )
-            })?
-        };
+            .decode_status::<GetBlockInfoRequest, _>("block_hash")?;
+        let sidechain_id = parse_sidechain_id::<GetBlockInfoRequest>(sidechain_id, "sidechain_id")?;
+        let max_ancestors = max_ancestors.unwrap_or(0) as usize;
         let resp = match self
             .validator
-            .try_get_block_infos(&block_hash, max_ancestors.unwrap_or(0) as usize)
-            .map_err(|err| tonic::Status::from_error(Box::new(err)))?
+            .try_get_block_infos(&block_hash, max_ancestors)
+            .map_err(internal_err)?
         {
-            None => GetBlockInfoResponse { infos: Vec::new() },
-            Some(block_infos) => GetBlockInfoResponse {
-                infos: block_infos
+            None => GetBlockInfoResponse::default(),
+            Some(infos) => GetBlockInfoResponse {
+                infos: infos
                     .into_iter()
                     .map(|(header_info, block_info)| get_block_info_response::Info {
-                        header_info: Some(header_info.into()),
-                        block_info: Some(block_info.as_proto(sidechain_id)),
+                        header_info: MessageField::some(header_info.into()),
+                        block_info: MessageField::some(block_info.as_proto(sidechain_id)),
                     })
                     .collect(),
             },
         };
-        Ok(tonic::Response::new(resp))
+        Ok(Response::new(resp))
     }
 
     async fn get_bmm_h_star_commitment(
         &self,
-        request: tonic::Request<GetBmmHStarCommitmentRequest>,
-    ) -> Result<tonic::Response<GetBmmHStarCommitmentResponse>, tonic::Status> {
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetBmmHStarCommitmentRequest>,
+    ) -> ServiceResult<GetBmmHStarCommitmentResponse> {
+        use crate::proto::mainchain::GetBmmHStarCommitmentRequest;
         let GetBmmHStarCommitmentRequest {
             block_hash,
             sidechain_id,
             max_ancestors,
-        } = request.into_inner();
+            ..
+        } = request.to_owned_message();
         let block_hash = block_hash
+            .into_option()
             .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("block_hash"))?
-            .decode_tonic::<GetBmmHStarCommitmentRequest, _>("block_hash")?;
-
-        let sidechain_id = {
-            let raw_id = sidechain_id
-                .ok_or_else(|| missing_field::<GetBmmHStarCommitmentRequest>("sidechain_id"))?;
-
-            SidechainNumber::try_from(raw_id).map_err(|err| {
-                invalid_field_value::<GetBmmHStarCommitmentRequest, _>(
-                    "sidechain_id",
-                    &raw_id.to_string(),
-                    err,
-                )
-            })?
-        };
+            .decode_status::<GetBmmHStarCommitmentRequest, _>("block_hash")?;
+        let sidechain_id =
+            parse_sidechain_id::<GetBmmHStarCommitmentRequest>(sidechain_id, "sidechain_id")?;
+        let max_ancestors = max_ancestors.unwrap_or(0) as usize;
         let bmm_commitments = self
             .validator
-            .try_get_bmm_commitments(&block_hash, max_ancestors.unwrap_or(0) as usize)
-            .map_err(|err| tonic::Status::from_error(Box::new(err)))?;
+            .try_get_bmm_commitments(&block_hash, max_ancestors)
+            .map_err(internal_err)?;
         let res = match nonempty::NonEmpty::from_vec(bmm_commitments) {
-            None => {
-                let err = get_bmm_h_star_commitment_response::BlockNotFoundError {
-                    block_hash: Some(ReverseHex::encode(&block_hash)),
-                };
-                get_bmm_h_star_commitment_response::Result::BlockNotFound(err)
-            }
+            None => get_bmm_h_star_commitment_response::Result::BlockNotFound(Box::new(
+                get_bmm_h_star_commitment_response::BlockNotFoundError {
+                    block_hash: MessageField::some(ReverseHex::encode(&block_hash)),
+                },
+            )),
             Some(nonempty::NonEmpty { head, tail }) => {
-                get_bmm_h_star_commitment_response::Result::Commitment(
+                let commitment = head
+                    .get(&sidechain_id)
+                    .map(|c| MessageField::some(ConsensusHex::encode(c)))
+                    .unwrap_or_default();
+                let ancestor_commitments = tail
+                    .into_iter()
+                    .map(
+                        |commitments| get_bmm_h_star_commitment_response::OptionalCommitment {
+                            commitment: commitments
+                                .get(&sidechain_id)
+                                .map(|c| MessageField::some(ConsensusHex::encode(c)))
+                                .unwrap_or_default(),
+                        },
+                    )
+                    .collect();
+                get_bmm_h_star_commitment_response::Result::Commitment(Box::new(
                     get_bmm_h_star_commitment_response::Commitment {
-                        commitment: head.get(&sidechain_id).map(ConsensusHex::encode),
-                        ancestor_commitments: tail
-                            .into_iter()
-                            .map(|commitments| {
-                                get_bmm_h_star_commitment_response::OptionalCommitment {
-                                    commitment: commitments
-                                        .get(&sidechain_id)
-                                        .map(ConsensusHex::encode),
-                                }
-                            })
-                            .collect(),
+                        commitment,
+                        ancestor_commitments,
                     },
-                )
+                ))
             }
         };
-        let resp = GetBmmHStarCommitmentResponse { result: Some(res) };
-        Ok(tonic::Response::new(resp))
+        Ok(Response::new(GetBmmHStarCommitmentResponse {
+            result: Some(res),
+        }))
     }
 
     async fn get_chain_info(
         &self,
-        request: tonic::Request<GetChainInfoRequest>,
-    ) -> Result<tonic::Response<GetChainInfoResponse>, tonic::Status> {
-        let GetChainInfoRequest {} = request.into_inner();
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, GetChainInfoRequest>,
+    ) -> ServiceResult<GetChainInfoResponse> {
         let bitcoin_network = self.validator.network();
         let network: Network = bitcoin_network.into();
         let Thresholds {
@@ -175,9 +172,9 @@ impl ValidatorService for Server {
             unused_sidechain_slot_proposal_max_age,
             unused_sidechain_slot_activation_threshold,
         } = Thresholds::for_network(bitcoin_network);
-        let resp = GetChainInfoResponse {
-            network: network as i32,
-            bip300_constants: Some(Bip300Constants {
+        Ok(Response::new(GetChainInfoResponse {
+            network: network.into(),
+            bip300_constants: MessageField::some(Bip300Constants {
                 withdrawal_bundle_max_age: withdrawal_bundle_max_age.into(),
                 withdrawal_bundle_inclusion_threshold: withdrawal_bundle_inclusion_threshold.into(),
                 used_sidechain_slot_proposal_max_age: used_sidechain_slot_proposal_max_age.into(),
@@ -188,156 +185,136 @@ impl ValidatorService for Server {
                 unused_sidechain_slot_activation_threshold:
                     unused_sidechain_slot_activation_threshold.into(),
             }),
-        };
-        Ok(tonic::Response::new(resp))
+        }))
     }
 
     async fn get_chain_tip(
         &self,
-        request: tonic::Request<GetChainTipRequest>,
-    ) -> Result<tonic::Response<GetChainTipResponse>, tonic::Status> {
-        let GetChainTipRequest {} = request.into_inner();
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, GetChainTipRequest>,
+    ) -> ServiceResult<GetChainTipResponse> {
         let Some(tip_hash) = self
             .validator
             .try_get_mainchain_tip()
-            .map_err(|err| err.builder().to_status())?
+            .map_err(|err| err.builder().to_connect_error())?
         else {
-            return Err(tonic::Status::unavailable("Validator is not synced"));
+            return Err(ConnectError::unavailable("Validator is not synced"));
         };
         let header_info = self
             .validator
             .get_header_info(&tip_hash)
-            .map_err(|err| tonic::Status::from_error(err.into()))?;
-        let resp = GetChainTipResponse {
-            block_header_info: Some(header_info.into()),
-        };
-        Ok(tonic::Response::new(resp))
+            .map_err(internal_err)?;
+        Ok(Response::new(GetChainTipResponse {
+            block_header_info: MessageField::some(header_info.into()),
+        }))
     }
 
     async fn get_coinbase_psbt(
         &self,
-        request: Request<GetCoinbasePsbtRequest>,
-    ) -> Result<Response<GetCoinbasePsbtResponse>, Status> {
-        let request = request.into_inner();
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetCoinbasePSBTRequest>,
+    ) -> ServiceResult<GetCoinbasePSBTResponse> {
+        use crate::proto::mainchain::GetCoinbasePSBTRequest;
+        let request = request.to_owned_message();
         let mut messages = Vec::<CoinbaseMessage>::new();
-        for propose_sidechain in request.propose_sidechains {
-            let m1: M1ProposeSidechain = propose_sidechain
-                .try_into()
-                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
+        for propose in request.propose_sidechains {
+            let m1: M1ProposeSidechain = propose.try_into()?;
             messages.push(m1.into());
         }
-        for ack_sidechain in request.ack_sidechains {
-            let m2: M2AckSidechain = ack_sidechain
-                .try_into()
-                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
+        for ack in request.ack_sidechains {
+            let m2: M2AckSidechain = ack.try_into()?;
             messages.push(m2.into());
         }
-        for propose_bundle in request.propose_bundles {
-            let m3: M3ProposeBundle = propose_bundle
-                .try_into()
-                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
+        for propose in request.propose_bundles {
+            let m3: M3ProposeBundle = propose.try_into()?;
             messages.push(m3.into());
         }
         let ack_bundles = request
             .ack_bundles
-            .ok_or_else(|| missing_field::<GetCoinbasePsbtRequest>("ack_bundles"))?;
-        {
-            let message = ack_bundles
-                .try_into()
-                .map_err(|err: crate::proto::Error| err.builder().to_status())?;
-            messages.push(message);
-        }
+            .into_option()
+            .ok_or_else(|| missing_field::<GetCoinbasePSBTRequest>("ack_bundles"))?;
+        let m4: CoinbaseMessage = ack_bundles.try_into()?;
+        messages.push(m4);
         let output = messages
             .into_iter()
-            .map(|message| {
+            .map(|m| {
                 Ok(TxOut {
                     value: Amount::ZERO,
-                    script_pubkey: message.try_into().into_diagnostic()?,
+                    script_pubkey: m.try_into().into_diagnostic()?,
                 })
             })
             .collect::<miette::Result<Vec<_>>>()
-            .map_err(|err| tonic::Status::internal(err.to_string()))?;
+            .map_err(internal_err)?;
         let transaction = Transaction {
             output,
             input: vec![],
             lock_time: bitcoin::absolute::LockTime::Blocks(Height::ZERO),
             version: bitcoin::transaction::Version::TWO,
         };
-        let response = GetCoinbasePsbtResponse {
-            psbt: Some(ConsensusHex::encode(&transaction)),
-        };
-        Ok(Response::new(response))
+        Ok(Response::new(GetCoinbasePSBTResponse {
+            psbt: MessageField::some(ConsensusHex::encode(&transaction)),
+        }))
     }
 
     async fn get_ctip(
         &self,
-        request: tonic::Request<GetCtipRequest>,
-    ) -> Result<tonic::Response<GetCtipResponse>, tonic::Status> {
-        let GetCtipRequest { sidechain_number } = request.into_inner();
-        let sidechain_number = {
-            let raw_id = sidechain_number
-                .ok_or_else(|| missing_field::<GetCtipRequest>("sidechain_number"))?;
-
-            SidechainNumber::try_from(raw_id).map_err(|err| {
-                invalid_field_value::<GetCtipRequest, _>(
-                    "sidechain_number",
-                    &raw_id.to_string(),
-                    err,
-                )
-            })?
-        };
-
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetCtipRequest>,
+    ) -> ServiceResult<GetCtipResponse> {
+        use crate::proto::mainchain::GetCtipRequest;
+        let GetCtipRequest {
+            sidechain_number, ..
+        } = request.to_owned_message();
+        let sidechain_number =
+            parse_sidechain_id::<GetCtipRequest>(sidechain_number, "sidechain_number")?;
         let ctip = self
             .validator
             .try_get_ctip(sidechain_number)
-            .map_err(|err| err.builder().to_status())?;
-        if let Some(ctip) = ctip {
+            .map_err(|err| err.builder().to_connect_error())?;
+        let response = if let Some(ctip) = ctip {
             let sequence_number = self
                 .validator
                 .get_ctip_sequence_number(sidechain_number)
-                .map_err(|err| err.builder().to_status())?;
-            // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
-            // return Some, so we just unwrap it.
-            let sequence_number = sequence_number.unwrap();
-            let ctip = Ctip {
-                txid: Some(ReverseHex::encode(&ctip.outpoint.txid)),
-                vout: ctip.outpoint.vout,
-                value: ctip.value.to_sat(),
-                sequence_number,
-            };
-            let response = GetCtipResponse { ctip: Some(ctip) };
-            Ok(Response::new(response))
+                .map_err(|err| err.builder().to_connect_error())?
+                // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
+                // return Some, so we just unwrap it.
+                .unwrap();
+            GetCtipResponse {
+                ctip: MessageField::some(Ctip {
+                    txid: MessageField::some(ReverseHex::encode(&ctip.outpoint.txid)),
+                    vout: ctip.outpoint.vout,
+                    value: ctip.value.to_sat(),
+                    sequence_number,
+                }),
+            }
         } else {
-            let response = GetCtipResponse { ctip: None };
-            Ok(Response::new(response))
-        }
+            GetCtipResponse::default()
+        };
+        Ok(Response::new(response))
     }
 
     async fn get_sidechain_proposals(
         &self,
-        request: tonic::Request<GetSidechainProposalsRequest>,
-    ) -> Result<tonic::Response<GetSidechainProposalsResponse>, tonic::Status> {
-        let GetSidechainProposalsRequest {} = request.into_inner();
-        let Some(mainchain_tip) = self
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, GetSidechainProposalsRequest>,
+    ) -> ServiceResult<GetSidechainProposalsResponse> {
+        let Some(tip) = self
             .validator
             .try_get_mainchain_tip()
-            .map_err(|err| err.builder().to_status())?
+            .map_err(|err| err.builder().to_connect_error())?
         else {
-            let response = GetSidechainProposalsResponse {
-                sidechain_proposals: Vec::new(),
-            };
-            return Ok(Response::new(response));
+            return Ok(Response::new(GetSidechainProposalsResponse::default()));
         };
         let mainchain_tip_height = self
             .validator
-            .get_header_info(&mainchain_tip)
-            .map_err(|err| err.builder().to_status())?
+            .get_header_info(&tip)
+            .map_err(|err| err.builder().to_connect_error())?
             .height;
-        let sidechain_proposals = self
+        let proposals = self
             .validator
             .get_sidechains()
-            .map_err(|err| err.builder().to_status())?;
-        let sidechain_proposals = sidechain_proposals
+            .map_err(|err| err.builder().to_connect_error())?;
+        let sidechain_proposals = proposals
             .into_iter()
             .map(|(proposal_id, sidechain)| {
                 let description = ConsensusHex::encode(&sidechain.proposal.description.0);
@@ -346,161 +323,124 @@ impl ValidatorService for Server {
                         .map(crate::proto::mainchain::SidechainDeclaration::from)
                         .ok();
                 SidechainProposal {
-                    sidechain_number: Some(sidechain.proposal.sidechain_number.0 as u32),
-                    description: Some(description),
-                    declaration,
-                    description_sha256d_hash: Some(ReverseHex::encode(
+                    sidechain_number: wrap_u32(sidechain.proposal.sidechain_number.0 as u32),
+                    description: MessageField::some(description),
+                    declaration: declaration.map(MessageField::some).unwrap_or_default(),
+                    description_sha256d_hash: MessageField::some(ReverseHex::encode(
                         &proposal_id.description_hash,
                     )),
-                    vote_count: Some(sidechain.status.vote_count as u32),
-                    proposal_height: Some(sidechain.status.proposal_height),
-                    proposal_age: Some(mainchain_tip_height - sidechain.status.proposal_height),
+                    vote_count: wrap_u32(sidechain.status.vote_count as u32),
+                    proposal_height: wrap_u32(sidechain.status.proposal_height),
+                    proposal_age: wrap_u32(mainchain_tip_height - sidechain.status.proposal_height),
                 }
             })
             .collect();
-        let response = GetSidechainProposalsResponse {
+        Ok(Response::new(GetSidechainProposalsResponse {
             sidechain_proposals,
-        };
-        Ok(Response::new(response))
+        }))
     }
 
     async fn get_sidechains(
         &self,
-        request: tonic::Request<GetSidechainsRequest>,
-    ) -> Result<tonic::Response<GetSidechainsResponse>, tonic::Status> {
-        let GetSidechainsRequest {} = request.into_inner();
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, GetSidechainsRequest>,
+    ) -> ServiceResult<GetSidechainsResponse> {
         let sidechains = self
             .validator
             .get_active_sidechains()
-            .map_err(|err| err.builder().to_status())?;
+            .map_err(|err| err.builder().to_connect_error())?;
         let sidechains = sidechains.into_iter().map(SidechainInfo::from).collect();
-        let response = GetSidechainsResponse { sidechains };
-        Ok(Response::new(response))
+        Ok(Response::new(GetSidechainsResponse { sidechains }))
     }
 
     async fn get_two_way_peg_data(
         &self,
-        request: tonic::Request<GetTwoWayPegDataRequest>,
-    ) -> Result<tonic::Response<GetTwoWayPegDataResponse>, tonic::Status> {
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetTwoWayPegDataRequest>,
+    ) -> ServiceResult<GetTwoWayPegDataResponse> {
+        use crate::proto::mainchain::GetTwoWayPegDataRequest;
         let GetTwoWayPegDataRequest {
             sidechain_id,
             start_block_hash,
             end_block_hash,
-        } = request.into_inner();
-
-        let sidechain_id = {
-            let raw_id = sidechain_id
-                .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("sidechain_id"))?;
-
-            SidechainNumber::try_from(raw_id).map_err(|err| {
-                invalid_field_value::<GetTwoWayPegDataRequest, _>(
-                    "sidechain_id",
-                    &raw_id.to_string(),
-                    err,
-                )
-            })?
-        };
-
+            ..
+        } = request.to_owned_message();
+        let sidechain_id =
+            parse_sidechain_id::<GetTwoWayPegDataRequest>(sidechain_id, "sidechain_id")?;
         let start_block_hash: Option<BlockHash> = start_block_hash
-            .map(|start_block_hash| {
-                start_block_hash.decode_tonic::<GetTwoWayPegDataRequest, _>("start_block_hash")
-            })
+            .into_option()
+            .map(|h| h.decode_status::<GetTwoWayPegDataRequest, _>("start_block_hash"))
             .transpose()?
             .map(|bytes| {
                 convert::bdk_block_hash_to_bitcoin_block_hash(
                     bdk_wallet::bitcoin::BlockHash::from_byte_array(bytes),
                 )
             });
-
         let end_block_hash: BlockHash = end_block_hash
+            .into_option()
             .ok_or_else(|| missing_field::<GetTwoWayPegDataRequest>("end_block_hash"))?
-            .decode_tonic::<GetTwoWayPegDataRequest, _>("end_block_hash")
+            .decode_status::<GetTwoWayPegDataRequest, _>("end_block_hash")
             .map(bdk_wallet::bitcoin::BlockHash::from_byte_array)
             .map(convert::bdk_block_hash_to_bitcoin_block_hash)?;
-
-        match self
+        let two_way_peg_data = self
             .validator
             .get_two_way_peg_data(start_block_hash, end_block_hash)
-        {
-            Err(err) => Err(tonic::Status::from_error(Box::new(err))),
-            Ok(two_way_peg_data) => {
-                let two_way_peg_data = two_way_peg_data
-                    .into_iter()
-                    .filter_map(|two_way_peg_data| two_way_peg_data.into_proto(sidechain_id))
-                    .collect();
-                let resp = GetTwoWayPegDataResponse {
-                    blocks: two_way_peg_data,
-                };
-                Ok(tonic::Response::new(resp))
-            }
-        }
+            .map_err(internal_err)?;
+        let blocks = two_way_peg_data
+            .into_iter()
+            .filter_map(|d| d.into_proto(sidechain_id))
+            .collect();
+        Ok(Response::new(GetTwoWayPegDataResponse { blocks }))
     }
-
-    type SubscribeEventsStream = BoxStream<'static, Result<SubscribeEventsResponse, tonic::Status>>;
 
     async fn subscribe_events(
         &self,
-        request: tonic::Request<SubscribeEventsRequest>,
-    ) -> Result<tonic::Response<Self::SubscribeEventsStream>, tonic::Status> {
-        let SubscribeEventsRequest { sidechain_id } = request.into_inner();
-
-        let sidechain_id = {
-            let raw_id = sidechain_id
-                .ok_or_else(|| missing_field::<SubscribeEventsRequest>("sidechain_id"))?;
-
-            SidechainNumber::try_from(raw_id).map_err(|err| {
-                invalid_field_value::<SubscribeEventsRequest, _>(
-                    "sidechain_id",
-                    &raw_id.to_string(),
-                    err,
-                )
-            })?
-        };
-
-        let stream = self
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, SubscribeEventsRequest>,
+    ) -> ServiceResult<connectrpc::ServiceStream<SubscribeEventsResponse>> {
+        use crate::proto::mainchain::SubscribeEventsRequest;
+        let SubscribeEventsRequest { sidechain_id, .. } = request.to_owned_message();
+        let sidechain_id =
+            parse_sidechain_id::<SubscribeEventsRequest>(sidechain_id, "sidechain_id")?;
+        let stream: BoxStream<'static, _> = self
             .validator
             .subscribe_events()
             .map(move |res| match res {
                 Ok(event) => Ok(SubscribeEventsResponse {
-                    event: Some(event.into_proto(sidechain_id).into()),
+                    event: MessageField::some(event.into_proto(sidechain_id).into()),
                 }),
-                Err(err) => Err(err.builder().to_status()),
+                Err(err) => Err(err.builder().to_connect_error()),
             })
             .boxed();
-        Ok(tonic::Response::new(stream))
+        Ok(Response::new(Box::pin(stream)))
     }
-
-    type SubscribeHeaderSyncProgressStream =
-        BoxStream<'static, Result<SubscribeHeaderSyncProgressResponse, tonic::Status>>;
 
     async fn subscribe_header_sync_progress(
         &self,
-        request: tonic::Request<SubscribeHeaderSyncProgressRequest>,
-    ) -> Result<tonic::Response<Self::SubscribeHeaderSyncProgressStream>, tonic::Status> {
-        let SubscribeHeaderSyncProgressRequest {} = request.into_inner();
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, SubscribeHeaderSyncProgressRequest>,
+    ) -> ServiceResult<connectrpc::ServiceStream<SubscribeHeaderSyncProgressResponse>> {
         let Some(rx) = self.validator.subscribe_header_sync_progress() else {
-            return Err(tonic::Status::unavailable("No header sync in progress"));
+            return Err(ConnectError::unavailable("No header sync in progress"));
         };
-        let stream = tokio_stream::wrappers::WatchStream::new(rx)
+        let stream: BoxStream<'static, _> = tokio_stream::wrappers::WatchStream::new(rx)
             .map(|progress| Ok(progress.into()))
             .boxed();
-        Ok(tonic::Response::new(stream))
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn stop(
         &self,
-        _: tonic::Request<StopRequest>,
-    ) -> Result<tonic::Response<StopResponse>, tonic::Status> {
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, StopRequest>,
+    ) -> ServiceResult<StopResponse> {
         if self.cancel.is_cancelled() {
-            return Err(tonic::Status::unavailable(
+            return Err(ConnectError::unavailable(
                 "Validator is already shutting down",
             ));
         }
-
         tracing::info!("received stop request, cancelling token");
-
         self.cancel.cancel();
-
-        Ok(tonic::Response::new(StopResponse {}))
+        Ok(Response::new(StopResponse::default()))
     }
 }

@@ -8,14 +8,14 @@ use bip300301_enforcer_lib::{
         self, ToStatus,
         mainchain::{
             BlockHeaderInfo, GenerateBlocksRequest, GenerateBlocksResponse, SubscribeEventsRequest,
+            SubscribeEventsResponse, subscribe_events_response,
             subscribe_events_response::event::ConnectBlock,
         },
-        sidechain::{SubscribeEventsResponse, subscribe_events_response},
     },
 };
 use bitcoin::Address;
+use connectrpc::ConnectError;
 use either::Either;
-use futures::TryStreamExt as _;
 use thiserror::Error;
 
 use crate::{
@@ -62,7 +62,7 @@ pub enum MineGbtError {
     #[error("Submitting block failed with error: `{err_msg}`")]
     SubmitBlock { err_msg: String },
     #[error(transparent)]
-    ValidatorClient(#[from] tonic::Status),
+    ValidatorClient(#[from] ConnectError),
     #[error(transparent)]
     Var(#[from] Arc<VarError>),
 }
@@ -124,14 +124,12 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
         )
         .run_utf8()
         .await?;
-    if submitblock_output.is_empty() {
-        tracing::debug!(%block_hash, %submitblock_output, "Submitted block");
-        Ok(block_hash)
-    } else {
-        Err(MineGbtError::SubmitBlock {
+    if !submitblock_output.is_empty() {
+        return Err(MineGbtError::SubmitBlock {
             err_msg: submitblock_output,
-        })
+        });
     }
+    Ok(block_hash)
 }
 
 #[derive(Debug, Error)]
@@ -145,7 +143,17 @@ pub enum MineSignetError {
     #[error("Signet miner not configured")]
     NoSignetMiner,
     #[error(transparent)]
-    ValidatorClient(#[from] tonic::Status),
+    ValidatorClient(#[from] ConnectError),
+}
+
+fn subscribe_request<S: Sidechain>() -> SubscribeEventsRequest {
+    SubscribeEventsRequest {
+        sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
+    }
+}
+
+fn proto_err_to_connect(err: proto::Error) -> ConnectError {
+    err.builder().to_connect_error()
 }
 
 // Mine blocks, running a check after each block
@@ -165,41 +173,42 @@ where
         .ok_or(either::Left(MineSignetError::NoSignetMiner))?;
     let mut stream = post_setup
         .validator_service_client
-        .subscribe_events(SubscribeEventsRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
-        })
+        .subscribe_events(subscribe_request::<S>())
         .await
-        .map_err(|err| Either::Left(err.into()))?
-        .into_inner();
+        .map_err(|err| Either::Left(err.into()))?;
     for _ in 0..blocks {
         let () = mine_single_signet(signet_miner, &post_setup.mining_address)
             .await
             .map_err(|err| Either::Left(err.into()))?;
-        let Some(resp) = stream
-            .try_next()
+        let Some(view) = stream
+            .message()
             .await
             .map_err(|err| Either::Left(err.into()))?
         else {
             return Err(Either::Left(MineSignetError::NoBlockEvent));
         };
+        let resp: SubscribeEventsResponse = view.to_owned_message();
         let resp_event = resp
             .event
+            .into_option()
             .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))
-            .map_err(|err| Either::Left(err.builder().to_status().into()))?
+            .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
             .event
             .ok_or_else(|| proto::Error::missing_field::<subscribe_events_response::Event>("event"))
-            .map_err(|err| Either::Left(err.builder().to_status().into()))?;
+            .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
         match resp_event {
             Event::ConnectBlock(connect_block) => {
                 let header_info = connect_block
                     .header_info
+                    .into_option()
                     .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))
-                    .map_err(|err| Either::Left(err.builder().to_status().into()))?;
+                    .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
                 let block_hash = header_info
                     .block_hash
+                    .into_option()
                     .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))
-                    .map_err(|err| Either::Left(err.builder().to_status().into()))?
-                    .decode_tonic::<BlockHeaderInfo, _>("block_hash")
+                    .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
+                    .decode_status::<BlockHeaderInfo, _>("block_hash")
                     .map_err(|err| Either::Left(err.into()))?;
                 check(block_hash).map_err(Either::Right)?
             }
@@ -224,39 +233,40 @@ where
     use proto::mainchain::subscribe_events_response::event::Event;
     let mut stream = post_setup
         .validator_service_client
-        .subscribe_events(SubscribeEventsRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
-        })
+        .subscribe_events(subscribe_request::<S>())
         .await
-        .map_err(|err| Either::Left(err.into()))?
-        .into_inner();
+        .map_err(|err| Either::Left(err.into()))?;
     for _ in 0..blocks {
         let _block_hash = mine_gbt(post_setup).await.map_err(Either::Left)?;
-        let Some(resp) = stream
-            .try_next()
+        let Some(view) = stream
+            .message()
             .await
             .map_err(|err| Either::Left(err.into()))?
         else {
             return Err(Either::Left(MineGbtError::NoBlockEvent));
         };
+        let resp: SubscribeEventsResponse = view.to_owned_message();
         let resp_event = resp
             .event
+            .into_option()
             .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))
-            .map_err(|err| Either::Left(err.builder().to_status().into()))?
+            .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
             .event
             .ok_or_else(|| proto::Error::missing_field::<subscribe_events_response::Event>("event"))
-            .map_err(|err| Either::Left(err.builder().to_status().into()))?;
+            .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
         match resp_event {
             Event::ConnectBlock(connect_block) => {
                 let header_info = connect_block
                     .header_info
+                    .into_option()
                     .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))
-                    .map_err(|err| Either::Left(err.builder().to_status().into()))?;
+                    .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
                 let block_hash = header_info
                     .block_hash
+                    .into_option()
                     .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))
-                    .map_err(|err| Either::Left(err.builder().to_status().into()))?
-                    .decode_tonic::<BlockHeaderInfo, _>("block_hash")
+                    .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
+                    .decode_status::<BlockHeaderInfo, _>("block_hash")
                     .map_err(|err| Either::Left(err.into()))?;
                 check(block_hash).map_err(Either::Right)?
             }
@@ -272,28 +282,27 @@ pub async fn mine_generateblocks_check<F, Err>(
     blocks: u32,
     ack_all_proposals: Option<bool>,
     mut check: F,
-) -> Result<(), Either<tonic::Status, Err>>
+) -> Result<(), Either<ConnectError, Err>>
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
 {
     let request = GenerateBlocksRequest {
-        blocks: Some(blocks),
+        blocks: proto::wrap_u32(blocks),
         ack_all_proposals: ack_all_proposals.unwrap_or(false),
     };
     let mut stream = post_setup
         .wallet_service_client
         .generate_blocks(request)
         .await
-        .map_err(Either::Left)?
-        .into_inner();
-    while let Some(resp) = stream.try_next().await.map_err(Either::Left)? {
-        let GenerateBlocksResponse { block_hash } = resp;
+        .map_err(Either::Left)?;
+    while let Some(view) = stream.message().await.map_err(Either::Left)? {
+        let resp: GenerateBlocksResponse = view.to_owned_message();
+        let GenerateBlocksResponse { block_hash, .. } = resp;
         let block_hash = block_hash
-            .ok_or_else(|| {
-                proto::Error::missing_field::<GenerateBlocksResponse>("block_hash").into()
-            })
-            .map_err(Either::Left)?
-            .decode_tonic::<GenerateBlocksResponse, _>("block_hash")
+            .into_option()
+            .ok_or_else(|| proto::Error::missing_field::<GenerateBlocksResponse>("block_hash"))
+            .map_err(|err| Either::Left(proto_err_to_connect(err)))?
+            .decode_status::<GenerateBlocksResponse, _>("block_hash")
             .map_err(Either::Left)?;
         let () = check(block_hash).map_err(Either::Right)?;
     }
@@ -303,7 +312,7 @@ where
 #[derive(Debug, Error)]
 pub enum MineError {
     #[error(transparent)]
-    GenerateBlocks(tonic::Status),
+    GenerateBlocks(ConnectError),
     #[error(transparent)]
     Gbt(MineGbtError),
     #[error(transparent)]
@@ -363,27 +372,23 @@ where
     tracing::debug!("Mining {blocks} block(s)");
     let mut events = post_setup
         .validator_service_client
-        .subscribe_events(SubscribeEventsRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
-        })
-        .await?
-        .into_inner();
+        .subscribe_events(subscribe_request::<S>())
+        .await?;
     for blocks_mined in 0..blocks {
         let () = mine::<S>(post_setup, 1, ack_all_proposals).await?;
-        let Some(event) = events
-            .try_next()
-            .await?
-            .and_then(|event| event.event)
-            .and_then(|event| event.event)
-        else {
+        let Some(view) = events.message().await? else {
             anyhow::bail!("Expected a block event")
+        };
+        let resp: SubscribeEventsResponse = view.to_owned_message();
+        let Some(event) = resp.event.into_option().and_then(|inner| inner.event) else {
+            anyhow::bail!("Expected event")
         };
         let proto::mainchain::subscribe_events_response::event::Event::ConnectBlock(connect_block) =
             event
         else {
             anyhow::bail!("Expected connect block event")
         };
-        let Some(block_info) = connect_block.block_info else {
+        let Some(block_info) = connect_block.block_info.into_option() else {
             anyhow::bail!("Expected block info")
         };
         let () = check(blocks_mined, block_info)?;

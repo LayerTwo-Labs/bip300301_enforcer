@@ -849,14 +849,14 @@ impl Wallet {
     pub(crate) fn parse_checked_address(
         &self,
         address: &str,
-    ) -> Result<bitcoin::Address, tonic::Status> {
+    ) -> Result<bitcoin::Address, connectrpc::ConnectError> {
         let network = self.validator().network();
         let address = bdk_wallet::bitcoin::Address::from_str(address).map_err(|err| {
-            tonic::Status::invalid_argument(format!("invalid bitcoin address: {err:#}"))
+            connectrpc::ConnectError::invalid_argument(format!("invalid bitcoin address: {err:#}"))
         })?;
 
         let address = address.require_network(network).map_err(|_| {
-            tonic::Status::invalid_argument(format!(
+            connectrpc::ConnectError::invalid_argument(format!(
                 "bitcoin address is not valid for network `{network}`",
             ))
         })?;
