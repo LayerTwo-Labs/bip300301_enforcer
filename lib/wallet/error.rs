@@ -915,9 +915,11 @@ pub enum InitialSync {
 #[derive(Debug, Diagnostic, Error)]
 pub enum ConnectBlock {
     #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    #[error(transparent)]
     Validator(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
-    Wallet(#[from] SyncWalletToTip),
+    SyncWalletToTip(#[from] SyncWalletToTip),
 }
 
 #[derive(Debug, Diagnostic, Error)]
