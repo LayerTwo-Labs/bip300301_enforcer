@@ -20,15 +20,20 @@ anyhow = "1.0.102"
 argon2 = "0.5.3"
 async-broadcast = "0.7.1"
 async-lock = "3.4.0"
+axum = { version = "0.8", features = ["http2"] }
 bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.100"
 bitcoin-send-tx-p2p = "0.3.0"
+buffa = { version = "0.7", features = ["json"] }
+buffa-types = { version = "0.7", features = ["json"] }
 byteorder = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
+connectrpc = { version = "0.7", features = ["axum", "client", "server"] }
+connectrpc-health = "0.7"
 derive_more = "2.0.1"
 dotenvy = "0.15.7"
 either = "1.16.0"
@@ -40,6 +45,7 @@ heed = "0.22.0"
 heed-types = "0.21.0"
 hex = "0.4.3"
 http = "1.4.2"
+http-body = "1.0"
 indicatif = "0.18.4"
 jiff = { version = "0.2.28", default-features = false }
 jsonrpsee = "0.26.0"
@@ -49,8 +55,6 @@ nom = "8.0.0"
 nonempty = "0.12.0"
 ordermap = "1.2.0"
 parking_lot = "0.12.3"
-prost = "0.14.4"
-prost-types = "0.14.4"
 rand = "0.10.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
 reserve-port = "2.4.0"
@@ -69,10 +73,6 @@ tokio = { version = "1.52.3", default-features = false }
 tokio-rusqlite = "0.5.1"
 tokio-stream = "0.1.15"
 tokio-util = "0.7.18"
-tonic = "0.14.6"
-tonic-health = "0.14.6"
-tonic-prost = "0.14.5"
-tonic-reflection = "0.14.6"
 # needs to line up with jsonrpsee tower version...
 tower = "0.5.3"
 tower-http = "0.6.11"

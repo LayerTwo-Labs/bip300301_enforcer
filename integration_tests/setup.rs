@@ -15,16 +15,17 @@ use bip300301_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
         self,
-        mainchain::{
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
-            validator_service_client::ValidatorServiceClient,
-            wallet_service_client::WalletServiceClient,
-        },
+        mainchain::{BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse},
+        mainchain_service::{ValidatorServiceClient, WalletServiceClient},
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
 use bitcoin::{Address, Txid};
-use futures::{FutureExt as _, StreamExt, channel::mpsc, future};
+use connectrpc::{
+    ConnectError,
+    client::{ClientConfig, HttpClient},
+};
+use futures::{channel::mpsc, future};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
@@ -368,7 +369,18 @@ pub struct Tasks {
     _bitcoind: AbortOnDrop<()>,
 }
 
-type Transport = tonic::transport::Channel;
+type Transport = HttpClient;
+
+/// Construct a connectrpc transport/config pair for a plaintext gRPC endpoint
+/// served by our enforcer.
+fn make_client(port: u16) -> anyhow::Result<(HttpClient, ClientConfig)> {
+    let uri: http::Uri = format!("http://127.0.0.1:{port}")
+        .parse()
+        .map_err(|err| anyhow!("invalid client URI: {err}"))?;
+    let http = HttpClient::plaintext();
+    let config = ClientConfig::new(uri);
+    Ok((http, config))
+}
 
 #[derive(Clone, Debug)]
 pub struct Directories {
@@ -628,7 +640,7 @@ impl PostSetup {
         let enforcer_task = enforcer.spawn_command_with_args(
             [(
                 "RUST_LOG",
-                "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,tonic=debug,trace",
+                "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
             )],
             opts.enforcer_args,
             move |err| {
@@ -655,16 +667,9 @@ impl PostSetup {
         if let Some(signet_miner) = signet_miner.as_mut() {
             let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }
-        let validator_service_client = ValidatorServiceClient::connect(format!(
-            "http://127.0.0.1:{}",
-            enforcer.serve_grpc_port
-        ))
-        .await
-        .map_err(|err| anyhow!("failed to create validator service client: {err:#}"))?;
-        let wallet_service_client =
-            WalletServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-                .await
-                .map_err(|err| anyhow!("failed to create wallet service client: {err:#}"))?;
+        let (http, config) = make_client(enforcer.serve_grpc_port)?;
+        let validator_service_client = ValidatorServiceClient::new(http.clone(), config.clone());
+        let wallet_service_client = WalletServiceClient::new(http, config);
         let bitcoin_util = {
             let path = match bin_paths.bitcoin_util() {
                 Ok(path) => Ok(path.clone()),
@@ -782,16 +787,22 @@ pub enum DummySidechainError {
     #[error(transparent)]
     BlindedM6(#[from] BlindedM6Error),
     #[error(transparent)]
-    Grpc(Box<tonic::Status>),
+    Grpc(Box<ConnectError>),
     #[error("Event stream was cancelled due to earlier error")]
     EventStreamCancelled,
     #[error("Event stream was closed unexpectedly")]
     EventStreamClosed,
 }
 
-impl From<tonic::Status> for DummySidechainError {
-    fn from(err: tonic::Status) -> Self {
+impl From<ConnectError> for DummySidechainError {
+    fn from(err: ConnectError) -> Self {
         Self::Grpc(Box::new(err))
+    }
+}
+
+impl From<proto::Error> for DummySidechainError {
+    fn from(err: proto::Error) -> Self {
+        Self::Grpc(Box::new(err.into()))
     }
 }
 
@@ -804,7 +815,15 @@ pub struct DummySidechain {
     /// is created
     pending_withdrawal_fee: bitcoin::Amount,
     withdrawal_bundles: HashMap<M6id, BlindedM6<'static>>,
-    event_stream: Option<tonic::Streaming<proto::mainchain::SubscribeEventsResponse>>,
+    /// Receiver for SubscribeEvents stream items. The producer is a
+    /// background task spawned in `setup` that pumps a connectrpc
+    /// `ServerStream` into this channel. `None` after the stream errors or
+    /// closes.
+    event_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<
+            Result<proto::mainchain::SubscribeEventsResponse, ConnectError>,
+        >,
+    >,
 }
 
 impl DummySidechain {
@@ -840,23 +859,21 @@ impl DummySidechain {
     /// Extract withdrawal bundle events from block info events
     fn extract_withdrawal_bundle_event(
         block_event: proto::mainchain::block_info::Event,
-    ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, tonic::Status> {
-        use proto::{ToStatus, mainchain::block_info::event::Event};
+    ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, proto::Error> {
+        use proto::mainchain::block_info::event::Event;
         let event = block_event.event.ok_or_else(|| {
             proto::Error::missing_field::<proto::mainchain::block_info::Event>("event")
-                .builder()
-                .to_status()
         })?;
         match event {
             Event::Deposit(_) => Ok(None),
-            Event::WithdrawalBundle(withdrawal_bundle_event) => Ok(Some(withdrawal_bundle_event)),
+            Event::WithdrawalBundle(wbe) => Ok(Some(*wbe)),
         }
     }
 
-    /// Consume ready chunks from event stream
+    /// Drain any currently-ready events from the channel (non-blocking).
     fn update_from_events(&mut self) -> Result<(), DummySidechainError> {
         use bip300301_enforcer_lib::proto::{
-            self, ToStatus,
+            self,
             mainchain::{
                 SubscribeEventsResponse, WithdrawalBundleEvent,
                 subscribe_events_response::{
@@ -866,75 +883,63 @@ impl DummySidechain {
                 withdrawal_bundle_event,
             },
         };
-        let Some(events_stream) = self.event_stream.take() else {
+        use tokio::sync::mpsc::error::TryRecvError;
+        let Some(rx) = self.event_rx.as_mut() else {
             return Err(DummySidechainError::EventStreamCancelled);
         };
-        // Arbitrary, just needs to be 'big enough'
-        const EVENT_STREAM_CHUNK_SIZE: usize = 1024;
-        let mut events_stream = events_stream.ready_chunks(EVENT_STREAM_CHUNK_SIZE);
-        let events = events_stream
-            .next()
-            .map(|chunk| chunk.ok_or(DummySidechainError::EventStreamClosed))
-            .now_or_never()
-            .transpose()?
-            .unwrap_or_default();
-        self.event_stream = Some(events_stream.into_inner());
-        for event in events {
-            let SubscribeEventsResponse { event } = match event {
+        loop {
+            let item = match rx.try_recv() {
+                Ok(item) => item,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.event_rx = None;
+                    return Err(DummySidechainError::EventStreamClosed);
+                }
+            };
+            let SubscribeEventsResponse { event, .. } = match item {
                 Ok(event) => event,
                 Err(err) => {
-                    self.event_stream = None;
+                    self.event_rx = None;
                     return Err(err.into());
                 }
             };
-            let subscribe_events_response::Event { event } = event.ok_or_else(|| {
-                proto::Error::missing_field::<SubscribeEventsResponse>("event")
-                    .builder()
-                    .to_status()
-            })?;
+            let subscribe_events_response::Event { event, .. } = event
+                .into_option()
+                .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))?;
             let event: subscribe_events_response::event::Event = event.ok_or_else(|| {
                 proto::Error::missing_field::<subscribe_events_response::Event>("event")
-                    .builder()
-                    .to_status()
             })?;
             match event {
                 Event::ConnectBlock(connect_block_event) => {
-                    let block_info = connect_block_event.block_info.ok_or_else(|| {
-                        proto::Error::missing_field::<ConnectBlock>("block_info")
-                            .builder()
-                            .to_status()
-                    })?;
+                    let block_info = connect_block_event
+                        .block_info
+                        .into_option()
+                        .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("block_info"))?;
                     'inner: for event in block_info.events {
-                        let Some(withdrawal_bundle_event) =
-                            Self::extract_withdrawal_bundle_event(event)?
-                        else {
+                        let Some(wbe) = Self::extract_withdrawal_bundle_event(event)? else {
                             continue 'inner;
                         };
-                        let m6id = withdrawal_bundle_event
+                        let m6id = wbe
                             .m6id
+                            .into_option()
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<WithdrawalBundleEvent>("m6id")
-                                    .builder()
-                                    .to_status()
                             })?
-                            .decode_tonic::<WithdrawalBundleEvent, Txid>("m6id")
+                            .decode::<WithdrawalBundleEvent, Txid>("m6id")
                             .map(M6id)?;
-                        let withdrawal_bundle_event = withdrawal_bundle_event
+                        let wbe_inner = wbe
                             .event
+                            .into_option()
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<WithdrawalBundleEvent>("event")
-                                    .builder()
-                                    .to_status()
                             })?
                             .event
                             .ok_or_else(|| {
                                 proto::Error::missing_field::<withdrawal_bundle_event::Event>(
                                     "event",
                                 )
-                                .builder()
-                                .to_status()
                             })?;
-                        match withdrawal_bundle_event {
+                        match wbe_inner {
                             withdrawal_bundle_event::event::Event::Failed(_) => {
                                 let failed_withdrawal = &self.withdrawal_bundles[&m6id];
                                 self.pending_withdrawal_fee += *failed_withdrawal.fee();
@@ -957,7 +962,7 @@ impl Sidechain for DummySidechain {
 
     type Init = ();
 
-    type SetupError = tonic::Status;
+    type SetupError = ConnectError;
 
     async fn setup(
         _: Self::Init,
@@ -966,19 +971,36 @@ impl Sidechain for DummySidechain {
     ) -> Result<Self, Self::SetupError> {
         use bip300301_enforcer_lib::proto::mainchain::SubscribeEventsRequest;
         let subscribe_events_request = SubscribeEventsRequest {
-            sidechain_id: Some(Self::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: proto::wrap_u32(Self::SIDECHAIN_NUMBER.0.into()),
         };
-        let event_stream = post_setup
+        let mut stream = post_setup
             .validator_service_client
-            .clone()
             .subscribe_events(subscribe_events_request)
-            .await?
-            .into_inner();
+            .await?;
+        // Pump the connect-rust ServerStream into a tokio mpsc so the
+        // existing non-blocking `try_recv`-based event drain works as before.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                match stream.message().await {
+                    Ok(Some(view)) => {
+                        if tx.send(Ok(view.to_owned_message())).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(err) => {
+                        drop(tx.send(Err(err)));
+                        break;
+                    }
+                }
+            }
+        });
         Ok(Self {
             pending_withdrawal_fee: bitcoin::Amount::ZERO,
             pending_withdrawal_value: bitcoin::Amount::ZERO,
             withdrawal_bundles: HashMap::new(),
-            event_stream: Some(event_stream),
+            event_rx: Some(rx),
         })
     }
 
@@ -1032,14 +1054,17 @@ impl Sidechain for DummySidechain {
         );
         let withdrawal_bundle_tx = blinded_m6.clone().tx().into_owned();
         self.withdrawal_bundles.insert(m6id, blinded_m6);
-        let BroadcastWithdrawalBundleResponse {} = post_setup
+        let _resp: BroadcastWithdrawalBundleResponse = post_setup
             .wallet_service_client
             .broadcast_withdrawal_bundle(BroadcastWithdrawalBundleRequest {
-                sidechain_id: Some(Self::SIDECHAIN_NUMBER.0.into()),
-                transaction: Some(bitcoin::consensus::serialize(&withdrawal_bundle_tx)),
+                sidechain_id: proto::wrap_u32(Self::SIDECHAIN_NUMBER.0.into()),
+                transaction: buffa::MessageField::some(buffa_types::google::protobuf::BytesValue {
+                    value: bitcoin::consensus::serialize(&withdrawal_bundle_tx),
+                    ..Default::default()
+                }),
             })
             .await?
-            .into_inner();
+            .into_owned();
         Ok(m6id)
     }
 }

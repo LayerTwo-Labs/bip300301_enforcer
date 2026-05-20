@@ -10,13 +10,15 @@ inputs:
     subdir: proto
 
 plugins:
-  - remote: buf.build/community/neoeinstein-prost:v0.5.0
-    out: lib/proto/generated
+  - remote: buf.build/anthropics/buffa:v0.7.0
+    out: lib/proto/generated/buffa
     opt:
-      - enable_type_names=true # impl prost::Name for each message
-      - file_descriptor_set=true # embed per-package FILE_DESCRIPTOR_SET for reflection
-      - flat_output_dir=true # flat layout, module nesting handled in lib/proto.rs
-  - remote: buf.build/community/neoeinstein-tonic:v0.5.0
-    out: lib/proto/generated
+      - file_per_package=true # needed for remote generation to work
+      - unknown_fields=false # makes destructuring more ergonomic
+      - json=true # serde impls for the Connect JSON wire format
+      - views=true # zero-copy *View types used by handler signatures
+  - remote: buf.build/anthropics/connect-rust:v0.7.0
+    out: lib/proto/generated/connect
     opt:
-      - flat_output_dir=true
+      - file_per_package
+      - buffa_module=crate::proto::generated::buffa

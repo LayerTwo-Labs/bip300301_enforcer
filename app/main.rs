@@ -1,6 +1,7 @@
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -10,12 +11,8 @@ use bip300301_enforcer_lib::{
     errors::ErrorChain,
     p2p::compute_signet_magic,
     proto::{
-        self,
-        crypto::crypto_service_server::CryptoServiceServer,
-        mainchain::{
-            validator_service_server::ValidatorServiceServer,
-            wallet_service_server::WalletServiceServer,
-        },
+        crypto_service::CryptoServiceExt,
+        mainchain_service::{ValidatorServiceExt, WalletServiceExt},
     },
     rpc_client, server,
     validator::{
@@ -28,6 +25,7 @@ use bip300301_enforcer_lib::{
 use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
+use connectrpc::Router;
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
@@ -37,11 +35,9 @@ use reqwest::Url;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
-use tonic::{server::NamedService, transport::Server};
-use tower::ServiceBuilder;
 use tower_http::{
-    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
+    request_id::{MakeRequestId, RequestId, SetRequestIdLayer},
+    trace::{DefaultOnFailure, TraceLayer},
 };
 use tracing::Instrument;
 use wallet::Wallet;
@@ -96,29 +92,53 @@ fn set_request_id_layer() -> SetRequestIdLayer<RequestIdMaker> {
     SetRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER), RequestIdMaker)
 }
 
-fn propagate_request_id_layer() -> PropagateRequestIdLayer {
-    PropagateRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER))
-}
-
-#[derive(Debug, Clone)]
-struct FailureHandler;
-use tower_http::classify::GrpcFailureClass;
-
-impl tower_http::trace::OnFailure<GrpcFailureClass> for FailureHandler {
-    fn on_failure(&mut self, failure: GrpcFailureClass, latency: Duration, _span: &tracing::Span) {
-        let code = match failure {
-            GrpcFailureClass::Code(code) => tonic::Code::from_i32(code.into()),
-            GrpcFailureClass::Error(err) => {
-                tracing::warn!("unexpected gRPC failure class: {err}");
-                tonic::Code::Internal
-            }
-        };
-        tracing::error!(
-            latency = ?latency,
-            code = ?code,
-            "gRPC server responding with error",
-        );
-    }
+/// Build the shared HTTP-level tower stack for our jsonrpsee servers
+/// (request-id stamping + propagation + per-request tracing span +
+/// structured response event).
+///
+/// Returns the *inner* `tower::Layer` (post-`into_inner()`), so callers
+/// can compose it with additional layers (e.g. `ConcurrencyLimitLayer`).
+///
+/// A macro rather than a fn because (a) `tracing::span!` needs a literal
+/// span name and (b) the layered `ServiceBuilder<Stack<..>>` return type
+/// is impractical to spell out.
+macro_rules! jsonrpsee_tracer {
+    ($span_name:literal) => {{
+        // Ordering here matters! Order here is from official docs on request IDs tracings
+        // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
+        tower::ServiceBuilder::new()
+            .layer(set_request_id_layer())
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(|request: &http::Request<_>| {
+                        let request_id = request
+                            .headers()
+                            .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
+                            .and_then(|h| h.to_str().ok())
+                            .filter(|s| !s.is_empty());
+                        tracing::span!(tracing::Level::DEBUG, $span_name, request_id)
+                    })
+                    .on_request(())
+                    .on_eos(())
+                    .on_response(
+                        |response: &http::Response<_>,
+                         duration: std::time::Duration,
+                         _span: &tracing::Span| {
+                            tracing::info!(
+                                server = $span_name,
+                                status = response.status().as_u16(),
+                                duration_ms = duration.as_millis(),
+                                "served JSON-RPC request",
+                            );
+                        },
+                    )
+                    .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
+            )
+            .layer(tower_http::request_id::PropagateRequestIdLayer::new(
+                http::HeaderName::from_static(REQUEST_ID_HEADER),
+            ))
+            .into_inner()
+    }};
 }
 
 async fn spawn_json_rpc_server(
@@ -141,34 +161,7 @@ async fn spawn_json_rpc_server(
 
     tracing::info!("Listening for JSON-RPC on {}", serve_addr);
 
-    // Ordering here matters! Order here is from official docs on request IDs tracings
-    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
-    let tracer = tower::ServiceBuilder::new()
-        .layer(set_request_id_layer())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(move |request: &http::Request<_>| {
-                    let request_id = request
-                        .headers()
-                        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
-                        .and_then(|h| h.to_str().ok())
-                        .filter(|s| !s.is_empty());
-
-                    tracing::span!(
-                        tracing::Level::DEBUG,
-                        "json_rpc_server",
-                        request_id, // this is needed for the record call below to work
-                    )
-                })
-                .on_request(())
-                .on_eos(())
-                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
-        )
-        .layer(propagate_request_id_layer())
-        .into_inner();
-
-    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
+    let http_middleware = tower::ServiceBuilder::new().layer(jsonrpsee_tracer!("json_rpc_server"));
     let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
 
     let handle = jsonrpsee::server::Server::builder()
@@ -181,100 +174,242 @@ async fn spawn_json_rpc_server(
     Ok(handle)
 }
 
-async fn run_grpc_server(
+async fn connect_rpc_access_log(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    /// Cap how much error-response body we buffer for logging.
+    const ERROR_BODY_LOG_LIMIT: usize = 4 * 1024;
+
+    let uri = req.uri().clone();
+    let request_id_header = http::HeaderName::from_static(REQUEST_ID_HEADER);
+    let request_id = req.headers().get(&request_id_header).cloned();
+
+    let started = std::time::Instant::now();
+    let mut response = next.run(req).await;
+    let duration_ms = started.elapsed().as_millis();
+    let http_status = response.status();
+
+    // Stamp the request id on the response so the caller sees it back.
+    // Connect dispatchers don't preserve headers added by inner tower
+    // layers, so we mirror it here unconditionally.
+    if let Some(ref id) = request_id {
+        response.headers_mut().insert(request_id_header, id.clone());
+    }
+
+    let request_id = request_id
+        .as_ref()
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+
+    // Connect procedure: `/package.Service/Method`. Logged as-is rather
+    // than split — the connect router may be mounted under a non-root
+    // path, in which case the URL path carries a prefix we don't want to
+    // mis-interpret as the service component.
+    let procedure = uri.path().to_owned();
+
+    // On non-2xx, buffer the body so we can pull the Connect error code
+    // and message out of it. Bodies are small JSON like
+    // `{"code":"invalid_argument","message":"..."}`.
+    if http_status.is_client_error() || http_status.is_server_error() {
+        let (parts, body) = response.into_parts();
+        let body_bytes = axum::body::to_bytes(body, ERROR_BODY_LOG_LIMIT)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    procedure, %http_status, duration_ms, request_id,
+                    "connect_rpc: failed to buffer error body: {err:#}",
+                );
+                axum::body::Bytes::from_static(b"{}")
+            });
+        let (connect_code, message) =
+            match buffa::serde_json::from_slice::<connectrpc::ConnectError>(&body_bytes) {
+                Ok(err) => (
+                    err.code.as_str().to_owned(),
+                    err.message.unwrap_or_default(),
+                ),
+                Err(_) => (
+                    "unknown".to_owned(),
+                    String::from_utf8_lossy(&body_bytes).into_owned(),
+                ),
+            };
+        if http_status.is_server_error() {
+            tracing::error!(
+                procedure, code = %connect_code, duration_ms,
+                request_id, message = %message, "connect_rpc",
+            );
+        } else {
+            tracing::warn!(
+                procedure, code = %connect_code, duration_ms,
+                request_id, message = %message, "connect_rpc",
+            );
+        }
+        return axum::response::Response::from_parts(parts, axum::body::Body::from(body_bytes));
+    }
+
+    tracing::info!(
+        procedure,
+        code = "ok",
+        duration_ms,
+        request_id,
+        "connect_rpc",
+    );
+    response
+}
+
+/// Treat a POST with no body the same as a POST with `{}`, so
+/// `curl $url` works the same as `curl -d '{}' $url`
+/// for RPCs without parameters.
+///
+/// Streaming RPCs uses `application/connect+json` /
+/// `application/connect+proto`, so we leave those alone.
+async fn fill_empty_json_body(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_unary_json = req.method() == http::Method::POST
+        && req
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .eq_ignore_ascii_case("application/json")
+            });
+    // Missing or zero Content-Length on a unary JSON POST → assume empty body.
+    // (A well-behaved JSON client always sends Content-Length for a fixed payload.)
+    let is_empty = req
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .is_none_or(|v| v.to_str().ok().and_then(|s| s.parse::<u64>().ok()) == Some(0));
+    if !is_unary_json || !is_empty {
+        return next.run(req).await;
+    }
+
+    let (mut parts, _body) = req.into_parts();
+    parts.headers.insert(
+        http::header::CONTENT_LENGTH,
+        http::HeaderValue::from_static("2"),
+    );
+    next.run(axum::extract::Request::from_parts(
+        parts,
+        axum::body::Body::from("{}"),
+    ))
+    .await
+}
+
+/// For Connect unary GETs, default `encoding` to `json` and `message` to `{}`
+/// when the client omitted them. Other query params are left untouched.
+/// This makes it possible to do a simple curl invocation of GET endpoints: 
+/// 
+///     curl -H 'content-type: application/json' http://localhost:50051/cusf.mainchain.v1.WalletService/GetBalance 
+/// 
+/// As opposed to: 
+///     curl -H 'content-type: application/json' http://localhost:50051/cusf.mainchain.v1.WalletService/GetBalance?encoding=json=message={}
+async fn fill_connect_get_defaults(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.method() != http::Method::GET {
+        return next.run(req).await;
+    }
+
+    let existing = req.uri().query().unwrap_or("");
+    let mut has_encoding = false;
+    let mut has_message = false;
+    for pair in existing.split('&').filter(|s| !s.is_empty()) {
+        let key = pair.split('=').next().unwrap_or("");
+        match key {
+            "encoding" => has_encoding = true,
+            "message" => has_message = true,
+            _ => {}
+        }
+    }
+    if has_encoding && has_message {
+        return next.run(req).await;
+    }
+
+    let mut new_query = existing.to_string();
+    if !has_encoding {
+        if !new_query.is_empty() {
+            new_query.push('&');
+        }
+        new_query.push_str("encoding=json");
+    }
+    if !has_message {
+        if !new_query.is_empty() {
+            new_query.push('&');
+        }
+        let empty_message: String = url::form_urlencoded::byte_serialize(b"{}").collect();
+        new_query.push_str(&format!("message={empty_message}"));
+    }
+
+    let mut uri_parts = req.uri().clone().into_parts();
+    let path = uri_parts
+        .path_and_query
+        .as_ref()
+        .map(|pq| pq.path())
+        .unwrap_or("/");
+    uri_parts.path_and_query = Some(
+        format!("{path}?{new_query}")
+            .parse()
+            .expect("valid path+query"),
+    );
+    let new_uri = http::Uri::from_parts(uri_parts).expect("valid uri");
+
+    let (mut parts, body) = req.into_parts();
+    parts.uri = new_uri;
+    next.run(axum::extract::Request::from_parts(parts, body))
+        .await
+}
+
+async fn run_connect_server(
     validator: Either<Validator, Wallet>,
     cancel: CancellationToken,
     addr: SocketAddr,
-) -> Result<()> {
-    // Ordering here matters! Order here is from official docs on request IDs tracings
-    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
-    let tracer = ServiceBuilder::new()
-        .layer(set_request_id_layer())
+) -> Result<(), error::ConnectServer> {
+    let (inner_validator, wallet) = match validator {
+        Either::Left(v) => (v, None),
+        Either::Right(w) => (w.validator().clone(), Some(w)),
+    };
+    let router = Router::new();
+    let router = Arc::new(server::crypto::CryptoServiceServer).register(router);
+    let router = Arc::new(server::validator::Server::new(
+        inner_validator,
+        cancel.clone(),
+    ))
+    .register(router);
+    let router = if let Some(wallet) = wallet {
+        Arc::new(wallet).register(router)
+    } else {
+        router
+    };
+
+    let app = axum::Router::new()
+        .fallback_service(router.into_axum_service())
         .layer(
-            TraceLayer::new_for_grpc()
-                .make_span_with(move |request: &Request<_>| {
-                    let request_id = request
-                        .headers()
-                        .get(HeaderName::from_static(REQUEST_ID_HEADER))
-                        .and_then(|h| h.to_str().ok())
-                        .filter(|s| !s.is_empty());
+            tower::ServiceBuilder::new()
+                .layer(set_request_id_layer())
+                .layer(axum::middleware::from_fn(connect_rpc_access_log))
+                .layer(axum::middleware::from_fn(fill_empty_json_body))
+                .layer(axum::middleware::from_fn(fill_connect_get_defaults)),
+        );
 
-                    tracing::span!(
-                        tracing::Level::DEBUG,
-                        "grpc_server",
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        request_id , // this is needed for the record call below to work
-                    )
-                })
-                .on_request(())
-                .on_eos(())
-                // Set this to a low log level. Quickly leads to enormous log files, as our GUI
-                // implementations are sending a lof of requests /all/ the time.
-                .on_response(DefaultOnResponse::new().level(tracing::Level::TRACE))
-                .on_failure(FailureHandler),
-        )
-        .layer(propagate_request_id_layer())
-        .into_inner();
-
-    let crypto_service = CryptoServiceServer::new(server::crypto::CryptoServiceServer);
-    let mut builder = Server::builder()
-        .layer(tracer)
-        .add_service(crypto_service)
-        .add_service(ValidatorServiceServer::new({
-            let validator = match validator {
-                Either::Left(ref validator) => validator,
-                Either::Right(ref wallet) => wallet.validator(),
-            };
-            server::validator::Server::new(validator.clone(), cancel.clone())
-        }));
-
-    let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
-        .with_service_name(CryptoServiceServer::<server::crypto::CryptoServiceServer>::NAME)
-        .with_service_name(ValidatorServiceServer::<Validator>::NAME);
-    for descriptor_set in proto::ENCODED_FILE_DESCRIPTOR_SETS {
-        reflection_service_builder =
-            reflection_service_builder.register_encoded_file_descriptor_set(descriptor_set);
-    }
-
-    if let Either::Right(wallet) = validator.clone() {
-        tracing::info!("gRPC: enabling wallet service");
-        let wallet_service = WalletServiceServer::new(wallet);
-        builder = builder.add_service(wallet_service);
-        reflection_service_builder =
-            reflection_service_builder.with_service_name(WalletServiceServer::<Wallet>::NAME);
-    }
-
-    let (health_reporter, health_service) = tonic_health::server::health_reporter();
-
-    // Set all services to have the "serving" status.
-    // TODO: somehow expose the health reporter to the running services, and
-    // dynamically update if we're running into issues.
-    for service in [
-        ValidatorServiceServer::<Validator>::NAME,
-        WalletServiceServer::<Wallet>::NAME,
-        CryptoServiceServer::<server::crypto::CryptoServiceServer>::NAME,
-    ] {
-        tracing::debug!("Setting health status for service: {service}");
-        health_reporter
-            .set_service_status(service, tonic_health::ServingStatus::Serving)
-            .await;
-    }
-
-    tracing::info!("Listening for gRPC on {addr} with reflection");
-
-    let server = builder
-        .add_service(
-            reflection_service_builder
-                .build_v1()
-                .map_err(error::GrpcServer::Reflection)?,
-        )
-        .add_service(health_service);
-
-    server
-        .serve_with_shutdown(addr, cancel.clone().cancelled())
+    let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .map_err(|err| miette::Report::from_err(error::GrpcServer::Serve { addr, source: err }))
+        .map_err(|err| error::ConnectServer::Bind { addr, source: err })?;
+
+    tracing::info!("Listening for Connect RPC on {addr}");
+
+    let cancel_clone = cancel.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { cancel_clone.cancelled().await })
+        .await
+        .map_err(|err| error::ConnectServer::Serve { addr, source: err })
 }
 
 async fn spawn_gbt_server<RpcClient>(
@@ -296,39 +431,12 @@ where
             .join(", ")
     );
 
-    // Ordering here matters! Order here is from official docs on request IDs tracings
-    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
-    let tracer = tower::ServiceBuilder::new()
-        .layer(set_request_id_layer())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(move |request: &http::Request<_>| {
-                    let request_id = request
-                        .headers()
-                        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
-                        .and_then(|h| h.to_str().ok())
-                        .filter(|s| !s.is_empty());
-
-                    tracing::span!(
-                        tracing::Level::DEBUG,
-                        "gbt_server",
-                        request_id, // this is needed for the record call below to work
-                    )
-                })
-                .on_request(())
-                .on_eos(())
-                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
-                .on_failure(DefaultOnFailure::new().level(tracing::Level::ERROR)),
-        )
-        .layer(propagate_request_id_layer())
-        .into_inner();
-
     let http_middleware = tower::ServiceBuilder::new()
         // Limit the gbt_server to 1 concurrent request, preventing runaway
         // callers (e.g. a stuck signet miner subprocess) from hammering
         // the endpoint with parallel requests.
         .layer(tower::limit::ConcurrencyLimitLayer::new(1))
-        .layer(tracer);
+        .layer(jsonrpsee_tracer!("gbt_server"));
     let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
 
     use cusf_enforcer_mempool::server::RpcServer;
@@ -1213,8 +1321,10 @@ async fn main() -> Result<()> {
         let enforcer = enforcer.clone();
         let addr = cli.serve_grpc_addr;
         tasks.spawn(async move {
-            let res = run_grpc_server(enforcer, cancel, addr).await;
-            ("gRPC server", res)
+            let res = run_connect_server(enforcer, cancel, addr)
+                .await
+                .map_err(miette::Report::from_err);
+            ("Connect RPC server", res)
         });
     }
 

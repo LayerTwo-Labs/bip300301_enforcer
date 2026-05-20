@@ -8,12 +8,10 @@ fn get_git_hash() -> Result<String, Box<dyn std::error::Error>> {
         return Err(format!("Failed to execute `git {}`", args.join(" ")).into());
     }
 
-    let hash = String::from_utf8(output.stdout)?.trim().to_string();
-
-    Ok(hash)
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     match get_git_hash() {
         Ok(hash) => {
             println!("cargo:rustc-env=GIT_HASH={hash}");
@@ -25,5 +23,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rustc-env=GIT_HASH=unknown");
         }
     }
-    Ok(())
 }
