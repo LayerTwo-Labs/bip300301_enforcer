@@ -16,32 +16,34 @@ pub async fn test_unconfirmed_transactions(mut post_setup: PostSetup) -> anyhow:
 
     let txs_pre = post_setup
         .wallet_service_client
-        .list_transactions(ListTransactionsRequest {})
+        .list_transactions(ListTransactionsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
 
     let utxos_pre = post_setup
         .wallet_service_client
-        .list_unspent_outputs(ListUnspentOutputsRequest {})
+        .list_unspent_outputs(ListUnspentOutputsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
 
     let destination_address = "bcrt1quzsfstj6aspah0yqzumnek9s2nmeh2ctax8tgy";
 
     let send_tx_res = post_setup
         .wallet_service_client
         .send_transaction(SendTransactionRequest {
-            destinations: HashMap::from([(destination_address.to_string(), 123_456_u64)]),
+            destinations: HashMap::from([(destination_address.to_string(), 123_456_u64)])
+                .into_iter()
+                .collect(),
             ..Default::default()
         })
         .await?
-        .into_inner();
+        .into_owned();
 
     let txs_post = post_setup
         .wallet_service_client
-        .list_transactions(ListTransactionsRequest {})
+        .list_transactions(ListTransactionsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
 
     assert!(txs_post.transactions.len() == txs_pre.transactions.len() + 1);
 
@@ -63,9 +65,9 @@ pub async fn test_unconfirmed_transactions(mut post_setup: PostSetup) -> anyhow:
 
     let unspent_post = post_setup
         .wallet_service_client
-        .list_unspent_outputs(ListUnspentOutputsRequest {})
+        .list_unspent_outputs(ListUnspentOutputsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
 
     let new_utxos = unspent_post
         .outputs

@@ -14,7 +14,7 @@ use bip300301_enforcer_lib::{
     },
 };
 use bitcoin::Amount;
-use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _, channel::mpsc};
+use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument as _;
@@ -140,42 +140,38 @@ where
 {
     tracing::info!("Proposing sidechain");
     let create_sidechain_proposal_request = {
-        let sidechain_declaration =
-            proto::mainchain::sidechain_declaration::SidechainDeclaration::V0(
-                proto::mainchain::sidechain_declaration::V0 {
-                    title: Some("sidechain".to_owned()),
-                    description: Some("sidechain".to_owned()),
-                    hash_id_1: Some(ConsensusHex::encode(&[0; 32])),
-                    hash_id_2: Some(Hex::encode(&[0u8; 20])),
-                },
-            );
+        let v0 = proto::mainchain::sidechain_declaration::V0 {
+            title: proto::wrap_string("sidechain"),
+            description: proto::wrap_string("sidechain"),
+            hash_id_1: buffa::MessageField::some(ConsensusHex::encode(&[0; 32])),
+            hash_id_2: buffa::MessageField::some(Hex::encode(&[0u8; 20])),
+        };
         let declaration = proto::mainchain::SidechainDeclaration {
-            sidechain_declaration: Some(sidechain_declaration),
+            sidechain_declaration: Some(v0.into()),
         };
         CreateSidechainProposalRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
-            declaration: Some(declaration),
+            sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
+            declaration: buffa::MessageField::some(declaration),
         }
     };
     let mut create_sidechain_proposal_resp = post_setup
         .wallet_service_client
         .create_sidechain_proposal(create_sidechain_proposal_request)
-        .await?
-        .into_inner();
+        .await?;
     // Wait before mining
     sleep(std::time::Duration::from_secs(1)).await;
     tracing::debug!("Mining 1 block");
     let () = mine::<S>(post_setup, 1, Some(true)).await?;
-    let Some(_) = create_sidechain_proposal_resp.try_next().await? else {
+    let Some(_) = create_sidechain_proposal_resp.message().await? else {
         anyhow::bail!("Expected response when proposing sidechain");
     };
     tracing::debug!("Proposed sidechain");
     tracing::debug!("Checking sidechain proposals");
     let sidechain_proposals_resp = post_setup
         .validator_service_client
-        .get_sidechain_proposals(GetSidechainProposalsRequest {})
+        .get_sidechain_proposals(GetSidechainProposalsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
     if sidechain_proposals_resp.sidechain_proposals.len() != 1 {
         anyhow::bail!("Expected 1 sidechain proposal")
     }
@@ -190,9 +186,9 @@ where
     tracing::debug!("Checking that 0 sidechains are active");
     let sidechains_resp = post_setup
         .validator_service_client
-        .get_sidechains(GetSidechainsRequest {})
+        .get_sidechains(GetSidechainsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
     if !sidechains_resp.sidechains.is_empty() {
         anyhow::bail!("unexpected sidechains resp: `{sidechains_resp:?}`")
     };
@@ -203,9 +199,9 @@ where
     tracing::debug!("Checking that exactly 1 sidechain is active");
     let sidechains_resp = post_setup
         .validator_service_client
-        .get_sidechains(GetSidechainsRequest {})
+        .get_sidechains(GetSidechainsRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
     if sidechains_resp.sidechains.len() != 1 {
         anyhow::bail!("Expected 1 active sidechain")
     }
@@ -247,9 +243,9 @@ where
         Network::Regtest => {
             let address = post_setup
                 .wallet_service_client
-                .create_new_address(CreateNewAddressRequest {})
+                .create_new_address(CreateNewAddressRequest::default())
                 .await?
-                .into_inner()
+                .into_owned()
                 .address;
 
             post_setup
@@ -296,14 +292,15 @@ where
     let deposit_txid: bitcoin::Txid = post_setup
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
-            address: Some(sidechain_address.to_owned()),
-            value_sats: Some(deposit_amount.to_sat()),
-            fee_sats: Some(deposit_fee.to_sat()),
+            sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
+            address: proto::wrap_string(sidechain_address.to_owned()),
+            value_sats: proto::wrap_u64(deposit_amount.to_sat()),
+            fee_sats: proto::wrap_u64(deposit_fee.to_sat()),
         })
         .await?
-        .into_inner()
+        .into_owned()
         .txid
+        .into_option()
         .ok_or_else(|| proto::Error::missing_field::<CreateDepositTransactionResponse>("txid"))?
         .decode::<CreateDepositTransactionResponse, _>("txid")?;
     tracing::debug!("Deposit TXID: {deposit_txid}");
@@ -317,6 +314,7 @@ where
         [
             block_info::Event {
                 event: Some(block_info::event::Event::Deposit(_)),
+                ..
             },
         ] => Ok(()),
         events => anyhow::bail!("Expected deposit event, found `{events:?}`"),
@@ -333,7 +331,7 @@ where
         .wallet_service_client
         .list_sidechain_deposit_transactions(ListSidechainDepositTransactionsRequest {})
         .await?
-        .into_inner()
+        .into_owned()
         .transactions;
     anyhow::ensure!(
         !deposits.is_empty(),
@@ -346,21 +344,25 @@ where
 fn expect_withdrawal_bundle_event(
     event: &block_info::Event,
 ) -> anyhow::Result<(&ConsensusHex, &withdrawal_bundle_event::event::Event)> {
-    match event {
-        block_info::Event {
-            event:
-                Some(block_info::event::Event::WithdrawalBundle(
-                    proto::mainchain::WithdrawalBundleEvent {
-                        m6id: Some(event_m6id),
-                        event:
-                            Some(proto::mainchain::withdrawal_bundle_event::Event {
-                                event: Some(event),
-                            }),
-                    },
-                )),
-        } => Ok((event_m6id, event)),
-        _ => anyhow::bail!("Expected withdrawal bundle event"),
-    }
+    let block_info::event::Event::WithdrawalBundle(wbe) = event
+        .event
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("block_info::Event missing inner event"))?
+    else {
+        anyhow::bail!("Expected withdrawal bundle event");
+    };
+    let event_m6id = wbe
+        .m6id
+        .as_option()
+        .ok_or_else(|| anyhow::anyhow!("withdrawal bundle event missing m6id"))?;
+    let inner_event = wbe
+        .event
+        .as_option()
+        .ok_or_else(|| anyhow::anyhow!("withdrawal bundle event missing event wrapper"))?
+        .event
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("withdrawal bundle event missing oneof"))?;
+    Ok((event_m6id, inner_event))
 }
 
 const WITHDRAW_AMOUNT_0: Amount = Amount::from_sat(18_000_000);
@@ -399,10 +401,7 @@ where
     {
         [event] => {
             let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-            let withdrawal_bundle_event::event::Event::Submitted(
-                withdrawal_bundle_event::event::Submitted {},
-            ) = event
-            else {
+            let withdrawal_bundle_event::event::Event::Submitted(_) = event else {
                 anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
             };
             anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
@@ -418,10 +417,7 @@ where
         match (seq, block_info.events.as_slice()) {
             (10, [event]) => {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-                let withdrawal_bundle_event::event::Event::Failed(
-                    withdrawal_bundle_event::event::Failed {},
-                ) = event
-                else {
+                let withdrawal_bundle_event::event::Event::Failed(_) = event else {
                     anyhow::bail!("Expected withdrawal bundle failed event, found `{event:?}`")
                 };
                 anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
@@ -465,10 +461,7 @@ where
     {
         [event] => {
             let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-            let withdrawal_bundle_event::event::Event::Submitted(
-                withdrawal_bundle_event::event::Submitted {},
-            ) = event
-            else {
+            let withdrawal_bundle_event::event::Event::Submitted(_) = event else {
                 anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
             };
             anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
@@ -497,13 +490,7 @@ where
         match (seq, block_info.events.as_slice()) {
             (5, [event]) => {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-                let withdrawal_bundle_event::event::Event::Succeeded(
-                    withdrawal_bundle_event::event::Succeeded {
-                        sequence_number: _,
-                        transaction: _,
-                    },
-                ) = event
-                else {
+                let withdrawal_bundle_event::event::Event::Succeeded(_) = event else {
                     anyhow::bail!("Expected withdrawal bundle success event, found `{event:?}`")
                 };
                 anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));

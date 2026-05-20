@@ -7,16 +7,19 @@ use miette::Diagnostic;
 use thiserror::Error;
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GrpcServer {
-    #[error("unable to serve gRPC at `{addr}`")]
-    #[diagnostic(code(grpc_server::serve))]
+pub enum ConnectServer {
+    #[error("unable to bind ConnectRPC server to `{addr}`: {source}")]
+    #[diagnostic(code(connectrpc_server::bind))]
+    Bind {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[error("unable to serve ConnectRPC at `{addr}`: {source}")]
+    #[diagnostic(code(connectrpc_server::serve))]
     Serve {
         addr: SocketAddr,
-        source: tonic::transport::Error,
+        source: std::io::Error,
     },
-    #[error("unable to build reflection service")]
-    #[diagnostic(code(grpc_server::reflection))]
-    Reflection(#[from] tonic_reflection::server::Error),
 }
 
 #[derive(educe::Educe, Diagnostic, Error)]

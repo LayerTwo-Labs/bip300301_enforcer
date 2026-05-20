@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bip300301_enforcer_lib::{
     bins::CommandExt,
     proto::{
+        self,
         common::ConsensusHex,
         mainchain::{
             BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, CreateNewAddressRequest,
@@ -10,6 +11,7 @@ use bip300301_enforcer_lib::{
         },
     },
 };
+use buffa::MessageField;
 use futures::{StreamExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tracing::Instrument as _;
@@ -156,21 +158,23 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     let sender_addr = post_setup
         .sender
         .wallet_service_client
-        .create_new_address(CreateNewAddressRequest {})
+        .create_new_address(CreateNewAddressRequest::default())
         .await?
-        .into_inner()
+        .into_owned()
         .address;
     if post_setup
         .miner
         .wallet_service_client
         .send_transaction(SendTransactionRequest {
-            destinations: HashMap::from([(sender_addr, 123_456_u64)]),
+            destinations: HashMap::from([(sender_addr, 123_456_u64)])
+                .into_iter()
+                .collect(),
             ..Default::default()
         })
         .await?
-        .into_inner()
+        .into_owned()
         .txid
-        .is_none()
+        .is_unset()
     {
         anyhow::bail!("Failed to create a tx to fund sender wallet")
     };
@@ -180,9 +184,9 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     let sender_balance = post_setup
         .sender
         .wallet_service_client
-        .get_balance(GetBalanceRequest {})
+        .get_balance(GetBalanceRequest::default())
         .await?
-        .into_inner();
+        .into_owned();
     anyhow::ensure!(sender_balance.confirmed_sats > 0);
     tracing::info!("Funded enforcer successfully (sender)");
 
@@ -192,17 +196,20 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         height: tip_height,
         work: _,
         timestamp: _,
+        ..
     } = post_setup
         .sender
         .validator_service_client
-        .get_chain_tip(GetChainTipRequest {})
+        .get_chain_tip(GetChainTipRequest::default())
         .await?
-        .into_inner()
+        .into_owned()
         .block_header_info
+        .into_option()
         .ok_or_else(|| {
             anyhow::anyhow!("Expected `block_header_info field` in GetChainInfoResponse")
         })?;
     let tip_block_hash = tip_block_hash
+        .into_option()
         .ok_or_else(|| anyhow::anyhow!("Expected `block_hash field` in BlockHeaderInfo"))?;
     let sidechain_block_hash: [u8; 32] = {
         use bitcoin::hashes::Hash;
@@ -212,16 +219,17 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         .sender
         .wallet_service_client
         .create_bmm_critical_data_transaction(CreateBmmCriticalDataTransactionRequest {
-            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            value_sats: Some(10_000),
-            height: Some(tip_height),
-            critical_hash: Some(ConsensusHex::encode(&sidechain_block_hash)),
-            prev_bytes: Some(tip_block_hash),
+            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            value_sats: proto::wrap_u64(10_000),
+            height: proto::wrap_u32(tip_height),
+            critical_hash: MessageField::some(ConsensusHex::encode(&sidechain_block_hash)),
+            prev_bytes: MessageField::some(tip_block_hash),
         })
         .await?
-        .into_inner()
+        .into_owned()
         .txid
-        .and_then(|txid| txid.hex)
+        .into_option()
+        .and_then(|txid| proto::unwrap_string(txid.hex))
     else {
         anyhow::bail!("Failed to create BMM critical data tx")
     };
@@ -244,6 +252,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         |_, block_info| {
             let bmm_commitment = block_info
                 .bmm_commitment
+                .into_option()
                 .ok_or_else(|| anyhow::anyhow!("Expected a BMM commitment"))?;
             let expected_bmm_commitment = ConsensusHex::encode(&sidechain_block_hash);
             anyhow::ensure!(bmm_commitment == expected_bmm_commitment);
