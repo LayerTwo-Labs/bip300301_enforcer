@@ -231,7 +231,6 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
-        #[allow(clippy::result_large_err)]
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
             Message: prost::Name,
@@ -270,7 +269,6 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
-        #[allow(clippy::result_large_err)]
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
             Message: prost::Name,
@@ -313,7 +311,6 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
-        #[allow(clippy::result_large_err)]
         pub fn decode_tonic<Message, T>(self, field_name: &str) -> Result<T, tonic::Status>
         where
             Message: prost::Name,
@@ -341,10 +338,12 @@ pub mod common {
     }
 }
 
+#[expect(clippy::allow_attributes, reason = "generated code uses #[allow]")]
 pub mod crypto {
     tonic::include_proto!("cusf.crypto.v1");
 }
 
+#[expect(clippy::allow_attributes, reason = "generated code uses #[allow]")]
 pub mod mainchain {
     use crate::{
         messages::{
@@ -356,7 +355,6 @@ pub mod mainchain {
 
     tonic::include_proto!("cusf.mainchain.v1");
 
-    #[allow(unused_imports)]
     pub use self::{
         subscribe_events_response::event::{ConnectBlock, DisconnectBlock},
         validator_service_server::{
@@ -982,6 +980,7 @@ pub mod mainchain {
     }
 }
 
+#[expect(clippy::allow_attributes, reason = "generated code uses #[allow]")]
 pub mod sidechain {
     tonic::include_proto!("cusf.sidechain.v1");
 }

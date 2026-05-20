@@ -137,10 +137,6 @@ async fn sync_wallet_to_tip(
 impl CusfEnforcer for Wallet {
     type SyncError = error::InitialSync;
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "false positive, sync_write is consumed by commit()"
-    )]
     #[instrument(skip_all, fields(tip_hash))]
     // TODO: this is confusing. This function is called multiple times? I want an easy
     // way to run a initial full scan after the validator has synced to the tip.

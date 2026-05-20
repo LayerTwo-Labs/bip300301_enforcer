@@ -41,7 +41,7 @@ impl TestFailureCollector {
     }
 
     /// Format and display all collected failures
-    #[allow(clippy::print_stderr)]
+    #[expect(clippy::print_stderr)]
     pub fn display_all_failures(&self) {
         let failures = self.get_failures();
         if failures.is_empty() {

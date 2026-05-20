@@ -672,7 +672,6 @@ pub struct BlindedM6<'a> {
     tx: Cow<'a, bitcoin::Transaction>,
 }
 
-#[allow(dead_code, reason = "will be used later for M4/M6")]
 impl<'a> BlindedM6<'a> {
     pub fn fee(&self) -> &Amount {
         &self.fee
