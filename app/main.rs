@@ -729,13 +729,13 @@ async fn run_exit_after_sync(
 
     let start_height = validator.try_get_block_height().ok().flatten();
 
-    if let Some(current) = start_height {
-        if current > goal_height {
-            return Err(miette!(
-                "data dir is already synced to height {current}, past the requested height \
-                 {goal_height}"
-            ));
-        }
+    if let Some(current) = start_height
+        && current > goal_height
+    {
+        return Err(miette!(
+            "data dir is already synced to height {current}, past the requested height \
+                {goal_height}"
+        ));
     }
 
     let target_hash = mainchain_client
