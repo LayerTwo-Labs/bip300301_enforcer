@@ -1,4 +1,9 @@
-use std::{borrow::Cow, collections::HashMap, future::Future};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    future::Future,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bitcoin::{BlockHash, Transaction, Txid, hashes::Hash as _};
 use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
@@ -12,6 +17,7 @@ use cusf_enforcer_mempool::{
 use tracing::instrument;
 
 use crate::{
+    errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
     validator::Validator,
     wallet::{Wallet, error},
@@ -206,8 +212,19 @@ impl CusfEnforcer for Wallet {
         // `sync_wallet_to_tip` would fail in `get_block_infos` and bubble an
         // error up that prevents the standalone driver from issuing
         // `invalidateblock` to bitcoind.
-        if matches!(res, ConnectBlockAction::Accept { .. }) {
-            let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
+        match &res {
+            ConnectBlockAction::Accept { remove_mempool_txs } => {
+                let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
+                let mut wallet_write = self.inner.write_wallet().await?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                wallet_write.with_mut(|wallet| {
+                    wallet.apply_evicted_txs(remove_mempool_txs.iter().map(|txid| (*txid, now)))
+                })
+            }
+            ConnectBlockAction::Reject => (),
         }
         Ok(res)
     }
@@ -248,7 +265,33 @@ impl CusfEnforcer for Wallet {
     where
         TxRef: std::borrow::Borrow<Transaction>,
     {
-        self.inner.validator.clone().accept_tx(tx, tx_inputs)
+        let res = self.inner.validator.clone().accept_tx(tx, tx_inputs)?;
+        match res {
+            TxAcceptAction::Accept { .. } => {
+                // TODO: Ideally we could push these updates to a channel, and
+                // a wallet task could apply the updates
+                tokio::spawn({
+                    let inner = self.inner.clone();
+                    let tx = tx.clone();
+                    || async move {
+                        let mut wallet_write = match inner.write_wallet().await {
+                            Ok(wallet_write) => wallet_write,
+                            Err(err) => {
+                                tracing::error!("{:#}", ErrorChain::new(&err));
+                                return;
+                            }
+                        };
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        wallet_write.with_mut(|wallet| wallet.apply_unconfirmed_txs([(tx, now)]));
+                    }
+                }());
+            }
+            TxAcceptAction::Reject => (),
+        }
+        Ok(res)
     }
 }
 
