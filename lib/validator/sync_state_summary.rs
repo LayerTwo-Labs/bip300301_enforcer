@@ -66,7 +66,7 @@ impl Validator {
                 };
 
             // Canonical ordering of bundles by M6id.
-            pending_withdrawals.sort_by(|a, b| a.m6id.0.cmp(&b.m6id.0));
+            pending_withdrawals.sort_by_key(|summary| summary.m6id.0);
 
             // Human-readable title/description, best-effort
             let declaration = SidechainDeclaration::try_from(&sidechain.proposal.description).ok();
