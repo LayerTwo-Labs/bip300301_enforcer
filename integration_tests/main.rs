@@ -133,7 +133,20 @@ async fn run() -> anyhow::Result<std::process::ExitCode> {
     );
 
     // Run all tests and collect the exit code
-    let exit_code = libtest_mimic::run(&args.test_args, tests).exit_code();
+    let filter_provided = args.test_args.filter.is_some();
+    let conclusion = libtest_mimic::run(&args.test_args, tests);
+    let nothing_ran = conclusion.num_passed
+        + conclusion.num_failed
+        + conclusion.num_ignored
+        + conclusion.num_measured
+        == 0;
+    if filter_provided && nothing_ran {
+        anyhow::bail!(
+            "no integration test matched the provided filter `{}`",
+            args.test_args.filter.as_deref().unwrap_or("")
+        );
+    }
+    let exit_code = conclusion.exit_code();
 
     // Display all collected failures at the end
     failure_collector.display_all_failures();
