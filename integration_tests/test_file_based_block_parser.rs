@@ -92,7 +92,6 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         node_rpc_port: bitcoind.rpc_port,
         node_zmq_sequence_port: bitcoind.zmq_sequence_port,
         serve_grpc_port: setup.reserved_ports.enforcer_serve_grpc.port(),
-        serve_json_rpc_port: setup.reserved_ports.enforcer_serve_json_rpc.port(),
         serve_rpc_port: setup.reserved_ports.enforcer_serve_rpc.port(),
         wallet_electrum_rpc_port: 0,
         wallet_electrum_http_port: 0,
