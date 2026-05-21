@@ -3,7 +3,6 @@ use tokio_util::sync::CancellationToken;
 use crate::validator::Validator;
 
 mod grpc;
-pub mod json_rpc;
 
 #[derive(Clone)]
 pub struct Server {

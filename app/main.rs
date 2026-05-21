@@ -141,39 +141,6 @@ macro_rules! jsonrpsee_tracer {
     }};
 }
 
-async fn spawn_json_rpc_server(
-    validator: Either<Validator, Wallet>,
-    serve_addr: SocketAddr,
-) -> miette::Result<jsonrpsee::server::ServerHandle> {
-    let methods = match validator {
-        Either::Left(validator) => {
-            server::validator::json_rpc::RpcServer::into_rpc(validator).into()
-        }
-        Either::Right(wallet) => {
-            let mut methods: jsonrpsee::server::Methods =
-                server::validator::json_rpc::RpcServer::into_rpc(wallet.validator().clone()).into();
-            methods
-                .merge(server::wallet::json_rpc::RpcServer::into_rpc(wallet))
-                .into_diagnostic()?;
-            methods
-        }
-    };
-
-    tracing::info!("Listening for JSON-RPC on {}", serve_addr);
-
-    let http_middleware = tower::ServiceBuilder::new().layer(jsonrpsee_tracer!("json_rpc_server"));
-    let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
-
-    let handle = jsonrpsee::server::Server::builder()
-        .set_http_middleware(http_middleware)
-        .set_rpc_middleware(rpc_middleware)
-        .build(serve_addr)
-        .await
-        .map_err(|err| miette!("initialize JSON-RPC server at `{serve_addr}`: {err:#}"))?
-        .start(methods);
-    Ok(handle)
-}
-
 async fn connect_rpc_access_log(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -1222,10 +1189,6 @@ async fn main() -> Result<()> {
     } else {
         Either::Left(validator)
     };
-    // Start JSON-RPC server
-    let json_rpc_server_handle = spawn_json_rpc_server(enforcer.clone(), cli.serve_json_rpc_addr)
-        .await
-        .map_err(|err| miette!("Failed to spawn JSON-RPC server: {err:#}"))?;
 
     let cancel = CancellationToken::new();
 
@@ -1325,17 +1288,6 @@ async fn main() -> Result<()> {
                 .await
                 .map_err(miette::Report::from_err);
             ("Connect RPC server", res)
-        });
-    }
-
-    {
-        let cancel = cancel.clone();
-        tasks.spawn(async move {
-            cancel.cancelled().await;
-            let res = json_rpc_server_handle
-                .stop()
-                .map_err(|err| miette!("error stopping JSON-RPC server: {err:#}"));
-            ("JSON-RPC server", res)
         });
     }
 
