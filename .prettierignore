@@ -3,3 +3,5 @@ target
 
 # git submodule
 cusf_sidechain_proto
+
+.worktrees
