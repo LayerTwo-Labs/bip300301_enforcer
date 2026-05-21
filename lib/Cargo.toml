@@ -68,7 +68,6 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 transitive = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-zeromq = { workspace = true }
 
 [features]
 default = ["rustls"]

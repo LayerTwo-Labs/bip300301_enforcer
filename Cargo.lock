@@ -572,7 +572,6 @@ dependencies = [
  "transitive",
  "url",
  "uuid",
- "zeromq",
 ]
 
 [[package]]
