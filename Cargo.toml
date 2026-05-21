@@ -127,7 +127,7 @@ branch = "2026-02-28-flush-tcpstream"
 git = "https://gitlab.com/A-Manning/leonhard-llc-ops.git"
 branch = "temp-dir-leak"
 
-# Have to use a patch here. Depending directly on the fork breaks macros. 
+# Have to use a patch here. Depending directly on the fork breaks macros.
 [patch.crates-io.tracing-appender]
 git = "https://github.com/torkelrogstad/tokio-tracing.git"
 branch = "log-rotation-size"

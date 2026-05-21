@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-util = { workspace = true }
 connectrpc = { workspace = true }
+connectrpc-health = { workspace = true }
 # needs to line up with jsonrpsee tower version...
 tower = { workspace = true, features = ["limit"] }
 tower-http = { workspace = true, features = ["trace", "request-id"] }

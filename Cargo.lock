@@ -471,6 +471,7 @@ dependencies = [
  "buffa",
  "clap",
  "connectrpc",
+ "connectrpc-health",
  "cusf-enforcer-mempool",
  "educe",
  "either",
@@ -999,6 +1000,22 @@ dependencies = [
  "tracing",
  "wasm-bindgen-futures",
  "zstd",
+]
+
+[[package]]
+name = "connectrpc-health"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4c7f18f54f10041849252ef1abd66de1461b256a8eb4ccadd28ef629fc58c56"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "futures",
+ "http-body",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
