@@ -288,6 +288,16 @@ pub(in crate::validator) enum ConnectBlock {
     #[error("Error handling M4 (ack bundles)")]
     #[fatal(forward)]
     M4AckBundles(#[from] HandleM4AckBundles),
+    #[error(
+        "Missing required M6 for slot {}: M6ID `{m6id}` \
+         has vote count above withdrawal bundle inclusion threshold",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    MissingRequiredM6 {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    },
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
     #[fatal(false)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },

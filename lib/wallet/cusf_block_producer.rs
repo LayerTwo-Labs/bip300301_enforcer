@@ -252,6 +252,9 @@ impl CusfEnforcer for Wallet {
     }
 }
 
+// TODO: make ACKing configurable for the miner
+const ACK_ALL_PROPOSALS: bool = true;
+
 impl CusfBlockProducer for Wallet {
     type InitialBlockTemplateError = error::InitialBlockTemplate;
 
@@ -291,7 +294,6 @@ impl CusfBlockProducer for Wallet {
                 coinbase_txouts
             );
 
-            const ACK_ALL_PROPOSALS: bool = true;
             let () = self
                 .extend_coinbase_txouts(ACK_ALL_PROPOSALS, mainchain_tip, coinbase_txouts)
                 .await?;
@@ -328,6 +330,17 @@ impl CusfBlockProducer for Wallet {
 
     type SuffixTxsError = error::SuffixTxs;
 
+    /// This function is called once the RPC server has finished assembling
+    /// the bulk of a block template. The flow is something like this:
+    /// 1. RPC server (within the `cusf_enforcer_mempool` crate) calls
+    ///    `initial_block_template` (see above) for the coinbase outputs
+    /// 2. Fills in `prefix_txs` with the mempool txs it wants to include
+    /// 3. Calls this function for the trailing bits (this function!)
+    /// 4. Stitches it all together and spits out a block template to the client
+    ///
+    /// This function is our "hook" for adding M6 withdrawal txs to the end of
+    /// the block, and tacking the matching M7 BMM-accept outputs onto the
+    /// coinbase for any M8s pulled in from the mempool.
     async fn block_template_suffix<const COINBASE_TXN: bool>(
         &self,
         _parent_block_hash: &BlockHash,
@@ -423,7 +436,7 @@ impl CusfBlockProducer for Wallet {
                 )?
                 .ok_or(error::SuffixTxsInner::InitialBlockTemplate)?;
                 let suffix_txs = self
-                    .generate_suffix_txs(&ctips)
+                    .generate_suffix_txs(&ctips, ACK_ALL_PROPOSALS)
                     .await?
                     .into_iter()
                     .map(|tx| (tx, bitcoin::Amount::ZERO))

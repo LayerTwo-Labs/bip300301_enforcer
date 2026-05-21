@@ -453,14 +453,31 @@ fn handle_m4_ack_bundles(
 /// has exceeded `WITHDRAWAL_BUNDLE_MAX_AGE`.
 ///
 /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m6-withdrawal-bundle>
-fn handle_failed_m6ids(
+/// Result of a single pass over each active sidechain's pending M6IDs.
+struct PendingM6idScan {
+    /// Pending bundles whose age has exceeded `WITHDRAWAL_BUNDLE_MAX_AGE` and
+    /// must be expired this block.
+    failed: diff::FailedM6ids,
+    /// Pending bundles whose vote count has exceeded
+    /// `WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD`. Per BIP300 M4, the block
+    /// MUST include the corresponding M6 in its txdata for each of these.
+    must_include: Vec<(SidechainNumber, M6id, u16)>,
+}
+
+/// BIP 300 M4/M6 scan: walks every active sidechain's `pending_m6ids` once and
+/// classifies each entry as either expired (failed) or above the inclusion
+/// threshold (must include).
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m6-withdrawal-bundle>
+fn scan_pending_m6ids(
     rotxn: &RoTxn,
     dbs: &Dbs,
     block_height: u32,
-) -> Result<diff::FailedM6ids, error::HandleFailedM6Ids> {
+) -> Result<PendingM6idScan, error::HandleFailedM6Ids> {
     let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
 
     let mut failed_m6ids = HashMap::<_, BTreeMap<_, _>>::new();
+    let mut must_include = Vec::new();
 
     for sidechain_number in active_sidechains {
         // Invariant: `put_sidechain` always creates a corresponding
@@ -470,20 +487,26 @@ fn handle_failed_m6ids(
             .active_sidechains
             .pending_m6ids()
             .get(rotxn, &sidechain_number)?;
-        let failed = pending_m6ids
-            .into_iter()
-            .enumerate()
-            .filter(|(_, (_, info))| {
-                let age = block_height.saturating_sub(info.proposal_height);
-                age > WITHDRAWAL_BUNDLE_MAX_AGE as u32
-            })
-            .collect::<BTreeMap<_, _>>();
-        if !failed.is_empty() {
-            failed_m6ids.insert(sidechain_number, failed);
+        let mut failed_for_slot = BTreeMap::new();
+        for (idx, (m6id, info)) in pending_m6ids.into_iter().enumerate() {
+            let age = block_height.saturating_sub(info.proposal_height);
+            // Expired beats must-include: a bundle about to fail shouldn't
+            // simultaneously demand inclusion.
+            if age > WITHDRAWAL_BUNDLE_MAX_AGE as u32 {
+                failed_for_slot.insert(idx, (m6id, info));
+            } else if info.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD {
+                must_include.push((sidechain_number, m6id, info.vote_count));
+            }
+        }
+        if !failed_for_slot.is_empty() {
+            failed_m6ids.insert(sidechain_number, failed_for_slot);
         }
     }
 
-    Ok(diff::FailedM6ids(failed_m6ids))
+    Ok(PendingM6idScan {
+        failed: diff::FailedM6ids(failed_m6ids),
+        must_include,
+    })
 }
 
 /// Deposit or (sidechain_id, m6id, sequence_number)
@@ -955,7 +978,10 @@ pub(in crate::validator) fn connect_block(
     let coinbase_msg_diffs = coinbase_msg_diffs.diffs();
     let failed_sidechain_proposals_diff = handle_failed_sidechain_proposals(rwtxn, dbs, height)?;
     let () = failed_sidechain_proposals_diff.apply(rwtxn, &dbs.proposal_id_to_sidechain, height)?;
-    let failed_m6ids_diff = handle_failed_m6ids(rwtxn, dbs, height)?;
+    let PendingM6idScan {
+        failed: failed_m6ids_diff,
+        mut must_include,
+    } = scan_pending_m6ids(rwtxn, dbs, height)?;
     let () = failed_m6ids_diff.apply(rwtxn, &dbs.active_sidechains, height)?;
     events.extend(
         failed_m6ids_diff
@@ -1019,6 +1045,22 @@ pub(in crate::validator) fn connect_block(
     // Tx diffs are already applied
     let tx_diffs = tx_diffs.diffs();
     tracing::trace!("Handled block txs");
+
+    // BIP300 M4: any M6ID whose vote_count crossed the inclusion threshold
+    // in this block MUST have a
+    // matching M6 in txdata. Subtract the M6s that were actually removed
+    // from `pending_m6ids` by txdata; anything left is a violation.
+    for tx_diff in &tx_diffs {
+        if let Some((included_m6id, _)) = &tx_diff.removed_pending_withdrawal {
+            must_include.retain(|(_, pending_m6id, _)| pending_m6id != included_m6id);
+        }
+    }
+    if let Some((sidechain_number, m6id, _vote_count)) = must_include.into_iter().next() {
+        return Err(error::ConnectBlock::MissingRequiredM6 {
+            sidechain_number,
+            m6id,
+        });
+    }
     let block_info = BlockInfo {
         bmm_commitments: accepted_bmm_requests.into_iter().collect(),
         coinbase_txid: coinbase.compute_txid(),
@@ -2758,6 +2800,178 @@ mod tests {
             diff.0.get(&sc),
             Some(diff::AckBundleAction::Upvote { m6id, .. }) if *m6id == leader
         ));
+        Ok(())
+    }
+
+    // ── scan_pending_m6ids / connect_block: must-include-M6 enforcement ──
+
+    /// Helper: seed an active sidechain with a single pending m6id at
+    /// `vote_count` and `proposal_height`. Returns `(sc, m6id)`.
+    fn seed_pending(
+        rwtxn: &mut RwTxn,
+        dbs: &Dbs,
+        sc_num: u8,
+        vote_count: u16,
+        proposal_height: u32,
+    ) -> (SidechainNumber, M6id) {
+        let sc = SidechainNumber(sc_num);
+        let m6id = test_m6id(0xA0 ^ sc_num);
+        dbs.active_sidechains
+            .put_sidechain(rwtxn, &sc, &test_sidechain(sc_num, 0))
+            .unwrap();
+        dbs.active_sidechains
+            .put_pending_m6id(rwtxn, &sc, m6id, proposal_height)
+            .unwrap();
+        set_vote_count(rwtxn, dbs, &sc, m6id, vote_count);
+        (sc, m6id)
+    }
+
+    /// BIP300 M4 uses strict `>`, not `>=`. Walk the boundary: T-1, T, T+1.
+    /// Only T+1 must end up in `must_include`.
+    #[test]
+    fn scan_pending_m6ids_threshold_boundary() -> Result<()> {
+        const T: u16 = WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD;
+        for (vote_count, expect_in_must_include) in [(T - 1, false), (T, false), (T + 1, true)] {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let (sc, m6id) = seed_pending(&mut rwtxn, &dbs, 1, vote_count, 0);
+            let scan = scan_pending_m6ids(&rwtxn, &dbs, 1).into_diagnostic()?;
+            assert!(scan.failed.0.is_empty(), "vote_count={vote_count}");
+            assert_eq!(
+                !scan.must_include.is_empty(),
+                expect_in_must_include,
+                "vote_count={vote_count}"
+            );
+            if expect_in_must_include {
+                assert_eq!(scan.must_include, vec![(sc, m6id, vote_count)]);
+            }
+        }
+        Ok(())
+    }
+
+    /// Load-bearing `else if`: a bundle that's both expired AND above
+    /// threshold goes to `failed`, not `must_include`. Otherwise a dying
+    /// bundle would erroneously trigger `MissingRequiredM6`.
+    #[test]
+    fn scan_pending_m6ids_expired_beats_must_include() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let (sc, _) = seed_pending(
+            &mut rwtxn,
+            &dbs,
+            1,
+            WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD + 1,
+            0,
+        );
+        // age = MAX_AGE + 2 > MAX_AGE → expired
+        let scan = scan_pending_m6ids(&rwtxn, &dbs, WITHDRAWAL_BUNDLE_MAX_AGE as u32 + 2)
+            .into_diagnostic()?;
+        assert!(scan.must_include.is_empty());
+        assert!(scan.failed.0.contains_key(&sc));
+        Ok(())
+    }
+
+    /// Three sidechains, each in a different state, scanned in one pass:
+    /// above-threshold (non-expired) → `must_include`; below-threshold →
+    /// ignored; expired → `failed`.
+    #[test]
+    fn scan_pending_m6ids_multiple_sidechains_mixed_states() -> Result<()> {
+        const T: u16 = WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD;
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let scan_height = WITHDRAWAL_BUNDLE_MAX_AGE as u32 + 2;
+        // Non-expired (recent proposal) above / below threshold.
+        let (sc_high, m_high) = seed_pending(&mut rwtxn, &dbs, 1, T + 1, scan_height - 1);
+        let (sc_low, _) = seed_pending(&mut rwtxn, &dbs, 2, 0, scan_height - 1);
+        // Expired (proposed at height 0) above threshold — expiry wins.
+        let (sc_expired, _) = seed_pending(&mut rwtxn, &dbs, 3, T + 1, 0);
+
+        let scan = scan_pending_m6ids(&rwtxn, &dbs, scan_height).into_diagnostic()?;
+        assert_eq!(scan.must_include, vec![(sc_high, m_high, T + 1)]);
+        assert_eq!(scan.failed.0.len(), 1);
+        assert!(scan.failed.0.contains_key(&sc_expired));
+        assert!(!scan.failed.0.contains_key(&sc_low));
+        Ok(())
+    }
+
+    /// Helper: empty block + headers stored, ready for `connect_block`.
+    fn empty_block_with_header_stored(
+        rwtxn: &mut RwTxn,
+        dbs: &Dbs,
+    ) -> miette::Result<bitcoin::Block> {
+        let block = build_test_block(BlockHash::all_zeros(), vec![]);
+        dbs.block_hashes
+            .put_headers(rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+        Ok(block)
+    }
+
+    #[test]
+    fn connect_block_missing_required_m6_is_rejected_non_fatally() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let (sc, m6id) = seed_pending(
+            &mut rwtxn,
+            &dbs,
+            1,
+            WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD + 1,
+            0,
+        );
+        let block = empty_block_with_header_stored(&mut rwtxn, &dbs)?;
+
+        let err = connect_block(&mut rwtxn, &dbs, &block).expect_err("must reject");
+        assert!(
+            matches!(
+                &err,
+                error::ConnectBlock::MissingRequiredM6 {
+                    sidechain_number,
+                    m6id: violated_m6id,
+                } if *sidechain_number == sc && *violated_m6id == m6id
+            ),
+            "expected MissingRequiredM6 for ({sc:?}, {m6id}), got `{err:?}`"
+        );
+        assert!(!err.is_fatal());
+        Ok(())
+    }
+
+    /// At-threshold (vote_count == T) does not trigger rejection. The
+    /// connect_block-level twin of the function-level boundary test.
+    #[test]
+    fn connect_block_accepts_when_pending_at_threshold() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let _ = seed_pending(
+            &mut rwtxn,
+            &dbs,
+            1,
+            WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD,
+            0,
+        );
+        let block = empty_block_with_header_stored(&mut rwtxn, &dbs)?;
+        connect_block(&mut rwtxn, &dbs, &block).into_diagnostic()?;
+        Ok(())
+    }
+
+    /// When multiple sidechains have above-threshold bundles and none are
+    /// included, the error references one of them (we don't pin down which,
+    /// depends on iteration order).
+    #[test]
+    fn connect_block_reports_one_violator_when_multiple() -> Result<()> {
+        const T: u16 = WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD;
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let (sc_a, _) = seed_pending(&mut rwtxn, &dbs, 1, T + 1, 0);
+        let (sc_b, _) = seed_pending(&mut rwtxn, &dbs, 2, T + 1, 0);
+        let block = empty_block_with_header_stored(&mut rwtxn, &dbs)?;
+
+        let err = connect_block(&mut rwtxn, &dbs, &block).expect_err("must reject");
+        let error::ConnectBlock::MissingRequiredM6 {
+            sidechain_number, ..
+        } = err
+        else {
+            panic!("expected MissingRequiredM6, got `{err:?}`");
+        };
+        assert!(sidechain_number == sc_a || sidechain_number == sc_b);
         Ok(())
     }
 }

@@ -195,8 +195,8 @@ impl Wallet {
             );
             coinbase_builder.bmm_accept(sidechain_number, bmm_hash)?;
         }
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
-            for (m6id, _blinded_m6, m6id_info) in m6ids {
+        for (sidechain_id, bundle_proposals) in self.get_bundle_proposals().await? {
+            for (m6id, _blinded_m6, m6id_info) in bundle_proposals.proposals {
                 if m6id_info.is_none() {
                     coinbase_builder.propose_bundle(sidechain_id, m6id)?;
                 }
@@ -229,16 +229,30 @@ impl Wallet {
     }
 
     /// Generate suffix txs for a new block
+    ///
+    /// `ack_all_proposals` mirrors the value passed to [`extend_coinbase_txouts`]
+    /// for the same block: with auto-ack on, the coinbase upvotes index 0 of each
+    /// slot's pending m6ids, bumping that bundle's vote_count by 1. We simulate
+    /// that here so M6 is included in the *same* block where vote_count crosses
+    /// `WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD`. Not doing so causes the block to
+    /// be invalid.
     pub(in crate::wallet) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, crate::types::Ctip>,
+        ack_all_proposals: bool,
     ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
         let mut res = Vec::new();
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
+        for (sidechain_id, bundle_proposals) in self.get_bundle_proposals().await? {
             let mut ctip = None;
-            for (_m6id, blinded_m6, m6id_info) in m6ids {
+            for (m6id, blinded_m6, m6id_info) in bundle_proposals.proposals {
                 let Some(m6id_info) = m6id_info else { continue };
-                if m6id_info.vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD {
+                let projected_vote_count =
+                    if ack_all_proposals && Some(m6id) == bundle_proposals.first_pending_m6id {
+                        m6id_info.vote_count.saturating_add(1)
+                    } else {
+                        m6id_info.vote_count
+                    };
+                if projected_vote_count > WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD {
                     let Ctip { outpoint, value } = if let Some(ctip) = ctip {
                         ctip
                     } else {
@@ -263,9 +277,12 @@ impl Wallet {
     }
 
     /// select non-coinbase txs for a new block
-    async fn select_block_txs(&self) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
+    async fn select_block_txs(
+        &self,
+        ack_all_proposals: bool,
+    ) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
         let ctips = self.inner.validator.get_ctips()?;
-        let mut res = self.generate_suffix_txs(&ctips).await?;
+        let mut res = self.generate_suffix_txs(&ctips, ack_all_proposals).await?;
 
         // We want to include all transactions from the mempool into our newly generated block.
         // This approach is perhaps a bit naive, and could fail if there are conflicting TXs
@@ -755,7 +772,7 @@ impl Wallet {
         let () = self
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
-        let transactions = self.select_block_txs().await?;
+        let transactions = self.select_block_txs(ack_all_proposals).await?;
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
         for tx in &transactions {
             if let Some(bmm_request) = crate::messages::parse_m8_tx(tx)

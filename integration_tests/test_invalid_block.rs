@@ -3,7 +3,7 @@ use std::{path::Path, time::Duration};
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept},
-    types::{BmmCommitment, SidechainDescription},
+    types::{BmmCommitment, SidechainDescription, WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
@@ -18,7 +18,8 @@ use serde::Deserialize;
 use tokio::time::sleep;
 
 use crate::{
-    integration_test::setup_active_sidechain,
+    integration_test::{deposit, setup_active_sidechain},
+    mine::mine_check_block_events,
     setup::{DummySidechain, PostSetup},
 };
 
@@ -164,6 +165,16 @@ async fn submit_invalid_block(
     post_setup: &PostSetup,
     case: &BadBlockCase,
 ) -> anyhow::Result<BlockHash> {
+    submit_block_with_extra_coinbase_outputs(post_setup, (case.extra_coinbase_outputs)()?).await
+}
+
+/// Submit a block with `extra_outputs` appended to the coinbase, after the
+/// standard reward + witness-commitment outputs. Bypasses the enforcer's
+/// mining proxy by talking to bitcoind directly via `submitblock`.
+async fn submit_block_with_extra_coinbase_outputs(
+    post_setup: &PostSetup,
+    extra_outputs: Vec<TxOut>,
+) -> anyhow::Result<BlockHash> {
     let template_json = post_setup
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "getblocktemplate", [r#"{"rules":["segwit"]}"#])
@@ -209,7 +220,7 @@ async fn submit_invalid_block(
             value: Amount::ZERO,
         },
     ];
-    outputs.extend((case.extra_coinbase_outputs)()?);
+    outputs.extend(extra_outputs);
     let coinbase = Transaction {
         version: Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -335,4 +346,79 @@ async fn poll_until_chaintip_invalid(
             _ => sleep(Duration::from_millis(200)).await,
         }
     }
+}
+
+/// BIP300 M4: once an `M6ID`'s vote count exceeds
+/// `WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD`, the block that pushes it over
+/// MUST include the corresponding M6 — otherwise the block is invalid.
+///
+/// This test drives the enforcer to vote_count == THRESHOLD (= 5 in this
+/// codebase), then hand-submits a block via `submitblock` that contains
+/// the next M4 OneByte upvote (which would push vote_count to 6) but
+/// omits the M6 from txdata. The enforcer must reject the block.
+pub async fn test_block_missing_required_m6(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let mut sidechain = DummySidechain::setup(&post_setup).await?;
+
+    setup_active_sidechain(&mut post_setup).await?;
+
+    // Treasury needs funds before a withdrawal bundle can be proposed.
+    let deposit_address = sidechain.get_deposit_address();
+    deposit(
+        &mut post_setup,
+        &mut sidechain,
+        &deposit_address,
+        Amount::from_btc(1.0)?,
+        Amount::from_sat(1_000),
+    )
+    .await?;
+
+    // Submit a withdrawal via the enforcer; M3 will be injected into the
+    // next coinbase mined through the enforcer's proxy.
+    let receive_address = post_setup.receive_address.clone();
+    let _m6id = sidechain
+        .create_withdrawal(
+            &mut post_setup,
+            &receive_address,
+            Amount::from_btc(0.5)?,
+            Amount::from_sat(1_000),
+        )
+        .await?;
+
+    // Block N: enforcer mines M3 (vote_count = 0 after this block).
+    mine_check_block_events(&mut post_setup, 1, None, |_, _| Ok(())).await?;
+    // Blocks N+1..N+5: enforcer mines 5 M4 OneByte upvotes for the pending
+    // bundle, bringing vote_count to THRESHOLD (5). The *next* upvote would
+    // push it past THRESHOLD and is the one that must be paired with M6.
+    mine_check_block_events(
+        &mut post_setup,
+        u32::from(WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD),
+        Some(true),
+        |_, _| Ok(()),
+    )
+    .await?;
+
+    wait_past_mtp(&post_setup).await?;
+
+    // Hand-craft the offending block: a single M4 OneByte upvote at index 0
+    // (chronologically-first pending M6ID for this sidechain), with no M6
+    // in txdata. Must be rejected.
+    let extra_outputs = vec![zero_value(
+        M4AckBundles::OneByte {
+            upvotes: vec![0x00],
+        }
+        .try_into()?,
+    )];
+    let bad_block_hash =
+        submit_block_with_extra_coinbase_outputs(&post_setup, extra_outputs).await?;
+    tracing::info!(%bad_block_hash, "submitted missing-M6 block");
+
+    poll_until_chaintip_invalid(&post_setup, bad_block_hash, Duration::from_secs(10)).await?;
+
+    let stdout_path = post_setup.directories.enforcer_dir.join("stdout.txt");
+    let stdout = std::fs::read_to_string(&stdout_path)?;
+    anyhow::ensure!(
+        stdout.contains("MissingRequiredM6") || stdout.contains("missing required M6"),
+        "enforcer log did not contain expected must-include-M6 rejection message"
+    );
+    Ok(())
 }
