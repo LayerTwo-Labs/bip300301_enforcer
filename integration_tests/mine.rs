@@ -19,7 +19,7 @@ use futures::TryStreamExt as _;
 use thiserror::Error;
 
 use crate::{
-    setup::{MiningMode, Network, PostSetup, Sidechain},
+    setup::{DummySidechain, MiningMode, Network, PostSetup},
     util::VarError,
 };
 
@@ -149,14 +149,13 @@ pub enum MineSignetError {
 }
 
 // Mine blocks, running a check after each block
-pub async fn mine_signet_check<F, Err, S>(
+pub async fn mine_signet_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
     mut check: F,
 ) -> Result<(), Either<MineSignetError, Err>>
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
-    S: Sidechain,
 {
     use proto::mainchain::subscribe_events_response::event::Event;
     let signet_miner = post_setup
@@ -166,7 +165,7 @@ where
     let mut stream = post_setup
         .validator_service_client
         .subscribe_events(SubscribeEventsRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
         })
         .await
         .map_err(|err| Either::Left(err.into()))?
@@ -212,20 +211,19 @@ where
 }
 
 // Mine blocks, running a check after each block
-pub async fn mine_gbt_check<F, Err, S>(
+pub async fn mine_gbt_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
     mut check: F,
 ) -> Result<(), Either<MineGbtError, Err>>
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
-    S: Sidechain,
 {
     use proto::mainchain::subscribe_events_response::event::Event;
     let mut stream = post_setup
         .validator_service_client
         .subscribe_events(SubscribeEventsRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
         })
         .await
         .map_err(|err| Either::Left(err.into()))?
@@ -312,14 +310,11 @@ pub enum MineError {
     SignetGenerateBlocks,
 }
 
-pub async fn mine<S>(
+pub async fn mine(
     post_setup: &mut PostSetup,
     blocks: u32,
     ack_all_proposals: Option<bool>,
-) -> Result<(), MineError>
-where
-    S: Sidechain,
-{
+) -> Result<(), MineError> {
     use std::convert::Infallible;
     match (post_setup.network, post_setup.mode.mining_mode()) {
         (Network::Regtest, MiningMode::GenerateBlocks) => {
@@ -332,14 +327,14 @@ where
             })
         }
         (Network::Regtest, MiningMode::GetBlockTemplate) => {
-            mine_gbt_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
+            mine_gbt_check::<_, Infallible>(post_setup, blocks, |_| Ok(()))
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MineError::Gbt(err),
                 })
         }
         (Network::Signet, MiningMode::GetBlockTemplate) => {
-            mine_signet_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
+            mine_signet_check::<_, Infallible>(post_setup, blocks, |_| Ok(()))
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MineError::Signet(err),
@@ -350,7 +345,7 @@ where
 }
 
 /// Mine blocks, and check the events for each block
-pub async fn mine_check_block_events<F, S>(
+pub async fn mine_check_block_events<F>(
     post_setup: &mut PostSetup,
     blocks: u32,
     ack_all_proposals: Option<bool>,
@@ -358,18 +353,17 @@ pub async fn mine_check_block_events<F, S>(
 ) -> anyhow::Result<()>
 where
     F: FnMut(u32, proto::mainchain::BlockInfo) -> anyhow::Result<()>,
-    S: Sidechain,
 {
     tracing::debug!("Mining {blocks} block(s)");
     let mut events = post_setup
         .validator_service_client
         .subscribe_events(SubscribeEventsRequest {
-            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
         })
         .await?
         .into_inner();
     for blocks_mined in 0..blocks {
-        let () = mine::<S>(post_setup, 1, ack_all_proposals).await?;
+        let () = mine(post_setup, 1, ack_all_proposals).await?;
         let Some(event) = events
             .try_next()
             .await?
