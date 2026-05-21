@@ -15,9 +15,9 @@ use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
-    integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
+    integration_test::setup_active_sidechain,
     mine,
-    setup::{BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain},
+    setup::{BitcoindKind, DummySidechain, Mode, Network, SetupOpts},
     util::{self, BinPaths, FileDumpConfig, TestFileRegistry},
 };
 
@@ -146,12 +146,8 @@ impl PreSetup {
 
 async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
     tracing::info!("Setup successfully");
-    let () = propose_sidechain::<DummySidechain>(&mut post_setup.miner).await?;
-    tracing::info!("Proposed sidechain successfully");
-    let () = activate_sidechain::<DummySidechain>(&mut post_setup.miner).await?;
-    tracing::info!("Activated sidechain successfully");
-    let () = fund_enforcer::<DummySidechain>(&mut post_setup.miner).await?;
-    tracing::info!("Funded enforcer successfully (miner)");
+    let () = setup_active_sidechain(&mut post_setup.miner).await?;
+    tracing::info!("Active sidechain set up successfully (miner)");
 
     let sender_addr = post_setup
         .sender
@@ -174,7 +170,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     {
         anyhow::bail!("Failed to create a tx to fund sender wallet")
     };
-    let () = crate::mine::mine::<DummySidechain>(&mut post_setup.miner, 1, None).await?;
+    let () = crate::mine::mine(&mut post_setup.miner, 1, None).await?;
     // Wait for sender to receive block
     sleep(std::time::Duration::from_secs(1)).await;
     let sender_balance = post_setup
@@ -237,19 +233,14 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         .await?;
     tracing::debug!(%mempool_entry);
     // Mine a block and check that the BMM request worked
-    let () = mine::mine_check_block_events::<_, DummySidechain>(
-        &mut post_setup.miner,
-        1,
-        None,
-        |_, block_info| {
-            let bmm_commitment = block_info
-                .bmm_commitment
-                .ok_or_else(|| anyhow::anyhow!("Expected a BMM commitment"))?;
-            let expected_bmm_commitment = ConsensusHex::encode(&sidechain_block_hash);
-            anyhow::ensure!(bmm_commitment == expected_bmm_commitment);
-            Ok(())
-        },
-    )
+    let () = mine::mine_check_block_events(&mut post_setup.miner, 1, None, |_, block_info| {
+        let bmm_commitment = block_info
+            .bmm_commitment
+            .ok_or_else(|| anyhow::anyhow!("Expected a BMM commitment"))?;
+        let expected_bmm_commitment = ConsensusHex::encode(&sidechain_block_hash);
+        anyhow::ensure!(bmm_commitment == expected_bmm_commitment);
+        Ok(())
+    })
     .await?;
     tracing::info!("Included BMM request tx successfully");
     tracing::info!(
