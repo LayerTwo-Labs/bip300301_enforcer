@@ -11,8 +11,11 @@ use bip300301_enforcer_lib::{
     errors::ErrorChain,
     p2p::compute_signet_magic,
     proto::{
-        crypto_service::CryptoServiceExt,
-        mainchain_service::{ValidatorServiceExt, WalletServiceExt},
+        crypto_service::{CRYPTO_SERVICE_SERVICE_NAME, CryptoServiceExt},
+        mainchain_service::{
+            VALIDATOR_SERVICE_SERVICE_NAME, ValidatorServiceExt, WALLET_SERVICE_SERVICE_NAME,
+            WalletServiceExt,
+        },
     },
     rpc_client, server,
     validator::{
@@ -26,6 +29,7 @@ use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
 use connectrpc::Router;
+use connectrpc_health::{HealthExt, HealthService, StaticChecker};
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
@@ -271,11 +275,11 @@ async fn fill_empty_json_body(
 
 /// For Connect unary GETs, default `encoding` to `json` and `message` to `{}`
 /// when the client omitted them. Other query params are left untouched.
-/// This makes it possible to do a simple curl invocation of GET endpoints: 
-/// 
-///     curl -H 'content-type: application/json' http://localhost:50051/cusf.mainchain.v1.WalletService/GetBalance 
-/// 
-/// As opposed to: 
+/// This makes it possible to do a simple curl invocation of GET endpoints:
+///
+///     curl -H 'content-type: application/json' http://localhost:50051/cusf.mainchain.v1.WalletService/GetBalance
+///
+/// As opposed to:
 ///     curl -H 'content-type: application/json' http://localhost:50051/cusf.mainchain.v1.WalletService/GetBalance?encoding=json=message={}
 async fn fill_connect_get_defaults(
     req: axum::extract::Request,
@@ -350,11 +354,18 @@ async fn run_connect_server(
         cancel.clone(),
     ))
     .register(router);
+
+    let mut services: Vec<&'static str> =
+        vec![CRYPTO_SERVICE_SERVICE_NAME, VALIDATOR_SERVICE_SERVICE_NAME];
     let router = if let Some(wallet) = wallet {
+        services.push(WALLET_SERVICE_SERVICE_NAME);
         Arc::new(wallet).register(router)
     } else {
         router
     };
+
+    let health_checker = Arc::new(StaticChecker::with_services(services));
+    let router = Arc::new(HealthService::from_arc(Arc::clone(&health_checker))).register(router);
 
     let app = axum::Router::new()
         .fallback_service(router.into_axum_service())
@@ -373,10 +384,15 @@ async fn run_connect_server(
     tracing::info!("Listening for Connect RPC on {addr}");
 
     let cancel_clone = cancel.clone();
-    axum::serve(listener, app)
+    let res = axum::serve(listener, app)
         .with_graceful_shutdown(async move { cancel_clone.cancelled().await })
         .await
-        .map_err(|err| error::ConnectServer::Serve { addr, source: err })
+        .map_err(|err| error::ConnectServer::Serve { addr, source: err });
+
+    // Mark all services as not serving when we're shutting down
+    health_checker.shutdown();
+
+    res
 }
 
 async fn spawn_gbt_server<RpcClient>(
