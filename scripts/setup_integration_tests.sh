@@ -5,7 +5,17 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEPS_DIR="$REPO_ROOT/.integration-deps"
+
+# Deps live at the primary worktree so all worktrees of this clone share them.
+# `git rev-parse --git-common-dir` returns the primary worktree's .git regardless
+# of which worktree we're invoked from.
+GIT_COMMON_DIR="$(cd "$REPO_ROOT" && git rev-parse --git-common-dir)"
+case "$GIT_COMMON_DIR" in
+    /*) ;;
+    *)  GIT_COMMON_DIR="$REPO_ROOT/$GIT_COMMON_DIR" ;;
+esac
+DEPS_ROOT="$(cd "$GIT_COMMON_DIR/.." && pwd)"
+DEPS_DIR="$DEPS_ROOT/.integration-deps"
 
 BITCOIN_VERSION="30.2"
 ELECTRS_VERSION="v3.2.0"
@@ -29,11 +39,6 @@ case "$OS-$ARCH" in
 esac
 
 mkdir -p "$DEPS_DIR"
-
-# Render an absolute path as relative to REPO_ROOT.
-relpath() {
-    python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$1" "$REPO_ROOT"
-}
 
 # --- Patched Bitcoin Core ---
 if [ ! -x "$PATCHED_DIR/bitcoind" ]; then
@@ -93,17 +98,20 @@ else
 fi
 
 # --- Write integrationtests.env ---
+# Deps paths are absolute (shared across worktrees); the enforcer binary stays
+# relative since `target/` is per-worktree and tests run with cwd at the worktree root.
 ENV_FILE="$REPO_ROOT/integrationtests.env"
 cat > "$ENV_FILE" <<EOF
 BIP300301_ENFORCER='target/debug/bip300301_enforcer'
-BITCOIND='$(relpath "$PATCHED_DIR/bitcoind")'
-BITCOIND_UNPATCHED='$(relpath "$UNPATCHED_DIR/bitcoind")'
-BITCOIN_CLI='$(relpath "$PATCHED_DIR/bitcoin-cli")'
-BITCOIN_UTIL='$(relpath "$PATCHED_DIR/bitcoin-util")'
-ELECTRS='$(relpath "$ELECTRS_BIN")'
-SIGNET_MINER='$(relpath "$SIGNET_REPO_DIR/contrib/signet/miner")'
+BITCOIND='$PATCHED_DIR/bitcoind'
+BITCOIND_UNPATCHED='$UNPATCHED_DIR/bitcoind'
+BITCOIN_CLI='$PATCHED_DIR/bitcoin-cli'
+BITCOIN_UTIL='$PATCHED_DIR/bitcoin-util'
+ELECTRS='$ELECTRS_BIN'
+SIGNET_MINER='$SIGNET_REPO_DIR/contrib/signet/miner'
 EOF
 
 echo
-echo "Wrote $(relpath "$ENV_FILE")"
+echo "Wrote $ENV_FILE"
+echo "Deps cache: $DEPS_DIR"
 echo "Run integration tests with: just test-it"
