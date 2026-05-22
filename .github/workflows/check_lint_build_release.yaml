@@ -154,6 +154,7 @@ jobs:
       format('Bitcoin Core {0}', matrix.version) }})
     needs: compute-integration-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.compute-integration-matrix.outputs.matrix) }}
