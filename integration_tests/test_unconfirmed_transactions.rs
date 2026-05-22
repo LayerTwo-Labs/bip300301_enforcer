@@ -4,15 +4,12 @@ use bip300301_enforcer_lib::proto::mainchain::{
     ListTransactionsRequest, ListUnspentOutputsRequest, SendTransactionRequest,
 };
 
-use crate::{
-    integration_test,
-    setup::{DummySidechain, PostSetup},
-};
+use crate::{integration_test, setup::PostSetup};
 
 // Verify that unconfirmed transactions are immediately available when listing wallet
 // transactions.
 pub async fn test_unconfirmed_transactions(mut post_setup: PostSetup) -> anyhow::Result<()> {
-    integration_test::fund_enforcer::<DummySidechain>(&mut post_setup).await?;
+    integration_test::fund_enforcer(&mut post_setup).await?;
 
     let txs_pre = post_setup
         .wallet_service_client

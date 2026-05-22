@@ -65,6 +65,14 @@ mod util;
 
 type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
+/// Per-sidechain output of [`Wallet::get_bundle_proposals`].
+pub(in crate::wallet) struct SidechainBundleProposals {
+    /// Chronologically-first pending m6id. `None` if
+    /// nothing is pending.
+    pub first_pending_m6id: Option<M6id>,
+    pub proposals: BundleProposals,
+}
+
 pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
 type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
@@ -895,7 +903,7 @@ impl Wallet {
 
     async fn get_bundle_proposals(
         &self,
-    ) -> Result<HashMap<SidechainNumber, BundleProposals>, error::GetBundleProposals> {
+    ) -> Result<HashMap<SidechainNumber, SidechainBundleProposals>, error::GetBundleProposals> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, error::GetBundleProposals> {
             let mut statement = connection
@@ -936,14 +944,21 @@ impl Wallet {
                     .inner
                     .validator
                     .get_pending_withdrawals(&sidechain_id)?;
-                let res: Vec<_> = m6ids
+                let first_pending_m6id = pending_m6ids.keys().next().copied();
+                let proposals: BundleProposals = m6ids
                     .into_iter()
                     .map(|(m6id, blinded_m6)| (m6id, blinded_m6, pending_m6ids.get(&m6id).copied()))
                     .collect();
-                if res.is_empty() {
+                if proposals.is_empty() {
                     Ok(None)
                 } else {
-                    Ok(Some((sidechain_id, res)))
+                    Ok(Some((
+                        sidechain_id,
+                        SidechainBundleProposals {
+                            first_pending_m6id,
+                            proposals,
+                        },
+                    )))
                 }
             })
             .collect()?;

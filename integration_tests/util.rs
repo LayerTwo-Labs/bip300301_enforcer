@@ -4,6 +4,7 @@ use std::{
     future::Future,
     path::PathBuf,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use thiserror::Error;
@@ -334,6 +335,9 @@ impl<Fut> AsyncTrial<Fut> {
         Fut: Future<Output = Result<(), Err>> + Send + 'static,
         Err: std::fmt::Display,
     {
+        /// Global per-test cap
+        const TEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
         let span = tracing::info_span!("test", name = %self.name);
         let test_name = self.name.clone();
         let file_registry = self.file_registry;
@@ -344,17 +348,29 @@ impl<Fut> AsyncTrial<Fut> {
                 // Use spawn_blocking to avoid nested runtime issues
                 std::thread::spawn(move || {
                     rt_handle.block_on(async {
-                        let result = self.test.await;
-                        if let Err(err) = &result {
-                            // Alternate Display gives anyhow's chained
-                            // "top: cause: root" form without a backtrace.
+                        let record_failure = |error_message: String| {
                             failure_collector.add_failure(TestFailure {
                                 test_name: test_name.clone(),
-                                error_message: format!("{err:#}"),
+                                error_message,
                                 output_files: file_registry.get_files(&test_name),
                             });
+                        };
+                        match tokio::time::timeout(TEST_TIMEOUT, self.test).await {
+                            Ok(result) => {
+                                if let Err(err) = &result {
+                                    // Alternate Display gives anyhow's chained
+                                    // "top: cause: root" form without a backtrace.
+                                    record_failure(format!("{err:#}"));
+                                }
+                                result.map_err(libtest_mimic::Failed::from)
+                            }
+                            Err(_elapsed) => {
+                                let error_message =
+                                    format!("test `{test_name}` timed out after {TEST_TIMEOUT:?}");
+                                record_failure(error_message.clone());
+                                Err(error_message.into())
+                            }
                         }
-                        result.map_err(libtest_mimic::Failed::from)
                     })
                 })
                 .join()

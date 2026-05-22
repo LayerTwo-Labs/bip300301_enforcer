@@ -4,7 +4,6 @@ use std::{
     borrow::Borrow,
     collections::HashMap,
     ffi::OsStr,
-    future::Future,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, LazyLock},
@@ -24,7 +23,7 @@ use bip300301_enforcer_lib::{
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
 use bitcoin::{Address, Txid};
-use futures::{FutureExt as _, StreamExt, channel::mpsc, future};
+use futures::{FutureExt as _, StreamExt, channel::mpsc};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
@@ -332,6 +331,33 @@ pub async fn wait_for_port(
     }
 }
 
+/// Polls bitcoind via `getblockchaininfo` until it responds successfully.
+/// The RPC port opens before bitcoind is ready to serve commands, so a TCP
+/// probe alone is not enough.
+async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
+    const TIMEOUT: Duration = Duration::from_secs(30);
+    const CHECK_INTERVAL: Duration = Duration::from_millis(200);
+    let task = async {
+        loop {
+            match bitcoin_cli
+                .clone()
+                .command::<String, _, String, _, _>([], "getblockchaininfo", [])
+                .run_utf8()
+                .await
+            {
+                Ok(_) => return,
+                Err(e) => {
+                    tracing::trace!("bitcoind not ready yet ({e}), waiting...");
+                    sleep(CHECK_INTERVAL).await;
+                }
+            }
+        }
+    };
+    timeout(TIMEOUT, task)
+        .await
+        .map_err(|_| anyhow!("Timeout waiting for bitcoind to become ready after {TIMEOUT:?}"))
+}
+
 /// Running tasks, aborted on drop
 pub struct Tasks {
     // MUST be dropped before electrs and bitcoind
@@ -478,9 +504,10 @@ impl PostSetup {
                 }
             });
         // wait for startup
-        sleep(std::time::Duration::from_secs(1)).await;
-        // Create a wallet and initialize it
         let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
+        wait_for_bitcoind_ready(&bitcoin_cli).await?;
+
+        // Create a wallet and initialize it
         tracing::debug!("Creating wallet");
         let _create_wallet_output = bitcoin_cli
             .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
@@ -707,48 +734,6 @@ impl<B> PreSetup<B> {
     }
 }
 
-pub trait Sidechain: Sized {
-    const SIDECHAIN_NUMBER: SidechainNumber;
-
-    type Init;
-
-    type SetupError: std::error::Error + Send + Sync + 'static;
-
-    fn setup(
-        init: Self::Init,
-        post_setup: &PostSetup,
-        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
-    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send;
-
-    type GetDepositAddressError: std::error::Error + Send + Sync + 'static;
-
-    /// Get a sidechain address to deposit to
-    fn get_deposit_address(
-        &self,
-    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send;
-
-    type ConfirmDepositError: std::error::Error + Send + Sync + 'static;
-
-    fn confirm_deposit(
-        &mut self,
-        post_setup: &mut PostSetup,
-        address: &str,
-        value: bitcoin::Amount,
-        txid: bitcoin::Txid,
-    ) -> impl Future<Output = Result<(), Self::ConfirmDepositError>> + Send;
-
-    /// Create a withdrawal and broadcast the bundle
-    type CreateWithdrawalError: std::error::Error + Send + Sync + 'static;
-
-    fn create_withdrawal(
-        &mut self,
-        post_setup: &mut PostSetup,
-        receive_address: &bitcoin::Address,
-        value: bitcoin::Amount,
-        fee: bitcoin::Amount,
-    ) -> impl Future<Output = Result<M6id, Self::CreateWithdrawalError>> + Send;
-}
-
 #[derive(Debug, Error)]
 pub enum DummySidechainError {
     #[error(transparent)]
@@ -924,18 +909,10 @@ impl DummySidechain {
     }
 }
 
-impl Sidechain for DummySidechain {
-    const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(0);
+impl DummySidechain {
+    pub const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(0);
 
-    type Init = ();
-
-    type SetupError = tonic::Status;
-
-    async fn setup(
-        _: Self::Init,
-        post_setup: &PostSetup,
-        _: mpsc::UnboundedSender<anyhow::Result<()>>,
-    ) -> Result<Self, Self::SetupError> {
+    pub async fn setup(post_setup: &PostSetup) -> Result<Self, tonic::Status> {
         use bip300301_enforcer_lib::proto::mainchain::SubscribeEventsRequest;
         let subscribe_events_request = SubscribeEventsRequest {
             sidechain_id: Some(Self::SIDECHAIN_NUMBER.0.into()),
@@ -954,35 +931,26 @@ impl Sidechain for DummySidechain {
         })
     }
 
-    type GetDepositAddressError = std::convert::Infallible;
-
-    fn get_deposit_address(
-        &self,
-    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send {
-        future::ok("sidechain address".to_owned())
+    pub fn get_deposit_address(&self) -> String {
+        "sidechain address".to_owned()
     }
 
-    type ConfirmDepositError = std::convert::Infallible;
-
-    async fn confirm_deposit(
+    pub fn confirm_deposit(
         &mut self,
-        _: &mut PostSetup,
-        _: &str,
-        _: bitcoin::Amount,
-        _: bitcoin::Txid,
-    ) -> Result<(), Self::ConfirmDepositError> {
-        Ok(())
+        _post_setup: &mut PostSetup,
+        _address: &str,
+        _value: bitcoin::Amount,
+        _txid: bitcoin::Txid,
+    ) {
     }
 
-    type CreateWithdrawalError = DummySidechainError;
-
-    async fn create_withdrawal(
+    pub async fn create_withdrawal(
         &mut self,
         post_setup: &mut PostSetup,
         receive_address: &bitcoin::Address,
         mut value: bitcoin::Amount,
         mut fee: bitcoin::Amount,
-    ) -> Result<M6id, Self::CreateWithdrawalError> {
+    ) -> Result<M6id, DummySidechainError> {
         let () = self.update_from_events()?;
         value += self.pending_withdrawal_value;
         self.pending_withdrawal_value = bitcoin::Amount::ZERO;
