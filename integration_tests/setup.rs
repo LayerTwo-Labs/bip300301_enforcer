@@ -331,6 +331,33 @@ pub async fn wait_for_port(
     }
 }
 
+/// Polls bitcoind via `getblockchaininfo` until it responds successfully.
+/// The RPC port opens before bitcoind is ready to serve commands, so a TCP
+/// probe alone is not enough.
+async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
+    const TIMEOUT: Duration = Duration::from_secs(30);
+    const CHECK_INTERVAL: Duration = Duration::from_millis(200);
+    let task = async {
+        loop {
+            match bitcoin_cli
+                .clone()
+                .command::<String, _, String, _, _>([], "getblockchaininfo", [])
+                .run_utf8()
+                .await
+            {
+                Ok(_) => return,
+                Err(e) => {
+                    tracing::trace!("bitcoind not ready yet ({e}), waiting...");
+                    sleep(CHECK_INTERVAL).await;
+                }
+            }
+        }
+    };
+    timeout(TIMEOUT, task)
+        .await
+        .map_err(|_| anyhow!("Timeout waiting for bitcoind to become ready after {TIMEOUT:?}"))
+}
+
 /// Running tasks, aborted on drop
 pub struct Tasks {
     // MUST be dropped before electrs and bitcoind
@@ -477,9 +504,10 @@ impl PostSetup {
                 }
             });
         // wait for startup
-        sleep(std::time::Duration::from_secs(1)).await;
-        // Create a wallet and initialize it
         let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
+        wait_for_bitcoind_ready(&bitcoin_cli).await?;
+
+        // Create a wallet and initialize it
         tracing::debug!("Creating wallet");
         let _create_wallet_output = bitcoin_cli
             .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
