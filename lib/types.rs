@@ -21,8 +21,51 @@ use thiserror::Error;
 
 use crate::proto::{StatusBuilder, ToStatus};
 
-pub const WITHDRAWAL_BUNDLE_MAX_AGE: u16 = 10;
-pub const WITHDRAWAL_BUNDLE_INCLUSION_THRESHOLD: u16 = WITHDRAWAL_BUNDLE_MAX_AGE / 2; // 5
+/// BIP 300 voting / aging thresholds. Values are network-specific: mainnet
+/// follows the spec, everything else uses tiny dev-friendly values so
+/// regtest/signet sessions don't take weeks to exercise activations and
+/// withdrawals.
+///
+/// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#constants>
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Thresholds {
+    pub withdrawal_bundle_max_age: u16,
+    pub withdrawal_bundle_inclusion_threshold: u16,
+    pub used_sidechain_slot_proposal_max_age: u16,
+    pub used_sidechain_slot_activation_threshold: u16,
+    pub unused_sidechain_slot_proposal_max_age: u16,
+    pub unused_sidechain_slot_activation_threshold: u16,
+}
+
+impl Thresholds {
+    pub const MAINNET: Self = Self {
+        withdrawal_bundle_max_age: 26_300,
+        withdrawal_bundle_inclusion_threshold: 13_150,
+        used_sidechain_slot_proposal_max_age: 26_300,
+        used_sidechain_slot_activation_threshold: 13_150,
+        unused_sidechain_slot_proposal_max_age: 2016,
+        unused_sidechain_slot_activation_threshold: 1815,
+    };
+
+    /// Dev-friendly values used on every non-mainnet network so a full
+    /// activation/withdrawal cycle takes seconds rather than weeks.
+    pub const SHORT: Self = Self {
+        withdrawal_bundle_max_age: 10,
+        withdrawal_bundle_inclusion_threshold: 5,
+        used_sidechain_slot_proposal_max_age: 10,
+        used_sidechain_slot_activation_threshold: 5,
+        unused_sidechain_slot_proposal_max_age: 10,
+        unused_sidechain_slot_activation_threshold: 5,
+    };
+
+    #[inline]
+    pub const fn for_network(network: bitcoin::Network) -> Self {
+        match network {
+            bitcoin::Network::Bitcoin => Self::MAINNET,
+            _ => Self::SHORT,
+        }
+    }
+}
 
 #[derive(derive::Debug, Clone, Copy, Display, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[debug("{}", hex::encode(_0))]
