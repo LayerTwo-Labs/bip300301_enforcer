@@ -3,17 +3,14 @@ use std::{
     path::PathBuf,
 };
 
-use bitcoin::{Block, BlockHash, Network, hashes::Hash};
+use bitcoin::{Block, BlockHash, hashes::Hash};
 use sneed::RwTxn;
 use tokio_util::sync::CancellationToken;
 
+use super::BlockHandler;
 use crate::{
     types::Event,
-    validator::{
-        dbs::Dbs,
-        parse_block_files,
-        task::{error, handle_block_batch},
-    },
+    validator::{parse_block_files, task::error},
 };
 
 /// Simple LRU-style cache for temporarily storing blocks read from disk
@@ -84,13 +81,14 @@ const BLOCKS_DIR_CONNECT_BATCH_SIZE: usize = 2000;
 /// This function iteratively looks for the next expected block in the cache
 /// and processes it until no more consecutive blocks are found.
 fn process_cached_blocks(
-    dbs: &Dbs,
+    handler: &BlockHandler<'_>,
     event_tx: &async_broadcast::Sender<Event>,
     block_cache: &mut BlockCache,
     missing_blocks: &mut Vec<BlockHash>,
     pending_blocks: &mut Vec<Block>,
     total_handled_blocks: &mut usize,
 ) -> Result<(), error::Sync> {
+    let dbs = handler.dbs;
     while let Some(&expected_block_hash) = missing_blocks.last() {
         if let Some(cached_block) = block_cache.remove(&expected_block_hash) {
             // Found next expected block in cache
@@ -100,7 +98,7 @@ fn process_cached_blocks(
             // Check if we should process batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
                 let mut rwtxn: RwTxn<'_> = dbs.write_txn()?;
-                handle_block_batch(dbs, &mut rwtxn, pending_blocks, event_tx)?;
+                handler.handle_block_batch(&mut rwtxn, pending_blocks, event_tx)?;
                 rwtxn.commit()?;
 
                 *total_handled_blocks += pending_blocks.len();
@@ -124,13 +122,14 @@ fn process_cached_blocks(
 /// and checking the cache when expected blocks are found.
 #[tracing::instrument(skip_all)]
 pub fn sync_from_directory(
-    dbs: &Dbs,
+    handler: &BlockHandler<'_>,
     event_tx: &async_broadcast::Sender<Event>,
     missing_blocks: &mut Vec<BlockHash>,
     main_blocks_dir: PathBuf,
-    network: Network,
     cancel: CancellationToken,
 ) -> Result<u32, error::Sync> {
+    let dbs = handler.dbs;
+    let network = handler.network;
     let first_missing_block = *missing_blocks.last().expect("missing blocks is empty");
 
     let index_path = main_blocks_dir.join("index");
@@ -200,7 +199,7 @@ pub fn sync_from_directory(
                     pending_blocks.len()
                 );
                 let mut rwtxn = dbs.write_txn()?;
-                handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+                handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
                 rwtxn.commit()?;
             }
             return Err(error::Sync::Shutdown);
@@ -264,7 +263,7 @@ pub fn sync_from_directory(
             // Check if we should process the current batch
             if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
                 let mut rwtxn = dbs.write_txn()?;
-                handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+                handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
                 rwtxn.commit()?;
 
                 total_handled_blocks += pending_blocks.len();
@@ -273,7 +272,7 @@ pub fn sync_from_directory(
 
             // Check cache for subsequent expected blocks
             process_cached_blocks(
-                dbs,
+                handler,
                 event_tx,
                 &mut block_cache,
                 missing_blocks,
@@ -305,7 +304,7 @@ pub fn sync_from_directory(
                         pending_blocks.len()
                     );
                     let mut rwtxn = dbs.write_txn()?;
-                    handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+                    handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
                     rwtxn.commit()?;
 
                     total_handled_blocks += pending_blocks.len();
@@ -335,7 +334,7 @@ pub fn sync_from_directory(
             pending_blocks.len()
         );
         let mut rwtxn = dbs.write_txn()?;
-        handle_block_batch(dbs, &mut rwtxn, &pending_blocks, event_tx)?;
+        handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
         rwtxn.commit()?;
 
         total_handled_blocks += pending_blocks.len();

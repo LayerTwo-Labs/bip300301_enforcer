@@ -24,7 +24,7 @@ use crate::{
     types::{Ctip, Event, SidechainNumber},
     validator::{
         Validator,
-        task::{self, error::ValidateTransaction as ValidateTransactionError},
+        task::{self, BlockHandler, error::ValidateTransaction as ValidateTransactionError},
     },
 };
 
@@ -223,8 +223,9 @@ fn connect_block_no_commit<'validator>(
         child_builder: |parent: &mut RwTxn| validator.dbs.nested_write_txn(parent),
     }
     .try_build()?;
+    let handler = BlockHandler::new(&validator.dbs, validator.network);
     match parent_child_rwtxn
-        .with_child_mut(|child_rwtxn| task::connect_block(child_rwtxn, &validator.dbs, block))
+        .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
         .into_nested()?
     {
         Ok(event) => {
@@ -371,20 +372,20 @@ impl CusfEnforcer for Validator {
         };
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
-        let sync_future = task::sync_to_tip(
-            &self.dbs,
-            &self.mainchain_client,
-            &self.mainchain_rest_client,
-            self.mainchain_blocks_dir.clone(),
-            tip,
-            self.network,
-            task::SyncSignals {
-                cancel: cancel.clone(),
-                header_sync_progress_tx,
-                event_tx: self.events_tx.clone(),
-            },
-        )
-        .map_err(SyncError);
+        let handler = BlockHandler::new(&self.dbs, self.network);
+        let sync_future = handler
+            .sync_to_tip(
+                &self.mainchain_client,
+                &self.mainchain_rest_client,
+                self.mainchain_blocks_dir.clone(),
+                tip,
+                task::SyncSignals {
+                    cancel: cancel.clone(),
+                    header_sync_progress_tx,
+                    event_tx: self.events_tx.clone(),
+                },
+            )
+            .map_err(SyncError);
 
         tokio::select! {
             result = sync_future => {
@@ -415,7 +416,8 @@ impl CusfEnforcer for Validator {
         block_hash: BlockHash,
     ) -> Result<(), Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
-        let () = task::disconnect_block(&mut rwtxn, &self.dbs, &self.events_tx, block_hash)?;
+        let handler = BlockHandler::new(&self.dbs, self.network);
+        let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
         Ok(())
     }
@@ -434,7 +436,8 @@ impl CusfEnforcer for Validator {
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
-        let res = if task::validate_tx(&self.dbs, &mut rwtxn, tx)? {
+        let handler = BlockHandler::new(&self.dbs, self.network);
+        let res = if handler.validate_tx(&mut rwtxn, tx)? {
             let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
                 let txid = tx.compute_txid();
                 let conflicts_with = {
