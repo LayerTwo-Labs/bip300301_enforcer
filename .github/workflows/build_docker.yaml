@@ -51,8 +51,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       - name: Determine Rust version
         id: rust-version

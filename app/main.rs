@@ -228,8 +228,11 @@ async fn run_grpc_server(
 
     let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
         .with_service_name(CryptoServiceServer::<server::crypto::CryptoServiceServer>::NAME)
-        .with_service_name(ValidatorServiceServer::<Validator>::NAME)
-        .register_encoded_file_descriptor_set(proto::ENCODED_FILE_DESCRIPTOR_SET);
+        .with_service_name(ValidatorServiceServer::<Validator>::NAME);
+    for descriptor_set in proto::ENCODED_FILE_DESCRIPTOR_SETS {
+        reflection_service_builder =
+            reflection_service_builder.register_encoded_file_descriptor_set(descriptor_set);
+    }
 
     if let Either::Right(wallet) = validator.clone() {
         tracing::info!("gRPC: enabling wallet service");
