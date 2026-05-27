@@ -24,14 +24,14 @@ bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
-bitcoin = "0.32.9"
+bitcoin = "0.32.10"
 bitcoin-send-tx-p2p = "0.3.0"
 byteorder = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
 derive_more = "2.0.1"
 dotenvy = "0.15.7"
-either = "1.13.0"
+either = "1.16.0"
 error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"
 futures = "0.3.32"
@@ -39,9 +39,9 @@ hashlink = "0.11.0"
 heed = "0.22.0"
 heed-types = "0.21.0"
 hex = "0.4.3"
-http = "1.2.0"
+http = "1.4.1"
 indicatif = "0.18.4"
-jiff = { version = "0.2.24", default-features = false }
+jiff = { version = "0.2.27", default-features = false }
 jsonrpsee = "0.26.0"
 libtest-mimic = "0.8.2"
 miette = { version = "7.1.0", default-features = false }
@@ -52,14 +52,14 @@ parking_lot = "0.12.3"
 prost = "0.14.3"
 prost-types = "0.14.3"
 rand = "0.10.1"
-reqwest = { version = "0.13.3", default-features = false, features = ["json"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
 reserve-port = "2.4.0"
 # needs to line up with BDK version
 rusqlite = "0.31.0"
 rusqlite_migration = "1.0.0"
 rusty-leveldb = "4.0.0"
 serde = "1.0.219"
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 sneed = "0.0.22"
 strum = "0.28.0"
 temp-dir = "0.2.0"
