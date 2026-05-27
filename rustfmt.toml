@@ -11,3 +11,10 @@ group_imports = "StdExternalCrate"
 #  * "Crate"    – merge paths from the same root crate
 #  * "Module"   – merge paths at module level
 imports_granularity = "Crate"
+
+# Skip buf-generated code. The pattern is a bare
+# directory name because cargo fmt
+# walks via the `#[path = "../generated/..."]` mod attribute and passes
+# rustfmt a non-canonicalized path like `lib/proto/cusf/../generated/foo.rs`,
+# which `lib/proto/generated` as an anchored pattern would miss.
+ignore = ["generated"]

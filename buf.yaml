@@ -1,4 +1,0 @@
-version: v2
-modules:
-  - path: proto
-    name: buf.build/LayerTwo-Labs/validator

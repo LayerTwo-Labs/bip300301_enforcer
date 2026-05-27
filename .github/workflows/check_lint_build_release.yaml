@@ -22,6 +22,31 @@ jobs:
         with:
           args: --check .
 
+  check-generated-proto:
+    name: Check Generated Proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Regenerate proto code
+        run: buf generate --clean
+
+      # `git diff --exit-code` only inspects tracked files; new files added by
+      # the regeneration are untracked and would slip past it. `git add -N`
+      # marks new files as intent-to-add so they show up in the diff.
+      - name: Assert no diff vs checked-in generated code
+        run: |
+          git add -N lib/proto/generated
+          if ! git diff --exit-code lib/proto/generated; then
+            echo "::error::lib/proto/generated/ is out of sync with buf.gen.yaml. Run \`just generate\` locally and commit the result."
+            exit 1
+          fi
+
   check-rustfmt:
     name: Check Rustfmt
     runs-on: ubuntu-latest
@@ -49,8 +74,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -71,8 +94,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       # Must happen /after/ the checkout step, to pick up the toolchain
       # from the `rust-toolchain.toml` file.
@@ -235,8 +256,6 @@ jobs:
           cargo build --locked --release
 
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       # `rustup` is already installed on GitHub Actions runners, so
       # this reads the content from our `rust-toolchain.toml` file.
@@ -307,8 +326,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       # Must happen /after/ the checkout step, to pick up the toolchain
       - run: rustup target add ${{ matrix.name }}

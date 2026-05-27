@@ -5,12 +5,6 @@ edition.workspace = true
 publish.workspace = true
 version.workspace = true
 
-[build-dependencies]
-prost = { workspace = true }
-prost-build = { workspace = true }
-protox = { workspace = true }
-tonic-prost-build = { workspace = true }
-
 [dependencies]
 aes-gcm = { workspace = true, features = ["std"] }
 argon2 = { workspace = true, features = ["std"] }
@@ -86,5 +80,4 @@ path = "lib.rs"
 doctest = false
 
 [package.metadata.cargo-shear]
-# Used by tonic-prost-build generated code in OUT_DIR, which cargo-shear can't see.
-ignored = ["tonic-prost"]
+ignored-paths = ["proto/generated/*.rs"]

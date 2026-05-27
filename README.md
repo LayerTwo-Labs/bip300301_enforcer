@@ -18,8 +18,6 @@ unsupported Bitcoin Core version. The supported set lives in
 Building/running:
 
 ```bash
-# Check out git submodules
-$ git submodule update --init --recursive
 # Compiles the project
 $ cargo build
 
@@ -139,15 +137,20 @@ $ RUST_LOG=info,bip300301_enforcer=debug cargo run ...
 
 # Working with the proto files
 
-Code is generated with [protox](https://github.com/andrewhickman/protox), and
-happens automatically as part of the build process.
+The proto definitions live in the upstream
+[`LayerTwo-Labs/cusf_sidechain_proto`](https://github.com/LayerTwo-Labs/cusf_sidechain_proto)
+repo. We pin a specific commit in [`buf.gen.yaml`](./buf.gen.yaml) and check the
+generated Rust code into [`lib/proto/generated/`](./lib/proto/generated/).
+Generation is performed by the remote
+[`buf.build/community/neoeinstein-prost`](https://buf.build/community/neoeinstein-prost)
+and
+[`buf.build/community/neoeinstein-tonic`](https://buf.build/community/neoeinstein-tonic)
+plugins.
 
-Files are linted with [protolint](https://github.com/yoheimuta/protolint).
-
-To lint the files, run:
+To regenerate (after bumping the `ref:` in `buf.gen.yaml`):
 
 ```bash
-$ protolint lint --fix proto/validator/v1/validator.proto
+$ just generate
 ```
 
 # Code formatting

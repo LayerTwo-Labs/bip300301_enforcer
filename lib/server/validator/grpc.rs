@@ -20,7 +20,7 @@ use crate::{
             SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
             get_block_info_response, get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo, server::ValidatorService,
+            get_sidechains_response::SidechainInfo, validator_service_server::ValidatorService,
         },
     },
     server::{invalid_field_value, missing_field, validator::Server},

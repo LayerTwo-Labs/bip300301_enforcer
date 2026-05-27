@@ -1,0 +1,22 @@
+# https://buf.build/docs/configuration/v2/buf-gen-yaml/
+#
+# Generated Rust code is checked in under lib/proto/generated/.
+# Regenerate with `just generate`.
+version: v2
+
+inputs:
+  - git_repo: https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
+    ref: 3012c02cc1ac3d2d8f2384172e96b7018413fb3a
+    subdir: proto
+
+plugins:
+  - remote: buf.build/community/neoeinstein-prost:v0.5.0
+    out: lib/proto/generated
+    opt:
+      - enable_type_names=true # impl prost::Name for each message
+      - file_descriptor_set=true # embed per-package FILE_DESCRIPTOR_SET for reflection
+      - flat_output_dir=true # flat layout, module nesting handled in lib/proto.rs
+  - remote: buf.build/community/neoeinstein-tonic:v0.5.0
+    out: lib/proto/generated
+    opt:
+      - flat_output_dir=true
