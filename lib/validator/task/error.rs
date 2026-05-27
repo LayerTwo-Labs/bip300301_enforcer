@@ -1,4 +1,3 @@
-use bitcoin::hashes::sha256d;
 use bitcoin_jsonrpsee::jsonrpsee;
 use error_fatality::{Fatality, Split};
 use sneed::{db, env, rwtxn};
@@ -33,12 +32,6 @@ pub(in crate::validator) enum HandleM2AckSidechain {
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
-    #[error("Missing sidechain proposal for slot `{sidechain_slot}`: `{description_hash}`")]
-    #[fatal(false)]
-    MissingProposal {
-        sidechain_slot: SidechainNumber,
-        description_hash: sha256d::Hash,
-    },
 }
 
 impl From<db::Error> for HandleM2AckSidechain {

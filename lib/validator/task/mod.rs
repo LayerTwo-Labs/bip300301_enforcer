@@ -175,6 +175,9 @@ impl BlockHandler<'_> {
     /// BIP 300 M2 (ACK Proposal). Increments the proposal's vote count and
     /// activates it if it has crossed the threshold within the age window.
     ///
+    /// An M2 whose `description_hash` doesn't match any prior M1's
+    /// `sha256d(D)` MUST be ignored, in that case returns `Ok(None)`
+    ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m2-ack-proposal>
     fn handle_m2_ack_sidechain(
         &self,
@@ -182,7 +185,7 @@ impl BlockHandler<'_> {
         height: u32,
         sidechain_number: SidechainNumber,
         description_hash: sha256d::Hash,
-    ) -> Result<diff::AckSidechain, error::HandleM2AckSidechain> {
+    ) -> Result<Option<diff::AckSidechain>, error::HandleM2AckSidechain> {
         let dbs = self.dbs;
         let thresholds = self.thresholds;
         let proposal_id = SidechainProposalId {
@@ -191,10 +194,12 @@ impl BlockHandler<'_> {
         };
         let sidechain = dbs.proposal_id_to_sidechain.try_get(rotxn, &proposal_id)?;
         let Some(mut sidechain) = sidechain else {
-            return Err(error::HandleM2AckSidechain::MissingProposal {
-                sidechain_slot: sidechain_number,
-                description_hash,
-            });
+            tracing::debug!(
+                %sidechain_number,
+                %description_hash,
+                "ignoring M2 ack: no matching M1 proposal for this description hash"
+            );
+            return Ok(None);
         };
         sidechain.status.vote_count += 1;
         tracing::debug!(
@@ -230,7 +235,7 @@ impl BlockHandler<'_> {
         if new_sidechain_activated {
             diff.activated = true;
         }
-        Ok(diff)
+        Ok(Some(diff))
     }
 
     /// BIP 300 M2 failure path: removes sidechain proposals whose age has
@@ -749,13 +754,10 @@ impl BlockHandler<'_> {
                     "Ack sidechain number {sidechain_number} with proposal description hash {}",
                     hex::encode(description_hash)
                 );
-                let diff = self.handle_m2_ack_sidechain(
-                    rotxn,
-                    height,
-                    sidechain_number,
-                    description_hash,
-                )?;
-                Ok((None, Some(diff::CoinbaseMsg::AckSidechain(diff))))
+                let diff = self
+                    .handle_m2_ack_sidechain(rotxn, height, sidechain_number, description_hash)?
+                    .map(diff::CoinbaseMsg::AckSidechain);
+                Ok((None, diff))
             }
             CoinbaseMessage::M3ProposeBundle(M3ProposeBundle {
                 sidechain_number,
@@ -1863,7 +1865,18 @@ mod tests {
 
     // ── connect_block ──
 
-    fn build_test_block(prev_hash: BlockHash, extra_txs: Vec<Transaction>) -> Block {
+    #[derive(Default)]
+    struct TestBlockParts {
+        extra_coinbase_outputs: Vec<TxOut>,
+        extra_txs: Vec<Transaction>,
+    }
+
+    fn build_test_block(prev_hash: BlockHash, parts: TestBlockParts) -> Block {
+        let mut coinbase_outputs = vec![TxOut {
+            script_pubkey: ScriptBuf::new(),
+            value: Amount::from_sat(50_0000_0000),
+        }];
+        coinbase_outputs.extend(parts.extra_coinbase_outputs);
         let coinbase_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1874,13 +1887,10 @@ mod tests {
                 },
                 ..TxIn::default()
             }],
-            output: vec![TxOut {
-                script_pubkey: ScriptBuf::new(),
-                value: Amount::from_sat(50_0000_0000),
-            }],
+            output: coinbase_outputs,
         };
         let mut txdata = vec![coinbase_tx];
-        txdata.extend(extra_txs);
+        txdata.extend(parts.extra_txs);
         Block {
             header: bitcoin::block::Header {
                 version: bitcoin::block::Version::TWO,
@@ -1902,7 +1912,13 @@ mod tests {
 
         // M8 request with no matching M7 in coinbase → non-fatal error
         let m8_tx = build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash);
-        let block = build_test_block(prev_hash, vec![m8_tx]);
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![m8_tx],
+                ..Default::default()
+            },
+        );
 
         dbs.block_hashes
             .put_headers(&mut rwtxn, &[(block.header, 0)])
@@ -1920,7 +1936,7 @@ mod tests {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let prev_hash = BlockHash::all_zeros();
-        let block = build_test_block(prev_hash, vec![]);
+        let block = build_test_block(prev_hash, TestBlockParts::default());
         let block_hash = block.header.block_hash();
 
         dbs.block_hashes
@@ -2118,7 +2134,8 @@ mod tests {
                 proposal_id.sidechain_number,
                 proposal_id.description_hash,
             )
-            .into_diagnostic()?;
+            .into_diagnostic()?
+            .expect("M2 for known proposal must produce a diff");
         assert!(!diff.activated, "1 vote should not activate");
 
         sidechain.status.vote_count = activation_threshold;
@@ -2132,7 +2149,8 @@ mod tests {
                 proposal_id.sidechain_number,
                 proposal_id.description_hash,
             )
-            .into_diagnostic()?;
+            .into_diagnostic()?
+            .expect("M2 for known proposal must produce a diff");
         assert!(
             diff.activated,
             "vote_count > threshold within max age should activate"
@@ -2148,7 +2166,8 @@ mod tests {
                 proposal_id.sidechain_number,
                 proposal_id.description_hash,
             )
-            .into_diagnostic()?;
+            .into_diagnostic()?
+            .expect("M2 for known proposal must produce a diff");
         assert!(
             !diff.activated,
             "proposal exceeding max age should not activate"
@@ -2156,22 +2175,45 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 300 M2: an M2 whose `description_hash` doesn't match any prior
+    /// M1's `sha256d(D)` MUST be ignored ("interpreted as an ordinary
+    /// script"). The containing block must NOT be rejected.
     #[test]
-    fn handle_m2_missing_proposal() -> Result<()> {
+    fn connect_block_accepts_m2_for_unknown_proposal() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
-        let rotxn = dbs.read_txn().into_diagnostic()?;
-        let err = test_handler(&dbs)
-            .handle_m2_ack_sidechain(
-                &rotxn,
-                100,
-                SidechainNumber(99),
-                bitcoin::hashes::sha256d::Hash::all_zeros(),
-            )
-            .expect_err("missing proposal must error");
-        assert!(matches!(
-            err,
-            error::HandleM2AckSidechain::MissingProposal { .. }
-        ));
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let m2_script: ScriptBuf = M2AckSidechain {
+            sidechain_number: SidechainNumber(99),
+            description_hash: bitcoin::hashes::sha256d::Hash::all_zeros(),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![TxOut {
+                    script_pubkey: m2_script,
+                    value: Amount::ZERO,
+                }],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()
+            .map_err(|e| {
+                miette::miette!(
+                    "M2 referencing unknown proposal must be ignored, \
+                     not reject the block: {e:#}"
+                )
+            })?;
         Ok(())
     }
 
