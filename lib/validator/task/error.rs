@@ -134,6 +134,9 @@ pub(in crate::validator) enum HandleM4AckBundles {
         sidechain_number: SidechainNumber,
         m6id: M6id,
     },
+    #[error("M4 TwoBytes encoding with no element > 253")]
+    #[fatal(false)]
+    TwoBytesWithinByteRange,
 }
 
 impl From<db::Error> for HandleM4AckBundles {

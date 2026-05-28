@@ -530,9 +530,15 @@ impl BlockHandler<'_> {
                 self.handle_m4_votes(rotxn, &upvotes)
                     .map_err(error::HandleM4AckBundles::from)
             }
-            M4AckBundles::TwoBytes { upvotes } => self
-                .handle_m4_votes(rotxn, upvotes)
-                .map_err(error::HandleM4AckBundles::from),
+            M4AckBundles::TwoBytes { upvotes } => {
+                // BIP 300 M4: TwoBytes is only allowed if at least one element
+                // exceeds the one-byte range.
+                if upvotes.iter().all(|v| *v <= 253) {
+                    return Err(error::HandleM4AckBundles::TwoBytesWithinByteRange);
+                }
+                self.handle_m4_votes(rotxn, upvotes)
+                    .map_err(error::HandleM4AckBundles::from)
+            }
         }
     }
 
@@ -2474,6 +2480,56 @@ mod tests {
         assert_eq!(pending[&target].vote_count, 2);
         assert_eq!(pending[&other_positive].vote_count, 3);
         assert_eq!(pending[&other_zero].vote_count, 0);
+        Ok(())
+    }
+
+    // ── handle_m4_ack_bundles: TwoBytes encoding rules ──
+
+    /// BIP 300 M4 encoding: a `VOTES_TWO_BYTE` M4 with no element `> 253`
+    /// MUST invalidate the block — the encoding wastes a byte per element
+    /// when every value would fit in one byte.
+    #[test]
+    fn handle_m4_ack_bundles_rejects_twobytes_within_byte_range() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        // The single vote fits in one byte (≤ 253), so TwoBytes is wasteful.
+        let m4 = M4AckBundles::TwoBytes { upvotes: vec![253] };
+        let err = test_handler(&dbs)
+            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4)
+            .expect_err("TwoBytes with all elements ≤ 253 must be rejected");
+        assert!(matches!(
+            err,
+            error::HandleM4AckBundles::TwoBytesWithinByteRange
+        ));
+        assert!(
+            !err.is_fatal(),
+            "encoding rule violation is block-invalidation, not DB corruption"
+        );
+        Ok(())
+    }
+
+    /// Sanity: TwoBytes that does need two-byte encoding (e.g. a vote > 253,
+    /// or a TwoByte-only sentinel like ALARM_TWO_BYTES = 0xFFFE) is allowed.
+    #[test]
+    fn handle_m4_ack_bundles_accepts_twobytes_with_value_over_byte_range() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let m4 = M4AckBundles::TwoBytes {
+            upvotes: vec![M4AckBundles::ALARM_TWO_BYTES],
+        };
+        let _diff = test_handler(&dbs)
+            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4)
+            .into_diagnostic()?;
         Ok(())
     }
 
