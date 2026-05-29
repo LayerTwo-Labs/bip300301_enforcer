@@ -491,14 +491,44 @@ impl Diff for Coinbase {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[must_use]
-pub struct Tx {
-    pub sidechain_number: SidechainNumber,
-    pub new_ctip: Ctip,
-    pub removed_pending_withdrawal: Option<(M6id, PendingM6idInfo)>,
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct M5 {
+    pub new_ctips: HashMap<SidechainNumber, Ctip>,
 }
 
-impl Diff for Tx {
+impl Diff for M5 {
+    type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
+
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
+        let Self { new_ctips } = self;
+        for (sidechain_number, new_ctip) in new_ctips {
+            let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
+        }
+        Ok(())
+    }
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+        let Self { new_ctips } = self;
+        for sidechain_number in new_ctips.keys().copied() {
+            let () = dbs.delete_ctip(rwtxn, sidechain_number)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[must_use]
+pub struct M6 {
+    pub sidechain_number: SidechainNumber,
+    pub new_ctip: Ctip,
+    pub removed_pending_withdrawal: M6id,
+    pub removed_pending_withdrawal_info: PendingM6idInfo,
+}
+
+impl Diff for M6 {
     type Dbs = dbs::ActiveSidechainDbs;
     type ApplyError = db::Error;
     type UndoError = db::Error;
@@ -508,11 +538,11 @@ impl Diff for Tx {
             sidechain_number,
             new_ctip,
             removed_pending_withdrawal,
+            removed_pending_withdrawal_info: _,
         } = self;
         let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
-        if let Some((m6id, _)) = removed_pending_withdrawal {
-            let () = dbs.delete_pending_withdrawal(rwtxn, sidechain_number, *m6id)?;
-        }
+        let () =
+            dbs.delete_pending_withdrawal(rwtxn, sidechain_number, *removed_pending_withdrawal)?;
         Ok(())
     }
 
@@ -521,18 +551,50 @@ impl Diff for Tx {
             sidechain_number,
             new_ctip: _,
             removed_pending_withdrawal,
+            removed_pending_withdrawal_info,
         } = self;
         let () = dbs.delete_ctip(rwtxn, *sidechain_number)?;
-        if let Some((m6id, info)) = removed_pending_withdrawal {
-            let () =
-                dbs.with_pending_withdrawal_entry(rwtxn, sidechain_number, *m6id, |entry| {
-                    match entry {
-                        ordermap::map::Entry::Occupied(mut entry) => _ = entry.insert(*info),
-                        ordermap::map::Entry::Vacant(entry) => _ = entry.insert(*info),
-                    }
-                })?;
-        }
+        let () = dbs.with_pending_withdrawal_entry(
+            rwtxn,
+            sidechain_number,
+            *removed_pending_withdrawal,
+            |entry| match entry {
+                ordermap::map::Entry::Occupied(mut entry) => {
+                    _ = entry.insert(*removed_pending_withdrawal_info)
+                }
+                ordermap::map::Entry::Vacant(entry) => {
+                    _ = entry.insert(*removed_pending_withdrawal_info)
+                }
+            },
+        )?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[must_use]
+pub enum Tx {
+    M5(M5),
+    M6(M6),
+}
+
+impl Diff for Tx {
+    type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
+
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
+        match self {
+            Self::M5(m5) => m5.apply(rwtxn, dbs, height),
+            Self::M6(m6) => m6.apply(rwtxn, dbs, height),
+        }
+    }
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+        match self {
+            Self::M5(m5) => m5.undo(rwtxn, dbs),
+            Self::M6(m6) => m6.undo(rwtxn, dbs),
+        }
     }
 }
 

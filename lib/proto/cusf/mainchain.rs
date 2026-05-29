@@ -323,10 +323,9 @@ pub mod v1 {
         }
     }
 
-    impl From<&crate::types::Deposit> for (SidechainNumber, Deposit) {
+    impl From<&crate::types::Deposit> for Deposit {
         fn from(deposit: &crate::types::Deposit) -> Self {
             let crate::types::Deposit {
-                sidechain_id,
                 sequence_number,
                 outpoint,
                 address,
@@ -336,12 +335,11 @@ pub mod v1 {
                 address: Some(Hex::encode(&address)),
                 value_sats: Some(value.to_sat()),
             };
-            let deposit = Deposit {
+            Deposit {
                 sequence_number: Some(*sequence_number),
                 outpoint: Some(outpoint.into()),
                 output: Some(output),
-            };
-            (*sidechain_id, deposit)
+            }
         }
     }
 
@@ -390,59 +388,49 @@ pub mod v1 {
         }
     }
 
-    impl From<&crate::types::WithdrawalBundleEvent> for (SidechainNumber, WithdrawalBundleEvent) {
-        fn from(event: &crate::types::WithdrawalBundleEvent) -> Self {
-            let sidechain_number = event.sidechain_id;
-            let event = WithdrawalBundleEvent {
+    impl From<&crate::types::SidechainWithdrawalBundleEvent> for WithdrawalBundleEvent {
+        fn from(event: &crate::types::SidechainWithdrawalBundleEvent) -> Self {
+            WithdrawalBundleEvent {
                 m6id: Some(ConsensusHex::encode(&event.m6id.0)),
                 event: Some((&event.kind).into()),
-            };
-            (sidechain_number, event)
+            }
         }
     }
 
-    impl From<&crate::types::BlockEvent> for Option<(SidechainNumber, block_info::event::Event)> {
-        fn from(
-            event: &crate::types::BlockEvent,
-        ) -> Option<(SidechainNumber, block_info::event::Event)> {
-            use crate::types::BlockEvent;
+    impl From<&crate::types::SidechainBlockEvent> for Option<block_info::event::Event> {
+        fn from(event: &crate::types::SidechainBlockEvent) -> Option<block_info::event::Event> {
+            use crate::types::SidechainBlockEvent;
             match event {
-                BlockEvent::Deposit(deposit) => {
-                    let (sidechain_number, deposit) = deposit.into();
-                    Some((sidechain_number, block_info::event::Event::Deposit(deposit)))
+                SidechainBlockEvent::Deposit(deposit) => {
+                    let deposit = deposit.into();
+                    Some(block_info::event::Event::Deposit(deposit))
                 }
-                BlockEvent::SidechainProposal { .. } => None,
-                BlockEvent::WithdrawalBundle(bundle_event) => {
-                    let (sidechain_number, bundle_event) = bundle_event.into();
-                    Some((
-                        sidechain_number,
-                        block_info::event::Event::WithdrawalBundle(bundle_event),
-                    ))
+                SidechainBlockEvent::SidechainProposal { .. } => None,
+                SidechainBlockEvent::WithdrawalBundle(bundle_event) => {
+                    let bundle_event = bundle_event.into();
+                    Some(block_info::event::Event::WithdrawalBundle(bundle_event))
                 }
             }
         }
     }
 
-    impl From<&crate::types::BlockEvent> for Option<(SidechainNumber, block_info::Event)> {
-        fn from(event: &crate::types::BlockEvent) -> Self {
-            let (sidechain_number, event) = Option::<_>::from(event)?;
-            Some((sidechain_number, block_info::Event { event: Some(event) }))
+    impl From<&crate::types::SidechainBlockEvent> for Option<block_info::Event> {
+        fn from(event: &crate::types::SidechainBlockEvent) -> Self {
+            let event = Option::<_>::from(event)?;
+            Some(block_info::Event { event: Some(event) })
         }
     }
 
     impl<E> From<&crate::types::SidechainBlockInfo<E>> for BlockInfo
     where
-        E: std::borrow::Borrow<crate::types::BlockEvent>,
+        E: std::borrow::Borrow<crate::types::SidechainBlockEvent>,
     {
         fn from(block_info: &crate::types::SidechainBlockInfo<E>) -> Self {
             let bmm_commitment = block_info.bmm_commitment.as_ref().map(ConsensusHex::encode);
             let events = block_info
                 .events
                 .iter()
-                .filter_map(|event| {
-                    let (_event_sidechain_number, event) = Option::<_>::from(event.borrow())?;
-                    Some(event)
-                })
+                .filter_map(|event| Option::<_>::from(event.borrow()))
                 .collect();
             Self {
                 bmm_commitment,

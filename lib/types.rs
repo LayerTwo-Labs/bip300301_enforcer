@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::TryFromIntError, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, num::TryFromIntError, sync::Arc};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
@@ -422,9 +422,9 @@ mod serde_hexstr_human_readable {
     }
 }
 
+/// Deposit, for a single sidechain
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Deposit {
-    pub sidechain_id: SidechainNumber,
     pub sequence_number: u64,
     pub outpoint: OutPoint,
     #[serde(with = "serde_hexstr_human_readable")]
@@ -451,6 +451,13 @@ pub enum WithdrawalBundleEventKind {
     },
 }
 
+/// Withdrawal bundle event, for a single sidechain
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SidechainWithdrawalBundleEvent {
+    pub m6id: M6id,
+    pub kind: WithdrawalBundleEventKind,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WithdrawalBundleEvent {
     pub sidechain_id: SidechainNumber,
@@ -461,21 +468,27 @@ pub struct WithdrawalBundleEvent {
 /// BMM commitments for a single block
 pub type BmmCommitments = LinkedHashMap<SidechainNumber, BmmCommitment>;
 
+/// Block event, for a single sidechain
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SidechainBlockEvent {
+    Deposit(Deposit),
+    SidechainProposal {
+        /// Coinbase vout
+        vout: u32,
+        description: SidechainDescription,
+    },
+    WithdrawalBundle(SidechainWithdrawalBundleEvent),
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum BlockEvent {
-    Deposit(Deposit),
+    Deposits(HashMap<SidechainNumber, Deposit>),
     SidechainProposal {
         /// Coinbase vout
         vout: u32,
         proposal: SidechainProposal,
     },
     WithdrawalBundle(WithdrawalBundleEvent),
-}
-
-impl From<Deposit> for BlockEvent {
-    fn from(deposit: Deposit) -> Self {
-        Self::Deposit(deposit)
-    }
 }
 
 impl From<WithdrawalBundleEvent> for BlockEvent {
@@ -486,9 +499,9 @@ impl From<WithdrawalBundleEvent> for BlockEvent {
 
 /// Block info specific to some sidechain
 #[derive(Clone, Debug, Serialize)]
-pub struct SidechainBlockInfo<E = BlockEvent>
+pub struct SidechainBlockInfo<E = SidechainBlockEvent>
 where
-    E: std::borrow::Borrow<BlockEvent>,
+    E: std::borrow::Borrow<SidechainBlockEvent>,
 {
     pub bmm_commitment: Option<BmmCommitment>,
     pub events: Vec<E>,
@@ -496,9 +509,9 @@ where
 
 impl<E> SidechainBlockInfo<E>
 where
-    E: std::borrow::Borrow<BlockEvent>,
+    E: std::borrow::Borrow<SidechainBlockEvent>,
 {
-    pub fn to_owned(&self) -> SidechainBlockInfo<BlockEvent> {
+    pub fn to_owned(&self) -> SidechainBlockInfo<SidechainBlockEvent> {
         SidechainBlockInfo {
             bmm_commitment: self.bmm_commitment,
             events: self
@@ -525,7 +538,7 @@ impl BlockInfo {
     ) -> impl DoubleEndedIterator<Item = (u32, &SidechainProposal)> {
         self.events.iter().filter_map(|event| match event {
             BlockEvent::SidechainProposal { vout, proposal } => Some((*vout, proposal)),
-            BlockEvent::Deposit(_) | BlockEvent::WithdrawalBundle(_) => None,
+            BlockEvent::Deposits(_) | BlockEvent::WithdrawalBundle(_) => None,
         })
     }
 
@@ -534,7 +547,7 @@ impl BlockInfo {
     ) -> impl DoubleEndedIterator<Item = &WithdrawalBundleEvent> {
         self.events.iter().filter_map(|event| match event {
             BlockEvent::WithdrawalBundle(bundle_event) => Some(bundle_event),
-            BlockEvent::Deposit(_) | BlockEvent::SidechainProposal { .. } => None,
+            BlockEvent::Deposits(_) | BlockEvent::SidechainProposal { .. } => None,
         })
     }
 
@@ -542,16 +555,31 @@ impl BlockInfo {
     pub fn only_sidechain(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> SidechainBlockInfo<&BlockEvent> {
+    ) -> SidechainBlockInfo<SidechainBlockEvent> {
         let bmm_commitment = self.bmm_commitments.get(&sidechain_number).copied();
         let events = self
             .events
             .iter()
-            .filter(|event| match event {
-                BlockEvent::Deposit(deposit) => deposit.sidechain_id == sidechain_number,
-                BlockEvent::SidechainProposal { .. } => false,
+            .filter_map(|event| match event {
+                BlockEvent::Deposits(deposits) => deposits
+                    .get(&sidechain_number)
+                    .map(|deposit| SidechainBlockEvent::Deposit(deposit.clone())),
+                BlockEvent::SidechainProposal { .. } => None,
                 BlockEvent::WithdrawalBundle(bundle_event) => {
-                    bundle_event.sidechain_id == sidechain_number
+                    let WithdrawalBundleEvent {
+                        sidechain_id,
+                        m6id,
+                        kind,
+                    } = bundle_event;
+                    if *sidechain_id == sidechain_number {
+                        let bundle_event = SidechainWithdrawalBundleEvent {
+                            m6id: *m6id,
+                            kind: kind.clone(),
+                        };
+                        Some(SidechainBlockEvent::WithdrawalBundle(bundle_event))
+                    } else {
+                        None
+                    }
                 }
             })
             .collect();
