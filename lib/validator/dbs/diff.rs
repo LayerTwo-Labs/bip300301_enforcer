@@ -700,7 +700,7 @@ mod tests {
             .pending_m6ids()
             .get(&rwtxn, &sc)
             .into_diagnostic()?;
-        assert_eq!(pending[&m6id].vote_count, 1);
+        assert_eq!(pending[&m6id].vote_count, 2);
 
         diff.undo(&mut rwtxn, &dbs.active_sidechains)
             .into_diagnostic()?;
@@ -709,7 +709,7 @@ mod tests {
             .pending_m6ids()
             .get(&rwtxn, &sc)
             .into_diagnostic()?;
-        assert_eq!(pending[&m6id].vote_count, 0);
+        assert_eq!(pending[&m6id].vote_count, 1);
         Ok(())
     }
 
@@ -775,8 +775,11 @@ mod tests {
         Ok(())
     }
 
+    /// `Upvote::undo` does `checked_sub(1)` on the bundle's vote_count, so
+    /// undoing against a 0-voted bundle MUST surface a non-fatal
+    /// `BundleVoteCountUnderflow` rather than panic.
     #[test]
-    fn upvote_then_alarm_then_undo_upvote_errors_on_underflow() -> Result<()> {
+    fn ack_bundles_upvote_undo_underflows_at_zero() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
@@ -788,6 +791,16 @@ mod tests {
         let m6id = test_m6id(0xCC);
         dbs.active_sidechains
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+            .into_diagnostic()?;
+        // Force vote_count to 0 directly. Initial is 1 (BIP 300 M3). we
+        // bypass apply/alarm here because the underflow we're testing is a
+        // property of undo alone, not of any particular apply sequence.
+        dbs.active_sidechains
+            .with_pending_withdrawal_entry(&mut rwtxn, &sc, m6id, |entry| {
+                if let ordermap::map::Entry::Occupied(mut e) = entry {
+                    e.get_mut().vote_count = 0;
+                }
+            })
             .into_diagnostic()?;
 
         let upvote_diff = AckBundles({
@@ -801,40 +814,6 @@ mod tests {
             );
             map
         });
-        upvote_diff
-            .apply(&mut rwtxn, &dbs.active_sidechains, 1)
-            .into_diagnostic()?;
-        assert_eq!(
-            dbs.active_sidechains
-                .pending_m6ids()
-                .get(&rwtxn, &sc)
-                .into_diagnostic()?[&m6id]
-                .vote_count,
-            1
-        );
-
-        let alarm_diff = AckBundles({
-            let mut map = HashMap::new();
-            map.insert(
-                sc,
-                AckBundleAction::Alarm {
-                    positive_votes_proposals: HashSet::from([m6id]),
-                },
-            );
-            map
-        });
-        alarm_diff
-            .apply(&mut rwtxn, &dbs.active_sidechains, 2)
-            .into_diagnostic()?;
-        assert_eq!(
-            dbs.active_sidechains
-                .pending_m6ids()
-                .get(&rwtxn, &sc)
-                .into_diagnostic()?[&m6id]
-                .vote_count,
-            0
-        );
-
         let err = upvote_diff
             .undo(&mut rwtxn, &dbs.active_sidechains)
             .expect_err("undo at vote_count=0 must error");
