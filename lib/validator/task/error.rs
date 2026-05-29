@@ -22,6 +22,7 @@ pub(in crate::validator) enum HandleM1ProposeSidechain {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Delete, db::Error),
@@ -41,6 +42,7 @@ impl From<db::Error> for HandleM2AckSidechain {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Delete, db::Error),
@@ -81,6 +83,7 @@ impl From<db::Error> for HandleM3ProposeBundle {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Get, db::Error),
@@ -113,6 +116,7 @@ impl From<db::Error> for HandleM4Votes {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM4AckBundles {
@@ -139,6 +143,7 @@ impl From<db::Error> for HandleM4AckBundles {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Get, db::Error),
@@ -267,6 +272,7 @@ pub(in crate::validator) enum HandleTransaction {
 }
 
 #[derive(Debug, Error, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator::task) enum ValidateTransactionInner {
     #[error(transparent)]
@@ -300,6 +306,7 @@ where
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Delete, db::Error),
@@ -359,6 +366,7 @@ impl From<db::Error> for ConnectBlock {
 }
 
 #[derive(Debug, Error, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[transitive(
     from(db::error::Delete, db::Error),
     from(db::error::Get, db::Error),
@@ -386,6 +394,7 @@ impl From<db::Error> for DisconnectBlock {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(db::error::Get, db::Error),

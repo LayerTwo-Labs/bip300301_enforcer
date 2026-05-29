@@ -290,6 +290,7 @@ impl ActiveSidechainDbs {
 }
 
 #[derive(transitive::Transitive, Debug, Error)]
+#[expect(clippy::duplicated_attributes)]
 #[transitive(
     from(env::error::CreateDb, env::Error),
     from(env::error::OpenEnv, env::Error),
