@@ -165,26 +165,86 @@ impl From<db::Error> for HandleFailedM6Ids {
     }
 }
 
+#[derive(Debug, Error)]
+pub(in crate::validator) enum InvalidM6 {
+    #[error(
+        "invalid input count ({}); M6 withdrawals must have exactly 1 input",
+        n_inputs
+    )]
+    InputCount { n_inputs: usize },
+    #[error(
+        "vote count ({}) is below threshold ({}) for withdrawal bundle {}",
+        .vote_count,
+        .threshold,
+        .m6id,
+    )]
+    InsufficientVoteCount {
+        m6id: M6id,
+        threshold: u16,
+        vote_count: u16,
+    },
+    #[error(
+        "M6ID {} does not correspond to a pending withdrawal for sidechain {}",
+        .m6id,
+        .sidechain_number,
+    )]
+    MissingPendingWithdrawal {
+        m6id: M6id,
+        sidechain_number: SidechainNumber,
+    },
+    #[error(
+        "invalid treasury output count ({}); must create exactly 1 ctip",
+        .n_treasury_outputs,
+    )]
+    TreasuryOutputCount { n_treasury_outputs: usize },
+    #[error(
+        "invalid treasury output index ({}); must be at index 0 in tx outputs",
+        .treasury_vout
+    )]
+    TreasuryOutputIndex { treasury_vout: u32 },
+}
+
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM5M6 {
+    #[error("Cannot be both M5 deposit and M6 withdrawal")]
+    #[fatal(false)]
+    Ambiguous,
+    #[error(
+        "Ctip for sidechain {} exists in {} but not {}",
+        .sidechain,
+        .db_exists_in,
+        .db_missing_in,
+    )]
+    #[fatal(true)]
+    CtipDbsInconsistent {
+        sidechain: SidechainNumber,
+        db_exists_in: String,
+        db_missing_in: String,
+    },
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
-    #[error("Invalid M6")]
+    #[error("Invalid M6 withdrawal")]
     #[fatal(false)]
-    InvalidM6,
+    InvalidM6(#[from] InvalidM6),
     #[error(transparent)]
     #[fatal(false)]
     M6id(#[from] crate::messages::M6idError),
+    #[error("Multiple OP_DRIVECHAIN outputs for sidechain {0}")]
+    #[fatal(false)]
+    MultipleOpDrivechainOutputs(SidechainNumber),
     /// BIP 300 M5: If the treasury UTXO for sidechain slot `S` exists and
     /// a transaction creates a new treasury UTXO for `S` without spending
     /// the already existing treasury UTXO, then this transaction MUST be
     /// considered invalid.
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
-    #[fatal(true)]
+    #[fatal(false)]
     OldCtipUnspent { sidechain_number: SidechainNumber },
+    #[error("cannot deposit or withdraw zero sats from sidechain")]
+    #[fatal(false)]
+    ZeroDiff,
 }
 
 impl From<db::Error> for HandleM5M6 {
