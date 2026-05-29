@@ -16,7 +16,7 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take},
-    combinator::{fail, rest},
+    combinator::{eof, fail, rest},
     multi::many0,
 };
 use thiserror::Error;
@@ -85,6 +85,9 @@ impl M2AckSidechain {
         let sidechain_number = sidechain_number[0];
         let (input, description_hash) = take(32usize)(input)?;
         let description_hash: [u8; 32] = description_hash.try_into().unwrap();
+        // BIP 300 M2: a script that is not "composed of exactly 38 bytes"
+        // MUST be interpreted as an ordinary script.
+        let (input, _) = eof(input)?;
         let message = Self {
             sidechain_number: SidechainNumber::from(sidechain_number),
             description_hash: sha256d::Hash::from_byte_array(description_hash),
@@ -126,6 +129,9 @@ impl M3ProposeBundle {
         let sidechain_number = sidechain_number[0];
         let (input, bundle_txid) = take(32usize)(input)?;
         let bundle_txid: [u8; 32] = bundle_txid.try_into().unwrap();
+        // BIP 300 M3: a script that is not "composed of exactly 38 bytes"
+        // MUST be interpreted as an ordinary script.
+        let (input, _) = eof(input)?;
         let message = Self {
             sidechain_number: SidechainNumber::from(sidechain_number),
             bundle_txid,
@@ -192,6 +198,9 @@ impl M4AckBundles {
         .parse(input)?;
 
         if m4_tag == Self::REPEAT_PREVIOUS_TAG {
+            // BIP 300 M4: RepeatPrevious "script MUST be exactly 6
+            // bytes long"
+            let (input, _) = eof(input)?;
             let message = M4AckBundles::RepeatPrevious;
             return Ok((input, message));
         } else if m4_tag == Self::ONE_BYTE_TAG {
@@ -201,10 +210,15 @@ impl M4AckBundles {
             return Ok((input, message));
         } else if m4_tag == Self::TWO_BYTES_TAG {
             let (input, upvotes) = many0(take(2usize)).parse(input)?;
+            // BIP 300 M4: TwoBytes elements are 16-bit unsigned integers
+            let (input, _) = eof(input)?;
             let upvotes: Vec<u16> = upvotes.into_iter().map(LittleEndian::read_u16).collect();
             let message = M4AckBundles::TwoBytes { upvotes };
             return Ok((input, message));
         } else if m4_tag == Self::LEADING_BY_50_TAG {
+            // BIP 300 M4: LeadingBy50 "script MUST be exactly 6
+            // bytes long"
+            let (input, _) = eof(input)?;
             let message = M4AckBundles::LeadingBy50;
             return Ok((input, message));
         }
@@ -250,6 +264,9 @@ impl M7BmmAccept {
         let (input, sidechain_number) = take(1usize)(input)?;
         let sidechain_number = sidechain_number[0];
         let (input, sidechain_block_hash) = parse_bmm_commitment(input)?;
+        // BIP 301 M7: A `scriptPubKey` encoding an `M7` BMM Accept message
+        // MUST have the following form: `OP_RETURN [0xD1, 0x61, 0x73, 0x68] <S> <H>`
+        let (input, _) = eof(input)?;
         let message = Self {
             sidechain_number: SidechainNumber::from(sidechain_number),
             sidechain_block_hash,
@@ -317,6 +334,16 @@ impl CoinbaseMessage {
                 instructions,
             ));
         };
+        // BIP 300/301 coinbase messages are exactly `OP_RETURN <push>`. M2/M3
+        // explicitly require "exactly N bytes" (`spec/bip300.md:188,241`), M4
+        // versions 0/3 "exactly 6 bytes" (`spec/bip300.md:358-360`). Reject
+        // any extra instructions after the message push.
+        if instructions.next().is_some() {
+            return Err(instruction_failure(
+                Some("unexpected trailing instructions after message"),
+                instructions,
+            ));
+        }
         let input = data.as_bytes();
         let (input, message_tag) = alt((
             tag(M1ProposeSidechain::TAG.as_slice()),
@@ -748,6 +775,9 @@ impl M8BmmRequest {
         let (input, prev_mainchain_block_hash) = take(32usize)(input)?;
         let prev_mainchain_block_hash: [u8; 32] = prev_mainchain_block_hash.try_into().unwrap();
         let prev_mainchain_block_hash = BlockHash::from_byte_array(prev_mainchain_block_hash);
+        // BIP 301 M8: Output of `M8` at index 0 MUST have a `scriptPubKey`
+        // of the following form: `OP_RETURN [tag] <S> <H> <P>`
+        let (input, _) = eof(input)?;
         let message = Self {
             sidechain_number: sidechain_number.into(),
             sidechain_block_hash,
@@ -772,7 +802,10 @@ pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], SidechainNumber> {
         tag([OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8()].as_slice())(input)?;
     let (input, sidechain_number) = take(1usize)(input)?;
     let sidechain_number = sidechain_number[0];
-    tag([OP_TRUE.to_u8()].as_slice())(input)?;
+    let (input, _) = tag([OP_TRUE.to_u8()].as_slice())(input)?;
+    // A treasury UTXO MUST have a `scriptPubKey` of the following form:
+    // `OP_DRIVECHAIN OP_PUSHBYTES_1 <S> OP_TRUE`.
+    let (input, _) = eof(input)?;
     Ok((input, SidechainNumber::from(sidechain_number)))
 }
 
@@ -1061,6 +1094,68 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 300/301 message scripts have explicit exact-length rules (M2/M3
+    /// "exactly 38 bytes", M4 v0/v3 "exactly 6 bytes") or "form" rules
+    /// (M7/M8). All parsers must reject trailing bytes beyond the canonical
+    /// form.
+    #[test]
+    fn parsers_reject_trailing_bytes() -> miette::Result<()> {
+        // M2: canonical body is 1 sidechain + 32 hash = 33 bytes.
+        let mut m2_body = vec![0u8; 33];
+        assert!(M2AckSidechain::parse(&m2_body).is_ok());
+        m2_body.push(0x00);
+        assert!(M2AckSidechain::parse(&m2_body).is_err());
+
+        // M3: canonical body is 1 sidechain + 32 m6id = 33 bytes.
+        let mut m3_body = vec![0u8; 33];
+        assert!(M3ProposeBundle::parse(&m3_body).is_ok());
+        m3_body.push(0x00);
+        assert!(M3ProposeBundle::parse(&m3_body).is_err());
+
+        // M4 RepeatPrevious (V=0) and LeadingBy50 (V=3): nothing follows V.
+        for v in [0x00u8, 0x03] {
+            assert!(M4AckBundles::parse(&[v]).is_ok());
+            assert!(M4AckBundles::parse(&[v, 0x00]).is_err());
+        }
+
+        // M4 TwoBytes: trailing odd byte must be rejected.
+        assert!(M4AckBundles::parse(&[0x02, 0x00, 0x01]).is_ok());
+        assert!(M4AckBundles::parse(&[0x02, 0x00, 0x01, 0xFF]).is_err());
+
+        // M7: canonical body is 1 sidechain + 32 commitment = 33 bytes.
+        let mut m7_body = vec![0u8; 33];
+        assert!(M7BmmAccept::parse(&m7_body).is_ok());
+        m7_body.push(0x00);
+        assert!(M7BmmAccept::parse(&m7_body).is_err());
+
+        // M8: full script is `OP_RETURN <len> [tag] <S> <H> <P>`. Build a
+        // canonical one, then append a trailing byte.
+        let canonical = M8BmmRequest::script_pubkey(
+            SidechainNumber(0),
+            BmmCommitment([0; 32]),
+            BlockHash::from_byte_array([0; 32]),
+        )
+        .into_diagnostic()?;
+        let mut bytes = canonical.to_bytes();
+        assert!(M8BmmRequest::parse(&bytes).is_ok());
+        bytes.push(0x00);
+        assert!(M8BmmRequest::parse(&bytes).is_err());
+
+        // CoinbaseMessage: a script with an M7 followed by extra push must
+        // be rejected at the script-instructions level, before we even reach
+        // the message-body parser.
+        let m7_data = PushBytesBuf::try_from([M7BmmAccept::TAG.as_slice(), &[0u8; 33]].concat())
+            .into_diagnostic()?;
+        let extra = PushBytesBuf::try_from(vec![0xAB]).into_diagnostic()?;
+        let script = bitcoin::script::Builder::new()
+            .push_opcode(OP_RETURN)
+            .push_slice(&m7_data)
+            .push_slice(&extra)
+            .into_script();
+        assert!(CoinbaseMessage::parse(&script).is_err());
+        Ok(())
+    }
+
     #[test]
     fn parse_op_drivechain_rejects_invalid_scripts() {
         // Empty input
@@ -1070,6 +1165,17 @@ mod tests {
         // Missing OP_TRUE at end
         assert!(
             parse_op_drivechain(&[OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8(), 0x01]).is_err()
+        );
+        // Junk at the end
+        assert!(
+            parse_op_drivechain(&[
+                OP_DRIVECHAIN.to_u8(),
+                OP_PUSHBYTES_1.to_u8(),
+                0x01,
+                OP_TRUE.to_u8(),
+                0xAB,
+            ])
+            .is_err()
         );
     }
 
