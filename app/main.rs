@@ -952,10 +952,10 @@ async fn main() -> Result<()> {
     // Spawn the wallet's full scan before pushing anything into the
     // JoinSet. It is blocking on the wallet's behalf and any error should
     // short-circuit startup
-    if let Either::Right(wallet) = &enforcer {
-        if cli.wallet_opts.full_scan {
-            wallet.full_scan().await?;
-        }
+    if let Either::Right(wallet) = &enforcer
+        && cli.wallet_opts.full_scan
+    {
+        wallet.full_scan().await?;
     }
 
     // Task name -> task result

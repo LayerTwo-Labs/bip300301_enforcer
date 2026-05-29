@@ -393,7 +393,7 @@ impl BlockHandler<'_> {
 
             let mut by_votes: Vec<(M6id, u16)> =
                 pending.iter().map(|(m, i)| (*m, i.vote_count)).collect();
-            by_votes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            by_votes.sort_unstable_by_key(|(_, vote_count)| std::cmp::Reverse(*vote_count));
 
             let Some(&(leader_m6id, lead_votes)) = by_votes.first() else {
                 continue;

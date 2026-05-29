@@ -38,6 +38,7 @@ pub mod error {
     }
 
     #[derive(Debug, Error, Transitive)]
+    #[expect(clippy::duplicated_attributes)]
     #[transitive(from(db::error::Put, db::Error), from(db::error::TryGet, db::Error))]
     pub(in crate::validator::dbs::block_hashes) enum PutBlockInfoInner {
         #[error(transparent)]
@@ -68,6 +69,7 @@ pub mod error {
     }
 
     #[derive(Debug, Error, Transitive)]
+    #[expect(clippy::duplicated_attributes)]
     #[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
     pub(crate) enum LastCommonAncestor {
         #[error(transparent)]

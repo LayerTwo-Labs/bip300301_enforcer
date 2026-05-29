@@ -36,6 +36,7 @@ pub(in crate::validator) trait Diff {
 /// inconsistency between the block and the state — would have driven a
 /// vote count below zero. Treat as an invalid block, not corrupt state.
 #[derive(Debug, Error, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[transitive(
     from(db::error::Delete, db::Error),
     from(db::error::Get, db::Error),
