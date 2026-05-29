@@ -844,9 +844,10 @@ pub struct PendingM6idInfo {
 }
 
 impl PendingM6idInfo {
+    /// BIP 300 M3: a newly proposed bundle starts with an ACK score of 1
     pub fn new(proposal_height: u32) -> Self {
         Self {
-            vote_count: 0,
+            vote_count: 1,
             proposal_height,
         }
     }

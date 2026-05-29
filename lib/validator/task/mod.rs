@@ -2217,6 +2217,35 @@ mod tests {
         Ok(())
     }
 
+    // ── handle_m3 ──
+
+    /// BIP 300 M3: a newly proposed bundle starts with an ACK score of 1
+    /// (the proposer's implicit vote), not 0.
+    #[test]
+    fn handle_m3_propose_starts_vote_count_at_one() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let m6id = test_m6id(0xAA);
+        let diff = test_handler(&dbs)
+            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .into_diagnostic()?;
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 0)
+            .into_diagnostic()?;
+
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .into_diagnostic()?;
+        assert_eq!(pending[&m6id].vote_count, 1);
+        Ok(())
+    }
+
     // ── handle_m4_votes ──
 
     #[test]
@@ -2321,6 +2350,7 @@ mod tests {
         }
         set_vote_count(&mut rwtxn, &dbs, &sc, target, 2);
         set_vote_count(&mut rwtxn, &dbs, &sc, other_positive, 3);
+        set_vote_count(&mut rwtxn, &dbs, &sc, other_zero, 0);
 
         // Upvote target (index 0). Spec: target +1; other_positive -1;
         // other_zero unchanged (saturating at 0).
@@ -2654,6 +2684,7 @@ mod tests {
         }
         // Current state: target=1, rival_now_zero=0, rival_still_positive=2.
         set_vote_count(&mut rwtxn, &dbs, &sc, target, 1);
+        set_vote_count(&mut rwtxn, &dbs, &sc, rival_now_zero, 0);
         set_vote_count(&mut rwtxn, &dbs, &sc, rival_still_positive, 2);
 
         // Prior diff listed BOTH rivals in downvoted_others (simulating the
@@ -2711,6 +2742,7 @@ mod tests {
                 .into_diagnostic()?;
         }
         // Current state: a=0, b=3. Stale prior set claimed both were positive.
+        set_vote_count(&mut rwtxn, &dbs, &sc, a, 0);
         set_vote_count(&mut rwtxn, &dbs, &sc, b, 3);
         let stale = diff::AckBundles({
             let mut map = HashMap::new();

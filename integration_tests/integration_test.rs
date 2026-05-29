@@ -462,9 +462,9 @@ pub async fn withdraw_succeed(
         bitcoin::Amount::from_str_in(&receive_addr_balance_str, bitcoin::Denomination::Bitcoin)?;
     anyhow::ensure!(receive_addr_balance == bitcoin::Amount::ZERO);
     tracing::debug!("Mining blocks until withdrawal success");
-    let () = mine_check_block_events(post_setup, 7, Some(true), |seq, block_info| {
+    let () = mine_check_block_events(post_setup, 6, Some(true), |seq, block_info| {
         match (seq, block_info.events.as_slice()) {
-            (6, [event]) => {
+            (5, [event]) => {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
                 let withdrawal_bundle_event::event::Event::Succeeded(
                     withdrawal_bundle_event::event::Succeeded {
@@ -478,7 +478,7 @@ pub async fn withdraw_succeed(
                 anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
                 Ok(())
             }
-            (6, events) => {
+            (5, events) => {
                 anyhow::bail!("Expected withdrawal bundle success event, found `{events:?}`")
             }
             (_, []) => Ok(()),
