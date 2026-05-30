@@ -28,11 +28,15 @@ pub mod cusf_enforcer;
 mod dbs;
 pub mod main_rest_client;
 pub mod parse_block_files;
+mod sync_state_summary;
 mod task;
 #[cfg(test)]
 mod test_utils;
 
 use self::dbs::{Dbs, PendingM6ids};
+pub use self::sync_state_summary::{
+    CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
+};
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -800,45 +804,4 @@ impl Validator {
             .get_seen_bmm_requests_for_parent_block(&rotxn, parent_block_hash)?;
         Ok(res)
     }
-
-    /*
-    pub fn get_deposits(&self, sidechain_number: u8) -> Result<Vec<Deposit>> {
-        let txn = self.env.read_txn().into_diagnostic()?;
-        let treasury_utxos_range = self
-            .sidechain_number_sequence_number_to_treasury_utxo
-            .range(&txn, &((sidechain_number, 0)..(sidechain_number, u64::MAX)))
-            .into_diagnostic()?;
-        let mut deposits = vec![];
-        for item in treasury_utxos_range {
-            let ((_, sequence_number), treasury_utxo) = item.into_diagnostic()?;
-            if treasury_utxo.total_value > treasury_utxo.previous_total_value
-                && treasury_utxo.address.is_some()
-            {
-                let deposit = Deposit {
-                    sequence_number,
-                    address: treasury_utxo.address.unwrap(),
-                    value: treasury_utxo.total_value - treasury_utxo.previous_total_value,
-                };
-                deposits.push(deposit);
-            }
-        }
-        Ok(deposits)
-    }
-    */
-
-    /*
-    pub fn get_accepted_bmm_hashes(&self) -> Result<Vec<(u32, Vec<[u8; 32]>)>> {
-        let mut block_height_accepted_bmm_hashes = vec![];
-        let txn = self.env.read_txn().into_diagnostic()?;
-        for item in self
-            .block_height_to_accepted_bmm_block_hashes
-            .iter(&txn)
-            .into_diagnostic()?
-        {
-            let (block_height, accepted_bmm_hashes) = item.into_diagnostic()?;
-            block_height_accepted_bmm_hashes.push((block_height, accepted_bmm_hashes.to_vec()));
-        }
-        Ok(block_height_accepted_bmm_hashes)
-    }
-    */
 }

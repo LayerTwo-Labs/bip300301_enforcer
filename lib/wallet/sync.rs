@@ -85,7 +85,7 @@ impl WalletInner {
             .delete_pending_sidechain_proposals(sidechain_proposal_ids)
             .await?;
         let mut database = self.bdk_db.lock().await;
-        tracing::debug!("applying block to BDK wallet");
+        tracing::trace!("applying block to BDK wallet");
 
         match wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height)) {
             Ok(()) => (),
@@ -96,7 +96,7 @@ impl WalletInner {
             .await
             .map_err(error::HandleConnectBlock::from)?;
 
-        tracing::debug!(
+        tracing::trace!(
             "applied block {} in persisted changes to BDK wallet",
             if persisted_changed {
                 "resulted"
