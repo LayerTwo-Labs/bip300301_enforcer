@@ -2,5 +2,6 @@
 /.integration-deps
 bip300301_enforcer.mdb
 datadir
+datadir-sync-benchmark*
 sync_analysis
 integrationtests.env

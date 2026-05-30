@@ -432,9 +432,17 @@ pub struct Config {
     pub wallet_opts: WalletConfig,
 
     /// Exit after syncing to the specified block height. If set to 0, we exit
-    /// after syncing to the tip. Can be used for benchmarking sync speeds.
+    /// after syncing to the tip. On exit, a summary of the sync (blocks
+    /// synced, elapsed time, blocks/sec) is logged.
     #[arg(long)]
     pub exit_after_sync: Option<u32>,
+
+    /// Path to a reference `consensus-state.json` (from a prior
+    /// `--exit-after-sync` run). Syncs to that file's tip height and verifies
+    /// the resulting consensus state matches it, exiting non-zero on any
+    /// mismatch. Cannot be combined with `--exit-after-sync`.
+    #[arg(long, conflicts_with = "exit_after_sync")]
+    pub verify_consensus_state: Option<PathBuf>,
 
     /// Assert that the connected Bitcoin Core node is running this major
     /// version (e.g. `30`). If not set, the enforcer accepts any major in

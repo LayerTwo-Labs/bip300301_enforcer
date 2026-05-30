@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
@@ -14,9 +18,8 @@ use bip300301_enforcer_lib::{
         },
     },
     rpc_client, server,
-    types::Event,
     validator::{
-        Validator,
+        SyncStateSummary, Validator,
         main_rest_client::{MainRestClient, MainRestClientError},
     },
     version,
@@ -26,7 +29,7 @@ use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
 use either::Either;
-use futures::{StreamExt, TryFutureExt as _, channel::oneshot};
+use futures::{TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
 use jsonrpsee::{core::client::Error, server::middleware::rpc::RpcServiceBuilder};
 use miette::{Diagnostic, IntoDiagnostic, Result, WrapErr as _, miette};
@@ -626,33 +629,153 @@ async fn run_wallet_mempool_task(
     result
 }
 
-async fn run_exit_after_sync(validator: Validator, goal_height: u32) -> Result<(), miette::Report> {
-    tracing::info!("Waiting for sync to height {} before exiting", goal_height);
+fn report_sync_state(validator: &Validator, state_file: &Path) -> Result<SyncStateSummary> {
+    match validator.sync_state_summary() {
+        Ok(summary) => {
+            tracing::info!(
+                state_digest = %summary.digest(),
+                tip_hash = %summary.tip_hash,
+                tip_height = summary.tip_height,
+                sidechain_proposals = summary.sidechains.len(),
+                active_sidechains = summary.active_sidechain_count(),
+                pending_withdrawal_bundles = summary.pending_withdrawal_count(),
+                "writing consensus state summary to {}", state_file.display(),
+            );
+            let json = summary.to_json_pretty();
+            std::fs::write(state_file, format!("{json}\n")).map_err(|err| {
+                miette::Report::from_err(err).wrap_err("write sync state summary")
+            })?;
+            Ok(summary)
+        }
+        err => err,
+    }
+}
 
-    let mut events = std::pin::pin!(validator.subscribe_events());
-    tracing::debug!("Subscribed to validator events");
+fn load_consensus_reference(path: &Path) -> Result<SyncStateSummary, miette::Report> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|err| miette::Report::from_err(err).wrap_err("load consensus reference"))?;
 
-    loop {
-        match events.next().await {
-            Some(Ok(Event::ConnectBlock { header_info, .. }))
-                if header_info.height >= goal_height =>
-            {
-                tracing::info!("Synced to block height {}, exiting", header_info.height);
-                return Ok(());
-            }
+    SyncStateSummary::from_json(&contents)
+        .map_err(|err| miette!("consensus-state file {} is invalid: {err}", path.display()))
+}
 
-            Some(Ok(_)) => {}
+fn verify_against_reference(
+    produced: SyncStateSummary,
+    reference: &Option<SyncStateSummary>,
+) -> Result<(), miette::Report> {
+    use std::fmt::Write as _;
 
-            Some(Err(err)) => {
-                return Err(miette::Report::from_err(err)
-                    .wrap_err("exit-after-sync: error receiving event"));
-            }
+    let Some(reference) = reference else {
+        return Ok(());
+    };
 
-            None => {
-                return Err(miette!("exit-after-sync: no event received"));
-            }
+    if produced == *reference {
+        tracing::info!(
+            digest = %produced.digest(),
+            tip_height = produced.tip_height,
+            "consensus-state verification PASSED: state matches reference exactly",
+        );
+        return Ok(());
+    }
+
+    // Short hash/digest prefixes keep every report line on one line
+    let short = |v: &dyn std::fmt::Display| -> String { v.to_string().chars().take(12).collect() };
+
+    let mut report = String::new();
+    let _ = writeln!(report, "consensus-state verification FAILED");
+    let _ = writeln!(
+        report,
+        "  current   tip:    height {} ({}..)",
+        produced.tip_height,
+        short(&produced.tip_hash)
+    );
+    let _ = writeln!(
+        report,
+        "  reference tip:    height {} ({}..)",
+        reference.tip_height,
+        short(&reference.tip_hash)
+    );
+    let _ = writeln!(
+        report,
+        "  current   digest: {}..",
+        short(&produced.digest())
+    );
+    let _ = write!(
+        report,
+        "  reference digest: {}..",
+        short(&reference.digest())
+    );
+
+    let sidechain_diffs = produced.sidechain_diffs(reference);
+    if !sidechain_diffs.is_empty() {
+        let _ = write!(report, "\nsidechain differences:");
+        for diff in sidechain_diffs {
+            let _ = write!(report, "\n  - {diff}");
         }
     }
+
+    Err(miette!("{report}"))
+}
+
+async fn run_exit_after_sync(
+    mut validator: Validator,
+    goal_height: u32,
+    state_file: PathBuf,
+    reference: Option<SyncStateSummary>,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    cancel: CancellationToken,
+) -> Result<(), miette::Report> {
+    use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer as _;
+
+    let start_height = validator.try_get_block_height().ok().flatten();
+
+    if let Some(current) = start_height {
+        if current > goal_height {
+            return Err(miette!(
+                "data dir is already synced to height {current}, past the requested height \
+                 {goal_height}"
+            ));
+        }
+    }
+
+    let target_hash = mainchain_client
+        .getblockhash(goal_height as usize)
+        .await
+        .map_err(|err| {
+            miette::Report::from_err(err).wrap_err(format!(
+                "exit-after-sync: failed to resolve block #{goal_height}"
+            ))
+        })?;
+
+    tracing::info!(
+        goal_height,
+        target_hash = %target_hash,
+        ?start_height,
+        "Syncing to height #{goal_height}: {target_hash}, then exiting",
+    );
+
+    let started_at = tokio::time::Instant::now();
+    validator
+        .sync_to_tip(cancel.cancelled(), target_hash)
+        .await?;
+    let elapsed = started_at.elapsed();
+
+    let final_height = validator.try_get_block_height().ok().flatten();
+    let blocks_synced = match (start_height, final_height) {
+        (Some(start), Some(end)) => u64::from(end.saturating_sub(start)),
+        (None, Some(end)) => u64::from(end) + 1,
+        _ => 0,
+    };
+    let elapsed_secs = elapsed.as_secs_f64();
+    let blocks_per_sec = blocks_synced as f64 / elapsed_secs;
+    let elapsed = jiff::SignedDuration::try_from(elapsed).unwrap_or_default();
+    tracing::info!(
+        "exit-after-sync complete: synced {blocks_synced} blocks to height {} in {elapsed} ({blocks_per_sec:.1} blocks/sec)",
+        final_height.map_or_else(|| "?".to_owned(), |h| h.to_string()),
+    );
+
+    let produced = report_sync_state(&validator, &state_file)?;
+    verify_against_reference(produced, &reference)
 }
 
 #[tokio::main]
@@ -692,6 +815,23 @@ async fn main() -> Result<()> {
         build = if cfg!(debug_assertions) { "debug" } else { "release" },
         "Starting up bip300301_enforcer",
     );
+
+    // Validate the verification reference early, before creating node connections etc.
+    let verify_reference = cli
+        .verify_consensus_state
+        .clone()
+        .map(|path| {
+            let reference = load_consensus_reference(path.as_ref())?;
+            tracing::info!(
+                reference = %path.display(),
+                tip_height = reference.tip_height,
+                reference_digest = %reference.digest(),
+                "Loaded consensus-state reference, will sync to #{} and verify",
+                reference.tip_height,
+            );
+            Ok::<_, miette::Report>(reference)
+        })
+        .transpose()?;
 
     let raw_url = format!("http://{}", cli.node_rpc_opts.addr);
     let mainchain_rest_client = MainRestClient::new(
@@ -962,7 +1102,14 @@ async fn main() -> Result<()> {
     let mut tasks: tokio::task::JoinSet<(&'static str, Result<(), miette::Report>)> =
         tokio::task::JoinSet::new();
 
-    {
+    // `--exit-after-sync` / `--verify-consensus-state` drive a single bounded
+    // sync to a specific height (spawned below) instead of the normal task that
+    // chases the live chain tip. Skip the tip-chasing sync (and the periodic
+    // wallet sync) in that mode so the two don't race on the validator.
+    let exit_after_sync_mode =
+        cli.exit_after_sync.is_some() || cli.verify_consensus_state.is_some();
+
+    if !exit_after_sync_mode {
         let cancel = cancel.clone();
         let mainchain_client = mainchain_client.clone();
         let zmq = node_zmq_addr_sequence.clone();
@@ -1032,7 +1179,7 @@ async fn main() -> Result<()> {
         // periodic sync. Therefore we expose a knob to disable it.
         let sync_source_disabled = cli.wallet_opts.sync_source == WalletSyncSource::Disabled;
 
-        if !cli.wallet_opts.skip_periodic_sync && !sync_source_disabled {
+        if !cli.wallet_opts.skip_periodic_sync && !sync_source_disabled && !exit_after_sync_mode {
             let cancel = cancel.clone();
             tasks.spawn(async move {
                 let res = wallet.sync_task(cancel).await;
@@ -1041,32 +1188,39 @@ async fn main() -> Result<()> {
         }
     }
 
-    if let Some(exit_after_sync) = cli.exit_after_sync {
+    if exit_after_sync_mode {
         let validator = match &enforcer {
             Either::Left(validator) => validator.clone(),
             Either::Right(wallet) => wallet.validator().clone(),
         };
 
-        let goal_height = if exit_after_sync != 0 {
-            // Sanity check that the user didn't give an exit height that's
-            // below what we're currently at.
-
-            let mainchain_tip = validator.try_get_block_height()?;
-            if exit_after_sync < mainchain_tip.unwrap_or_default() {
-                return Err(miette!(
-                    "exit-after-sync height {} is below current height {}",
-                    exit_after_sync,
-                    mainchain_tip.unwrap_or_default()
-                ));
+        // The reference (if any) was loaded + validated at startup.
+        let (goal_height, reference) = match verify_reference {
+            Some(reference) => (reference.tip_height, Some(reference)),
+            None => {
+                let exit_after_sync = cli.exit_after_sync.unwrap_or(0);
+                let goal_height = if exit_after_sync != 0 {
+                    exit_after_sync
+                } else {
+                    info.blocks
+                };
+                (goal_height, None)
             }
-
-            exit_after_sync
-        } else {
-            info.blocks
         };
 
+        let state_file = cli.data_dir.join("consensus-state.json");
+        let mainchain_client = mainchain_client.clone();
+        let cancel = cancel.clone();
         tasks.spawn(async move {
-            let res = run_exit_after_sync(validator, goal_height).await;
+            let res = run_exit_after_sync(
+                validator,
+                goal_height,
+                state_file,
+                reference,
+                mainchain_client,
+                cancel,
+            )
+            .await;
             ("exit-after-sync task", res)
         });
     }
