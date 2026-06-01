@@ -1944,6 +1944,48 @@ mod tests {
         Ok(())
     }
 
+    /// A miner-controlled coinbase carrying a non-fatal malformed BIP 300
+    /// message must not be able to abort block connection. Here: an M4 (ACK
+    /// bundles) OneByte message with 1 upvote while zero sidechains are active
+    /// yields `HandleM4Votes::InvalidVotes` (non-fatal). The block is otherwise
+    /// valid and would be accepted by unmodified Bitcoin Core.
+    #[test]
+    fn connect_block_coinbase_m4_invalid_votes_should_not_halt() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let m4_script: ScriptBuf = M4AckBundles::OneByte {
+            upvotes: vec![0x00],
+        }
+        .try_into()
+        .expect("build m4 script");
+        let m4_output = TxOut {
+            script_pubkey: m4_script,
+            value: Amount::ZERO,
+        };
+
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![m4_output],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let res = test_handler(&dbs).connect_block(&mut rwtxn, &block);
+        assert!(
+            res.is_ok(),
+            "connect_block must not abort on a non-fatal coinbase M4 error, got: {:?}",
+            res.err()
+        );
+        Ok(())
+    }
+
     #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
