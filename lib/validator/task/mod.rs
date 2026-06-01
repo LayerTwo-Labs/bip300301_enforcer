@@ -948,7 +948,7 @@ impl BlockHandler<'_> {
         let mut coinbase_msg_diffs = diff::DiffBuilder::new(rwtxn, dbs, height);
         let m4_exists = coinbase_messages.m4_exists();
         for (message, _vout) in coinbase_messages {
-            let (event, diff) = coinbase_msg_diffs.rotxn(|rotxn, _dbs| {
+            let (event, diff) = match coinbase_msg_diffs.rotxn(|rotxn, _dbs| {
                 self.handle_coinbase_message(
                     rotxn,
                     height,
@@ -956,7 +956,20 @@ impl BlockHandler<'_> {
                     &mut accepted_bmm_requests,
                     message,
                 )
-            })?;
+            }) {
+                Ok(ok) => ok,
+                // Mirror the non-coinbase tx loop below: a non-fatal error from
+                // a (miner-controlled) coinbase message must not abort block
+                // connection or any miner could wedge every enforcer with a
+                // malformed M3/M4/etc.
+                Err(err) => {
+                    if err.is_fatal() {
+                        return Err(err);
+                    }
+                    tracing::warn!("Non-fatal error handling coinbase message: {err:#}");
+                    continue;
+                }
+            };
             match event {
                 Some(CoinbaseMessageEvent::NewSidechainProposal { sidechain }) => {
                     let proposal = sidechain.proposal;
