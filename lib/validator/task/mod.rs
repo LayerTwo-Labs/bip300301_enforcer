@@ -11,7 +11,7 @@ use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use error_fatality::{Fatality as _, Split as _};
+use error_fatality::Split as _;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
@@ -1110,27 +1110,15 @@ impl BlockHandler<'_> {
         let prev_mainchain_block_hash = block.header.prev_blockhash;
         let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
         'connect_txs: for transaction in &block.txdata[1..] {
-            let result = match tx_diffs.rotxn(|rotxn, _dbs| {
+            let Some((tx_event, diff)) = tx_diffs.rotxn(|rotxn, _dbs| {
                 self.handle_transaction(
                     rotxn,
                     Some(&accepted_bmm_requests),
                     &prev_mainchain_block_hash,
                     transaction,
                 )
-            }) {
-                Ok(result) => result,
-                Err(err) => {
-                    if err.is_fatal() {
-                        return Err(err.into());
-                    }
-                    tracing::warn!(
-                        "Non-fatal error handling tx `{}`: {err:#}",
-                        transaction.compute_txid()
-                    );
-                    continue 'connect_txs;
-                }
-            };
-            let Some((tx_event, diff)) = result else {
+            })?
+            else {
                 continue 'connect_txs;
             };
             let () = tx_diffs.apply(diff)?;
@@ -1992,7 +1980,7 @@ mod tests {
     }
 
     #[test]
-    fn connect_block_skips_non_fatal_tx_errors() -> Result<()> {
+    fn connect_block_does_not_skip_non_fatal_tx_errors() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let prev_hash = BlockHash::all_zeros();
@@ -2012,8 +2000,10 @@ mod tests {
             .into_diagnostic()?;
 
         assert!(
-            test_handler(&dbs).connect_block(&mut rwtxn, &block).is_ok(),
-            "connect_block should succeed despite non-fatal M8 error"
+            test_handler(&dbs)
+                .connect_block(&mut rwtxn, &block)
+                .is_err(),
+            "connect_block should not succeed due to non-fatal M8 error"
         );
         Ok(())
     }
