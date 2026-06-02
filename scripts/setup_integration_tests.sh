@@ -17,7 +17,16 @@ esac
 DEPS_ROOT="$(cd "$GIT_COMMON_DIR/.." && pwd)"
 DEPS_DIR="$DEPS_ROOT/.integration-deps"
 
-BITCOIN_VERSION="30.2"
+# Stock Bitcoin Core version to download as BITCOIND_UNPATCHED. Derived from
+# CI_BITCOIN_CORE_VERSIONS in lib/version.rs.
+VERSION_FILE="$REPO_ROOT/lib/version.rs"
+ALL_BITCOIN_VERSIONS="$(grep -oE '"[0-9]+\.[0-9]+"' "$VERSION_FILE" | tr -d '"' || true)"
+if [ -z "$ALL_BITCOIN_VERSIONS" ]; then
+    echo "Could not parse CI_BITCOIN_CORE_VERSIONS from $VERSION_FILE" >&2
+    exit 1
+fi
+# CI_BITCOIN_CORE_VERSIONS is sorted newest-first; take the newest.
+BITCOIN_VERSION="${ALL_BITCOIN_VERSIONS%%$'\n'*}"
 ELECTRS_VERSION="v3.2.0"
 PATCHED_REVISION="latest"
 
