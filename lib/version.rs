@@ -15,7 +15,7 @@ use thiserror::Error;
 
 /// Bitcoin Core major versions the enforcer is known to work with.
 /// Keep sorted newest-first. Update when dropping or adding support.
-pub const SUPPORTED_BITCOIN_CORE_MAJORS: [u32; 3] = [30, 29, 28];
+pub const SUPPORTED_BITCOIN_CORE_MAJORS: [u32; 3] = [31, 30, 29];
 
 /// Specific Bitcoin Core releases that integration-test CI exercises, one
 /// per entry of [`SUPPORTED_BITCOIN_CORE_MAJORS`]. Format is `MAJOR.MINOR`,
@@ -26,7 +26,7 @@ pub const SUPPORTED_BITCOIN_CORE_MAJORS: [u32; 3] = [30, 29, 28];
 /// so the grep in `.github/workflows/check_lint_build_release.yaml` keeps
 /// working. A unit test (`ci_versions_match_majors`) asserts the two
 /// constants stay consistent.
-pub const CI_BITCOIN_CORE_VERSIONS: [&str; 3] = ["30.2", "29.1", "28.2"];
+pub const CI_BITCOIN_CORE_VERSIONS: [&str; 3] = ["31.0", "30.2", "29.1"];
 
 /// Extracts the major version from a Bitcoin Core `version` integer as
 /// returned by `getnetworkinfo`.
