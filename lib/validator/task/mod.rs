@@ -2406,6 +2406,46 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 300 M3: re-proposing a withdrawal bundle that is already pending
+    /// must be rejected, otherwise a miner could reset its ack count and age.
+    #[test]
+    fn handle_m3_rejects_already_pending_bundle() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        // Propose a bundle and apply it, so the m6id is pending.
+        let m6id = test_m6id(0xAA);
+        let diff = test_handler(&dbs)
+            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .into_diagnostic()?;
+        diff.apply(&mut rwtxn, &dbs.active_sidechains, 0)
+            .into_diagnostic()?;
+
+        // Re-proposing the same m6id is rejected.
+        let err = test_handler(&dbs)
+            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .expect_err("re-proposing a pending bundle must be rejected");
+        assert!(matches!(
+            err,
+            error::HandleM3ProposeBundle::BundleAlreadyPending { sidechain_number, m6id: e }
+                if sidechain_number == sc && e == m6id
+        ));
+        assert!(!err.is_fatal());
+
+        // A different, not-yet-pending m6id is still accepted.
+        assert!(
+            test_handler(&dbs)
+                .handle_m3_propose_bundle(&rwtxn, sc, test_m6id(0xBB))
+                .is_ok(),
+            "a not-yet-pending bundle should be accepted"
+        );
+        Ok(())
+    }
+
     // ── handle_m4_votes ──
 
     #[test]
