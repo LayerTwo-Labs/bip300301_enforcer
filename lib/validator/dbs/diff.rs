@@ -526,6 +526,10 @@ pub struct M6 {
     pub sidechain_number: SidechainNumber,
     pub new_ctip: Ctip,
     pub removed_pending_withdrawal: M6id,
+    /// Position of the removed bundle in the chronological pending list at
+    /// apply time, so undo can restore it at the same index (M4 votes index
+    /// pending bundles by position).
+    pub removed_pending_withdrawal_index: usize,
     pub removed_pending_withdrawal_info: PendingM6idInfo,
 }
 
@@ -539,6 +543,7 @@ impl Diff for M6 {
             sidechain_number,
             new_ctip,
             removed_pending_withdrawal,
+            removed_pending_withdrawal_index: _,
             removed_pending_withdrawal_info: _,
         } = self;
         let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
@@ -552,22 +557,20 @@ impl Diff for M6 {
             sidechain_number,
             new_ctip: _,
             removed_pending_withdrawal,
+            removed_pending_withdrawal_index,
             removed_pending_withdrawal_info,
         } = self;
         let () = dbs.delete_ctip(rwtxn, *sidechain_number)?;
-        let () = dbs.with_pending_withdrawal_entry(
-            rwtxn,
-            sidechain_number,
-            *removed_pending_withdrawal,
-            |entry| match entry {
-                ordermap::map::Entry::Occupied(mut entry) => {
-                    _ = entry.insert(*removed_pending_withdrawal_info)
-                }
-                ordermap::map::Entry::Vacant(entry) => {
-                    _ = entry.insert(*removed_pending_withdrawal_info)
-                }
-            },
-        )?;
+        // Restore the bundle at its original position. `apply` removed it with
+        // a shift-remove, so a plain re-insert would append it at the end and
+        // permanently reorder the remaining bundles.
+        let () = dbs.with_pending_withdrawals(rwtxn, sidechain_number, |pending| {
+            pending.shift_insert(
+                *removed_pending_withdrawal_index,
+                *removed_pending_withdrawal,
+                *removed_pending_withdrawal_info,
+            );
+        })?;
         Ok(())
     }
 }
