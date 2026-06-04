@@ -601,7 +601,7 @@ impl BlockHandler<'_> {
         rotxn: &RoTxn,
         transaction: Transaction,
         old_treasury_value: Amount,
-    ) -> Result<(M6id, SidechainNumber, PendingM6idInfo), error::HandleM5M6> {
+    ) -> Result<(M6id, SidechainNumber, usize, PendingM6idInfo), error::HandleM5M6> {
         let (m6id, sidechain_number) = compute_m6id(transaction, old_treasury_value)?;
 
         let pending_m6ids = self
@@ -613,14 +613,17 @@ impl BlockHandler<'_> {
                 m6id,
                 sidechain_number,
             })?;
-        let info = pending_m6ids
-            .get(&m6id)
-            .ok_or(error::InvalidM6::MissingPendingWithdrawal {
-                m6id,
-                sidechain_number,
-            })?;
+        // Capture the bundle's position in the chronological list so a
+        // disconnect (undo) can restore it at the same index.
+        let (index, _, info) =
+            pending_m6ids
+                .get_full(&m6id)
+                .ok_or(error::InvalidM6::MissingPendingWithdrawal {
+                    m6id,
+                    sidechain_number,
+                })?;
         if info.vote_count > self.thresholds.withdrawal_bundle_inclusion_threshold {
-            Ok((m6id, sidechain_number, *info))
+            Ok((m6id, sidechain_number, index, *info))
         } else {
             let err = error::InvalidM6::InsufficientVoteCount {
                 m6id,
@@ -722,7 +725,7 @@ impl BlockHandler<'_> {
                         };
                         return Err(err.into());
                     }
-                    let (m6id, sidechain_number_, info) = self.handle_m6(
+                    let (m6id, sidechain_number_, removed_index, info) = self.handle_m6(
                         rotxn,
                         transaction.clone().into_owned(),
                         old_treasury_value,
@@ -745,6 +748,7 @@ impl BlockHandler<'_> {
                         sidechain_number,
                         new_ctip,
                         removed_pending_withdrawal: m6id,
+                        removed_pending_withdrawal_index: removed_index,
                         removed_pending_withdrawal_info: info,
                     };
                     match res {
