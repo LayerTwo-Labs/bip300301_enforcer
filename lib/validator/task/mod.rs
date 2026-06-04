@@ -267,20 +267,29 @@ impl BlockHandler<'_> {
             .filter(|(_proposal_id, sidechain)| {
                 // doing `height - sidechain.status.proposal_height` can panic if the enforcer has data
                 // from a previous sync that is not in the active chain.
-                let sidechain_proposal_age =
-                    height.saturating_sub(sidechain.status.proposal_height);
+                let age = height.saturating_sub(sidechain.status.proposal_height);
                 let sidechain_slot_is_used = dbs
                     .active_sidechains
                     .sidechain()
                     .contains_key(rotxn, &sidechain.proposal.sidechain_number)?;
-                // FIXME: Do we need to check that the vote_count is below the threshold, or is it
-                // enough to check that the max age was exceeded?
-                let failed = sidechain_slot_is_used
-                    && sidechain_proposal_age
-                        > thresholds.used_sidechain_slot_proposal_max_age as u32
-                    || !sidechain_slot_is_used
-                        && sidechain_proposal_age
-                            > thresholds.unused_sidechain_slot_proposal_max_age as u32;
+                let (max_age, threshold) = if sidechain_slot_is_used {
+                    (
+                        thresholds.used_sidechain_slot_proposal_max_age as u32,
+                        thresholds.used_sidechain_slot_activation_threshold as u32,
+                    )
+                } else {
+                    (
+                        thresholds.unused_sidechain_slot_proposal_max_age as u32,
+                        thresholds.unused_sidechain_slot_activation_threshold as u32,
+                    )
+                };
+                // BIP 300: a proposal fails once its age exceeds the max age, or
+                // once it has accumulated enough non-ack blocks that it can no
+                // longer reach the activation threshold within the remaining
+                // window (max_fails = max_age - threshold).
+                let max_fails = max_age.saturating_sub(threshold);
+                let fails = age.saturating_sub(sidechain.status.vote_count as u32);
+                let failed = age > max_age || (age > max_fails && fails >= max_fails);
                 Ok(failed)
             })
             .collect()?;
