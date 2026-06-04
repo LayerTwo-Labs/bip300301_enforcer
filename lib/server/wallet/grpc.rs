@@ -1,10 +1,14 @@
-use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, io::Cursor, str::FromStr, sync::Arc};
 
 use bdk_wallet::bip39::Mnemonic;
-use bitcoin::{Address, Amount, BlockHash, Transaction, hashes::Hash as _};
+use bitcoin::{
+    consensus::encode::{Decodable, VarInt},
+    hashes::Hash as _,
+    Address, Amount, BlockHash, Transaction, TxOut,
+};
 use futures::{
-    StreamExt as _,
     stream::{BoxStream, FusedStream},
+    StreamExt as _,
 };
 use thiserror::Error;
 
@@ -12,29 +16,28 @@ use crate::{
     convert,
     errors::ErrorChain,
     proto::{
-        StatusBuilder, ToStatus,
         common::ReverseHex,
         mainchain::{
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
-            CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
-            CreateSidechainProposalResponse, CreateWalletRequest, CreateWalletResponse,
-            GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
-            GetInfoRequest, GetInfoResponse, ListSidechainDepositTransactionsRequest,
-            ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
-            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
-            SendTransactionRequest, SendTransactionResponse, UnlockWalletRequest,
-            UnlockWalletResponse, WalletTransaction, create_sidechain_proposal_response,
-            get_info_response,
+            create_sidechain_proposal_response, get_info_response,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
-            wallet_service_server::WalletService,
+            wallet_service_server::WalletService, BroadcastWithdrawalBundleRequest,
+            BroadcastWithdrawalBundleResponse, CreateBmmCriticalDataTransactionRequest,
+            CreateBmmCriticalDataTransactionResponse, CreateDepositTransactionRequest,
+            CreateDepositTransactionResponse, CreateNewAddressRequest, CreateNewAddressResponse,
+            CreateSidechainProposalRequest, CreateSidechainProposalResponse, CreateWalletRequest,
+            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
+            GetBalanceResponse, GetInfoRequest, GetInfoResponse,
+            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
+            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
+            ListUnspentOutputsResponse, SendTransactionRequest, SendTransactionResponse,
+            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
         },
+        StatusBuilder, ToStatus,
     },
     server::{invalid_field_value, missing_field},
     types::{BlindedM6, Event, SidechainNumber},
-    wallet::{CreateTransactionParams, error::WalletInitialization},
+    wallet::{error::WalletInitialization, CreateTransactionParams},
 };
 
 /// Stream (non-)confirmations for a sidechain proposal
@@ -112,6 +115,37 @@ fn stream_proposal_confirmations(
         };
         futures::future::ready(resp)
     })
+}
+
+fn deserialize_blinded_m6_transaction(
+    bytes: &[u8],
+) -> Result<Transaction, bitcoin::consensus::encode::Error> {
+    match bitcoin::consensus::deserialize(bytes) {
+        Ok(tx) => Ok(tx),
+        Err(deserialize_err) => {
+            let mut cursor = Cursor::new(bytes);
+            let version = bitcoin::transaction::Version::consensus_decode(&mut cursor)?;
+            let input_count = VarInt::consensus_decode(&mut cursor)?;
+            if input_count.0 != 0 {
+                return Err(deserialize_err);
+            }
+            let output_count = VarInt::consensus_decode(&mut cursor)?;
+            let mut output = Vec::with_capacity(output_count.0 as usize);
+            for _ in 0..output_count.0 {
+                output.push(TxOut::consensus_decode(&mut cursor)?);
+            }
+            let lock_time = bitcoin::absolute::LockTime::consensus_decode(&mut cursor)?;
+            if cursor.position() != bytes.len() as u64 {
+                return Err(deserialize_err);
+            }
+            Ok(Transaction {
+                version,
+                lock_time,
+                input: Vec::new(),
+                output,
+            })
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -296,7 +330,7 @@ impl WalletService for crate::wallet::Wallet {
         };
         let transaction_bytes = transaction
             .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("transaction"))?;
-        let transaction: Transaction = bitcoin::consensus::deserialize(&transaction_bytes)
+        let transaction: Transaction = deserialize_blinded_m6_transaction(&transaction_bytes)
             .map_err(|err| {
                 invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
                     "transaction",

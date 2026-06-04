@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io::Cursor,
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -20,7 +21,11 @@ use bdk_wallet::{
     },
 };
 use bitcoin::{
-    Amount, BlockHash, Network, Transaction, Txid,
+    Amount, BlockHash, Network, Transaction, TxOut, Txid,
+    consensus::{
+        Decodable, Encodable,
+        encode::{self, VarInt},
+    },
     hashes::{Hash as _, HashEngine, sha256, sha256d},
     script::PushBytesBuf,
 };
@@ -70,6 +75,61 @@ type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
+
+fn serialize_blinded_m6_for_storage(tx: &Transaction) -> Vec<u8> {
+    if !tx.input.is_empty() {
+        return bitcoin::consensus::serialize(tx);
+    }
+
+    let mut bytes = Vec::new();
+    tx.version
+        .consensus_encode(&mut bytes)
+        .expect("Vec writes cannot fail");
+    VarInt(0)
+        .consensus_encode(&mut bytes)
+        .expect("Vec writes cannot fail");
+    VarInt(tx.output.len() as u64)
+        .consensus_encode(&mut bytes)
+        .expect("Vec writes cannot fail");
+    for output in &tx.output {
+        output
+            .consensus_encode(&mut bytes)
+            .expect("Vec writes cannot fail");
+    }
+    tx.lock_time
+        .consensus_encode(&mut bytes)
+        .expect("Vec writes cannot fail");
+    bytes
+}
+
+fn deserialize_blinded_m6_from_storage(bytes: &[u8]) -> Result<Transaction, encode::Error> {
+    match bitcoin::consensus::deserialize(bytes) {
+        Ok(tx) => Ok(tx),
+        Err(deserialize_err) => {
+            let mut cursor = Cursor::new(bytes);
+            let version = bitcoin::transaction::Version::consensus_decode(&mut cursor)?;
+            let input_count = VarInt::consensus_decode(&mut cursor)?;
+            if input_count.0 != 0 {
+                return Err(deserialize_err);
+            }
+            let output_count = VarInt::consensus_decode(&mut cursor)?;
+            let mut output = Vec::with_capacity(output_count.0 as usize);
+            for _ in 0..output_count.0 {
+                output.push(TxOut::consensus_decode(&mut cursor)?);
+            }
+            let lock_time = bitcoin::absolute::LockTime::consensus_decode(&mut cursor)?;
+            if cursor.position() != bytes.len() as u64 {
+                return Err(deserialize_err);
+            }
+            Ok(Transaction {
+                version,
+                lock_time,
+                input: Vec::new(),
+                output,
+            })
+        }
+    }
+}
 
 #[non_exhaustive]
 enum ChainSourceClient {
@@ -912,7 +972,8 @@ impl Wallet {
                 .transpose_into_fallible()
                 .map_err(error::GetBundleProposals::from)
                 .for_each(|(sidechain_number, m6id, bundle_tx_bytes)| {
-                    let bundle_proposal_tx = bitcoin::consensus::deserialize(&bundle_tx_bytes)?;
+                    let bundle_proposal_tx =
+                        deserialize_blinded_m6_from_storage(&bundle_tx_bytes)?;
                     let bundle_proposal_tx =
                         BlindedM6::try_from(std::borrow::Cow::Owned(bundle_proposal_tx))?;
                     bundle_proposals
@@ -2144,7 +2205,7 @@ impl Wallet {
         blinded_m6: &BlindedM6<'static>,
     ) -> Result<M6id, rusqlite::Error> {
         let m6id = blinded_m6.compute_m6id();
-        let tx_bytes = bitcoin::consensus::serialize(blinded_m6.as_ref());
+        let tx_bytes = serialize_blinded_m6_for_storage(blinded_m6.as_ref());
         self.inner.self_db
             .lock()
             .await
