@@ -732,6 +732,61 @@ mod tests {
         Ok(())
     }
 
+    /// M4 votes index pending bundles by chronological position, so an M6
+    /// apply/undo roundtrip (a reorg across a successful withdrawal) must
+    /// restore the exact pending order.
+    #[test]
+    fn m6_undo_restores_pending_order() -> Result<()> {
+        use crate::types::{Ctip, PendingM6idInfo};
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let a = test_m6id(0xAA);
+        let b = test_m6id(0xBB);
+        let c = test_m6id(0xCC);
+        for m in [a, b, c] {
+            dbs.active_sidechains
+                .put_pending_m6id(&mut rwtxn, &sc, m, 0)
+                .into_diagnostic()?;
+        }
+        let order = |rwtxn: &RoTxn| -> Vec<M6id> {
+            dbs.active_sidechains
+                .pending_m6ids()
+                .get(rwtxn, &sc)
+                .unwrap()
+                .keys()
+                .copied()
+                .collect()
+        };
+        assert_eq!(order(&rwtxn), vec![a, b, c]);
+
+        // A successful M6 withdraws the middle bundle b (index 1).
+        let m6 = M6 {
+            sidechain_number: sc,
+            new_ctip: Ctip {
+                outpoint: bitcoin::OutPoint::null(),
+                value: bitcoin::Amount::ZERO,
+            },
+            removed_pending_withdrawal: b,
+            removed_pending_withdrawal_index: 1,
+            removed_pending_withdrawal_info: PendingM6idInfo::new(0),
+        };
+        m6.apply(&mut rwtxn, &dbs.active_sidechains, 0)
+            .into_diagnostic()?;
+        assert_eq!(order(&rwtxn), vec![a, c]);
+
+        // Disconnect (undo) restores the original order [a, b, c].
+        m6.undo(&mut rwtxn, &dbs.active_sidechains)
+            .into_diagnostic()?;
+        assert_eq!(order(&rwtxn), vec![a, b, c]);
+        Ok(())
+    }
+
     #[test]
     fn ack_bundles_upvote_apply_undo_roundtrip() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
