@@ -24,7 +24,7 @@ bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
-bitcoin = "0.32.10"
+bitcoin = "0.32.100"
 bitcoin-send-tx-p2p = "0.3.0"
 byteorder = "1.5.0"
 cfg-if = "1.0.0"
@@ -41,7 +41,7 @@ heed-types = "0.21.0"
 hex = "0.4.3"
 http = "1.4.1"
 indicatif = "0.18.4"
-jiff = { version = "0.2.27", default-features = false }
+jiff = { version = "0.2.28", default-features = false }
 jsonrpsee = "0.26.0"
 libtest-mimic = "0.8.2"
 miette = { version = "7.1.0", default-features = false }
@@ -83,7 +83,7 @@ tracing-log = "0.2.0"
 tracing-subscriber = "0.3.23"
 transitive = "1.2.0"
 url = "2.5.8"
-uuid = "1.23.1"
+uuid = "1.23.2"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
