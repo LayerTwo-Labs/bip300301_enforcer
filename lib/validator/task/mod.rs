@@ -298,19 +298,30 @@ impl BlockHandler<'_> {
         m6id: M6id,
     ) -> Result<diff::ProposeBundle, error::HandleM3ProposeBundle> {
         let dbs = self.dbs;
-        if dbs
+        if !dbs
             .active_sidechains
             .sidechain()
             .contains_key(rotxn, &sidechain_number)?
         {
-            let diff = diff::ProposeBundle {
-                m6id,
-                sidechain_number,
-            };
-            Ok(diff)
-        } else {
-            Err(error::HandleM3ProposeBundle::InactiveSidechain { sidechain_number })
+            return Err(error::HandleM3ProposeBundle::InactiveSidechain { sidechain_number });
         }
+        // BIP 300: re-proposing an M6ID that is already pending (proposed in a
+        // previous block and not yet paid out) would reset its ack count and
+        // age. Reject such a block instead.
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(rotxn, &sidechain_number)?;
+        if pending.contains_key(&m6id) {
+            return Err(error::HandleM3ProposeBundle::BundleAlreadyPending {
+                sidechain_number,
+                m6id,
+            });
+        }
+        Ok(diff::ProposeBundle {
+            m6id,
+            sidechain_number,
+        })
     }
 
     /// Core M4 upvote resolver: for each active sidechain, interprets the vote

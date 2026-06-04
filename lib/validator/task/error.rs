@@ -62,9 +62,21 @@ impl From<db::Error> for HandleFailedSidechainProposals {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
-#[transitive(from(db::error::TryGet, db::Error))]
+#[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM3ProposeBundle {
+    /// BIP 300: an M6ID already proposed in a previous block and not yet paid
+    /// out must not be re-proposed; re-proposing it would reset its ack count.
+    #[error(
+        "withdrawal bundle {m6id} for sidechain slot {} is already pending",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    BundleAlreadyPending {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    },
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
