@@ -669,6 +669,17 @@ impl BlockHandler<'_> {
             new_ctips
         };
         let n_new_ctips = new_ctips.len();
+        // BIP 300: a tx that spends a treasury UTXO must also create a new
+        // treasury UTXO for that sidechain. Without this check, a spend of the
+        // anyone-can-spend OP_DRIVECHAIN treasury that creates no replacement
+        // output is silently ignored and drains the slot.
+        for sidechain_number in ctip_spends.keys() {
+            if !new_ctips.contains_key(sidechain_number) {
+                return Err(error::HandleM5M6::TreasurySpentWithoutNewCtip {
+                    sidechain_number: *sidechain_number,
+                });
+            }
+        }
         // Check that old ctips are spent
         let mut res = Option::<DepositsOrSuccessfulWithdrawal>::None;
         for (sidechain_number, new_ctip) in new_ctips {

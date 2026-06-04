@@ -243,6 +243,15 @@ pub(in crate::validator) enum HandleM5M6 {
     #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
     #[fatal(false)]
     OldCtipUnspent { sidechain_number: SidechainNumber },
+    /// BIP 300: a transaction that spends a treasury UTXO as one of its inputs
+    /// and does not create a new treasury UTXO as one of its outputs is
+    /// invalid.
+    #[error(
+        "treasury UTXO for sidechain {} is spent without creating a new treasury UTXO",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    TreasurySpentWithoutNewCtip { sidechain_number: SidechainNumber },
     #[error("cannot deposit or withdraw zero sats from sidechain")]
     #[fatal(false)]
     ZeroDiff,
