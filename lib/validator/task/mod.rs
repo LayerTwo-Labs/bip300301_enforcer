@@ -2180,6 +2180,55 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 300: a tx that spends a treasury UTXO without creating a new
+    /// treasury UTXO is invalid. OP_DRIVECHAIN is anyone-can-spend, so without
+    /// this rule anyone could drain the treasury.
+    #[test]
+    fn handle_m5_m6_treasury_spent_without_new_ctip_is_invalid() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        let treasury_outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: treasury_outpoint,
+                    value: Amount::from_sat(5_000),
+                },
+            )
+            .into_diagnostic()?;
+
+        // Spend the treasury UTXO and pay it all to a non-treasury output.
+        let theft_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: treasury_outpoint,
+                ..TxIn::default()
+            }],
+            output: vec![TxOut {
+                script_pubkey: ScriptBuf::new(),
+                value: Amount::from_sat(5_000),
+            }],
+        };
+
+        let err = test_handler(&dbs)
+            .handle_m5_m6(&rwtxn, Cow::Borrowed(&theft_tx))
+            .expect_err("spending a treasury without creating a new one must be invalid");
+        assert!(matches!(
+            err,
+            error::HandleM5M6::TreasurySpentWithoutNewCtip { sidechain_number }
+                if sidechain_number == sc
+        ));
+        assert!(!err.is_fatal());
+        Ok(())
+    }
+
     // ── handle_m1 ──
 
     #[test]
