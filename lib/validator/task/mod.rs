@@ -2317,6 +2317,46 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 300: a proposal must fail once it has accumulated enough non-ack
+    /// blocks that it can no longer reach the activation threshold, even before
+    /// its max age. Regtest uses max_age=10, threshold=5, so max_fails=5.
+    #[test]
+    fn handle_failed_sidechain_proposals_early_fails_doomed_proposal() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let handler = test_handler(&dbs);
+
+        // Doomed (unused slot, never acked): at height 6, age=6 > max_fails=5
+        // and fails=6 >= 5, but age <= max_age=10, so only the early-failure
+        // rule can catch it.
+        let doomed = test_sidechain(1, 0);
+        let doomed_id = doomed.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &doomed_id, &doomed)
+            .into_diagnostic()?;
+
+        // Healthy (acked every block, fails=0): must not fail.
+        let mut healthy = test_sidechain(2, 0);
+        healthy.status.vote_count = 6;
+        let healthy_id = healthy.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &healthy_id, &healthy)
+            .into_diagnostic()?;
+
+        let failed = handler
+            .handle_failed_sidechain_proposals(&rwtxn, 6)
+            .into_diagnostic()?;
+        assert!(
+            failed.0.contains_key(&doomed_id),
+            "a proposal that can no longer reach the threshold must fail early"
+        );
+        assert!(
+            !failed.0.contains_key(&healthy_id),
+            "a fully-acked proposal must not fail"
+        );
+        Ok(())
+    }
+
     // ── handle_m3 ──
 
     /// BIP 300 M3: a newly proposed bundle starts with an ACK score of 1
