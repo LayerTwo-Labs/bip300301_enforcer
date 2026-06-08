@@ -367,12 +367,42 @@ pub enum InitElectrumClient {
     MissingHostPort { network: bitcoin::Network },
 }
 
+impl InitElectrumClient {
+    /// Whether the error is expected to clear up once electrs is reachable
+    /// (vs. a config / wrong-chain error that retrying will never fix).
+    fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateElectrumClient(_) | Self::GetInitialBlockHeader(_)
+        )
+    }
+}
+
+impl InitEsploraClient {
+    /// Whether the error is expected to clear up once the esplora server is
+    /// reachable (vs. a config error that retrying will never fix).
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::EsploraClientHeight(_))
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitChainSourceClient {
     #[error("failed to initialize electrum client")]
     Electrum(#[from] InitElectrumClient),
     #[error("failed to initialize esplora client")]
     Esplora(#[from] InitEsploraClient),
+}
+
+impl InitChainSourceClient {
+    /// A transient error means the sync backend isn't reachable yet (e.g. electrs
+    /// still starting up) and the connection should be retried.
+    pub(crate) fn is_transient(&self) -> bool {
+        match self {
+            Self::Electrum(err) => err.is_transient(),
+            Self::Esplora(err) => err.is_transient(),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
