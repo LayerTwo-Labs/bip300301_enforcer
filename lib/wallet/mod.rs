@@ -191,16 +191,41 @@ impl WalletInner {
         config: &WalletConfig,
         network: Network,
     ) -> Result<Option<ChainSourceClient>, error::InitChainSourceClient> {
-        match config.sync_source {
-            WalletSyncSource::Electrum => {
-                let electrum_client = Self::init_electrum_client(config, network)?;
-                Ok(Some(ChainSourceClient::Electrum(Box::new(electrum_client))))
+        if config.sync_source == WalletSyncSource::Disabled {
+            return Ok(None);
+        }
+        // The sync backend (electrs / esplora) may not be reachable yet when the
+        // enforcer starts -- e.g. a freshly bootstrapped network where electrs is
+        // still coming up. Rather than aborting startup, retry transient
+        // connection failures with capped backoff, mirroring how we wait for
+        // Bitcoin Core to become ready. Config and chain-mismatch errors are not
+        // transient and fail immediately.
+        const INITIAL_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        const MAX_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+        let mut retry_delay = INITIAL_RETRY_DELAY;
+        loop {
+            let result = match config.sync_source {
+                WalletSyncSource::Electrum => Self::init_electrum_client(config, network)
+                    .map(|client| ChainSourceClient::Electrum(Box::new(client)))
+                    .map_err(error::InitChainSourceClient::from),
+                WalletSyncSource::Esplora => Self::init_esplora_client(config, network)
+                    .await
+                    .map(ChainSourceClient::Esplora)
+                    .map_err(error::InitChainSourceClient::from),
+                WalletSyncSource::Disabled => unreachable!("handled above"),
+            };
+            match result {
+                Ok(client) => return Ok(Some(client)),
+                Err(err) if err.is_transient() => {
+                    tracing::warn!(
+                        %err,
+                        "wallet sync backend not ready, retrying in {retry_delay:?}",
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
+                }
+                Err(err) => return Err(err),
             }
-            WalletSyncSource::Esplora => {
-                let esplora_client = Self::init_esplora_client(config, network).await?;
-                Ok(Some(ChainSourceClient::Esplora(esplora_client)))
-            }
-            WalletSyncSource::Disabled => Ok(None),
         }
     }
 
