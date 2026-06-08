@@ -20,7 +20,9 @@ use tracing::Instrument as _;
 
 use crate::{
     mine::{mine, mine_check_block_events, mine_signet_check},
-    setup::{Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup},
+    setup::{
+        Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
+    },
     test_peer_bmm_request, test_unconfirmed_transactions,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
@@ -131,7 +133,10 @@ where
     )
 }
 
-pub async fn propose_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+pub async fn propose_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     tracing::info!("Proposing sidechain");
     let create_sidechain_proposal_request = {
         let sidechain_declaration =
@@ -147,7 +152,7 @@ pub async fn propose_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()>
             sidechain_declaration: Some(sidechain_declaration),
         };
         CreateSidechainProposalRequest {
-            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
             declaration: Some(declaration),
         }
     };
@@ -159,7 +164,7 @@ pub async fn propose_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()>
     // Wait before mining
     sleep(std::time::Duration::from_secs(1)).await;
     tracing::debug!("Mining 1 block");
-    let () = mine(post_setup, 1, Some(true)).await?;
+    let () = mine::<S>(post_setup, 1, Some(true)).await?;
     let Some(_) = create_sidechain_proposal_resp.try_next().await? else {
         anyhow::bail!("Expected response when proposing sidechain");
     };
@@ -176,7 +181,10 @@ pub async fn propose_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()>
     Ok(())
 }
 
-pub async fn activate_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+pub async fn activate_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     tracing::info!("Activating sidechain");
     tracing::debug!("Checking that 0 sidechains are active");
     let sidechains_resp = post_setup
@@ -189,7 +197,8 @@ pub async fn activate_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()
     };
     let blocks_to_mine = 6;
     tracing::debug!("Mining {blocks_to_mine} blocks");
-    let _ = mine_check_block_events(post_setup, blocks_to_mine, Some(true), |_, _| Ok(())).await?;
+    let _ = mine_check_block_events::<_, S>(post_setup, blocks_to_mine, Some(true), |_, _| Ok(()))
+        .await?;
     tracing::debug!("Checking that exactly 1 sidechain is active");
     let sidechains_resp = post_setup
         .validator_service_client
@@ -223,7 +232,10 @@ pub async fn wait_for_wallet_sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn fund_enforcer(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+pub async fn fund_enforcer<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     use std::convert::Infallible;
     const BLOCKS: u32 = 100;
     let progress_bar = indicatif::ProgressBar::new(BLOCKS as u64).with_style(
@@ -250,7 +262,7 @@ pub async fn fund_enforcer(post_setup: &mut PostSetup) -> anyhow::Result<()> {
                 .await?;
         }
         Network::Signet => {
-            mine_signet_check::<_, Infallible>(post_setup, BLOCKS, |_| {
+            mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| {
                 progress_bar.inc(1);
                 Ok(())
             })
@@ -262,26 +274,19 @@ pub async fn fund_enforcer(post_setup: &mut PostSetup) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Propose a sidechain via M1, ack it over `USED_SIDECHAIN_SLOT_ACTIVATION_THRESHOLD`
-/// blocks until activation, then top up the enforcer wallet with UTXOs to mine
-/// with. The standard prelude for tests that need an active sidechain.
-pub async fn setup_active_sidechain(post_setup: &mut PostSetup) -> anyhow::Result<()> {
-    propose_sidechain(post_setup).await?;
-    activate_sidechain(post_setup).await?;
-    fund_enforcer(post_setup).await?;
-    Ok(())
-}
-
 const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
 const DEPOSIT_FEE: bitcoin::Amount = bitcoin::Amount::from_sat(1_000_000);
 
-pub async fn deposit(
+pub async fn deposit<S>(
     post_setup: &mut PostSetup,
-    sidechain: &mut DummySidechain,
+    sidechain: &mut S,
     sidechain_address: &str,
     deposit_amount: bitcoin::Amount,
     deposit_fee: bitcoin::Amount,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     tracing::info!(
         deposit_amount = %deposit_amount.display_dynamic(),
         deposit_fee = %deposit_fee.display_dynamic(),
@@ -290,7 +295,7 @@ pub async fn deposit(
     let deposit_txid: bitcoin::Txid = post_setup
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
-            sidechain_id: Some(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: Some(S::SIDECHAIN_NUMBER.0.into()),
             address: Some(sidechain_address.to_owned()),
             value_sats: Some(deposit_amount.to_sat()),
             fee_sats: Some(deposit_fee.to_sat()),
@@ -304,18 +309,21 @@ pub async fn deposit(
     // Wait for deposit tx to enter mempool
     sleep(std::time::Duration::from_secs(1)).await;
     tracing::debug!("Mining 1 sidechain block");
-    let () = mine_check_block_events(post_setup, 1, None, |_, block_info| {
-        match block_info.events.as_slice() {
-            [
-                block_info::Event {
-                    event: Some(block_info::event::Event::Deposit(_)),
-                },
-            ] => Ok(()),
-            events => anyhow::bail!("Expected deposit event, found `{events:?}`"),
-        }
+    let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
+        .events
+        .as_slice()
+    {
+        [
+            block_info::Event {
+                event: Some(block_info::event::Event::Deposit(_)),
+            },
+        ] => Ok(()),
+        events => anyhow::bail!("Expected deposit event, found `{events:?}`"),
     })
     .await?;
-    sidechain.confirm_deposit(post_setup, sidechain_address, deposit_amount, deposit_txid);
+    let () = sidechain
+        .confirm_deposit(post_setup, sidechain_address, deposit_amount, deposit_txid)
+        .await?;
     Ok(())
 }
 
@@ -346,12 +354,15 @@ const WITHDRAW_AMOUNT_1: Amount = Amount::from_sat(18_000_000);
 const WITHDRAW_FEE_1: Amount = Amount::from_sat(1_000_000);
 
 // Create a withdrawal, and let it expire
-async fn withdraw_expire(
+async fn withdraw_expire<S>(
     post_setup: &mut PostSetup,
-    sidechain: &mut DummySidechain,
+    sidechain: &mut S,
     withdraw_amount: Amount,
     withdraw_fee: Amount,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     tracing::info!(
         value = %withdraw_amount.display_dynamic(),
         fee = %withdraw_fee.display_dynamic(),
@@ -367,27 +378,28 @@ async fn withdraw_expire(
         )
         .await?;
     tracing::debug!("Mining 1 block to include M3 for withdrawal bundle");
-    let () = mine_check_block_events(post_setup, 1, None, |_, block_info| {
-        match block_info.events.as_slice() {
-            [event] => {
-                let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-                let withdrawal_bundle_event::event::Event::Submitted(
-                    withdrawal_bundle_event::event::Submitted {},
-                ) = event
-                else {
-                    anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
-                };
-                anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
-                Ok(())
-            }
-            events => {
-                anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
-            }
+    let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
+        .events
+        .as_slice()
+    {
+        [event] => {
+            let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
+            let withdrawal_bundle_event::event::Event::Submitted(
+                withdrawal_bundle_event::event::Submitted {},
+            ) = event
+            else {
+                anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
+            };
+            anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
+            Ok(())
+        }
+        events => {
+            anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
         }
     })
     .await?;
     tracing::debug!("Mining blocks until withdrawal bundle failure due to expiry");
-    let () = mine_check_block_events(post_setup, 11, None, |seq, block_info| {
+    let () = mine_check_block_events::<_, S>(post_setup, 11, None, |seq, block_info| {
         match (seq, block_info.events.as_slice()) {
             (10, [event]) => {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
@@ -412,13 +424,16 @@ async fn withdraw_expire(
 }
 
 // Upvote the next withdrawal bundle so that it succeeds
-pub async fn withdraw_succeed(
+pub async fn withdraw_succeed<S>(
     post_setup: &mut PostSetup,
-    sidechain: &mut DummySidechain,
+    sidechain: &mut S,
     withdraw_amount: Amount,
     withdraw_fee: Amount,
     pending_withdrawal_value: Amount,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     tracing::info!(
         value = %withdraw_amount.display_dynamic(),
         fee = %withdraw_fee.display_dynamic(),
@@ -429,22 +444,23 @@ pub async fn withdraw_succeed(
         .create_withdrawal(post_setup, &receive_address, withdraw_amount, withdraw_fee)
         .await?;
     tracing::debug!("Mining 1 block to include M3 for withdrawal bundle");
-    let () = mine_check_block_events(post_setup, 1, None, |_, block_info| {
-        match block_info.events.as_slice() {
-            [event] => {
-                let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-                let withdrawal_bundle_event::event::Event::Submitted(
-                    withdrawal_bundle_event::event::Submitted {},
-                ) = event
-                else {
-                    anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
-                };
-                anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
-                Ok(())
-            }
-            events => {
-                anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
-            }
+    let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
+        .events
+        .as_slice()
+    {
+        [event] => {
+            let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
+            let withdrawal_bundle_event::event::Event::Submitted(
+                withdrawal_bundle_event::event::Submitted {},
+            ) = event
+            else {
+                anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
+            };
+            anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
+            Ok(())
+        }
+        events => {
+            anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
         }
     })
     .await?;
@@ -462,7 +478,7 @@ pub async fn withdraw_succeed(
         bitcoin::Amount::from_str_in(&receive_addr_balance_str, bitcoin::Denomination::Bitcoin)?;
     anyhow::ensure!(receive_addr_balance == bitcoin::Amount::ZERO);
     tracing::debug!("Mining blocks until withdrawal success");
-    let () = mine_check_block_events(post_setup, 6, Some(true), |seq, block_info| {
+    let () = mine_check_block_events::<_, S>(post_setup, 6, Some(true), |seq, block_info| {
         match (seq, block_info.events.as_slice()) {
             (5, [event]) => {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
@@ -506,14 +522,23 @@ pub async fn withdraw_succeed(
     Ok(())
 }
 
-pub async fn deposit_withdraw_roundtrip_task(
+pub async fn deposit_withdraw_roundtrip_task<S>(
     post_setup: &mut PostSetup,
-) -> anyhow::Result<DummySidechain> {
-    let mut sidechain = DummySidechain::setup(post_setup).await?;
+    res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    sidechain_init: S::Init,
+) -> anyhow::Result<S>
+where
+    S: Sidechain,
+{
+    let mut sidechain = S::setup(sidechain_init, post_setup, res_tx).await?;
     tracing::info!("Setup successfully");
-    let () = setup_active_sidechain(post_setup).await?;
-    tracing::info!("Active sidechain set up successfully");
-    let deposit_address = sidechain.get_deposit_address();
+    let () = propose_sidechain::<S>(post_setup).await?;
+    tracing::info!("Proposed sidechain successfully");
+    let () = activate_sidechain::<S>(post_setup).await?;
+    tracing::info!("Activated sidechain successfully");
+    let () = fund_enforcer::<S>(post_setup).await?;
+    tracing::info!("Funded enforcer successfully");
+    let deposit_address = sidechain.get_deposit_address().await?;
     let () = deposit(
         post_setup,
         &mut sidechain,
@@ -567,8 +592,17 @@ pub async fn deposit_withdraw_roundtrip_task(
 /// * Creates two deposits
 /// * If mode is not GBT, creates a withdrawal that will be allowed to expire
 /// * Creates and handles a withdrawal
-pub async fn deposit_withdraw_roundtrip(mut post_setup: PostSetup) -> anyhow::Result<()> {
-    let _sidechain = deposit_withdraw_roundtrip_task(&mut post_setup).await?;
+pub async fn deposit_withdraw_roundtrip<S>(
+    mut post_setup: PostSetup,
+    sidechain_init: S::Init,
+) -> anyhow::Result<()>
+where
+    S: Sidechain + Send,
+    S::Init: Send + 'static,
+{
+    let (res_tx, _) = mpsc::unbounded();
+    let _sidechain: S =
+        deposit_withdraw_roundtrip_task::<S>(&mut post_setup, res_tx, sidechain_init).await?;
     Ok(())
 }
 
@@ -594,7 +628,7 @@ pub fn tests(
                 file_registry: file_registry.clone(),
                 failure_collector: failure_collector.clone(),
             },
-            deposit_withdraw_roundtrip,
+            |post_setup| deposit_withdraw_roundtrip::<DummySidechain>(post_setup, ()),
         )
     });
 
