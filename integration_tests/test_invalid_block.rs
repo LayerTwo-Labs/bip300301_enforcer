@@ -14,12 +14,13 @@ use bitcoin::{
     script::{Builder as ScriptBuilder, PushBytesBuf},
     transaction::Version,
 };
+use futures::channel::mpsc;
 use serde::Deserialize;
 use tokio::time::sleep;
 
 use crate::{
-    integration_test::setup_active_sidechain,
-    setup::{DummySidechain, PostSetup},
+    integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
+    setup::{DummySidechain, PostSetup, Sidechain},
 };
 
 struct BadBlockCase {
@@ -106,9 +107,12 @@ fn duplicate_m7_outputs() -> anyhow::Result<Vec<TxOut>> {
 }
 
 pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()> {
-    let _sidechain = DummySidechain::setup(&post_setup).await?;
+    let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
+    let mut _sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
 
-    setup_active_sidechain(&mut post_setup).await?;
+    propose_sidechain::<DummySidechain>(&mut post_setup).await?;
+    activate_sidechain::<DummySidechain>(&mut post_setup).await?;
+    fund_enforcer::<DummySidechain>(&mut post_setup).await?;
     wait_past_mtp(&post_setup).await?;
 
     let stdout_path = post_setup.directories.enforcer_dir.join("stdout.txt");

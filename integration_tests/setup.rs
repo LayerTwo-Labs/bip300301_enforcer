@@ -4,6 +4,7 @@ use std::{
     borrow::Borrow,
     collections::HashMap,
     ffi::OsStr,
+    future::Future,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, LazyLock},
@@ -23,7 +24,7 @@ use bip300301_enforcer_lib::{
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
 use bitcoin::{Address, Txid};
-use futures::{FutureExt as _, StreamExt, channel::mpsc};
+use futures::{FutureExt as _, StreamExt, channel::mpsc, future};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
@@ -734,6 +735,48 @@ impl<B> PreSetup<B> {
     }
 }
 
+pub trait Sidechain: Sized {
+    const SIDECHAIN_NUMBER: SidechainNumber;
+
+    type Init;
+
+    type SetupError: std::error::Error + Send + Sync + 'static;
+
+    fn setup(
+        init: Self::Init,
+        post_setup: &PostSetup,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send;
+
+    type GetDepositAddressError: std::error::Error + Send + Sync + 'static;
+
+    /// Get a sidechain address to deposit to
+    fn get_deposit_address(
+        &self,
+    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send;
+
+    type ConfirmDepositError: std::error::Error + Send + Sync + 'static;
+
+    fn confirm_deposit(
+        &mut self,
+        post_setup: &mut PostSetup,
+        address: &str,
+        value: bitcoin::Amount,
+        txid: bitcoin::Txid,
+    ) -> impl Future<Output = Result<(), Self::ConfirmDepositError>> + Send;
+
+    /// Create a withdrawal and broadcast the bundle
+    type CreateWithdrawalError: std::error::Error + Send + Sync + 'static;
+
+    fn create_withdrawal(
+        &mut self,
+        post_setup: &mut PostSetup,
+        receive_address: &bitcoin::Address,
+        value: bitcoin::Amount,
+        fee: bitcoin::Amount,
+    ) -> impl Future<Output = Result<M6id, Self::CreateWithdrawalError>> + Send;
+}
+
 #[derive(Debug, Error)]
 pub enum DummySidechainError {
     #[error(transparent)]
@@ -909,10 +952,18 @@ impl DummySidechain {
     }
 }
 
-impl DummySidechain {
-    pub const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(0);
+impl Sidechain for DummySidechain {
+    const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(0);
 
-    pub async fn setup(post_setup: &PostSetup) -> Result<Self, tonic::Status> {
+    type Init = ();
+
+    type SetupError = tonic::Status;
+
+    async fn setup(
+        _: Self::Init,
+        post_setup: &PostSetup,
+        _: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> Result<Self, Self::SetupError> {
         use bip300301_enforcer_lib::proto::mainchain::SubscribeEventsRequest;
         let subscribe_events_request = SubscribeEventsRequest {
             sidechain_id: Some(Self::SIDECHAIN_NUMBER.0.into()),
@@ -931,26 +982,35 @@ impl DummySidechain {
         })
     }
 
-    pub fn get_deposit_address(&self) -> String {
-        "sidechain address".to_owned()
+    type GetDepositAddressError = std::convert::Infallible;
+
+    fn get_deposit_address(
+        &self,
+    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send {
+        future::ok("sidechain address".to_owned())
     }
 
-    pub fn confirm_deposit(
+    type ConfirmDepositError = std::convert::Infallible;
+
+    async fn confirm_deposit(
         &mut self,
-        _post_setup: &mut PostSetup,
-        _address: &str,
-        _value: bitcoin::Amount,
-        _txid: bitcoin::Txid,
-    ) {
+        _: &mut PostSetup,
+        _: &str,
+        _: bitcoin::Amount,
+        _: bitcoin::Txid,
+    ) -> Result<(), Self::ConfirmDepositError> {
+        Ok(())
     }
 
-    pub async fn create_withdrawal(
+    type CreateWithdrawalError = DummySidechainError;
+
+    async fn create_withdrawal(
         &mut self,
         post_setup: &mut PostSetup,
         receive_address: &bitcoin::Address,
         mut value: bitcoin::Amount,
         mut fee: bitcoin::Amount,
-    ) -> Result<M6id, DummySidechainError> {
+    ) -> Result<M6id, Self::CreateWithdrawalError> {
         let () = self.update_from_events()?;
         value += self.pending_withdrawal_value;
         self.pending_withdrawal_value = bitcoin::Amount::ZERO;
