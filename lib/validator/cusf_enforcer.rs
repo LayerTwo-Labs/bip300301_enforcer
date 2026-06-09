@@ -182,6 +182,7 @@ enum ConnectBlockRwTxnAction<'a> {
 /// The rwtxn is returned and can be committed or aborted.
 /// If connecting the block results in a header write, the header write is
 /// always committed. The block connect is not committed.
+#[expect(clippy::result_large_err)]
 fn connect_block_no_commit<'validator>(
     validator: &'validator Validator,
     block: &Block,

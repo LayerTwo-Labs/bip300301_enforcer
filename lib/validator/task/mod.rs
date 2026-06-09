@@ -805,6 +805,7 @@ impl BlockHandler<'_> {
     ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md>
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m7-bmm-accept>
+    #[expect(clippy::result_large_err)]
     fn handle_coinbase_message(
         &self,
         rotxn: &RoTxn,
@@ -965,6 +966,7 @@ impl BlockHandler<'_> {
 
     /// Block header should be stored before calling this.
     #[tracing::instrument(skip_all)]
+    #[expect(clippy::result_large_err)]
     pub(in crate::validator) fn connect_block(
         &self,
         rwtxn: &mut RwTxn,

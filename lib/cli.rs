@@ -444,6 +444,11 @@ pub struct Config {
     #[arg(long, conflicts_with = "exit_after_sync")]
     pub verify_consensus_state: Option<PathBuf>,
 
+    /// Sync to the specified block height, then stop syncing and keep the node
+    /// running so it can be queried at that frozen height.
+    #[arg(long, conflicts_with_all = ["exit_after_sync", "verify_consensus_state"])]
+    pub freeze_at_height: Option<u32>,
+
     /// Assert that the connected Bitcoin Core node is running this major
     /// version (e.g. `30`). If not set, the enforcer accepts any major in
     /// its built-in list of supported versions.
