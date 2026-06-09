@@ -717,14 +717,18 @@ fn verify_against_reference(
     Err(miette!("{report}"))
 }
 
-async fn run_exit_after_sync(
-    mut validator: Validator,
+/// Drive a single bounded sync of `validator` forward to `goal_height`, logging
+/// progress and a blocks/sec summary. Shared by the bounded-sync CLI modes
+/// (`--exit-after-sync`, `--verify-consensus-state`, `--freeze-at-height`);
+/// `label` names the mode in log and error messages. Returns the validator's
+/// height once the sync completes.
+async fn sync_to_height(
+    validator: &mut Validator,
     goal_height: u32,
-    state_file: PathBuf,
-    reference: Option<SyncStateSummary>,
-    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-    cancel: CancellationToken,
-) -> Result<(), miette::Report> {
+    label: &str,
+    mainchain_client: &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    cancel: &CancellationToken,
+) -> Result<Option<u32>, miette::Report> {
     use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer as _;
 
     let start_height = validator.try_get_block_height().ok().flatten();
@@ -742,16 +746,15 @@ async fn run_exit_after_sync(
         .getblockhash(goal_height as usize)
         .await
         .map_err(|err| {
-            miette::Report::from_err(err).wrap_err(format!(
-                "exit-after-sync: failed to resolve block #{goal_height}"
-            ))
+            miette::Report::from_err(err)
+                .wrap_err(format!("{label}: failed to resolve block #{goal_height}"))
         })?;
 
     tracing::info!(
         goal_height,
         target_hash = %target_hash,
         ?start_height,
-        "Syncing to height #{goal_height}: {target_hash}, then exiting",
+        "{label}: syncing to height #{goal_height} ({target_hash})",
     );
 
     let started_at = tokio::time::Instant::now();
@@ -766,16 +769,56 @@ async fn run_exit_after_sync(
         (None, Some(end)) => u64::from(end) + 1,
         _ => 0,
     };
-    let elapsed_secs = elapsed.as_secs_f64();
-    let blocks_per_sec = blocks_synced as f64 / elapsed_secs;
+    let blocks_per_sec = blocks_synced as f64 / elapsed.as_secs_f64();
     let elapsed = jiff::SignedDuration::try_from(elapsed).unwrap_or_default();
     tracing::info!(
-        "exit-after-sync complete: synced {blocks_synced} blocks to height {} in {elapsed} ({blocks_per_sec:.1} blocks/sec)",
+        "{label}: synced {blocks_synced} blocks to height {} in {elapsed} ({blocks_per_sec:.1} blocks/sec)",
         final_height.map_or_else(|| "?".to_owned(), |h| h.to_string()),
     );
 
+    Ok(final_height)
+}
+
+async fn run_exit_after_sync(
+    mut validator: Validator,
+    goal_height: u32,
+    state_file: PathBuf,
+    reference: Option<SyncStateSummary>,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    cancel: CancellationToken,
+) -> Result<(), miette::Report> {
+    sync_to_height(
+        &mut validator,
+        goal_height,
+        "exit-after-sync",
+        &mainchain_client,
+        &cancel,
+    )
+    .await?;
+
     let produced = report_sync_state(&validator, &state_file)?;
     verify_against_reference(produced, &reference)
+}
+
+async fn run_freeze_at_height(
+    mut validator: Validator,
+    goal_height: u32,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    cancel: CancellationToken,
+) -> Result<(), miette::Report> {
+    sync_to_height(
+        &mut validator,
+        goal_height,
+        "freeze-at-height",
+        &mainchain_client,
+        &cancel,
+    )
+    .await?;
+
+    tracing::info!("freeze-at-height: node stays queryable until shutdown (Ctrl-C)");
+
+    cancel.cancelled().await;
+    Ok(())
 }
 
 #[tokio::main]
@@ -1102,14 +1145,32 @@ async fn main() -> Result<()> {
     let mut tasks: tokio::task::JoinSet<(&'static str, Result<(), miette::Report>)> =
         tokio::task::JoinSet::new();
 
-    // `--exit-after-sync` / `--verify-consensus-state` drive a single bounded
-    // sync to a specific height (spawned below) instead of the normal task that
-    // chases the live chain tip. Skip the tip-chasing sync (and the periodic
-    // wallet sync) in that mode so the two don't race on the validator.
+    // `--exit-after-sync` / `--verify-consensus-state` / `--freeze-at-height`
+    // drive a single bounded sync to a specific height (spawned below) instead
+    // of the normal task that chases the live chain tip. Skip the tip-chasing
+    // sync in that mode so the two don't race on the validator. The periodic
+    // wallet sync still runs (it only reads the validator, same as in normal
+    // operation alongside the tip-chasing writer).
     let exit_after_sync_mode =
         cli.exit_after_sync.is_some() || cli.verify_consensus_state.is_some();
 
-    if !exit_after_sync_mode {
+    let bounded_sync_mode = exit_after_sync_mode || cli.freeze_at_height.is_some();
+
+    // The mempool / block-template server is brought up by the tip-chasing
+    // task, which is skipped in bounded-sync mode. It cannot run alongside a
+    // bounded sync: the mempool init forces the validator to Bitcoin Core's
+    // live tip (see cusf_enforcer::initial_sync), which is exactly what these
+    // modes avoid. Warn rather than silently ignoring the flag.
+    if bounded_sync_mode && cli.enable_mempool {
+        tracing::warn!(
+            "--enable-mempool has no effect in bounded-sync mode (--exit-after-sync / \
+             --verify-consensus-state / --freeze-at-height): the mempool / block-template \
+             server requires syncing to the live chain tip, which these modes do not do. \
+             The validator gRPC, JSON-RPC, and wallet endpoints are still available",
+        );
+    }
+
+    if !bounded_sync_mode {
         let cancel = cancel.clone();
         let mainchain_client = mainchain_client.clone();
         let zmq = node_zmq_addr_sequence.clone();
@@ -1179,7 +1240,7 @@ async fn main() -> Result<()> {
         // periodic sync. Therefore we expose a knob to disable it.
         let sync_source_disabled = cli.wallet_opts.sync_source == WalletSyncSource::Disabled;
 
-        if !cli.wallet_opts.skip_periodic_sync && !sync_source_disabled && !exit_after_sync_mode {
+        if !cli.wallet_opts.skip_periodic_sync && !sync_source_disabled {
             let cancel = cancel.clone();
             tasks.spawn(async move {
                 let res = wallet.sync_task(cancel).await;
@@ -1222,6 +1283,19 @@ async fn main() -> Result<()> {
             )
             .await;
             ("exit-after-sync task", res)
+        });
+    }
+
+    if let Some(goal_height) = cli.freeze_at_height {
+        let validator = match &enforcer {
+            Either::Left(validator) => validator.clone(),
+            Either::Right(wallet) => wallet.validator().clone(),
+        };
+        let mainchain_client = mainchain_client.clone();
+        let cancel = cancel.clone();
+        tasks.spawn(async move {
+            let res = run_freeze_at_height(validator, goal_height, mainchain_client, cancel).await;
+            ("freeze-at-height task", res)
         });
     }
 
