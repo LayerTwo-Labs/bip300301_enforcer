@@ -30,6 +30,7 @@ use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
 use connectrpc::Router;
 use connectrpc_health::{HealthExt, HealthService, StaticChecker};
+use connectrpc_reflection::Reflector;
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
@@ -366,6 +367,17 @@ async fn run_connect_server(
 
     let health_checker = Arc::new(StaticChecker::with_services(services));
     let router = Arc::new(HealthService::from_arc(Arc::clone(&health_checker))).register(router);
+
+    // gRPC server reflection (v1 + v1alpha), so tools like grpcurl/buf curl can
+    // discover and call our services without local proto files. Backed by the
+    // descriptor pool embedded in the buffa-generated code (`reflect_mode=bridge`
+    // in buf.gen.yaml). Each generated package embeds the full file closure, so
+    // any one package's pool covers every service.
+    let reflector = Reflector::from_descriptor_pool(Arc::clone(
+        bip300301_enforcer_lib::proto::mainchain::descriptor_pool(),
+    ))
+    .map_err(error::ConnectServer::Reflection)?;
+    let router = connectrpc_reflection::install(router, reflector);
 
     let app = axum::Router::new()
         .fallback_service(router.into_axum_service())

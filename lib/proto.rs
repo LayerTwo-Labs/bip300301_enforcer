@@ -39,6 +39,11 @@ use crate::{
     dead_code,
     unused_imports,
     unused_qualifications,
+    // Nightly lint (`just clippy` opts in via -Zcrate-attr); bridge-mode
+    // codegen re-exports `__buffa::reflect::descriptor_pool` unqualified.
+    // `unknown_lints` keeps stable rustc from warning about the name.
+    unknown_lints,
+    unqualified_local_imports,
     clippy::derivable_impls,
     clippy::match_single_binding,
     clippy::uninlined_format_args,
@@ -46,7 +51,9 @@ use crate::{
     clippy::module_inception,
     // buffa 0.7 codegen emits inline `#[allow(...)]` attributes; the workspace
     // denies `clippy::allow_attributes`, so permit them inside generated code.
-    clippy::allow_attributes
+    clippy::allow_attributes,
+    // `reflect_mode=bridge` codegen uses wildcard imports.
+    clippy::wildcard_imports
 )]
 pub mod generated {
     pub mod buffa {
