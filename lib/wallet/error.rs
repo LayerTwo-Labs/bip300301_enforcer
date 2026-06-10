@@ -609,11 +609,11 @@ impl ToStatus for EncodeBlock {
 #[derive(Debug, Diagnostic, Error)]
 enum GetBundleProposalsInner {
     #[error(transparent)]
-    BlindedM6(#[from] crate::types::BlindedM6Error),
-    #[error(transparent)]
-    ConsensusEncoding(#[from] bitcoin::consensus::encode::Error),
+    DecodeBlindedM6(#[from] crate::types::BlindedM6DecodeError),
     #[error(transparent)]
     GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
+    #[error(transparent)]
+    GetSidechains(#[from] crate::validator::GetSidechainsError),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
 }
@@ -621,9 +621,9 @@ enum GetBundleProposalsInner {
 impl ToStatus for GetBundleProposalsInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::BlindedM6(err) => err.builder(),
+            Self::DecodeBlindedM6(err) => err.builder(),
             Self::GetPendingWithdrawals(err) => err.builder(),
-            Self::ConsensusEncoding(err) => StatusBuilder::new(err),
+            Self::GetSidechains(err) => err.builder(),
             Self::Rusqlite(_) => StatusBuilder::new(self),
         }
     }

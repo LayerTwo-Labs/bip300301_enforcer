@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -944,9 +944,7 @@ impl Wallet {
                 .transpose_into_fallible()
                 .map_err(error::GetBundleProposals::from)
                 .for_each(|(sidechain_number, m6id, bundle_tx_bytes)| {
-                    let bundle_proposal_tx = bitcoin::consensus::deserialize(&bundle_tx_bytes)?;
-                    let bundle_proposal_tx =
-                        BlindedM6::try_from(std::borrow::Cow::Owned(bundle_proposal_tx))?;
+                    let bundle_proposal_tx = BlindedM6::deserialize(&bundle_tx_bytes)?;
                     bundle_proposals
                         .entry(sidechain_number)
                         .or_default()
@@ -955,15 +953,34 @@ impl Wallet {
                 })?;
             Ok(bundle_proposals)
         };
-        let connection = self.inner.self_db.lock().await;
-        let bundle_proposals = with_connection(&connection)?;
-        drop(connection);
+        let bundle_proposals = {
+            let connection = self.inner.self_db.lock().await;
+            with_connection(&connection)?
+        };
+        // Per BIP300 M3, a bundle proposed for a sidechain slot that is not active
+        // is interpreted as an ordinary script (a no-op), so there is nothing to
+        // gain by proposing it.
+        //
+        // Bundles for an inactive sidechain can sneak in if we're activating a sidechain
+        // and then reorging it out of existence. The wallet currently doesn't handle reorgs
+        // properly, so we would then end up with a bundle proposal for an inactive sidechain
+        // in our DB.
+        let active_sidechain_numbers: HashSet<SidechainNumber> = self
+            .inner
+            .validator
+            .get_active_sidechains()?
+            .into_iter()
+            .map(|sidechain| sidechain.proposal.sidechain_number)
+            .collect();
         // Filter out proposals that have already been created
         let res = bundle_proposals
             .into_iter()
             .map(Ok::<_, error::GetBundleProposals>)
             .transpose_into_fallible()
             .filter_map(|(sidechain_id, m6ids)| {
+                if !active_sidechain_numbers.contains(&sidechain_id) {
+                    return Ok(None);
+                }
                 let pending_m6ids = self
                     .inner
                     .validator
@@ -2217,7 +2234,10 @@ impl Wallet {
         blinded_m6: &BlindedM6<'static>,
     ) -> Result<M6id, rusqlite::Error> {
         let m6id = blinded_m6.compute_m6id();
-        let tx_bytes = bitcoin::consensus::serialize(blinded_m6.as_ref());
+        // Always encode with rust-bitcoin. A zero-input bundle round-trips
+        // because `BlindedM6::deserialize` reads this encoding back, and a
+        // finalized M6 has a treasury input anyway.
+        let tx_bytes = blinded_m6.serialize();
         self.inner.self_db
             .lock()
             .await

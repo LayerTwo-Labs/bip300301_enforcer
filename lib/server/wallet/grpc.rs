@@ -1,7 +1,7 @@
-use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use bdk_wallet::bip39::Mnemonic;
-use bitcoin::{Address, Amount, BlockHash, Transaction, hashes::Hash as _};
+use bitcoin::{Address, Amount, BlockHash, hashes::Hash as _};
 use buffa::MessageField;
 use buffa_types::google::protobuf::UInt32Value;
 use connectrpc::{
@@ -325,28 +325,35 @@ impl WalletService for crate::wallet::Wallet {
         } = request.to_owned_message();
         let sidechain_id =
             parse_sidechain_id::<BroadcastWithdrawalBundleRequest>(sidechain_id, "sidechain_id")?;
+        // Reject bundles for sidechains that are not active: an inactive slot has no
+        // treasury to withdraw from and, per BIP300 M3, a bundle proposed for it would
+        // be a no-op. Fail fast at ingestion rather than persisting a row that can
+        // never be acted on. NB: this gate cannot catch a slot that is deactivated by
+        // a reorg *after* a bundle is stored, so the block builder
+        // (`get_bundle_proposals`) also skips inactive-slot bundles.
+        match self.is_sidechain_active(sidechain_id) {
+            Ok(false) => {
+                return Err(ConnectError::failed_precondition(format!(
+                    "cannot accept a withdrawal bundle for sidechain {sidechain_id}: not active"
+                )));
+            }
+            Ok(true) => (),
+            Err(err) => return Err(internal_err(err)),
+        }
         let transaction_bytes: Vec<u8> = transaction
             .into_option()
             .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("transaction"))?
             .value;
-        let transaction: Transaction = bitcoin::consensus::deserialize(&transaction_bytes)
-            .map_err(|err| {
-                invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
-                    "transaction",
-                    &hex::encode(&transaction_bytes),
-                    err,
-                )
-            })?;
-        let transaction: BlindedM6 =
-            Cow::<Transaction>::Owned(transaction)
-                .try_into()
-                .map_err(|err| {
-                    invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
-                        "transaction",
-                        &hex::encode(&transaction_bytes),
-                        err,
-                    )
-                })?;
+        // A blinded M6 is a zero-input tx that Core/sidechains serialize in legacy
+        // form, which rust-bitcoin's standard decoder cannot parse;
+        // `BlindedM6::deserialize` handles that fallback and validates the bundle.
+        let transaction = BlindedM6::deserialize(&transaction_bytes).map_err(|err| {
+            invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
+                "transaction",
+                &hex::encode(&transaction_bytes),
+                err,
+            )
+        })?;
         let _m6id = self
             .put_withdrawal_bundle(sidechain_id, &transaction)
             .await
