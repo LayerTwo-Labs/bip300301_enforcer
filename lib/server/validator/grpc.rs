@@ -18,13 +18,14 @@ use crate::{
             GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
             StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
             SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
-            get_block_info_response, get_bmm_h_star_commitment_response, get_ctip_response::Ctip,
+            get_block_info_response, get_bmm_h_star_commitment_response,
+            get_chain_info_response::Bip300Constants, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, validator_service_server::ValidatorService,
         },
     },
     server::{invalid_field_value, missing_field, validator::Server},
-    types::SidechainNumber,
+    types::{SidechainNumber, Thresholds},
 };
 
 #[tonic::async_trait]
@@ -164,9 +165,29 @@ impl ValidatorService for Server {
         request: tonic::Request<GetChainInfoRequest>,
     ) -> Result<tonic::Response<GetChainInfoResponse>, tonic::Status> {
         let GetChainInfoRequest {} = request.into_inner();
-        let network: Network = self.validator.network().into();
+        let bitcoin_network = self.validator.network();
+        let network: Network = bitcoin_network.into();
+        let Thresholds {
+            withdrawal_bundle_max_age,
+            withdrawal_bundle_inclusion_threshold,
+            used_sidechain_slot_proposal_max_age,
+            used_sidechain_slot_activation_threshold,
+            unused_sidechain_slot_proposal_max_age,
+            unused_sidechain_slot_activation_threshold,
+        } = Thresholds::for_network(bitcoin_network);
         let resp = GetChainInfoResponse {
             network: network as i32,
+            bip300_constants: Some(Bip300Constants {
+                withdrawal_bundle_max_age: withdrawal_bundle_max_age.into(),
+                withdrawal_bundle_inclusion_threshold: withdrawal_bundle_inclusion_threshold.into(),
+                used_sidechain_slot_proposal_max_age: used_sidechain_slot_proposal_max_age.into(),
+                used_sidechain_slot_activation_threshold: used_sidechain_slot_activation_threshold
+                    .into(),
+                unused_sidechain_slot_proposal_max_age: unused_sidechain_slot_proposal_max_age
+                    .into(),
+                unused_sidechain_slot_activation_threshold:
+                    unused_sidechain_slot_activation_threshold.into(),
+            }),
         };
         Ok(tonic::Response::new(resp))
     }
