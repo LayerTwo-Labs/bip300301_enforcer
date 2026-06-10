@@ -105,6 +105,18 @@ impl WalletInner {
             }
         );
         drop(wallet_write);
+
+        if let Err(err) = self
+            .scan_block_for_reusable_payments(block, block_height)
+            .await
+        {
+            tracing::warn!(
+                height = block_height,
+                error = %err,
+                "reusable-payments scan failed; continuing with wallet sync"
+            );
+        }
+
         Ok(Ok(()))
     }
 

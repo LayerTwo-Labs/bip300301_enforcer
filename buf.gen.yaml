@@ -6,7 +6,7 @@ version: v2
 
 inputs:
   - git_repo: https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
-    ref: 3012c02cc1ac3d2d8f2384172e96b7018413fb3a
+    ref: 80dc33693c747a29eb2a45608a23fc6d2e96da8f
     subdir: proto
 
 plugins:
