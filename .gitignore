@@ -5,3 +5,4 @@ datadir
 datadir-sync-benchmark*
 sync_analysis
 integrationtests.env
+local.just
