@@ -20,6 +20,9 @@ pub enum ConnectServer {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    #[error("unable to build gRPC reflection service: {0}")]
+    #[diagnostic(code(connectrpc_server::reflection))]
+    Reflection(#[source] connectrpc_reflection::ReflectionError),
 }
 
 #[derive(educe::Educe, Diagnostic, Error)]

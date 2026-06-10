@@ -472,6 +472,7 @@ dependencies = [
  "clap",
  "connectrpc",
  "connectrpc-health",
+ "connectrpc-reflection",
  "cusf-enforcer-mempool",
  "educe",
  "either",
@@ -547,6 +548,7 @@ dependencies = [
  "bitcoin-jsonrpsee",
  "bitcoin-send-tx-p2p",
  "buffa",
+ "buffa-descriptor",
  "buffa-types",
  "byteorder",
  "clap",
@@ -744,6 +746,17 @@ dependencies = [
  "serde_json",
  "smol_str",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "buffa-descriptor"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c85ad3861d6affd9844ee02b9a10e6fc1927c719c8f72b03e2ff4adc46979a21"
+dependencies = [
+ "buffa",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1016,6 +1029,22 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "connectrpc-reflection"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ec04dd0cfef901e79f653a9515a149aeaf1f3fd3fc1e4a80a36563ea89ec6f"
+dependencies = [
+ "buffa",
+ "buffa-descriptor",
+ "connectrpc",
+ "futures",
+ "http-body",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
