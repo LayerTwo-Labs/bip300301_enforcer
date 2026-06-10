@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
@@ -19,6 +19,7 @@ use serde::Deserialize;
 use tokio::time::sleep;
 
 use crate::{
+    block_verdict::{Expect, assert_enforcer_verdict},
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{DummySidechain, PostSetup, Sidechain},
 };
@@ -115,11 +116,9 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
     fund_enforcer::<DummySidechain>(&mut post_setup).await?;
     wait_past_mtp(&post_setup).await?;
 
-    let stdout_path = post_setup.directories.enforcer_dir.join("stdout.txt");
-
     let mut failures = Vec::new();
     for case in CASES {
-        match run_case(&post_setup, case, &stdout_path).await {
+        match run_case(&mut post_setup, case).await {
             Ok(()) => tracing::info!(case = case.name, "case passed"),
             Err(err) => {
                 tracing::error!(case = case.name, "case failed: {err:#}");
@@ -137,31 +136,22 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
     Ok(())
 }
 
-async fn run_case(
-    post_setup: &PostSetup,
-    case: &BadBlockCase,
-    stdout_path: &Path,
-) -> anyhow::Result<()> {
+async fn run_case(post_setup: &mut PostSetup, case: &BadBlockCase) -> anyhow::Result<()> {
     let bad_block_hash = submit_invalid_block(post_setup, case).await?;
     tracing::info!(case = case.name, %bad_block_hash, "submitted bad block");
 
-    // Poll `getchaintips` for the bad block to show `status="invalid"`.
-    // Tip-based polling is unreliable here because the test environment
-    // background-mines valid blocks every ~10s, so the tip may advance past
-    // (rather than revert to) the pre-submit hash even when our block is
-    // correctly invalidated.
-    poll_until_chaintip_invalid(post_setup, bad_block_hash, Duration::from_secs(10)).await?;
-
-    // Each case's expected substring uniquely identifies a single message
-    // type (M1/M2/M4/M7), so cross-case collisions are impossible — no need
-    // to slice per case.
-    let stdout_contents = std::fs::read_to_string(stdout_path)?;
-    anyhow::ensure!(
-        stdout_contents.contains(case.expected_log_contains),
-        "enforcer log did not contain `{}`",
-        case.expected_log_contains
-    );
-    Ok(())
+    // The enforcer must reject the block with the expected reason. Each case's
+    // expected substring uniquely identifies a single message type
+    // (M1/M2/M4/M7)
+    assert_enforcer_verdict(
+        post_setup,
+        bad_block_hash,
+        Expect::Rejected {
+            log_contains: case.expected_log_contains,
+        },
+        Duration::from_secs(10),
+    )
+    .await
 }
 
 async fn submit_invalid_block(
@@ -309,34 +299,4 @@ async fn wait_past_mtp(post_setup: &PostSetup) -> anyhow::Result<()> {
         sleep(wait).await;
     }
     Ok(())
-}
-
-async fn poll_until_chaintip_invalid(
-    post_setup: &PostSetup,
-    block_hash: BlockHash,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let target = block_hash.to_string();
-    loop {
-        let chaintips_json = post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "getchaintips", [])
-            .run_utf8()
-            .await?;
-        let chaintips: Vec<serde_json::Value> = serde_json::from_str(&chaintips_json)?;
-        let status = chaintips
-            .iter()
-            .find(|tip| tip.get("hash").and_then(|h| h.as_str()) == Some(&target))
-            .and_then(|tip| tip.get("status"))
-            .and_then(|s| s.as_str());
-        match status {
-            Some("invalid") => return Ok(()),
-            _ if tokio::time::Instant::now() >= deadline => anyhow::bail!(
-                "timed out waiting for `{block_hash}` to be marked invalid in chaintips; \
-                 last status: {status:?}"
-            ),
-            _ => sleep(Duration::from_millis(200)).await,
-        }
-    }
 }

@@ -675,6 +675,17 @@ impl BlockHandler<'_> {
                 if let Ok((_input, sidechain_number)) =
                     parse_op_drivechain(output.script_pubkey.as_bytes())
                 {
+                    // An OP_DRIVECHAIN output only designates a treasury UTXO
+                    // for an *active* sidechain slot. On the mainchain
+                    // OP_DRIVECHAIN is anyone-can-spend, so for an inactive slot
+                    // the output is an ordinary output and the block is valid.
+                    // Without this guard we'd treat it as a CTIP with a
+                    // nonexistent treasury (old value zero), then either reject
+                    // a valid block (`ZeroDiff` for a zero-value output) or
+                    // fabricate a deposit into a sidechain that doesn't exist.
+                    if !dbs.sidechain().contains_key(rotxn, &sidechain_number)? {
+                        continue;
+                    }
                     let new_ctip = Ctip {
                         outpoint: OutPoint {
                             txid,
@@ -1878,6 +1889,26 @@ mod tests {
         }
     }
 
+    /// A transaction with a single output scripted exactly like a treasury
+    /// UTXO — `OP_DRIVECHAIN <slot> OP_TRUE` — for an arbitrary slot and value,
+    /// spending `input_outpoint`. Used to exercise outputs that *look* like
+    /// CTIPs but target an inactive sidechain slot.
+    fn build_drivechain_output_tx(
+        slot: SidechainNumber,
+        value: Amount,
+        input_outpoint: OutPoint,
+    ) -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: input_outpoint,
+                ..TxIn::default()
+            }],
+            output: vec![create_m5_deposit_output(slot, Amount::ZERO, value)],
+        }
+    }
+
     fn dummy_block_hash(byte: u8) -> BlockHash {
         BlockHash::from_byte_array([byte; 32])
     }
@@ -2111,13 +2142,17 @@ mod tests {
     #[test]
     fn handle_m5_m6_deposit_no_existing_ctip() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
-        let rotxn = dbs.read_txn().into_diagnostic()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
+        // A deposit can only target an *active* sidechain.
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
         let deposit_amount = Amount::from_sat(10_000);
         let tx = build_m5_deposit_tx(sc, OutPoint::default(), Amount::ZERO, deposit_amount);
 
         let result = test_handler(&dbs)
-            .handle_m5_m6(&rotxn, Cow::Borrowed(&tx))
+            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
             .into_diagnostic()?;
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) = result else {
             panic!("expected M5 deposit");
@@ -2136,6 +2171,9 @@ mod tests {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
         let old_outpoint = OutPoint {
             txid: Txid::from_byte_array([0x11; 32]),
             vout: 0,
@@ -2174,6 +2212,9 @@ mod tests {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
         dbs.active_sidechains
             .put_ctip(
                 &mut rwtxn,
@@ -2248,6 +2289,99 @@ mod tests {
                 if sidechain_number == sc
         ));
         assert!(!err.is_fatal());
+        Ok(())
+    }
+
+    #[test]
+    fn handle_m5_m6_inactive_slot_drivechain_output_is_ignored() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        // Slot 42 is not an active sidechain. `b4 01 2a 51` =
+        // OP_DRIVECHAIN OP_PUSHBYTES_1 <42> OP_TRUE, value 0.
+        let inactive = SidechainNumber(42);
+        let tx = build_drivechain_output_tx(inactive, Amount::ZERO, OutPoint::default());
+
+        // Sanity check: the output really does parse as a treasury UTXO.
+        assert_eq!(
+            parse_op_drivechain(tx.output[0].script_pubkey.as_bytes())
+                .expect("output should parse as OP_DRIVECHAIN")
+                .1,
+            inactive,
+        );
+        assert!(
+            test_handler(&dbs)
+                .handle_m5_m6(&rotxn, Cow::Borrowed(&tx))
+                .into_diagnostic()?
+                .is_none(),
+            "inactive-slot OP_DRIVECHAIN output must be ignored, not treated as a CTIP",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn connect_block_accepts_zero_value_inactive_slot_drivechain_output() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let tx = build_drivechain_output_tx(SidechainNumber(42), Amount::ZERO, OutPoint::default());
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![tx],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    #[test]
+    fn connect_block_accepts_inactive_slot_drivechain_output_spent_in_same_block() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let create_tx = build_drivechain_output_tx(
+            SidechainNumber(42),
+            Amount::from_sat(1_000),
+            OutPoint::default(),
+        );
+        let spend_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: create_tx.compute_txid(),
+                    vout: 0,
+                },
+                ..TxIn::default()
+            }],
+            output: vec![TxOut {
+                script_pubkey: ScriptBuf::new(),
+                value: Amount::from_sat(1_000),
+            }],
+        };
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![create_tx, spend_tx],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
         Ok(())
     }
 
