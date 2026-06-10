@@ -18,6 +18,7 @@ bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
 bitcoin-send-tx-p2p = { workspace = true }
 buffa = { workspace = true }
+buffa-descriptor = { workspace = true }
 buffa-types = { workspace = true }
 byteorder = { workspace = true }
 connectrpc = { workspace = true }

@@ -12,11 +12,17 @@ inputs:
 plugins:
   - remote: buf.build/anthropics/buffa:v0.7.0
     out: lib/proto/generated/buffa
+    # NB: `reflect_mode=bridge` needs the plugin to see the full file closure
+    # in one invocation, or the embedded descriptor pools will not cover the
+    # other packages' services (and reflection would miss them). Local plugins
+    # need `strategy: all` for this; remote plugins always execute against the
+    # whole input (buf rejects an explicit `strategy` key for them).
     opt:
       - file_per_package=true # needed for remote generation to work
       - unknown_fields=false # makes destructuring more ergonomic
       - json=true # serde impls for the Connect JSON wire format
       - views=true # zero-copy *View types used by handler signatures
+      - reflect_mode=bridge # embed descriptors + emit descriptor_pool(), drives gRPC reflection
   - remote: buf.build/anthropics/connect-rust:v0.7.0
     out: lib/proto/generated/connect
     opt:
