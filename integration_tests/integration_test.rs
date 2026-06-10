@@ -695,6 +695,17 @@ pub fn tests(
         },
         crate::test_invalid_block::test_invalid_block,
     ));
+    async_trials.push(new_trial_with_setup(
+        "inactive_slot_drivechain_output".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_inactive_drivechain_output::test_inactive_slot_drivechain_output,
+    ));
 
     async_trials
 }
