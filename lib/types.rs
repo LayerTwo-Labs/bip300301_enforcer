@@ -2,8 +2,12 @@ use std::{borrow::Cow, collections::HashMap, num::TryFromIntError, sync::Arc};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
-    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Transaction, Txid, Work,
+    Amount, BlockHash, Opcode, OutPoint, ScriptBuf, Transaction, TxOut, Txid, Work,
     amount::CheckedSum as _,
+    consensus::{
+        Decodable as _,
+        encode::{self, VarInt},
+    },
     hashes::{Hash as _, sha256d},
     opcodes::{
         OP_TRUE,
@@ -768,6 +772,70 @@ impl<'a> BlindedM6<'a> {
         M6id(self.tx.compute_txid())
     }
 
+    /// Consensus-encode this blinded M6 for storage or transport.
+    ///
+    /// Always uses rust-bitcoin's standard encoder. A finalized M6 carries a
+    /// treasury input, so it is never the ambiguous zero-input case. A
+    /// not-yet-finalized zero-input bundle still round-trips, because
+    /// [`BlindedM6::deserialize`] reads rust-bitcoin's own encoding back.
+    pub fn serialize(&self) -> Vec<u8> {
+        bitcoin::consensus::serialize(self.as_ref())
+    }
+
+    /// Decode a blinded M6 from consensus bytes, additionally accepting the
+    /// **legacy** zero-input encoding Bitcoin Core and sidechains use:
+    /// `version || 00 (input count) || out_count || outputs || locktime`, with
+    /// no BIP144 segwit marker/flag.
+    ///
+    /// rust-bitcoin's standard decoder is tried first. It cannot read the legacy
+    /// form, because a zero-input tx is ambiguous: BIP144 reuses an input count
+    /// of `0x00` as the segwit marker, so rust-bitcoin misreads the frame. See
+    /// <https://docs.rs/bitcoin/0.32/bitcoin/transaction/struct.Transaction.html>
+    /// ("Serialization notes" on zero-input txs) and
+    /// <https://github.com/rust-bitcoin/rust-bitcoin/issues/104>. When the
+    /// standard decoder fails, we fall back to parsing the legacy frame by hand.
+    pub fn deserialize(bytes: &[u8]) -> Result<BlindedM6<'static>, BlindedM6DecodeError> {
+        let tx = Self::deserialize_tx(bytes)?;
+        let blinded = BlindedM6::try_from(Cow::Owned(tx))?;
+        Ok(blinded)
+    }
+
+    /// Decode the (possibly legacy zero-input) transaction underlying a blinded
+    /// M6. See [`BlindedM6::deserialize`] for why the legacy fallback exists.
+    fn deserialize_tx(bytes: &[u8]) -> Result<Transaction, encode::Error> {
+        let standard_err = match bitcoin::consensus::deserialize::<Transaction>(bytes) {
+            Ok(tx) => return Ok(tx),
+            Err(err) => err,
+        };
+        let mut cursor = std::io::Cursor::new(bytes);
+        let version = bitcoin::transaction::Version::consensus_decode(&mut cursor)?;
+        let input_count = VarInt::consensus_decode(&mut cursor)?;
+        if input_count.0 != 0 {
+            return Err(standard_err);
+        }
+
+        let output_count = VarInt::consensus_decode(&mut cursor)?;
+
+        // Do NOT pre-allocate from the attacker-controlled `output_count`: a crafted
+        // varint (e.g. u64::MAX) would otherwise panic in `Vec::with_capacity`
+        // or abort the process on a huge allocation. `cursor` is finite, so `push`
+        // grows only as real outputs decode
+        let mut output = Vec::new();
+        for _ in 0..output_count.0 {
+            output.push(TxOut::consensus_decode(&mut cursor)?);
+        }
+        let lock_time = bitcoin::absolute::LockTime::consensus_decode(&mut cursor)?;
+        if cursor.position() != bytes.len() as u64 {
+            return Err(standard_err);
+        }
+        Ok(Transaction {
+            version,
+            lock_time,
+            input: Vec::new(),
+            output,
+        })
+    }
+
     // TODO: remove sidechain_number param
     pub fn into_m6(
         self,
@@ -865,6 +933,25 @@ impl<'a> TryFrom<Cow<'a, bitcoin::Transaction>> for BlindedM6<'a> {
     }
 }
 
+#[derive(Debug, Diagnostic, Error)]
+pub enum BlindedM6DecodeError {
+    #[error(
+        "not a valid transaction in rust-bitcoin's or Bitcoin Core's legacy zero-input encoding"
+    )]
+    Consensus(#[from] encode::Error),
+    #[error("decoded transaction is not a well-formed blinded M6")]
+    Invalid(#[from] BlindedM6Error),
+}
+
+impl ToStatus for BlindedM6DecodeError {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::Consensus(err) => StatusBuilder::new(err),
+            Self::Invalid(err) => err.builder(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct PendingM6idInfo {
     pub vote_count: u16,
@@ -883,9 +970,11 @@ impl PendingM6idInfo {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use miette::Diagnostic as _;
 
-    use crate::types::{SidechainDeclaration, SidechainNumber, SidechainProposal};
+    use crate::types::{BlindedM6, SidechainDeclaration, SidechainNumber, SidechainProposal};
 
     fn proposal(description: Vec<u8>) -> SidechainProposal {
         SidechainProposal {
@@ -991,6 +1080,104 @@ mod tests {
         assert_eq!(
             format!("{}", result.unwrap_err().code().unwrap()),
             "sidechain_proposal::unknown_version"
+        );
+    }
+
+    /// A structurally-valid zero-input blinded M6: an `OP_RETURN <fee>` marker at
+    /// index 0 followed by a payout output (so it has >= 2 outputs).
+    fn blinded_m6_tx() -> bitcoin::Transaction {
+        use bitcoin::{
+            Amount, ScriptBuf, TxOut, blockdata::locktime::absolute::LockTime,
+            opcodes::all::OP_RETURN, script::Builder, transaction::Version,
+        };
+        let fee_output = TxOut {
+            value: Amount::ZERO,
+            script_pubkey: Builder::new()
+                .push_opcode(OP_RETURN)
+                .push_slice(1_000u64.to_be_bytes())
+                .into_script(),
+        };
+        let payout_output = TxOut {
+            value: Amount::from_sat(50_000),
+            script_pubkey: ScriptBuf::from_bytes(
+                [vec![0x00, 0x14], vec![0x11; 20]].concat(), // P2WPKH
+            ),
+        };
+        bitcoin::Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: vec![fee_output, payout_output],
+        }
+    }
+
+    /// Emit a zero-input tx in Bitcoin Core's legacy frame (no BIP144 marker):
+    /// `version || 00 (input count) || out_count || outputs || locktime`. This is
+    /// the encoding `BlindedM6::deserialize` must accept but rust-bitcoin rejects.
+    fn serialize_zero_input_legacy(tx: &bitcoin::Transaction) -> Vec<u8> {
+        use bitcoin::consensus::{Encodable as _, encode::VarInt};
+        assert!(tx.input.is_empty());
+        let mut bytes = Vec::new();
+        tx.version.consensus_encode(&mut bytes).unwrap();
+        VarInt(0).consensus_encode(&mut bytes).unwrap();
+        VarInt(tx.output.len() as u64)
+            .consensus_encode(&mut bytes)
+            .unwrap();
+        for output in &tx.output {
+            output.consensus_encode(&mut bytes).unwrap();
+        }
+        tx.lock_time.consensus_encode(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn blinded_m6_always_serializes_with_rust_bitcoin() {
+        let tx = blinded_m6_tx();
+        let blinded = BlindedM6::try_from(Cow::Owned(tx.clone())).unwrap();
+        // We always emit rust-bitcoin's standard encoding, even for the
+        // zero-input case (where it produces the BIP144 segwit form). A
+        // finalized M6 has an input anyway, so the ambiguity never bites; and
+        // this still round-trips, since `deserialize` reads our own encoding back.
+        assert_eq!(blinded.serialize(), bitcoin::consensus::serialize(&tx));
+        assert_eq!(
+            BlindedM6::deserialize(&blinded.serialize())
+                .unwrap()
+                .as_ref(),
+            &tx
+        );
+    }
+
+    #[test]
+    fn blinded_m6_deserialize_accepts_legacy_zero_input() {
+        let tx = blinded_m6_tx();
+        let bytes = serialize_zero_input_legacy(&tx);
+        // It's the legacy frame: version || 00 (input count) || ...
+        assert_eq!(bytes[4], 0x00, "input count byte should be a literal 0x00");
+        // rust-bitcoin's standard decoder cannot read this legacy form (it
+        // misreads the 0x00 as the BIP144 segwit marker) -- the whole reason
+        // the legacy fallback in `deserialize` exists. See rust-bitcoin issue #104.
+        assert!(bitcoin::consensus::deserialize::<bitcoin::Transaction>(&bytes).is_err());
+        // ...but our fallback decoder round-trips it faithfully.
+        assert_eq!(BlindedM6::deserialize(&bytes).unwrap().as_ref(), &tx);
+    }
+
+    /// a zero-input header whose `output_count` varint is attacker-
+    /// chosen as `u64::MAX` must fail cleanly, NOT panic in `Vec::with_capacity`
+    /// This 14-byte payload is reachable from the `BroadcastWithdrawalBundle` RPC.
+    #[test]
+    fn deserialize_blinded_m6_rejects_oversized_output_count_without_panic() {
+        let payload = [
+            0x02, 0x00, 0x00, 0x00, // version = 2
+            0x00, // input count = 0 -> zero-input fallback engages
+            0xFF, // output count varint: 0xFF prefix -> read next 8 bytes as u64
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // output count = u64::MAX
+        ];
+        // Sanity: the standard decoder rejects it (segwit marker path), so the
+        // fallback really does run on this input.
+        assert!(bitcoin::consensus::deserialize::<bitcoin::Transaction>(&payload).is_err());
+        assert!(
+            BlindedM6::deserialize(&payload).is_err(),
+            "oversized output_count must be a clean Err, not a panic/abort"
         );
     }
 }
