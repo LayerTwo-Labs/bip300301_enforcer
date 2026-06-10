@@ -181,6 +181,7 @@ jobs:
       matrix: ${{ fromJSON(needs.compute-integration-matrix.outputs.matrix) }}
     env:
       ELECTRS_VERSION: v3.2.0
+      GRPCURL_VERSION: "1.9.3"
     steps:
       - name: Download Bitcoin Core (patched)
         if: matrix.flavor == 'patched'
@@ -270,6 +271,41 @@ jobs:
 
       - name: Build (debug)
         run: cargo build
+
+      # Verify gRPC server reflection with real schema-free clients
+      # (grpcurl + buf curl). Reuses this job's bitcoind download and debug
+      # build; gated to a single matrix entry since the result does not
+      # depend on the Bitcoin Core flavor.
+      - name: Install buf
+        if: matrix.flavor == 'patched'
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Cache grpcurl
+        if: matrix.flavor == 'patched'
+        id: cache-grpcurl
+        uses: actions/cache@v5
+        with:
+          path: ~/grpcurl-bin
+          key: grpcurl-v${{ env.GRPCURL_VERSION }}
+
+      - name: Install grpcurl
+        if: |
+          matrix.flavor == 'patched' &&
+          steps.cache-grpcurl.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/grpcurl-bin
+          wget -q "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz"
+          tar -xzf "grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" -C ~/grpcurl-bin grpcurl
+
+      - name: Verify gRPC reflection (grpcurl + buf curl)
+        if: matrix.flavor == 'patched'
+        run: |
+          export PATH="$HOME/grpcurl-bin:$PATH"
+          export BITCOIND='../bitcoin-bins/bitcoind'
+          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          ./scripts/verify_reflection.sh
 
       - name: Run integration tests
         # Stock Bitcoin Core rejects drivechain deposit transactions with
