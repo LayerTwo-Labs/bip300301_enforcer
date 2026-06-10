@@ -852,6 +852,301 @@ impl WalletService for crate::wallet::Wallet {
 
         Ok(tonic::Response::new(CreateWalletResponse {}))
     }
+
+    async fn get_bip47_payment_code(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::GetBip47PaymentCodeRequest>,
+    ) -> Result<tonic::Response<crate::proto::mainchain::GetBip47PaymentCodeResponse>, tonic::Status>
+    {
+        let req = request.into_inner();
+        let version = bip47_version_from_proto(req.version)?;
+        let code = self
+            .bip47_payment_code(version)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        let notification_address = bip47_notification_address(&code, self.validator().network())
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::GetBip47PaymentCodeResponse {
+                payment_code: code.to_string(),
+                notification_address,
+                version: bip47_version_to_proto(version) as i32,
+            },
+        ))
+    }
+
+    async fn send_to_bip47_payment_code(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::SendToBip47PaymentCodeRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::SendToBip47PaymentCodeResponse>,
+        tonic::Status,
+    > {
+        let req = request.into_inner();
+        let recipient: crate::wallet::reusable_payments::PaymentCode = req
+            .payment_code
+            .parse()
+            .map_err(|err: crate::wallet::reusable_payments::bip47::ParseError| {
+                tonic::Status::invalid_argument(format!("invalid payment_code: {err}"))
+            })?;
+        let amount = bitcoin::Amount::from_sat(req.amount_sats);
+        let result = self
+            .send_to_payment_code(recipient, amount, req.fee_sat_per_vbyte)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::SendToBip47PaymentCodeResponse {
+                notification_txid: result.notification_txid.map(|t| ReverseHex::encode(&t)),
+                payment_txid: Some(ReverseHex::encode(&result.payment_txid)),
+                sender_index: result.sender_index,
+                version: bip47_version_to_proto(result.version) as i32,
+            },
+        ))
+    }
+
+    async fn list_bip47_inbound_payers(
+        &self,
+        _request: tonic::Request<crate::proto::mainchain::ListBip47InboundPayersRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::ListBip47InboundPayersResponse>,
+        tonic::Status,
+    > {
+        let payers = self
+            .list_bip47_inbound_payers()
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        let proto_payers = payers
+            .into_iter()
+            .map(|p| crate::proto::mainchain::Bip47InboundPayer {
+                payment_code: p.sender_payment_code.to_string(),
+                version: bip47_version_to_proto(p.sender_payment_code.version()) as i32,
+                next_receive_index: p.next_receive_index,
+                total_received_sats: p.total_received_sats,
+                first_seen: Some(prost_types::Timestamp {
+                    seconds: p.first_seen_unix,
+                    nanos: 0,
+                }),
+            })
+            .collect();
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::ListBip47InboundPayersResponse {
+                payers: proto_payers,
+            },
+        ))
+    }
+
+    async fn get_reusable_scan_status(
+        &self,
+        _request: tonic::Request<crate::proto::mainchain::GetReusableScanStatusRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::GetReusableScanStatusResponse>,
+        tonic::Status,
+    > {
+        let status = self
+            .reusable_scan_status_snapshot()
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::GetReusableScanStatusResponse {
+                tip_height: status.tip_height,
+                last_scanned_height: status.last_scanned_height,
+                birthday_height: status.birthday_height,
+                catching_up: status.catching_up,
+            },
+        ))
+    }
+
+    async fn rescan_reusable_payments(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::RescanReusablePaymentsRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::RescanReusablePaymentsResponse>,
+        tonic::Status,
+    > {
+        let req = request.into_inner();
+        self.rescan_reusable_payments(req.from_height)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::RescanReusablePaymentsResponse {
+                scheduled_from_height: req.from_height,
+            },
+        ))
+    }
+
+    async fn get_silent_payment_address(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::GetSilentPaymentAddressRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::GetSilentPaymentAddressResponse>,
+        tonic::Status,
+    > {
+        let req = request.into_inner();
+        let addr = self
+            .silent_payment_address(req.label)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::GetSilentPaymentAddressResponse {
+                address: addr.to_string(),
+            },
+        ))
+    }
+
+    async fn create_silent_payment_label(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::CreateSilentPaymentLabelRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::CreateSilentPaymentLabelResponse>,
+        tonic::Status,
+    > {
+        let req = request.into_inner();
+        let name = req.name.trim();
+        if name.is_empty() {
+            return Err(tonic::Status::invalid_argument("name must be non-empty"));
+        }
+        let m = self
+            .create_silent_payment_label(name)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        let labeled = self
+            .silent_payment_address(Some(m))
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::CreateSilentPaymentLabelResponse {
+                label_m: m,
+                labeled_address: labeled.to_string(),
+            },
+        ))
+    }
+
+    async fn list_silent_payment_labels(
+        &self,
+        _request: tonic::Request<crate::proto::mainchain::ListSilentPaymentLabelsRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::ListSilentPaymentLabelsResponse>,
+        tonic::Status,
+    > {
+        let raw = self
+            .list_silent_payment_labels()
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        let mut labels = Vec::with_capacity(raw.len());
+        for (m, name) in raw {
+            let labeled = self
+                .silent_payment_address(Some(m))
+                .await
+                .map_err(|err| err.builder().to_status())?;
+            labels.push(crate::proto::mainchain::SilentPaymentLabel {
+                m,
+                name,
+                address: labeled.to_string(),
+            });
+        }
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::ListSilentPaymentLabelsResponse { labels },
+        ))
+    }
+
+    async fn send_to_silent_payment(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::SendToSilentPaymentRequest>,
+    ) -> Result<tonic::Response<crate::proto::mainchain::SendToSilentPaymentResponse>, tonic::Status>
+    {
+        let req = request.into_inner();
+        let expected_network = self.validator().network();
+        let mut parsed_recipients = Vec::with_capacity(req.recipients.len());
+        for r in req.recipients {
+            let addr = crate::wallet::reusable_payments::SilentPaymentAddress::parse_for_network(
+                &r.sp_address,
+                expected_network,
+            )
+            .map_err(
+                |err: crate::wallet::reusable_payments::silent_payments::ParseError| {
+                    tonic::Status::invalid_argument(format!("invalid sp_address: {err}"))
+                },
+            )?;
+            parsed_recipients.push((addr, bitcoin::Amount::from_sat(r.amount_sats)));
+        }
+        let txid = self
+            .send_to_silent_payment(parsed_recipients, req.fee_sat_per_vbyte)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::SendToSilentPaymentResponse {
+                txid: Some(ReverseHex::encode(&txid)),
+            },
+        ))
+    }
+
+    async fn list_silent_payment_receives(
+        &self,
+        request: tonic::Request<crate::proto::mainchain::ListSilentPaymentReceivesRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::mainchain::ListSilentPaymentReceivesResponse>,
+        tonic::Status,
+    > {
+        let req = request.into_inner();
+        let (raw, tip_height) = self
+            .list_silent_payment_receives(req.min_confirmations, req.limit)
+            .await
+            .map_err(|err| err.builder().to_status())?;
+        let items = raw
+            .into_iter()
+            .map(|r| crate::proto::mainchain::SilentPaymentReceive {
+                txid: Some(ReverseHex::encode(&r.txid)),
+                vout: r.vout,
+                output_pubkey: r.output_pubkey.serialize().to_vec(),
+                amount_sats: r.amount.to_sat(),
+                tweak_k: r.tweak_k,
+                label_m: r.label_m,
+                label_name: r.label_name,
+                height: r.height,
+                spent_in_txid: r.spent_in_txid.map(|t| ReverseHex::encode(&t)),
+            })
+            .collect();
+        Ok(tonic::Response::new(
+            crate::proto::mainchain::ListSilentPaymentReceivesResponse {
+                items,
+                scan_tip_height: tip_height,
+            },
+        ))
+    }
+}
+
+fn bip47_version_from_proto(
+    raw: i32,
+) -> Result<crate::wallet::reusable_payments::bip47::Version, tonic::Status> {
+    use crate::{proto::mainchain::Bip47Version as P, wallet::reusable_payments::bip47::Version};
+    let parsed = P::try_from(raw)
+        .map_err(|_| tonic::Status::invalid_argument(format!("unknown Bip47Version {raw}")))?;
+    match parsed {
+        P::V1 => Ok(Version::V1),
+        P::V3 => Ok(Version::V3),
+        P::Unspecified => Err(tonic::Status::invalid_argument(
+            "Bip47Version must be V1 or V3",
+        )),
+    }
+}
+
+fn bip47_version_to_proto(
+    v: crate::wallet::reusable_payments::bip47::Version,
+) -> crate::proto::mainchain::Bip47Version {
+    use crate::{proto::mainchain::Bip47Version as P, wallet::reusable_payments::bip47::Version};
+    match v {
+        Version::V1 => P::V1,
+        Version::V3 => P::V3,
+    }
+}
+
+fn bip47_notification_address(
+    code: &crate::wallet::reusable_payments::PaymentCode,
+    network: bitcoin::Network,
+) -> Result<String, crate::wallet::error::ReusablePayments> {
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let addr = crate::wallet::reusable_payments::bip47::notification_address(code, network, &secp)?;
+    Ok(addr.to_string())
 }
 
 #[derive(Debug, Error)]
