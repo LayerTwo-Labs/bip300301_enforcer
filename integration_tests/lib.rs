@@ -1,6 +1,7 @@
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
+mod test_blinded_m6_roundtrip;
 mod test_file_based_block_parser;
 mod test_invalid_block;
 mod test_peer_bmm_request;

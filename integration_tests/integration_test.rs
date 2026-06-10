@@ -696,5 +696,17 @@ pub fn tests(
         crate::test_invalid_block::test_invalid_block,
     ));
 
+    async_trials.push(new_trial_with_setup(
+        "blinded_m6_roundtrip".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_blinded_m6_roundtrip::test_blinded_m6_zero_input_roundtrip,
+    ));
+
     async_trials
 }
