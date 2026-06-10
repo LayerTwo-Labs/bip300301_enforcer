@@ -24,7 +24,8 @@ use crate::{
             GetInfoRequest, GetInfoResponse, ListSidechainDepositTransactionsRequest,
             ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
             ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
-            SendTransactionRequest, SendTransactionResponse, UnlockWalletRequest,
+            SendTransactionRequest, SendTransactionResponse, SidechainDeclaration,
+            SubmitSidechainProposalRequest, SubmitSidechainProposalResponse, UnlockWalletRequest,
             UnlockWalletResponse, WalletTransaction, create_sidechain_proposal_response,
             get_info_response,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
@@ -114,6 +115,58 @@ fn stream_proposal_confirmations(
     })
 }
 
+/// Shared implementation for `CreateSidechainProposal` and
+/// `SubmitSidechainProposal`: validates the request fields, creates a
+/// sidechain proposal (BIP300 M1), and persists it to the local database.
+/// Generic over the request message type so that field errors are attributed
+/// to the RPC that was actually called.
+async fn create_and_persist_sidechain_proposal<Request>(
+    wallet: &crate::wallet::Wallet,
+    sidechain_id: Option<u32>,
+    declaration: Option<SidechainDeclaration>,
+) -> Result<crate::types::SidechainProposal, tonic::Status>
+where
+    Request: prost::Name,
+{
+    let sidechain_id = {
+        let raw_id = sidechain_id.ok_or_else(|| missing_field::<Request>("sidechain_id"))?;
+        SidechainNumber::try_from(raw_id).map_err(|err| {
+            invalid_field_value::<Request, _>("sidechain_id", &raw_id.to_string(), err)
+        })?
+    };
+    let declaration = declaration
+        .ok_or_else(|| missing_field::<Request>("declaration"))?
+        .try_into()
+        .map_err(|err: crate::proto::Error| err.builder().to_status())?;
+    let (proposal_txout, description) =
+        crate::messages::create_sidechain_proposal(sidechain_id, &declaration).map_err(
+            |err: bitcoin::script::PushBytesError| tonic::Status::unknown(format!("{err:#}")),
+        )?;
+
+    tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
+    let sidechain_proposal = crate::types::SidechainProposal {
+        sidechain_number: sidechain_id,
+        description,
+    };
+    let () = wallet
+        .propose_sidechain(&sidechain_proposal)
+        .await
+        .map_err(|err| {
+            if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
+                tracing::error!("SQLite error: {:#}", ErrorChain::new(&sqlite_err));
+
+                if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
+                    return tonic::Status::already_exists("Sidechain proposal already exists");
+                }
+            }
+
+            tonic::Status::internal(err.to_string())
+        })?;
+
+    tracing::info!("Persisted sidechain proposal into DB",);
+    Ok(sidechain_proposal)
+}
+
 #[tonic::async_trait]
 impl WalletService for crate::wallet::Wallet {
     type CreateSidechainProposalStream =
@@ -163,51 +216,30 @@ impl WalletService for crate::wallet::Wallet {
             sidechain_id,
             declaration,
         } = request.into_inner();
-        let sidechain_id = {
-            let raw_id = sidechain_id
-                .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("sidechain_id"))?;
-            SidechainNumber::try_from(raw_id).map_err(|err| {
-                invalid_field_value::<CreateSidechainProposalRequest, _>(
-                    "sidechain_id",
-                    &raw_id.to_string(),
-                    err,
-                )
-            })?
-        };
-        let declaration = declaration
-            .ok_or_else(|| missing_field::<CreateSidechainProposalRequest>("declaration"))?
-            .try_into()
-            .map_err(|err: crate::proto::Error| err.builder().to_status())?;
-        let (proposal_txout, description) =
-            crate::messages::create_sidechain_proposal(sidechain_id, &declaration).map_err(
-                |err: bitcoin::script::PushBytesError| tonic::Status::unknown(format!("{err:#}")),
-            )?;
-
-        tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
-        let sidechain_proposal = crate::types::SidechainProposal {
-            sidechain_number: sidechain_id,
-            description,
-        };
-        let () = self
-            .propose_sidechain(&sidechain_proposal)
-            .await
-            .map_err(|err| {
-                if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
-                    tracing::error!("SQLite error: {:#}", ErrorChain::new(&sqlite_err));
-
-                    if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
-                        return tonic::Status::already_exists("Sidechain proposal already exists");
-                    }
-                }
-
-                tonic::Status::internal(err.to_string())
-            })?;
-
-        tracing::info!("Persisted sidechain proposal into DB",);
+        let sidechain_proposal = create_and_persist_sidechain_proposal::<
+            CreateSidechainProposalRequest,
+        >(self, sidechain_id, declaration)
+        .await?;
 
         let stream = stream_proposal_confirmations(self.validator(), sidechain_proposal).boxed();
 
         Ok(tonic::Response::new(stream))
+    }
+
+    async fn submit_sidechain_proposal(
+        &self,
+        request: tonic::Request<SubmitSidechainProposalRequest>,
+    ) -> Result<tonic::Response<SubmitSidechainProposalResponse>, tonic::Status> {
+        let SubmitSidechainProposalRequest {
+            sidechain_id,
+            declaration,
+        } = request.into_inner();
+        let _sidechain_proposal = create_and_persist_sidechain_proposal::<
+            SubmitSidechainProposalRequest,
+        >(self, sidechain_id, declaration)
+        .await?;
+
+        Ok(tonic::Response::new(SubmitSidechainProposalResponse {}))
     }
 
     async fn create_new_address(
