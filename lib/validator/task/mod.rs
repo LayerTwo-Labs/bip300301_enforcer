@@ -1123,14 +1123,20 @@ impl BlockHandler<'_> {
         let prev_mainchain_block_hash = block.header.prev_blockhash;
         let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
         'connect_txs: for transaction in &block.txdata[1..] {
-            let Some((tx_event, diff)) = tx_diffs.rotxn(|rotxn, _dbs| {
-                self.handle_transaction(
-                    rotxn,
-                    Some(&accepted_bmm_requests),
-                    &prev_mainchain_block_hash,
-                    transaction,
-                )
-            })?
+            let Some((tx_event, diff)) = tx_diffs
+                .rotxn(|rotxn, _dbs| {
+                    self.handle_transaction(
+                        rotxn,
+                        Some(&accepted_bmm_requests),
+                        &prev_mainchain_block_hash,
+                        transaction,
+                    )
+                })
+                .map_err(|source| error::ConnectBlock::Transaction {
+                    txid: transaction.compute_txid(),
+                    block_hash,
+                    source,
+                })?
             else {
                 continue 'connect_txs;
             };

@@ -366,9 +366,14 @@ pub(in crate::validator) enum ConnectBlock {
     #[error(transparent)]
     #[fatal(true)]
     PutBlockInfo(#[from] dbs::block_hash_dbs_error::PutBlockInfo),
-    #[error(transparent)]
+    #[error("Error handling transaction `{txid}` in block `{block_hash}`")]
     #[fatal(forward)]
-    Transaction(#[from] HandleTransaction),
+    Transaction {
+        txid: bitcoin::Txid,
+        block_hash: bitcoin::BlockHash,
+        #[source]
+        source: HandleTransaction,
+    },
 }
 
 impl From<db::Error> for ConnectBlock {
