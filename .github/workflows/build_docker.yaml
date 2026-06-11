@@ -7,14 +7,33 @@ on:
   workflow_dispatch:
   pull_request:
 
+env:
+  # GHCR image refs must be lowercase, and `github.repository_owner` is
+  # `LayerTwo-Labs` — so we hardcode the lowercased name here.
+  IMAGE: ghcr.io/layertwo-labs/bip300301_enforcer
+
 jobs:
   # Build and push ALL events. We'll make sure to give the images
   # sensible tags, so there's no confusion around what's 'dev' builds
   # through PRs, and what's proper 'master' builds.
   #
-  # Official GitHub docs on this: https://docs.github.com/en/actions/use-cases-and-examples/publishing-packages/publishing-docker-images
-  build-push-docker:
-    runs-on: ubuntu-latest-large
+  # Each platform is built natively on its own runner (emulating an
+  # arm64 Rust compile through QEMU is far too slow), pushed by digest,
+  # and then stitched together into a single multi-arch manifest by the
+  # `merge-docker-manifest` job below.
+  #
+  # Official Docker docs on this: https://docs.docker.com/build/ci/github-actions/multi-platform/#distribute-build-across-multiple-runners
+  build-docker:
+    name: Build Docker image (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest-large
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # needed to push to GHCR
     permissions:
       contents: read
@@ -22,13 +41,96 @@ jobs:
       attestations: write
       id-token: write
     steps:
+      - name: Prepare platform name for artifact upload
+        run: |
+          platform='${{ matrix.platform }}'
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/checkout@v6
+
+      - name: Determine Rust version
+        id: rust-version
+        run: |
+          RUST_VERSION=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/{split($2,v,"."); print v[1]"."v[2]; exit}' rust-toolchain.toml)
+          echo "rust-version=$RUST_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build (and maybe push) Docker image by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          platforms: ${{ matrix.platform }}
+          # Push by digest only — tags are applied by the merge job once
+          # all platform images exist. Only push if this is not a PR from
+          # a fork.
+          # prettier-ignore
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          # Caching Docker builds on CI is an eternally
+          # difficult task. From the official docs:
+          # "In most cases you want to use the inline cache exporter"
+          #
+          # https://docs.docker.com/build/ci/github-actions/cache/#inline-cache
+          #
+          # `:latest` is a multi-arch manifest list, so buildx resolves it
+          # to the cache image matching the platform being built.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:latest
+          cache-to: type=inline
+          build-args:
+            RUST_VERSION=${{ steps.rust-version.outputs.rust-version }}
+
+      - name: Export digest
+        # prettier-ignore
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        # prettier-ignore
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-docker-manifest:
+    name: Merge and push multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: build-docker
+    # Skip for PRs from forks — nothing was pushed, so there's nothing
+    # to merge.
+    # prettier-ignore
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
       - name: Docker meta
         id: meta
         # https://github.com/docker/metadata-action
         uses: docker/metadata-action@v6
         with:
           images: |
-            ghcr.io/${{ github.repository_owner }}/bip300301_enforcer
+            ${{ env.IMAGE }}
           # generate Docker tags based on the following events/attributes
           tags: |
             # creates a tag for each push
@@ -50,27 +152,13 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/checkout@v6
-
-      - name: Determine Rust version
-        id: rust-version
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
         run: |
-          RUST_VERSION=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/{split($2,v,"."); print v[1]"."v[2]; exit}' rust-toolchain.toml)
-          echo "rust-version=$RUST_VERSION" >> $GITHUB_OUTPUT
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
-      - name: Build (and maybe push) Docker image
-        uses: docker/build-push-action@v7
-        with:
-          # Only push if this is not a PR from a fork
-          # prettier-ignore
-          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          tags: ${{ steps.meta.outputs.tags }}
-          # Caching Docker builds on CI is an eternally
-          # difficult task. From the official docs:
-          # "In most cases you want to use the inline cache exporter"
-          #
-          # https://docs.docker.com/build/ci/github-actions/cache/#inline-cache
-          # prettier-ignore
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/bip300301_enforcer:latest
-          cache-to: type=inline
-          build-args: RUST_VERSION=${{ steps.rust-version.outputs.rust-version }}
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
