@@ -517,6 +517,7 @@ dependencies = [
  "bdk_electrum",
  "bdk_esplora",
  "bdk_wallet",
+ "bip47",
  "bitcoin",
  "bitcoin-jsonrpsee",
  "bitcoin-send-tx-p2p",
@@ -575,6 +576,15 @@ dependencies = [
  "bitcoin_hashes",
  "serde",
  "unicode-normalization",
+]
+
+[[package]]
+name = "bip47"
+version = "0.3.4"
+dependencies = [
+ "bitcoin",
+ "hex",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

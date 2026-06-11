@@ -1,3 +1,6 @@
+//! BIP47 reusable payment codes (v1 and v3): parsing/serialization,
+//! notification blinding, and send/receive address derivation.
+
 use std::{fmt, str::FromStr};
 
 use bitcoin::{
@@ -9,7 +12,7 @@ use bitcoin::{
     secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, Verification, ecdh},
 };
 
-use super::util;
+mod util;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Version {
@@ -447,7 +450,6 @@ pub fn derive_send_pubkey<C: Verification + bitcoin::secp256k1::Signing>(
 }
 
 // TODO: spend side
-#[cfg(test)]
 pub fn derive_receive_priv(
     receiver_priv_at_i: &SecretKey,
     sender_notification_pub: &PublicKey,
@@ -758,10 +760,6 @@ mod tests {
         fn v3_official_vectors() {
             let secp = Secp256k1::new();
 
-            assert_eq!(
-                crate::wallet::reusable_payments::util::bip44_coin_type(Network::Bitcoin),
-                0
-            );
             let seed = hex_decode(ALICE_SEED_HEX);
             let master = Xpriv::new_master(bitcoin::NetworkKind::Main, &seed).unwrap();
             let account = master

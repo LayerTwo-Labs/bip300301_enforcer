@@ -605,7 +605,11 @@ impl WalletInner {
         block: &bitcoin::Block,
         height: u32,
     ) -> Result<(), error::ReusablePayments> {
-        let _scanner_guard = self.scanner_lock.lock().await;
+        let _scanner_guard = self
+            .scanner_lock
+            .acquire()
+            .await
+            .expect("scanner semaphore is never closed");
         self.scan_block_for_reusable_payments_locked(block, height)
             .await
     }

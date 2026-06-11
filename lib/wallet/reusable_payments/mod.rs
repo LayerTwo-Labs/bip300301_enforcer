@@ -1,4 +1,4 @@
-pub mod bip47;
+pub use ::bip47;
 pub mod r#impl;
 pub mod scan;
 pub mod silent_payments;

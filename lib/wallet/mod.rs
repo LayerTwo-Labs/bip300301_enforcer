@@ -118,9 +118,11 @@ struct WalletInner {
     config: Config,
     /// Limits GenerateBlocks to one concurrent call at a time.
     generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
+    /// One-permit semaphores serializing sends per recipient payment code.
     bip47_send_locks:
-        tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    scanner_lock: tokio::sync::Mutex<()>,
+        tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    /// Limits reusable-payments scanning to one task at a time.
+    scanner_lock: tokio::sync::Semaphore,
 }
 
 impl WalletInner {
@@ -483,7 +485,7 @@ impl WalletInner {
             last_sync: async_lock::RwLock::new(None),
             generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             bip47_send_locks: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-            scanner_lock: tokio::sync::Mutex::new(()),
+            scanner_lock: tokio::sync::Semaphore::new(1),
         })
     }
 
@@ -2590,14 +2592,17 @@ impl Wallet {
         let version = recipient.version();
         let recipient_code_str = recipient.to_string();
 
-        let recipient_lock: Arc<tokio::sync::Mutex<()>> = {
+        let recipient_lock: Arc<tokio::sync::Semaphore> = {
             let mut locks = self.inner.bip47_send_locks.lock().await;
             locks
                 .entry(recipient_code_str.clone())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
                 .clone()
         };
-        let _send_guard = recipient_lock.lock().await;
+        let _send_guard = recipient_lock
+            .acquire_owned()
+            .await
+            .expect("BIP47 send semaphore is never closed");
 
         let (mut existing_notif_txid, current_index) = self
             .inner
@@ -3105,7 +3110,12 @@ impl Wallet {
         self.inner.ensure_wallet_unlocked().await?;
         self.inner.ensure_scanner_activated().await?;
 
-        let _scanner_guard = self.inner.scanner_lock.lock().await;
+        let _scanner_guard = self
+            .inner
+            .scanner_lock
+            .acquire()
+            .await
+            .expect("scanner semaphore is never closed");
 
         self.inner.drop_scan_events_above(from_height).await?;
 
