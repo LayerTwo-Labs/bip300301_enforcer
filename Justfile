@@ -5,8 +5,11 @@ default:
 
 # Regenerate checked-in protobuf code under lib/proto/generated/ via buf.
 # The proto source ref is pinned in buf.gen.yaml. Bump it there to upgrade.
+#
+# NB: no `--include-imports`/`--include-wkt`: well-known types come from the
+# `buffa-types` crate, not from generated code.
 generate:
-    buf generate --clean --include-imports --include-wkt
+    buf generate --clean
 
 # Benchmark a from-scratch signet sync. Each run creates a brand-new, isolated
 # data dir with a random suffix (./datadir-sync-benchmark.XXXXXX). Logs stats

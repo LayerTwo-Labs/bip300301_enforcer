@@ -6,7 +6,9 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+axum = { workspace = true }
 bdk_wallet = { workspace = true }
+buffa = { workspace = true }
 bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
@@ -23,16 +25,17 @@ reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
-tonic-health = { workspace = true }
-tonic-reflection = { workspace = true }
+connectrpc = { workspace = true }
+connectrpc-health = { workspace = true }
+connectrpc-reflection = { workspace = true }
 # needs to line up with jsonrpsee tower version...
-tower = { workspace = true }
+tower = { workspace = true, features = ["limit"] }
 tower-http = { workspace = true, features = ["trace", "request-id"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-log = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url = { workspace = true }
 uuid = { workspace = true }
 
 [features]

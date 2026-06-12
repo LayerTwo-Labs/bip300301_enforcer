@@ -11,6 +11,8 @@ bdk_wallet = { workspace = true }
 bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin-jsonrpsee = { workspace = true }
 bitcoin = { workspace = true }
+buffa = { workspace = true }
+buffa-types = { workspace = true }
 cfg-if = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
 dotenvy = { workspace = true }
@@ -26,7 +28,8 @@ serde_json = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 temp-dir = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true }
+connectrpc = { workspace = true }
+http = { workspace = true }
 tracing = { workspace = true }
 tracing-indicatif = { workspace = true }
 tokio-stream = { workspace = true }
@@ -35,7 +38,7 @@ serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 clap = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [features]

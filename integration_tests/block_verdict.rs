@@ -1,6 +1,9 @@
-use std::{str::FromStr as _, time::Duration};
+use std::time::Duration;
 
-use bip300301_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetChainTipRequest};
+use bip300301_enforcer_lib::{
+    bins::CommandExt as _,
+    proto::mainchain::{BlockHeaderInfo, GetChainTipRequest},
+};
 use bitcoin::BlockHash;
 use tokio::time::sleep;
 
@@ -15,23 +18,25 @@ pub enum Expect {
     Rejected { log_contains: &'static str },
 }
 
-/// The enforcer's validated chain tip `(hash, height)`. Surfaces the gRPC error
+/// The enforcer's validated chain tip `(hash, height)`. Surfaces the RPC error
 /// (e.g. `Unavailable` while the validator is not yet synced) so poll-loop
 /// callers can retry rather than abort.
 async fn enforcer_tip(post_setup: &mut PostSetup) -> anyhow::Result<(BlockHash, u32)> {
     let info = post_setup
         .validator_service_client
-        .get_chain_tip(GetChainTipRequest {})
+        .get_chain_tip(GetChainTipRequest::default())
         .await?
-        .into_inner()
+        .into_owned()
         .block_header_info
+        .into_option()
         .ok_or_else(|| anyhow::anyhow!("get_chain_tip: missing block_header_info"))?;
 
     let hash = info
         .block_hash
-        .and_then(|h| h.hex)
-        .ok_or_else(|| anyhow::anyhow!("get_chain_tip: missing block_hash"))?;
-    Ok((BlockHash::from_str(&hash)?, info.height))
+        .into_option()
+        .ok_or_else(|| anyhow::anyhow!("get_chain_tip: missing block_hash"))?
+        .decode::<BlockHeaderInfo, BlockHash>("block_hash")?;
+    Ok((hash, info.height))
 }
 
 /// `Some(height)` if `block_hash` is on bitcoind's active chain (`getblock`

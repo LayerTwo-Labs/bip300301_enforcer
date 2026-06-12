@@ -30,8 +30,8 @@ impl ToStatus for Electrum {
     fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(match self.code {
             // https://github.com/bitcoin/bitcoin/blob/e8f72aefd20049eac81b150e7f0d33709acd18ed/src/common/messages.cpp
-            -25 => tonic::Code::InvalidArgument,
-            _ => tonic::Code::Unknown,
+            -25 => connectrpc::ErrorCode::InvalidArgument,
+            _ => connectrpc::ErrorCode::Unknown,
         })
     }
 }
@@ -42,22 +42,6 @@ impl ToStatus for Electrum {
 pub struct Esplora {
     code: i32,
     message: String,
-}
-
-// Add new TonicStatusError type
-#[derive(Clone, Debug, Diagnostic, Error)]
-#[error("tonic error: {0}")]
-pub struct TonicStatus(#[from] tonic::Status);
-
-// Add extension trait for tonic::Status
-pub trait TonicStatusExt {
-    fn into_diagnostic(self) -> miette::Result<()>;
-}
-
-impl TonicStatusExt for tonic::Status {
-    fn into_diagnostic(self) -> miette::Result<()> {
-        Err(TonicStatus(self).into())
-    }
 }
 
 /// Wallet not synced
@@ -129,12 +113,12 @@ pub enum WalletInitialization {
 impl ToStatus for WalletInitialization {
     fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(match self {
-            Self::NotSynced(_) => tonic::Code::FailedPrecondition,
-            Self::InvalidPassword => tonic::Code::InvalidArgument,
-            Self::DataMismatch(_) => tonic::Code::Internal,
-            Self::NotFound => tonic::Code::NotFound,
-            Self::AlreadyExists => tonic::Code::AlreadyExists,
-            Self::AlreadyUnlocked => tonic::Code::AlreadyExists,
+            Self::NotSynced(_) => connectrpc::ErrorCode::FailedPrecondition,
+            Self::InvalidPassword => connectrpc::ErrorCode::InvalidArgument,
+            Self::DataMismatch(_) => connectrpc::ErrorCode::Internal,
+            Self::NotFound => connectrpc::ErrorCode::NotFound,
+            Self::AlreadyExists => connectrpc::ErrorCode::AlreadyExists,
+            Self::AlreadyUnlocked => connectrpc::ErrorCode::AlreadyExists,
         })
     }
 }
@@ -598,7 +582,7 @@ impl ToStatus for BitcoinCoreRPC {
                 // loaded with the /bitcoin core/ wallet not being loaded.
                 let err_msg = "the underlying Bitcoin Core node has no loaded wallet (fix this: `bitcoin-cli loadwallet WALLET_NAME`)";
                 StatusBuilder {
-                    code: tonic::Code::FailedPrecondition,
+                    code: connectrpc::ErrorCode::FailedPrecondition,
                     fmt_message: Box::new(|f| err_msg.fmt(f)),
                     source: None,
                 }
@@ -1075,9 +1059,9 @@ pub struct MissingBinary {
 impl ToStatus for MissingBinary {
     fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::new(self).code(if self.source.is_some() {
-            tonic::Code::Internal
+            connectrpc::ErrorCode::Internal
         } else {
-            tonic::Code::FailedPrecondition
+            connectrpc::ErrorCode::FailedPrecondition
         })
     }
 }
@@ -1106,10 +1090,10 @@ impl ToStatus for VerifyCanMine {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::MissingBinary(err) => err.builder(),
             Self::MultipleBlocksOnSignet => {
-                StatusBuilder::new(self).code(tonic::Code::InvalidArgument)
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
             }
             Self::Network(_) | Self::SignetChallengeAddressMissing(_) => {
-                StatusBuilder::new(self).code(tonic::Code::FailedPrecondition)
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
             Self::NoSignetChallengeFound | Self::ParseSignetChallenge(_) => {
                 StatusBuilder::new(self)
@@ -1283,7 +1267,9 @@ pub enum CreateSendPsbt {
 impl ToStatus for CreateSendPsbt {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::UnknownUTXO(_) => StatusBuilder::new(self).code(tonic::Code::InvalidArgument),
+            Self::UnknownUTXO(_) => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
+            }
             Self::NotUnlocked(err) => err.builder(),
             Self::CreateTx(err) => StatusBuilder::new(err),
             Self::Script(err) => StatusBuilder::new(err),

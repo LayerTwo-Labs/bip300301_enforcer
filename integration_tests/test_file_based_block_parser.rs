@@ -2,11 +2,14 @@ use std::time::Duration;
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
-    proto::mainchain::{GetChainTipRequest, validator_service_client::ValidatorServiceClient},
+    proto::{mainchain::GetChainTipRequest, mainchain_service::ValidatorServiceClient},
+};
+use connectrpc::{
+    client::{ClientConfig, HttpClient},
+    error::ErrorCode,
 };
 use futures::channel::mpsc;
 use tokio::time::sleep;
-use tonic::Code;
 
 use crate::{
     setup::{PreSetup, new_bitcoind, wait_for_port},
@@ -89,7 +92,6 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         node_rpc_port: bitcoind.rpc_port,
         node_zmq_sequence_port: bitcoind.zmq_sequence_port,
         serve_grpc_port: setup.reserved_ports.enforcer_serve_grpc.port(),
-        serve_json_rpc_port: setup.reserved_ports.enforcer_serve_json_rpc.port(),
         serve_rpc_port: setup.reserved_ports.enforcer_serve_rpc.port(),
         wallet_electrum_rpc_port: 0,
         wallet_electrum_http_port: 0,
@@ -99,7 +101,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     let _enforcer_task = enforcer.spawn_command_with_args::<_, String, _, _, _>(
         [(
             "RUST_LOG",
-            "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,tonic=debug,trace",
+            "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
         )],
         [],
         move |err| {
@@ -118,20 +120,22 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
 
     // verify we were able to sync
 
-    let mut client =
-        ValidatorServiceClient::connect(format!("http://127.0.0.1:{}", enforcer.serve_grpc_port))
-            .await?;
+    let uri: http::Uri = format!("http://127.0.0.1:{}", enforcer.serve_grpc_port).parse()?;
+    let http = HttpClient::plaintext();
+    let config = ClientConfig::new(uri);
+    let client = ValidatorServiceClient::new(http, config);
 
     let header_info = loop {
-        match client.get_chain_tip(GetChainTipRequest {}).await {
+        match client.get_chain_tip(GetChainTipRequest::default()).await {
             Ok(enforcer_tip) => {
                 break enforcer_tip
-                    .into_inner()
+                    .into_owned()
                     .block_header_info
+                    .into_option()
                     .expect("no block header info");
             }
             // validator is not synced
-            Err(err) if err.code() == Code::Unavailable => {
+            Err(err) if err.code == ErrorCode::Unavailable => {
                 tracing::debug!("Validator is not synced yet, retrying...");
                 sleep(Duration::from_millis(100)).await;
                 continue;
@@ -147,9 +151,12 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         *generated_blocks.last().expect("no last block"),
         header_info
             .block_hash
+            .into_option()
             .expect("no block hash")
             .hex
-            .expect("no hex"),
+            .into_option()
+            .expect("no hex")
+            .value,
     );
 
     // Verify we did it by parsing the block files
