@@ -310,8 +310,58 @@ impl CusfBlockProducer for Wallet {
         &self,
         parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
-        mut template: InitialBlockTemplate<COINBASE_TXN>,
+        template: InitialBlockTemplate<COINBASE_TXN>,
     ) -> Result<InitialBlockTemplate<COINBASE_TXN>, Self::InitialBlockTemplateError>
+    where
+        Bool<COINBASE_TXN>: CoinbaseTxn,
+    {
+        let res = self
+            .initial_block_template_inner(parent_block_hash, coinbase_txn_wit, template)
+            .await;
+        self.record_gbt_result(&res);
+        res
+    }
+
+    type SuffixTxsError = error::SuffixTxs;
+
+    async fn block_template_suffix<const COINBASE_TXN: bool>(
+        &self,
+        parent_block_hash: &BlockHash,
+        coinbase_txn_wit: BoolWit<COINBASE_TXN>,
+        template: &InitialBlockTemplate<COINBASE_TXN>,
+    ) -> Result<BlockTemplateSuffix<COINBASE_TXN>, Self::SuffixTxsError>
+    where
+        Bool<COINBASE_TXN>: CoinbaseTxn,
+    {
+        let res = self
+            .block_template_suffix_inner(parent_block_hash, coinbase_txn_wit, template)
+            .await;
+        self.record_gbt_result(&res);
+        res
+    }
+}
+
+impl Wallet {
+    /// Record the result of a block template build, so that GenerateBlocks
+    /// failures can surface the underlying template error. The GBT server
+    /// reports it to its JSON-RPC client in the error `data` field, which
+    /// `bitcoin-cli` — and thus the signet miner's stderr — drops.
+    fn record_gbt_result<T, Err>(&self, res: &Result<T, Err>)
+    where
+        Err: std::error::Error,
+    {
+        *self.inner.last_gbt_error.write() = res
+            .as_ref()
+            .err()
+            .map(|err| format!("{:#}", ErrorChain::new(err)));
+    }
+
+    async fn initial_block_template_inner<const COINBASE_TXN: bool>(
+        &self,
+        parent_block_hash: &BlockHash,
+        coinbase_txn_wit: BoolWit<COINBASE_TXN>,
+        mut template: InitialBlockTemplate<COINBASE_TXN>,
+    ) -> Result<InitialBlockTemplate<COINBASE_TXN>, error::InitialBlockTemplate>
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
@@ -369,14 +419,12 @@ impl CusfBlockProducer for Wallet {
         Ok(template)
     }
 
-    type SuffixTxsError = error::SuffixTxs;
-
-    async fn block_template_suffix<const COINBASE_TXN: bool>(
+    async fn block_template_suffix_inner<const COINBASE_TXN: bool>(
         &self,
         _parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
         template: &InitialBlockTemplate<COINBASE_TXN>,
-    ) -> Result<BlockTemplateSuffix<COINBASE_TXN>, Self::SuffixTxsError>
+    ) -> Result<BlockTemplateSuffix<COINBASE_TXN>, error::SuffixTxs>
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
@@ -464,7 +512,7 @@ impl CusfBlockProducer for Wallet {
                     &self.inner.validator,
                     &block,
                 )?
-                .ok_or(error::SuffixTxsInner::InitialBlockTemplate)?;
+                .map_err(|reason| error::SuffixTxsInner::InitialBlockTemplate { reason })?;
                 let suffix_txs = self
                     .generate_suffix_txs(&ctips)
                     .await?

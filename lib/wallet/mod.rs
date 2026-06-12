@@ -117,6 +117,12 @@ struct WalletInner {
     config: Config,
     /// Limits GenerateBlocks to one concurrent call at a time.
     generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Error from the most recent failed block template build, cleared on
+    /// success. The GBT server reports template failures to its JSON-RPC
+    /// client in a field that `bitcoin-cli` (and thus the signet miner's
+    /// stderr) drops, so GenerateBlocks attaches this to its own error to
+    /// surface the root cause.
+    last_gbt_error: parking_lot::RwLock<Option<String>>,
 }
 
 impl WalletInner {
@@ -410,6 +416,7 @@ impl WalletInner {
             chain_source_client,
             last_sync: async_lock::RwLock::new(None),
             generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            last_gbt_error: parking_lot::RwLock::new(None),
         })
     }
 
