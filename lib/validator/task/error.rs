@@ -394,6 +394,17 @@ impl From<db::Error> for ConnectBlock {
     }
 }
 
+impl JfyiConnectBlock {
+    /// Txid of the tx that caused the block to be rejected, if the rejection
+    /// is attributable to a specific non-coinbase tx
+    pub(in crate::validator) fn rejected_txid(&self) -> Option<bitcoin::Txid> {
+        match self {
+            Self::Transaction { txid, .. } => Some(*txid),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Error, Transitive)]
 #[expect(clippy::duplicated_attributes)]
 #[transitive(

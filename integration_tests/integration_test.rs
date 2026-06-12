@@ -706,6 +706,17 @@ pub fn tests(
         },
         crate::test_inactive_drivechain_output::test_inactive_slot_drivechain_output,
     ));
+    async_trials.push(new_trial_with_setup(
+        "competing_unconfirmed_deposits".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_competing_deposits::test_competing_unconfirmed_deposits,
+    ));
 
     async_trials
 }

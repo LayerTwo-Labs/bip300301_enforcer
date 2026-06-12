@@ -309,6 +309,15 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
     }
 }
 
+/// A block rejected by the validator in a dry run
+#[derive(Debug)]
+pub(crate) struct ProposalRejection {
+    /// Tx that caused the rejection, if attributable to a specific
+    /// non-coinbase tx
+    pub txid: Option<Txid>,
+    pub reason: String,
+}
+
 /// Used to implement `ConnectBlockMode`.
 /// Connects a block, but aborts the rwtxn.
 /// If the block is accepted, the function is executed on the rwtxn state
@@ -501,12 +510,20 @@ pub(crate) enum GetCtipsAfterError {
     DbIter(#[from] db::error::Iter),
 }
 
+/// Verdict on speculatively applying a block via [`get_ctips_after`].
+/// A rejected block is a normal outcome of the dry run, not an error.
+#[derive(Debug)]
+pub(crate) enum CtipsAfter {
+    /// The block would be accepted, resulting in these ctips
+    Accepted(HashMap<SidechainNumber, Ctip>),
+    Rejected(ProposalRejection),
+}
+
 /// Get ctips after (speculatively) applying a block.
-/// Returns the rejection reason if the block would be rejected.
 pub(crate) fn get_ctips_after(
     validator: &Validator,
     block: &Block,
-) -> Result<Result<HashMap<SidechainNumber, Ctip>, String>, GetCtipsAfterError> {
+) -> Result<CtipsAfter, GetCtipsAfterError> {
     match ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, _> {
         validator
             .dbs
@@ -519,7 +536,14 @@ pub(crate) fn get_ctips_after(
     })
     .connect_block(validator, block)?
     {
-        Ok(ctips) => Ok(Ok(ctips?)),
-        Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
+        Ok(ctips) => Ok(CtipsAfter::Accepted(ctips?)),
+        Err(reason) => {
+            let txid = match &reason {
+                RejectReason::ConnectBlock(jfyi) => jfyi.rejected_txid(),
+                RejectReason::MissingParentHeight { .. } => None,
+            };
+            let reason = format!("{:#}", ErrorChain::new(&reason));
+            Ok(CtipsAfter::Rejected(ProposalRejection { txid, reason }))
+        }
     }
 }

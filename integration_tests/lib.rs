@@ -2,6 +2,7 @@ pub mod block_verdict;
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
+mod test_competing_deposits;
 mod test_file_based_block_parser;
 mod test_inactive_drivechain_output;
 mod test_invalid_block;
