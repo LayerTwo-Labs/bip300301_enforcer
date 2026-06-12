@@ -29,7 +29,7 @@ use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use clap::Parser;
 use either::Either;
-use futures::{TryFutureExt as _, channel::oneshot};
+use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
 use jsonrpsee::{core::client::Error, server::middleware::rpc::RpcServiceBuilder};
 use miette::{Diagnostic, IntoDiagnostic, Result, WrapErr as _, miette};
@@ -394,14 +394,14 @@ where
     let init_sync_mempool_future = cusf_enforcer_mempool::mempool::init_sync_mempool(
         &mut enforcer,
         network,
-        &rpc_client,
+        rpc_client,
         zmq_addr_sequence,
-        cancel.cancelled(),
+        Box::pin(cancel.cancelled_owned()).fuse(),
     )
     .inspect_ok(|_| tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete"))
     .instrument(tracing::info_span!("initial_mempool_sync"));
 
-    let (sequence_stream, mempool, tx_cache) = match init_sync_mempool_future.await {
+    let synced = match init_sync_mempool_future.await {
         Ok(res) => res,
         Err(err) => {
             let err = error::MempoolTask::InitialSync(err);
@@ -411,17 +411,11 @@ where
     };
 
     let (err_tx, err_rx) = oneshot::channel();
-    let mempool = cusf_enforcer_mempool::mempool::MempoolSync::new(
-        enforcer,
-        mempool,
-        tx_cache,
-        rpc_client,
-        sequence_stream,
-        |err| async move {
+    let mempool =
+        cusf_enforcer_mempool::mempool::MempoolSync::new(enforcer, synced, |err| async move {
             let err = error::MempoolTask::SyncTask(err);
             let _send_err: Result<(), _> = err_tx.send(err);
-        },
-    );
+        });
 
     Ok((mempool, err_rx))
 }

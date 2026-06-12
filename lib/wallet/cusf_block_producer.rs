@@ -12,7 +12,7 @@ use cusf_enforcer_mempool::{
         BlockTemplateSuffix, CoinbaseTxn, CoinbaseTxouts, CusfBlockProducer, InitialBlockTemplate,
         typewit::const_marker::{Bool, BoolWit},
     },
-    cusf_enforcer::{ConnectBlockAction, CusfEnforcer, TxAcceptAction},
+    cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
 };
 use tracing::instrument;
 
@@ -234,8 +234,9 @@ impl CusfEnforcer for Wallet {
     async fn disconnect_block(
         &mut self,
         block_hash: BlockHash,
-    ) -> std::result::Result<(), Self::DisconnectBlockError> {
-        self.inner
+    ) -> std::result::Result<DisconnectBlockAction, Self::DisconnectBlockError> {
+        let res = self
+            .inner
             .validator
             .clone()
             .disconnect_block(block_hash)
@@ -252,7 +253,7 @@ impl CusfEnforcer for Wallet {
         // of this DB is wiped (with brutish `DELETE` statement) upon generating a new block.
         // This means that sidechain proposals etc. must be re-created if we disconnected a
         // block which caused a sidechain proposal to go out of existence.
-        Ok(())
+        Ok(res)
     }
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;

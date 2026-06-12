@@ -8,7 +8,9 @@ use std::{
 
 use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
-use cusf_enforcer_mempool::cusf_enforcer::{ConnectBlockAction, CusfEnforcer, TxAcceptAction};
+use cusf_enforcer_mempool::cusf_enforcer::{
+    ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
+};
 use error_fatality::{Nested as _, Split};
 use fallible_iterator::FallibleIterator;
 use futures::TryFutureExt as _;
@@ -418,12 +420,12 @@ impl CusfEnforcer for Validator {
     async fn disconnect_block(
         &mut self,
         block_hash: BlockHash,
-    ) -> Result<(), Self::DisconnectBlockError> {
+    ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
         let handler = BlockHandler::new(&self.dbs, self.network);
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
-        Ok(())
+        Ok(DisconnectBlockAction::default())
     }
 
     type AcceptTxError = AcceptTxError;
