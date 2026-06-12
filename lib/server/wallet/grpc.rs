@@ -326,9 +326,28 @@ impl WalletService for crate::wallet::Wallet {
                 )
             })?
         };
+        // Reject bundles for sidechains that are not active: an inactive slot has no
+        // treasury to withdraw from and, per BIP300 M3, a bundle proposed for it would
+        // be a no-op. Fail fast at ingestion rather than persisting a row that can
+        // never be acted on. NB: this gate cannot catch a slot that is deactivated by
+        // a reorg *after* a bundle is stored, so the block builder
+        // (`get_bundle_proposals`) also skips inactive-slot bundles.
+        let is_active = self
+            .validator()
+            .get_active_sidechains()
+            .map_err(|err| tonic::Status::from_error(err.into()))?
+            .iter()
+            .any(|sidechain| sidechain.proposal.sidechain_number == sidechain_id);
+        if !is_active {
+            return Err(tonic::Status::failed_precondition(format!(
+                "cannot accept a withdrawal bundle for sidechain {sidechain_id}: not active"
+            )));
+        }
         let transaction_bytes = transaction
             .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("transaction"))?;
-        let transaction: Transaction = bitcoin::consensus::deserialize(&transaction_bytes)
+        // A blinded M6 is a zero-input tx that Core/sidechains serialize in legacy
+        // form, which rust-bitcoin's standard decoder cannot parse
+        let transaction: Transaction = crate::types::deserialize_blinded_m6(&transaction_bytes)
             .map_err(|err| {
                 invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
                     "transaction",

@@ -630,6 +630,8 @@ enum GetBundleProposalsInner {
     ConsensusEncoding(#[from] bitcoin::consensus::encode::Error),
     #[error(transparent)]
     GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
+    #[error(transparent)]
+    GetSidechains(#[from] crate::validator::GetSidechainsError),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
 }
@@ -639,6 +641,7 @@ impl ToStatus for GetBundleProposalsInner {
         match self {
             Self::BlindedM6(err) => err.builder(),
             Self::GetPendingWithdrawals(err) => err.builder(),
+            Self::GetSidechains(err) => err.builder(),
             Self::ConsensusEncoding(err) => StatusBuilder::new(err),
             Self::Rusqlite(_) => StatusBuilder::new(self),
         }

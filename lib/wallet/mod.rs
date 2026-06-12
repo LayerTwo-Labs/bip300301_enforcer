@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -937,7 +937,8 @@ impl Wallet {
                 .transpose_into_fallible()
                 .map_err(error::GetBundleProposals::from)
                 .for_each(|(sidechain_number, m6id, bundle_tx_bytes)| {
-                    let bundle_proposal_tx = bitcoin::consensus::deserialize(&bundle_tx_bytes)?;
+                    let bundle_proposal_tx =
+                        crate::types::deserialize_blinded_m6(&bundle_tx_bytes)?;
                     let bundle_proposal_tx =
                         BlindedM6::try_from(std::borrow::Cow::Owned(bundle_proposal_tx))?;
                     bundle_proposals
@@ -948,15 +949,34 @@ impl Wallet {
                 })?;
             Ok(bundle_proposals)
         };
-        let connection = self.inner.self_db.lock().await;
-        let bundle_proposals = with_connection(&connection)?;
-        drop(connection);
+        let bundle_proposals = {
+            let connection = self.inner.self_db.lock().await;
+            with_connection(&connection)?
+        };
+        // Per BIP300 M3, a bundle proposed for a sidechain slot that is not active
+        // is interpreted as an ordinary script (a no-op), so there is nothing to
+        // gain by proposing it.
+        //
+        // Bundles for an inactive sidechain can sneak in if we're activating a sidechain
+        // and then reorging it out of existence. The wallet currently doesn't handle reorgs
+        // properly, so we would then end up with a bundle proposal for an inactive sidechain
+        // in our DB.
+        let active_sidechain_numbers: HashSet<SidechainNumber> = self
+            .inner
+            .validator
+            .get_active_sidechains()?
+            .into_iter()
+            .map(|sidechain| sidechain.proposal.sidechain_number)
+            .collect();
         // Filter out proposals that have already been created
         let res = bundle_proposals
             .into_iter()
             .map(Ok::<_, error::GetBundleProposals>)
             .transpose_into_fallible()
             .filter_map(|(sidechain_id, m6ids)| {
+                if !active_sidechain_numbers.contains(&sidechain_id) {
+                    return Ok(None);
+                }
                 let pending_m6ids = self
                     .inner
                     .validator
@@ -2169,7 +2189,9 @@ impl Wallet {
         blinded_m6: &BlindedM6<'static>,
     ) -> Result<M6id, rusqlite::Error> {
         let m6id = blinded_m6.compute_m6id();
-        let tx_bytes = bitcoin::consensus::serialize(blinded_m6.as_ref());
+        // Store in the legacy zero-input form so the bytes round-trip through
+        // `deserialize_blinded_m6` (and other Bitcoin software)
+        let tx_bytes = crate::types::serialize_blinded_m6(blinded_m6.as_ref());
         self.inner.self_db
             .lock()
             .await
