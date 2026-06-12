@@ -519,8 +519,8 @@ impl Validator {
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
         // In order to get the current sequence number we decrement it by one.
-        let sequence_number =
-            treasury_utxo_count.map(|treasury_utxo_count| treasury_utxo_count - 1);
+        // Defense-in-depth: a stale or zero count must not panic or wrap here.
+        let sequence_number = treasury_utxo_count.and_then(|count| count.checked_sub(1));
         Ok(sequence_number)
     }
 
