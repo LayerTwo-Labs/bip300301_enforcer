@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "2"
-members = ["app", "lib", "integration_tests"]
+members = ["app", "bip47", "lib", "integration_tests"]
 
 [workspace.package]
 authors = [
@@ -24,6 +24,7 @@ bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
+bip47 = { path = "bip47" }
 bitcoin = "0.32.100"
 bitcoin-send-tx-p2p = "0.3.0"
 byteorder = "1.5.0"

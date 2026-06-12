@@ -14,6 +14,7 @@ bdk_chain = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_esplora = { workspace = true, features = ["tokio", "async-https-rustls"] }
 bdk_wallet = { workspace = true, features = ["keys-bip39", "rusqlite"] }
+bip47 = { workspace = true }
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
 bitcoin-send-tx-p2p = { workspace = true }

@@ -1811,6 +1811,296 @@ pub mod wallet_service_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        pub async fn get_bip47_payment_code(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetBip47PaymentCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetBip47PaymentCodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/GetBip47PaymentCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "GetBip47PaymentCode",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn send_to_bip47_payment_code(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SendToBip47PaymentCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SendToBip47PaymentCodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/SendToBip47PaymentCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "SendToBip47PaymentCode",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_bip47_inbound_payers(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListBip47InboundPayersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListBip47InboundPayersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/ListBip47InboundPayers",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "ListBip47InboundPayers",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_silent_payment_address(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSilentPaymentAddressRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSilentPaymentAddressResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/GetSilentPaymentAddress",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "GetSilentPaymentAddress",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn create_silent_payment_label(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateSilentPaymentLabelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateSilentPaymentLabelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/CreateSilentPaymentLabel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "CreateSilentPaymentLabel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_silent_payment_labels(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSilentPaymentLabelsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSilentPaymentLabelsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/ListSilentPaymentLabels",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "ListSilentPaymentLabels",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn send_to_silent_payment(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SendToSilentPaymentRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SendToSilentPaymentResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/SendToSilentPayment",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "SendToSilentPayment",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_silent_payment_receives(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSilentPaymentReceivesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSilentPaymentReceivesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/ListSilentPaymentReceives",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "ListSilentPaymentReceives",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_reusable_scan_status(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetReusableScanStatusRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetReusableScanStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/GetReusableScanStatus",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "GetReusableScanStatus",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn rescan_reusable_payments(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RescanReusablePaymentsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RescanReusablePaymentsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cusf.mainchain.v1.WalletService/RescanReusablePayments",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cusf.mainchain.v1.WalletService",
+                        "RescanReusablePayments",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1941,6 +2231,76 @@ pub mod wallet_service_server {
             request: tonic::Request<super::GenerateBlocksRequest>,
         ) -> std::result::Result<
             tonic::Response<Self::GenerateBlocksStream>,
+            tonic::Status,
+        >;
+        async fn get_bip47_payment_code(
+            &self,
+            request: tonic::Request<super::GetBip47PaymentCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetBip47PaymentCodeResponse>,
+            tonic::Status,
+        >;
+        async fn send_to_bip47_payment_code(
+            &self,
+            request: tonic::Request<super::SendToBip47PaymentCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SendToBip47PaymentCodeResponse>,
+            tonic::Status,
+        >;
+        async fn list_bip47_inbound_payers(
+            &self,
+            request: tonic::Request<super::ListBip47InboundPayersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListBip47InboundPayersResponse>,
+            tonic::Status,
+        >;
+        async fn get_silent_payment_address(
+            &self,
+            request: tonic::Request<super::GetSilentPaymentAddressRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSilentPaymentAddressResponse>,
+            tonic::Status,
+        >;
+        async fn create_silent_payment_label(
+            &self,
+            request: tonic::Request<super::CreateSilentPaymentLabelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateSilentPaymentLabelResponse>,
+            tonic::Status,
+        >;
+        async fn list_silent_payment_labels(
+            &self,
+            request: tonic::Request<super::ListSilentPaymentLabelsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSilentPaymentLabelsResponse>,
+            tonic::Status,
+        >;
+        async fn send_to_silent_payment(
+            &self,
+            request: tonic::Request<super::SendToSilentPaymentRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SendToSilentPaymentResponse>,
+            tonic::Status,
+        >;
+        async fn list_silent_payment_receives(
+            &self,
+            request: tonic::Request<super::ListSilentPaymentReceivesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSilentPaymentReceivesResponse>,
+            tonic::Status,
+        >;
+        async fn get_reusable_scan_status(
+            &self,
+            request: tonic::Request<super::GetReusableScanStatusRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetReusableScanStatusResponse>,
+            tonic::Status,
+        >;
+        async fn rescan_reusable_payments(
+            &self,
+            request: tonic::Request<super::RescanReusablePaymentsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RescanReusablePaymentsResponse>,
             tonic::Status,
         >;
     }
@@ -2741,6 +3101,505 @@ pub mod wallet_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/GetBip47PaymentCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetBip47PaymentCodeSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::GetBip47PaymentCodeRequest>
+                    for GetBip47PaymentCodeSvc<T> {
+                        type Response = super::GetBip47PaymentCodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetBip47PaymentCodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::get_bip47_payment_code(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetBip47PaymentCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/SendToBip47PaymentCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct SendToBip47PaymentCodeSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::SendToBip47PaymentCodeRequest>
+                    for SendToBip47PaymentCodeSvc<T> {
+                        type Response = super::SendToBip47PaymentCodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SendToBip47PaymentCodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::send_to_bip47_payment_code(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SendToBip47PaymentCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/ListBip47InboundPayers" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListBip47InboundPayersSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::ListBip47InboundPayersRequest>
+                    for ListBip47InboundPayersSvc<T> {
+                        type Response = super::ListBip47InboundPayersResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListBip47InboundPayersRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::list_bip47_inbound_payers(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListBip47InboundPayersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/GetSilentPaymentAddress" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSilentPaymentAddressSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::GetSilentPaymentAddressRequest>
+                    for GetSilentPaymentAddressSvc<T> {
+                        type Response = super::GetSilentPaymentAddressResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::GetSilentPaymentAddressRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::get_silent_payment_address(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSilentPaymentAddressSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/CreateSilentPaymentLabel" => {
+                    #[allow(non_camel_case_types)]
+                    struct CreateSilentPaymentLabelSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::CreateSilentPaymentLabelRequest>
+                    for CreateSilentPaymentLabelSvc<T> {
+                        type Response = super::CreateSilentPaymentLabelResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::CreateSilentPaymentLabelRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::create_silent_payment_label(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CreateSilentPaymentLabelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/ListSilentPaymentLabels" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSilentPaymentLabelsSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::ListSilentPaymentLabelsRequest>
+                    for ListSilentPaymentLabelsSvc<T> {
+                        type Response = super::ListSilentPaymentLabelsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ListSilentPaymentLabelsRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::list_silent_payment_labels(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSilentPaymentLabelsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/SendToSilentPayment" => {
+                    #[allow(non_camel_case_types)]
+                    struct SendToSilentPaymentSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::SendToSilentPaymentRequest>
+                    for SendToSilentPaymentSvc<T> {
+                        type Response = super::SendToSilentPaymentResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SendToSilentPaymentRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::send_to_silent_payment(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SendToSilentPaymentSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/ListSilentPaymentReceives" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSilentPaymentReceivesSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<
+                        super::ListSilentPaymentReceivesRequest,
+                    > for ListSilentPaymentReceivesSvc<T> {
+                        type Response = super::ListSilentPaymentReceivesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::ListSilentPaymentReceivesRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::list_silent_payment_receives(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSilentPaymentReceivesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/GetReusableScanStatus" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetReusableScanStatusSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::GetReusableScanStatusRequest>
+                    for GetReusableScanStatusSvc<T> {
+                        type Response = super::GetReusableScanStatusResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetReusableScanStatusRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::get_reusable_scan_status(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetReusableScanStatusSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cusf.mainchain.v1.WalletService/RescanReusablePayments" => {
+                    #[allow(non_camel_case_types)]
+                    struct RescanReusablePaymentsSvc<T: WalletService>(pub Arc<T>);
+                    impl<
+                        T: WalletService,
+                    > tonic::server::UnaryService<super::RescanReusablePaymentsRequest>
+                    for RescanReusablePaymentsSvc<T> {
+                        type Response = super::RescanReusablePaymentsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RescanReusablePaymentsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as WalletService>::rescan_reusable_payments(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RescanReusablePaymentsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

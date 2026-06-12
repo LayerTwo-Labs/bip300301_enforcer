@@ -59,6 +59,7 @@ mod cusf_block_producer;
 pub mod error;
 mod mine;
 pub mod mnemonic;
+pub mod reusable_payments;
 mod sync;
 mod thread_safe_connection;
 mod util;
@@ -117,6 +118,11 @@ struct WalletInner {
     config: Config,
     /// Limits GenerateBlocks to one concurrent call at a time.
     generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
+    /// One-permit semaphores serializing sends per recipient payment code.
+    bip47_send_locks:
+        tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    /// Limits reusable-payments scanning to one task at a time.
+    scanner_lock: tokio::sync::Semaphore,
 }
 
 impl WalletInner {
@@ -286,6 +292,74 @@ impl WalletInner {
                  creation_time DATETIME NOT NULL DEFAULT (DATETIME('now')) 
                 );",
             ),
+            M::up(
+                "CREATE TABLE reusable_scan_state (
+                    wallet_id INTEGER PRIMARY KEY,
+                    birthday_height INTEGER NOT NULL,
+                    last_scanned_height INTEGER NOT NULL,
+                    last_scanned_block_hash BLOB
+                );",
+            ),
+            M::up(
+                "CREATE TABLE bip47_send_state (
+                    recipient_payment_code TEXT PRIMARY KEY,
+                    -- 1 = v1 (80-byte payload), 3 = v3 (35-byte payload).
+                    version INTEGER NOT NULL,
+                    notification_txid BLOB,
+                    notification_broadcast_at INTEGER,
+                    next_send_index INTEGER NOT NULL DEFAULT 0
+                );",
+            ),
+            M::up(
+                "CREATE TABLE bip47_inbound_payers (
+                    sender_payment_code TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    notification_txid BLOB NOT NULL,
+                    notification_height INTEGER NOT NULL,
+                    next_receive_index INTEGER NOT NULL DEFAULT 0,
+                    first_seen_unix INTEGER NOT NULL
+                );",
+            ),
+            M::up(
+                "CREATE TABLE silent_payment_labels (
+                    -- 0 reserved for change; user labels start at 1.
+                    m INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+            ),
+            M::up(
+                "CREATE TABLE silent_payment_received (
+                    txid BLOB NOT NULL,
+                    vout INTEGER NOT NULL,
+                    output_pubkey BLOB NOT NULL,
+                    amount_sats INTEGER NOT NULL,
+                    tweak_k INTEGER NOT NULL,
+                    -- NULL = base address, 0 = change, >=1 = user label.
+                    label_m INTEGER,
+                    height INTEGER NOT NULL,
+                    spent_in_txid BLOB,
+                    PRIMARY KEY (txid, vout)
+                );",
+            ),
+            M::up("ALTER TABLE bip47_send_state ADD COLUMN notification_height INTEGER;"),
+            M::up(
+                "CREATE TABLE bip47_received (
+                    txid BLOB NOT NULL,
+                    vout INTEGER NOT NULL,
+                    sender_payment_code TEXT NOT NULL,
+                    sender_index INTEGER NOT NULL,
+                    version INTEGER NOT NULL,
+                    amount_sats INTEGER NOT NULL,
+                    script_pubkey BLOB NOT NULL,
+                    height INTEGER NOT NULL,
+                    PRIMARY KEY (txid, vout)
+                );",
+            ),
+            M::up(
+                "CREATE INDEX bip47_received_sender ON bip47_received (sender_payment_code, sender_index);",
+            ),
+            M::up("ALTER TABLE bip47_received ADD COLUMN spent_in_txid BLOB;"),
         ]);
 
         let db_name = "db.sqlite";
@@ -410,6 +484,8 @@ impl WalletInner {
             chain_source_client,
             last_sync: async_lock::RwLock::new(None),
             generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            bip47_send_locks: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            scanner_lock: tokio::sync::Semaphore::new(1),
         })
     }
 
@@ -2303,5 +2379,810 @@ impl Wallet {
         password: Option<&str>,
     ) -> Result<(), error::CreateNewWallet> {
         self.inner.create_new_wallet(mnemonic, password).await
+    }
+
+    pub async fn bip47_payment_code(
+        &self,
+        version: reusable_payments::Bip47Version,
+    ) -> Result<reusable_payments::PaymentCode, error::ReusablePayments> {
+        self.inner.ensure_scanner_activated().await?;
+        self.inner.bip47_payment_code_inner(version).await
+    }
+
+    pub async fn silent_payment_address(
+        &self,
+        label: Option<u32>,
+    ) -> Result<reusable_payments::SilentPaymentAddress, error::ReusablePayments> {
+        self.inner.ensure_scanner_activated().await?;
+        self.inner.silent_payment_address_inner(label).await
+    }
+
+    pub async fn create_silent_payment_label(
+        &self,
+        name: &str,
+    ) -> Result<u32, error::ReusablePayments> {
+        self.inner.ensure_wallet_unlocked().await?;
+        self.inner.ensure_scanner_activated().await?;
+        let connection = self.inner.self_db.lock().await;
+        let next_m: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(m), 0) + 1 FROM silent_payment_labels WHERE m >= 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(error::ReusablePayments::db)?;
+        let m: u32 = u32::try_from(next_m).unwrap_or(1);
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        connection
+            .execute(
+                "INSERT INTO silent_payment_labels (m, name, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![m, name, now_unix],
+            )
+            .map_err(error::ReusablePayments::db)?;
+        drop(connection);
+
+        if let Some(cursor) = self.inner.load_scan_cursor_if_present().await? {
+            self.rescan_reusable_payments(cursor.birthday_height)
+                .await?;
+        }
+
+        Ok(m)
+    }
+
+    pub async fn list_silent_payment_labels(
+        &self,
+    ) -> Result<Vec<(u32, String)>, error::ReusablePayments> {
+        self.inner.ensure_wallet_unlocked().await?;
+        let connection = self.inner.self_db.lock().await;
+        let mut stmt = connection
+            .prepare("SELECT m, name FROM silent_payment_labels ORDER BY m ASC")
+            .map_err(error::ReusablePayments::db)?;
+        let rows_result: Result<Vec<(u32, String)>, _> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })
+            .and_then(|iter| iter.collect());
+        drop(stmt);
+        drop(connection);
+        let out = rows_result.map_err(error::ReusablePayments::db)?;
+        Ok(out)
+    }
+
+    pub async fn list_bip47_inbound_payers(
+        &self,
+    ) -> Result<Vec<reusable_payments::Bip47InboundPayer>, error::ReusablePayments> {
+        self.inner.ensure_wallet_unlocked().await?;
+        let connection = self.inner.self_db.lock().await;
+        let mut stmt = connection
+            .prepare(
+                "SELECT p.sender_payment_code, p.next_receive_index, p.first_seen_unix, \
+                        COALESCE(SUM(r.amount_sats), 0) \
+                 FROM bip47_inbound_payers p \
+                 LEFT JOIN bip47_received r \
+                     ON r.sender_payment_code = p.sender_payment_code \
+                 GROUP BY p.sender_payment_code \
+                 ORDER BY p.first_seen_unix ASC",
+            )
+            .map_err(error::ReusablePayments::db)?;
+        let rows_result: Result<Vec<(String, u32, i64, i64)>, _> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .and_then(|iter| iter.collect());
+        drop(stmt);
+        drop(connection);
+        let raw_rows = rows_result.map_err(error::ReusablePayments::db)?;
+        let mut out = Vec::new();
+        for (code_str, next_idx, first_seen, total_sats) in raw_rows {
+            let sender = std::str::FromStr::from_str(&code_str)?;
+            out.push(reusable_payments::Bip47InboundPayer {
+                sender_payment_code: sender,
+                next_receive_index: next_idx,
+                total_received_sats: total_sats.max(0) as u64,
+                first_seen_unix: first_seen,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_silent_payment_receives(
+        &self,
+        min_confirmations: Option<u32>,
+        limit: Option<u32>,
+    ) -> Result<(Vec<reusable_payments::SilentPaymentReceive>, u32), error::ReusablePayments> {
+        self.inner.ensure_wallet_unlocked().await?;
+        let last_scanned_height = self
+            .inner
+            .load_scan_cursor_if_present()
+            .await?
+            .map(|c| c.last_scanned_height)
+            .unwrap_or(0);
+        let connection = self.inner.self_db.lock().await;
+
+        let min_conf = min_confirmations.unwrap_or(0);
+        let max_height_for_filter = last_scanned_height
+            .saturating_sub(min_conf)
+            .saturating_add(1);
+        let limit_val = limit.unwrap_or(1000).min(10_000) as i64;
+
+        let mut stmt = connection
+            .prepare(
+                "SELECT r.txid, r.vout, r.output_pubkey, r.amount_sats, r.tweak_k, \
+                        r.label_m, l.name, r.height, r.spent_in_txid \
+                 FROM silent_payment_received r \
+                 LEFT JOIN silent_payment_labels l ON l.m = r.label_m \
+                 WHERE r.height < ?1 \
+                 ORDER BY r.height ASC, r.vout ASC \
+                 LIMIT ?2",
+            )
+            .map_err(error::ReusablePayments::db)?;
+        type RawReceiveRow = (
+            Vec<u8>,
+            u32,
+            Vec<u8>,
+            i64,
+            u32,
+            Option<u32>,
+            Option<String>,
+            u32,
+            Option<Vec<u8>>,
+        );
+        let rows_result: Result<Vec<RawReceiveRow>, _> = stmt
+            .query_map(rusqlite::params![max_height_for_filter, limit_val], |row| {
+                let txid: Vec<u8> = row.get(0)?;
+                let vout: u32 = row.get(1)?;
+                let output_pk: Vec<u8> = row.get(2)?;
+                let amount: i64 = row.get(3)?;
+                let tweak_k: u32 = row.get(4)?;
+                let label_m: Option<u32> = row.get(5)?;
+                let label_name: Option<String> = row.get(6)?;
+                let height: u32 = row.get(7)?;
+                let spent_in: Option<Vec<u8>> = row.get(8)?;
+                Ok((
+                    txid, vout, output_pk, amount, tweak_k, label_m, label_name, height, spent_in,
+                ))
+            })
+            .and_then(|iter| iter.collect());
+        drop(stmt);
+        drop(connection);
+        let raw_rows = rows_result.map_err(error::ReusablePayments::db)?;
+
+        let mut out = Vec::new();
+        for (txid_b, vout, pk_b, amt, tk, lm, ln, height, spent_b) in raw_rows {
+            let txid = bitcoin::Txid::from_slice(&txid_b).map_err(|_| {
+                error::ReusablePayments::Bip47Parse(
+                    reusable_payments::bip47::ParseError::BadLength { got: txid_b.len() },
+                )
+            })?;
+            let output_xonly = bitcoin::XOnlyPublicKey::from_slice(&pk_b).map_err(|e| {
+                error::ReusablePayments::SilentPaymentParse(
+                    reusable_payments::silent_payments::ParseError::BadPubkey(e),
+                )
+            })?;
+            let spent_txid = spent_b
+                .as_ref()
+                .and_then(|b| bitcoin::Txid::from_slice(b).ok());
+            out.push(reusable_payments::SilentPaymentReceive {
+                txid,
+                vout,
+                output_pubkey: output_xonly,
+                amount: bitcoin::Amount::from_sat(amt as u64),
+                tweak_k: tk,
+                label_m: lm,
+                label_name: ln,
+                height,
+                spent_in_txid: spent_txid,
+            });
+        }
+        Ok((out, last_scanned_height))
+    }
+
+    pub async fn send_to_payment_code(
+        &self,
+        recipient: reusable_payments::PaymentCode,
+        amount: bitcoin::Amount,
+        fee_sat_per_vbyte: u64,
+    ) -> Result<reusable_payments::Bip47SendResult, error::ReusablePayments> {
+        use bitcoin::FeeRate;
+
+        self.inner.ensure_scanner_activated().await?;
+        let version = recipient.version();
+        let recipient_code_str = recipient.to_string();
+
+        let recipient_lock: Arc<tokio::sync::Semaphore> = {
+            let mut locks = self.inner.bip47_send_locks.lock().await;
+            locks
+                .entry(recipient_code_str.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+                .clone()
+        };
+        let _send_guard = recipient_lock
+            .acquire_owned()
+            .await
+            .expect("BIP47 send semaphore is never closed");
+
+        let (mut existing_notif_txid, current_index) = self
+            .inner
+            .load_bip47_send_state(&recipient_code_str)
+            .await?;
+
+        if let Some(prev_notif) = existing_notif_txid {
+            let still_live = self
+                .inner
+                .notification_in_chain_or_mempool(prev_notif)
+                .await?;
+            if !still_live {
+                tracing::warn!(
+                    txid = %prev_notif,
+                    "BIP47 notification no longer in chain/mempool, re-notifying"
+                );
+                self.inner
+                    .rollback_bip47_notification(&recipient_code_str)
+                    .await?;
+                existing_notif_txid = None;
+            }
+        }
+
+        let fee_rate = FeeRate::from_sat_per_vb(fee_sat_per_vbyte)
+            .ok_or_else(|| error::ReusablePayments::Rpc("invalid fee_sat_per_vbyte".to_string()))?;
+
+        let notification_txid: Option<bitcoin::Txid> = if existing_notif_txid.is_none() {
+            use bitcoin_jsonrpsee::client::MainClient;
+            let tip_height: u32 = self
+                .inner
+                .main_client
+                .getblockcount()
+                .await
+                .map(|h| h as u32)
+                .map_err(|e| {
+                    error::ReusablePayments::Rpc(format!("tip height for notification: {e}"))
+                })?;
+            let txid = self
+                .broadcast_bip47_notification(&recipient, version, fee_rate)
+                .await?;
+            self.inner
+                .persist_bip47_notification(&recipient_code_str, version, txid, tip_height)
+                .await?;
+            Some(txid)
+        } else {
+            None
+        };
+
+        let payment_addr = self
+            .inner
+            .compute_bip47_send_address(&recipient, current_index)
+            .await?;
+
+        self.inner
+            .advance_bip47_next_index(&recipient_code_str, current_index + 1)
+            .await?;
+
+        let mut destinations = HashMap::new();
+        destinations.insert(payment_addr, amount);
+        let payment_result = self
+            .send_wallet_transaction(
+                destinations,
+                CreateTransactionParams {
+                    fee_policy: Some(crate::types::FeePolicy::Rate(fee_rate)),
+                    op_return_message: None,
+                    required_utxos: vec![],
+                    drain_wallet_to: None,
+                },
+            )
+            .await;
+
+        let payment_txid = match payment_result {
+            Ok(txid) => txid,
+            Err(err) => {
+                if let Err(rollback_err) = self
+                    .inner
+                    .rollback_bip47_index_advance(&recipient_code_str, current_index)
+                    .await
+                {
+                    tracing::error!(
+                        ?rollback_err,
+                        "failed to roll back BIP47 next_send_index after payment broadcast error"
+                    );
+                }
+                return Err(error::ReusablePayments::Rpc(format!("payment tx: {err}")));
+            }
+        };
+
+        Ok(reusable_payments::Bip47SendResult {
+            notification_txid,
+            payment_txid,
+            sender_index: current_index,
+            version,
+        })
+    }
+
+    async fn broadcast_bip47_notification(
+        &self,
+        recipient: &reusable_payments::PaymentCode,
+        version: reusable_payments::bip47::Version,
+        fee_rate: bitcoin::FeeRate,
+    ) -> Result<bitcoin::Txid, error::ReusablePayments> {
+        if version == reusable_payments::bip47::Version::V3 {
+            return self
+                .broadcast_bip47_notification_v3(recipient, fee_rate)
+                .await;
+        }
+
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let network = self.inner.validator.network();
+        let recipient_notif_addr =
+            reusable_payments::bip47::notification_address(recipient, network, &secp)?;
+
+        let payload_len: usize = 80;
+        let placeholder_payload = vec![0u8; payload_len];
+        let placeholder_op_return =
+            crate::messages::create_op_return_output(placeholder_payload.clone()).map_err(|e| {
+                error::ReusablePayments::Rpc(format!("op_return placeholder build: {e}"))
+            })?;
+
+        let mut destinations = HashMap::new();
+        destinations.insert(recipient_notif_addr, bitcoin::Amount::from_sat(546));
+        let mut psbt = self
+            .create_send_psbt(
+                destinations,
+                CreateTransactionParams {
+                    fee_policy: Some(crate::types::FeePolicy::Rate(fee_rate)),
+                    op_return_message: Some(placeholder_payload),
+                    required_utxos: vec![],
+                    drain_wallet_to: None,
+                },
+            )
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("notification psbt: {err}")))?;
+
+        let designated_idx = psbt
+            .inputs
+            .iter()
+            .position(|i| {
+                i.witness_utxo
+                    .as_ref()
+                    .map(|tx_out| {
+                        let spk = tx_out.script_pubkey.as_script();
+                        spk.is_p2wpkh() || spk.is_p2pkh() || spk.is_p2sh() || spk.is_p2tr()
+                    })
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| {
+                error::ReusablePayments::Rpc(
+                    "notification tx has no input that exposes a pubkey".to_string(),
+                )
+            })?;
+        let designated_outpoint = psbt
+            .unsigned_tx
+            .input
+            .get(designated_idx)
+            .ok_or_else(|| {
+                error::ReusablePayments::Rpc("notification tx has no inputs".to_string())
+            })?
+            .previous_output;
+        let designated_spk = psbt
+            .inputs
+            .get(designated_idx)
+            .and_then(|i| i.witness_utxo.as_ref())
+            .map(|tx_out| tx_out.script_pubkey.clone())
+            .ok_or_else(|| {
+                error::ReusablePayments::Rpc(
+                    "notification tx's designated input has no witness_utxo".to_string(),
+                )
+            })?;
+
+        let (blinded, _sender_code) = self
+            .inner
+            .compute_bip47_blinded_payload(recipient, version, designated_outpoint, designated_spk)
+            .await?;
+        debug_assert_eq!(blinded.len(), payload_len);
+
+        let real_op_return = crate::messages::create_op_return_output(blinded)
+            .map_err(|e| error::ReusablePayments::Rpc(format!("op_return build: {e}")))?;
+
+        let op_return_idx = psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .position(|o| o.script_pubkey == placeholder_op_return.script_pubkey)
+            .ok_or_else(|| {
+                error::ReusablePayments::Rpc(
+                    "notification PSBT has no placeholder OP_RETURN output".to_string(),
+                )
+            })?;
+        psbt.unsigned_tx.output[op_return_idx].script_pubkey = real_op_return.script_pubkey.clone();
+
+        self.sign_broadcast_apply_notification(psbt).await
+    }
+
+    /// OBPP-05 v3 notification: a single `OP_1 <A> <F> <G> OP_3 OP_CHECKMULTISIG`
+    /// output, where A is a fresh change pubkey used for the blinding ECDH.
+    async fn broadcast_bip47_notification_v3(
+        &self,
+        recipient: &reusable_payments::PaymentCode,
+        fee_rate: bitcoin::FeeRate,
+    ) -> Result<bitcoin::Txid, error::ReusablePayments> {
+        // Above Core's dust threshold (~786 sats) for a bare 1-of-3 multisig output.
+        const V3_NOTIFICATION_SATS: u64 = 1_000;
+
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+
+        let (eph_index, eph_spk_bytes) = {
+            let mut wallet_write = self.inner.write_wallet().await?;
+            let mut bdk_db_lock = self.inner.bdk_db.lock().await;
+            wallet_write
+                .with_mut(|wallet| {
+                    let info = wallet.reveal_next_address(bdk_wallet::KeychainKind::Internal);
+                    let index = info.index;
+                    let spk = info.address.script_pubkey().to_bytes();
+                    wallet
+                        .persist_async(&mut bdk_db_lock)
+                        .map_ok(move |_: bool| (index, spk))
+                })
+                .await
+                .map_err(|err| {
+                    error::ReusablePayments::Rpc(format!("v3 notification change reveal: {err}"))
+                })?
+        };
+
+        let master = self.inner.master_xpriv_inner().await?;
+        let eph_path = bitcoin::bip32::DerivationPath::from(
+            [
+                bitcoin::bip32::ChildNumber::from_hardened_idx(84)?,
+                bitcoin::bip32::ChildNumber::from_hardened_idx(1)?,
+                bitcoin::bip32::ChildNumber::from_hardened_idx(0)?,
+                bitcoin::bip32::ChildNumber::from_normal_idx(1)?,
+                bitcoin::bip32::ChildNumber::from_normal_idx(eph_index)?,
+            ]
+            .as_slice(),
+        );
+        let eph_priv = reusable_payments::scan::ScrubOnDrop::new(
+            master.derive_priv(&secp, &eph_path)?.private_key,
+        );
+        let eph_pub = eph_priv.public_key(&secp);
+        let network = self.inner.validator.network();
+        let expected_spk =
+            bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(eph_pub), network)
+                .script_pubkey();
+        if expected_spk.to_bytes() != eph_spk_bytes {
+            return Err(error::ReusablePayments::Rpc(
+                "v3 notification: derived ephemeral key does not match wallet descriptor"
+                    .to_string(),
+            ));
+        }
+
+        let script = self
+            .inner
+            .compute_bip47_v3_notification_script(recipient, &eph_priv)
+            .await?;
+        drop(eph_priv);
+
+        let psbt = {
+            let mut wallet_write = self.inner.write_wallet().await?;
+            tokio::task::block_in_place(|| {
+                wallet_write.with_mut(|wallet| {
+                    let mut builder = wallet.build_tx();
+                    builder.add_recipient(
+                        script.clone(),
+                        bitcoin::Amount::from_sat(V3_NOTIFICATION_SATS),
+                    );
+                    builder.fee_rate(fee_rate);
+                    builder.finish().map_err(error::CreateSendPsbt::CreateTx)
+                })
+            })
+            .map_err(|err| error::ReusablePayments::Rpc(format!("v3 notification psbt: {err}")))?
+        };
+
+        self.sign_broadcast_apply_notification(psbt).await
+    }
+
+    async fn sign_broadcast_apply_notification(
+        &self,
+        psbt: bdk_wallet::bitcoin::psbt::Psbt,
+    ) -> Result<bitcoin::Txid, error::ReusablePayments> {
+        let tx = self
+            .sign_transaction(psbt)
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("sign notification: {err}")))?;
+        let txid = tx.compute_txid();
+
+        if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("broadcast notification: {err}")))?
+            .is_none()
+        {
+            return Err(error::ReusablePayments::Rpc(
+                "notification broadcast rejected: OP_DRIVECHAIN not supported".to_string(),
+            ));
+        }
+
+        let mut bdk_db_lock = self.inner.bdk_db.lock().await;
+        let last_seen = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let _ = self
+            .inner
+            .write_wallet()
+            .await?
+            .with_mut(|wallet| {
+                wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
+                wallet.persist_async(&mut bdk_db_lock)
+            })
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("persist notification: {err}")))?;
+
+        tracing::info!(%txid, "broadcast BIP47 notification tx");
+        Ok(convert::bdk_txid_to_bitcoin_txid(txid))
+    }
+
+    pub async fn send_to_silent_payment(
+        &self,
+        recipients: Vec<(reusable_payments::SilentPaymentAddress, bitcoin::Amount)>,
+        fee_sat_per_vbyte: u64,
+    ) -> Result<bitcoin::Txid, error::ReusablePayments> {
+        use bitcoin::FeeRate;
+
+        if recipients.is_empty() {
+            return Err(error::ReusablePayments::Rpc(
+                "send_to_silent_payment requires at least one recipient".to_string(),
+            ));
+        }
+
+        self.inner.ensure_scanner_activated().await?;
+
+        let fee_rate = FeeRate::from_sat_per_vb(fee_sat_per_vbyte)
+            .ok_or_else(|| error::ReusablePayments::Rpc("invalid fee_sat_per_vbyte".to_string()))?;
+
+        let mut sorted_recipients = recipients.clone();
+        sorted_recipients.sort_by_key(|(addr, _)| addr.scan.serialize());
+
+        let placeholder_xonly = {
+            let secp = bitcoin::secp256k1::Secp256k1::new();
+            let dummy_sk = bitcoin::secp256k1::SecretKey::from_slice(&[1u8; 32])
+                .expect("[1; 32] is a valid secp256k1 scalar");
+            let dummy_pk = dummy_sk.public_key(&secp);
+            dummy_pk.x_only_public_key().0
+        };
+        let placeholder_script = bitcoin::ScriptBuf::new_p2tr_tweaked(
+            bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(placeholder_xonly),
+        );
+
+        let mut psbt = {
+            let mut wallet_write = self.inner.write_wallet().await?;
+            tokio::task::block_in_place(|| {
+                wallet_write.with_mut(|wallet| {
+                    let mut builder = wallet.build_tx();
+                    builder.ordering(bdk_wallet::TxOrdering::Untouched);
+                    for (_, amount) in &sorted_recipients {
+                        builder.add_recipient(placeholder_script.clone(), *amount);
+                    }
+                    builder.fee_rate(fee_rate);
+                    builder.finish().map_err(error::CreateSendPsbt::CreateTx)
+                })
+            })
+            .map_err(|err| error::ReusablePayments::Rpc(format!("sp psbt: {err}")))?
+        };
+
+        let (eligible_inputs, all_outpoints): (
+            Vec<(bitcoin::OutPoint, bitcoin::ScriptBuf)>,
+            Vec<bitcoin::OutPoint>,
+        ) = {
+            let mut eligible = Vec::with_capacity(psbt.inputs.len());
+            let mut all = Vec::with_capacity(psbt.inputs.len());
+            for (i, psbt_input) in psbt.inputs.iter().enumerate() {
+                let outpoint = psbt.unsigned_tx.input[i].previous_output;
+                all.push(outpoint);
+                let spk = psbt_input
+                    .witness_utxo
+                    .as_ref()
+                    .map(|t| t.script_pubkey.clone())
+                    .ok_or_else(|| {
+                        error::ReusablePayments::Rpc(format!(
+                            "sp send: input {i} has no witness_utxo"
+                        ))
+                    })?;
+                if !reusable_payments::is_bip352_eligible_spk(spk.as_script()) {
+                    return Err(error::ReusablePayments::SilentPaymentCrypto(
+                        reusable_payments::silent_payments::CryptoError::IneligibleInput {
+                            outpoint,
+                        },
+                    ));
+                }
+                eligible.push((outpoint, spk));
+            }
+            (eligible, all)
+        };
+
+        if eligible_inputs.is_empty() {
+            return Err(error::ReusablePayments::SilentPaymentCrypto(
+                reusable_payments::silent_payments::CryptoError::NoEligibleInputs,
+            ));
+        }
+
+        let real_outputs = self
+            .inner
+            .compute_sp_outputs(&sorted_recipients, &eligible_inputs, &all_outpoints)
+            .await?;
+
+        if real_outputs.len() != sorted_recipients.len() {
+            return Err(error::ReusablePayments::Rpc(format!(
+                "sp send: compute_outputs returned {} outputs for {} recipients",
+                real_outputs.len(),
+                sorted_recipients.len()
+            )));
+        }
+
+        for (idx, real) in (0..sorted_recipients.len()).zip(real_outputs) {
+            let output = psbt.unsigned_tx.output.get_mut(idx).ok_or_else(|| {
+                error::ReusablePayments::Rpc(format!(
+                    "sp send: PSBT has fewer outputs ({idx}) than recipients",
+                ))
+            })?;
+            if output.script_pubkey != placeholder_script {
+                return Err(error::ReusablePayments::Rpc(format!(
+                    "sp send: output at index {idx} is not the recipient placeholder",
+                )));
+            }
+            if output.value != real.value {
+                return Err(error::ReusablePayments::Rpc(format!(
+                    "sp send: PSBT amount {} != computed amount {}",
+                    output.value, real.value,
+                )));
+            }
+            output.script_pubkey = real.script_pubkey;
+        }
+
+        let tx = self
+            .sign_transaction(psbt)
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("sp sign: {err}")))?;
+        let txid = tx.compute_txid();
+
+        if crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("sp broadcast: {err}")))?
+            .is_none()
+        {
+            return Err(error::ReusablePayments::Rpc(
+                "sp broadcast rejected: OP_DRIVECHAIN not supported".to_string(),
+            ));
+        }
+
+        let mut bdk_db_lock = self.inner.bdk_db.lock().await;
+        let last_seen = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let _ = self
+            .inner
+            .write_wallet()
+            .await?
+            .with_mut(|wallet| {
+                wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
+                wallet.persist_async(&mut bdk_db_lock)
+            })
+            .await
+            .map_err(|err| error::ReusablePayments::Rpc(format!("persist sp tx: {err}")))?;
+
+        tracing::info!(%txid, "broadcast silent-payment tx");
+        Ok(convert::bdk_txid_to_bitcoin_txid(txid))
+    }
+
+    pub async fn reusable_scan_status_snapshot(
+        &self,
+    ) -> Result<reusable_payments::scan::ScanStatus, error::ReusablePayments> {
+        use bitcoin_jsonrpsee::client::MainClient;
+        let cursor_opt = self.inner.load_scan_cursor_if_present().await?;
+        let tip_height: u32 = self
+            .inner
+            .main_client
+            .getblockcount()
+            .await
+            .map(|h| h as u32)
+            .unwrap_or(0);
+        let (birthday_height, last_scanned_height, catching_up) = match cursor_opt {
+            Some(c) => (
+                c.birthday_height,
+                c.last_scanned_height,
+                c.last_scanned_height < tip_height,
+            ),
+            None => (0, 0, false),
+        };
+        Ok(reusable_payments::scan::ScanStatus {
+            tip_height,
+            last_scanned_height,
+            birthday_height,
+            catching_up,
+        })
+    }
+
+    pub async fn rescan_reusable_payments(
+        &self,
+        from_height: u32,
+    ) -> Result<(), error::ReusablePayments> {
+        use bitcoin_jsonrpsee::{
+            client::MainClient,
+            jsonrpsee::core::{client::ClientT, params::ArrayParams},
+        };
+
+        self.inner.ensure_wallet_unlocked().await?;
+        self.inner.ensure_scanner_activated().await?;
+
+        let _scanner_guard = self
+            .inner
+            .scanner_lock
+            .acquire()
+            .await
+            .expect("scanner semaphore is never closed");
+
+        self.inner.drop_scan_events_above(from_height).await?;
+
+        let map_rpc =
+            |err: bitcoin_jsonrpsee::jsonrpsee::core::client::Error| -> error::ReusablePayments {
+                error::ReusablePayments::Rpc(err.to_string())
+            };
+        let tip_height: u32 = self
+            .inner
+            .main_client
+            .getblockcount()
+            .await
+            .map_err(map_rpc)? as u32;
+
+        let mut ctx = match self.inner.build_scan_context_for_deep_rescan().await {
+            Ok(ctx) => ctx,
+            Err(error::ReusablePayments::WalletNotFound)
+            | Err(error::ReusablePayments::WalletEncrypted) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+
+        let mut prev_block_hash: Option<bitcoin::BlockHash> = None;
+        for height in from_height..=tip_height {
+            let hash = self
+                .inner
+                .main_client
+                .getblockhash(height as usize)
+                .await
+                .map_err(map_rpc)?;
+            let mut params = ArrayParams::new();
+            params
+                .insert(hash.to_string())
+                .map_err(|e| error::ReusablePayments::Rpc(e.to_string()))?;
+            params
+                .insert(0u32)
+                .map_err(|e| error::ReusablePayments::Rpc(e.to_string()))?;
+            let hex_str: String = self
+                .inner
+                .main_client
+                .request("getblock", params)
+                .await
+                .map_err(map_rpc)?;
+            let bytes = hex::decode(&hex_str)
+                .map_err(|e| error::ReusablePayments::ConsensusDecode(e.to_string()))?;
+            let block: bitcoin::Block = bitcoin::consensus::deserialize(&bytes)
+                .map_err(|e| error::ReusablePayments::ConsensusDecode(e.to_string()))?;
+
+            if let Some(expected_prev) = prev_block_hash
+                && block.header.prev_blockhash != expected_prev
+            {
+                tracing::warn!(
+                    height,
+                    expected = %expected_prev,
+                    got = %block.header.prev_blockhash,
+                    "rescan_reusable_payments: mid-rescan reorg detected, aborting"
+                );
+                self.inner.drop_scan_events_above(height).await?;
+                return Err(error::ReusablePayments::Rpc(
+                    "rescan aborted due to mid-rescan reorg, retry".to_string(),
+                ));
+            }
+
+            self.inner
+                .scan_block_with_ctx(&block, height, &mut ctx)
+                .await?;
+            prev_block_hash = Some(block.block_hash());
+        }
+        Ok(())
     }
 }

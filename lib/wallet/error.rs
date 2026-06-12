@@ -1406,3 +1406,65 @@ impl ToStatus for GetNewAddress {
         }
     }
 }
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum ReusablePayments {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    #[error("wallet not found - create one with CreateWallet first")]
+    #[diagnostic(code(wallet_not_found))]
+    WalletNotFound,
+    #[error("wallet is encrypted - unlock it first")]
+    #[diagnostic(code(wallet_encrypted))]
+    WalletEncrypted,
+    #[error(transparent)]
+    ReadDbMnemonic(#[from] ReadDbMnemonic),
+    #[error("failed to convert mnemonic to extended key")]
+    MnemonicToExtendedKey(#[source] bdk_wallet::keys::KeyError),
+    #[error("failed to derive master xpriv from extended key")]
+    #[diagnostic(code(reusable_payments_derive_master_xpriv))]
+    DeriveMasterXpriv,
+    #[error(transparent)]
+    Bip32(#[from] bitcoin::bip32::Error),
+    #[error(transparent)]
+    Bip47Crypto(#[from] crate::wallet::reusable_payments::bip47::CryptoError),
+    #[error(transparent)]
+    Bip47Parse(#[from] crate::wallet::reusable_payments::bip47::ParseError),
+    #[error(transparent)]
+    SilentPaymentCrypto(#[from] crate::wallet::reusable_payments::silent_payments::CryptoError),
+    #[error(transparent)]
+    SilentPaymentParse(#[from] crate::wallet::reusable_payments::silent_payments::ParseError),
+    #[error("Bitcoin Core RPC error during reusable-payments scan: {0}")]
+    #[diagnostic(code(reusable_payments_rpc_error))]
+    Rpc(String),
+    #[error("failed to deserialize block during reusable-payments scan: {0}")]
+    #[diagnostic(code(reusable_payments_consensus_decode))]
+    ConsensusDecode(String),
+}
+
+impl ReusablePayments {
+    pub(crate) fn db(e: rusqlite::Error) -> Self {
+        Self::ReadDbMnemonic(ReadDbMnemonicInner::Rusqlite(e).into())
+    }
+}
+
+impl ToStatus for ReusablePayments {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::NotUnlocked(err) => err.builder(),
+            Self::ReadDbMnemonic(err) => err.builder(),
+            Self::WalletNotFound => StatusBuilder::new(self).code(tonic::Code::NotFound),
+            Self::WalletEncrypted => StatusBuilder::new(self).code(tonic::Code::FailedPrecondition),
+            Self::Rpc(_) | Self::ConsensusDecode(_) => {
+                StatusBuilder::new(self).code(tonic::Code::Internal)
+            }
+            Self::MnemonicToExtendedKey(_)
+            | Self::DeriveMasterXpriv
+            | Self::Bip32(_)
+            | Self::Bip47Crypto(_)
+            | Self::Bip47Parse(_)
+            | Self::SilentPaymentCrypto(_)
+            | Self::SilentPaymentParse(_) => StatusBuilder::new(self),
+        }
+    }
+}
