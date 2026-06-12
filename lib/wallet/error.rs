@@ -981,21 +981,68 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(in crate::wallet) enum SuffixTxsInner {
+pub(in crate::wallet) enum AssembleCandidateBlockInner {
     #[error(transparent)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
-    #[error("Failed to apply initial block template: {reason}")]
-    InitialBlockTemplate { reason: String },
     #[error("Failed to generate coinbase txouts suffix")]
     GenerateSuffixCoinbaseTxouts(#[source] bitcoin::script::PushBytesError),
-    #[error(transparent)]
-    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
-    #[error(transparent)]
-    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
     #[error(transparent)]
     GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
     #[error(transparent)]
     TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct AssembleCandidateBlock(AssembleCandidateBlockInner);
+
+impl<Err> From<Err> for AssembleCandidateBlock
+where
+    AssembleCandidateBlockInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+pub(in crate::wallet) enum ValidateBlockProposalInner {
+    #[error(transparent)]
+    AssembleCandidateBlock(#[from] AssembleCandidateBlock),
+    #[error(transparent)]
+    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
+    #[error("Block proposal rejected, not attributable to a specific tx: {reason}")]
+    Rejected { reason: String },
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct ValidateBlockProposal(ValidateBlockProposalInner);
+
+impl<Err> From<Err> for ValidateBlockProposal
+where
+    ValidateBlockProposalInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+#[derive(Debug, Error)]
+pub(in crate::wallet) enum SuffixTxsInner {
+    #[error(transparent)]
+    AssembleCandidateBlock(#[from] AssembleCandidateBlock),
+    /// The block proposal is validated via
+    /// `CusfBlockProducer::validate_block_proposal` before the suffix is
+    /// computed, so a rejection here is unexpected
+    #[error("Failed to apply validated block template: {reason}")]
+    InitialBlockTemplate { reason: String },
+    #[error(transparent)]
+    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
+    #[error(transparent)]
+    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
 }
 
 #[derive(Debug, Diagnostic, Error)]

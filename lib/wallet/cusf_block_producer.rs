@@ -10,6 +10,7 @@ use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
         BlockTemplateSuffix, CoinbaseTxn, CoinbaseTxouts, CusfBlockProducer, InitialBlockTemplate,
+        ProposalValidity,
         typewit::const_marker::{Bool, BoolWit},
     },
     cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
@@ -19,7 +20,7 @@ use tracing::instrument;
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    validator::Validator,
+    validator::{Validator, cusf_enforcer::CtipsAfter},
     wallet::{Wallet, error},
 };
 
@@ -323,6 +324,24 @@ impl CusfBlockProducer for Wallet {
         res
     }
 
+    type ValidateBlockProposalError = error::ValidateBlockProposal;
+
+    async fn validate_block_proposal<const COINBASE_TXN: bool>(
+        &self,
+        parent_block_hash: &BlockHash,
+        coinbase_txn_wit: BoolWit<COINBASE_TXN>,
+        template: &InitialBlockTemplate<COINBASE_TXN>,
+    ) -> Result<ProposalValidity, Self::ValidateBlockProposalError>
+    where
+        Bool<COINBASE_TXN>: CoinbaseTxn,
+    {
+        let res = self
+            .validate_block_proposal_inner(parent_block_hash, coinbase_txn_wit, template)
+            .await;
+        self.record_gbt_result(&res);
+        res
+    }
+
     type SuffixTxsError = error::SuffixTxs;
 
     async fn block_template_suffix<const COINBASE_TXN: bool>(
@@ -420,6 +439,46 @@ impl Wallet {
         Ok(template)
     }
 
+    async fn validate_block_proposal_inner<const COINBASE_TXN: bool>(
+        &self,
+        _parent_block_hash: &BlockHash,
+        coinbase_txn_wit: BoolWit<COINBASE_TXN>,
+        template: &InitialBlockTemplate<COINBASE_TXN>,
+    ) -> Result<ProposalValidity, error::ValidateBlockProposal>
+    where
+        Bool<COINBASE_TXN>: CoinbaseTxn,
+    {
+        let BoolWit::True(wit) = coinbase_txn_wit else {
+            return Ok(ProposalValidity::Valid);
+        };
+        let coinbase_txouts = wit
+            .map(CoinbaseTxouts)
+            .in_ref()
+            .to_right(&template.coinbase_txouts)
+            .clone();
+        let candidate = self.assemble_candidate_block(coinbase_txouts, &template.prefix_txs)?;
+        match crate::validator::cusf_enforcer::get_ctips_after(
+            &self.inner.validator,
+            &candidate.block,
+        )? {
+            CtipsAfter::Accepted(_ctips) => Ok(ProposalValidity::Valid),
+            CtipsAfter::Rejected(rejection) => match rejection.txid {
+                Some(txid) => {
+                    tracing::warn!(
+                        %txid,
+                        reason = %rejection.reason,
+                        "block proposal contains invalid tx"
+                    );
+                    Ok(ProposalValidity::InvalidTx(txid))
+                }
+                None => Err(error::ValidateBlockProposalInner::Rejected {
+                    reason: rejection.reason,
+                }
+                .into()),
+            },
+        }
+    }
+
     async fn block_template_suffix_inner<const COINBASE_TXN: bool>(
         &self,
         _parent_block_hash: &BlockHash,
@@ -431,89 +490,25 @@ impl Wallet {
     {
         match coinbase_txn_wit {
             BoolWit::True(wit) => {
-                let (tip, height) = match self.validator().try_get_mainchain_tip()? {
-                    Some(tip) => {
-                        let tip_height = self.validator().get_header_info(&tip)?.height;
-                        (tip, tip_height + 1)
-                    }
-                    None => (BlockHash::all_zeros(), 0),
-                };
-                const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
-                let bip34_height_script = bitcoin::blockdata::script::Builder::new()
-                    .push_int(height as i64)
-                    .push_opcode(bitcoin::opcodes::OP_0)
-                    .into_script();
-                let mut coinbase_txouts = wit
-                    .map(cusf_enforcer_mempool::cusf_block_producer::CoinbaseTxouts)
+                let coinbase_txouts = wit
+                    .map(CoinbaseTxouts)
                     .in_ref()
                     .to_right(&template.coinbase_txouts)
                     .clone();
-                let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts)?;
-                for (tx, _) in &template.prefix_txs {
-                    if let Some(bmm_request) = parse_m8_tx(tx)
-                        && coinbase_builder
-                            .messages()
-                            .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                            .is_none()
-                    {
-                        coinbase_builder.bmm_accept(
-                            bmm_request.sidechain_number,
-                            bmm_request.sidechain_block_hash,
-                        )?;
-                    }
-                }
-                let coinbase_txouts_suffix = coinbase_builder
-                    .build_extension()
-                    .map_err(error::SuffixTxsInner::GenerateSuffixCoinbaseTxouts)?;
-                coinbase_txouts.extend(coinbase_txouts_suffix.iter().cloned());
-                let coinbase_tx = Transaction {
-                    version: bitcoin::transaction::Version::TWO,
-                    lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-                    input: vec![bitcoin::TxIn {
-                        previous_output: bitcoin::OutPoint {
-                            txid: Txid::all_zeros(),
-                            vout: 0xFFFF_FFFF,
-                        },
-                        sequence: bitcoin::Sequence::MAX,
-                        witness: bitcoin::Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
-                        script_sig: bip34_height_script,
-                    }],
-                    output: coinbase_txouts,
-                };
-                let merkle_root = {
-                    let hashes = std::iter::once(coinbase_tx.compute_txid().to_raw_hash()).chain(
-                        template
-                            .prefix_txs
-                            .iter()
-                            .map(|(tx, _)| tx.compute_txid().to_raw_hash()),
-                    );
-                    bitcoin::merkle_tree::calculate_root(hashes)
-                        .map(bitcoin::TxMerkleNode::from_raw_hash)
-                        .unwrap()
-                };
-                let time = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as u32;
-                let header = bitcoin::block::Header {
-                    version: bitcoin::block::Version::TWO,
-                    prev_blockhash: tip,
-                    merkle_root,
-                    time,
-                    bits: bitcoin::Target::MAX.to_compact_lossy(),
-                    nonce: 0,
-                };
-                let block = bitcoin::Block {
-                    header,
-                    txdata: std::iter::once(coinbase_tx)
-                        .chain(template.prefix_txs.iter().map(|(tx, _)| tx.clone()))
-                        .collect(),
-                };
-                let ctips = crate::validator::cusf_enforcer::get_ctips_after(
+                let candidate =
+                    self.assemble_candidate_block(coinbase_txouts, &template.prefix_txs)?;
+                let ctips = match crate::validator::cusf_enforcer::get_ctips_after(
                     &self.inner.validator,
-                    &block,
-                )?
-                .map_err(|reason| error::SuffixTxsInner::InitialBlockTemplate { reason })?;
+                    &candidate.block,
+                )? {
+                    CtipsAfter::Accepted(ctips) => ctips,
+                    CtipsAfter::Rejected(rejection) => {
+                        return Err(error::SuffixTxsInner::InitialBlockTemplate {
+                            reason: rejection.reason,
+                        }
+                        .into());
+                    }
+                };
                 let suffix_txs = self
                     .generate_suffix_txs(&ctips)
                     .await?
@@ -522,17 +517,110 @@ impl Wallet {
                     .collect();
                 Ok(BlockTemplateSuffix {
                     coinbase_txouts: wit
-                        .map(cusf_enforcer_mempool::cusf_block_producer::CoinbaseTxouts)
-                        .to_left(coinbase_txouts_suffix),
+                        .map(CoinbaseTxouts)
+                        .to_left(candidate.coinbase_txouts_suffix),
                     txs: suffix_txs,
                 })
             }
             BoolWit::False(wit) => Ok(BlockTemplateSuffix {
-                coinbase_txouts: wit
-                    .map(cusf_enforcer_mempool::cusf_block_producer::CoinbaseTxouts)
-                    .to_left(()),
+                coinbase_txouts: wit.map(CoinbaseTxouts).to_left(()),
                 txs: Vec::new(),
             }),
         }
+    }
+}
+
+/// A candidate block as it would be mined from a template: the coinbase
+/// (including the suffix coinbase txouts, e.g. M7 BMM accepts for the
+/// template's M8 txs) followed by the template's prefix txs.
+struct CandidateBlock {
+    block: bitcoin::Block,
+    /// Suffix coinbase txouts appended to the template's coinbase txouts in
+    /// [`Self::block`]'s coinbase
+    coinbase_txouts_suffix: Vec<bitcoin::TxOut>,
+}
+
+impl Wallet {
+    fn assemble_candidate_block(
+        &self,
+        mut coinbase_txouts: Vec<bitcoin::TxOut>,
+        prefix_txs: &[(Transaction, bitcoin::Amount)],
+    ) -> Result<CandidateBlock, error::AssembleCandidateBlock> {
+        let (tip, height) = match self.validator().try_get_mainchain_tip()? {
+            Some(tip) => {
+                let tip_height = self.validator().get_header_info(&tip)?.height;
+                (tip, tip_height + 1)
+            }
+            None => (BlockHash::all_zeros(), 0),
+        };
+        const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
+        let bip34_height_script = bitcoin::blockdata::script::Builder::new()
+            .push_int(height as i64)
+            .push_opcode(bitcoin::opcodes::OP_0)
+            .into_script();
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts)?;
+        for (tx, _) in prefix_txs {
+            if let Some(bmm_request) = parse_m8_tx(tx)
+                && coinbase_builder
+                    .messages()
+                    .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
+                    .is_none()
+            {
+                coinbase_builder.bmm_accept(
+                    bmm_request.sidechain_number,
+                    bmm_request.sidechain_block_hash,
+                )?;
+            }
+        }
+        let coinbase_txouts_suffix = coinbase_builder
+            .build_extension()
+            .map_err(error::AssembleCandidateBlockInner::GenerateSuffixCoinbaseTxouts)?;
+        coinbase_txouts.extend(coinbase_txouts_suffix.iter().cloned());
+        let coinbase_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout: 0xFFFF_FFFF,
+                },
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
+                script_sig: bip34_height_script,
+            }],
+            output: coinbase_txouts,
+        };
+        let merkle_root = {
+            let hashes = std::iter::once(coinbase_tx.compute_txid().to_raw_hash()).chain(
+                prefix_txs
+                    .iter()
+                    .map(|(tx, _)| tx.compute_txid().to_raw_hash()),
+            );
+            bitcoin::merkle_tree::calculate_root(hashes)
+                .map(bitcoin::TxMerkleNode::from_raw_hash)
+                .unwrap()
+        };
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        let header = bitcoin::block::Header {
+            version: bitcoin::block::Version::TWO,
+            prev_blockhash: tip,
+            merkle_root,
+            time,
+            bits: bitcoin::Target::MAX.to_compact_lossy(),
+            nonce: 0,
+        };
+        let block = bitcoin::Block {
+            header,
+            txdata: std::iter::once(coinbase_tx)
+                .chain(prefix_txs.iter().map(|(tx, _)| tx.clone()))
+                .collect(),
+        };
+        Ok(CandidateBlock {
+            block,
+            coinbase_txouts_suffix,
+        })
     }
 }
