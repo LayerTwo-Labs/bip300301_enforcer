@@ -715,6 +715,14 @@ impl Wallet {
         }
 
         if !status.success() {
+            // The miner's stderr only carries the JSON-RPC code and message
+            // from `bitcoin-cli getblocktemplate`. The underlying template
+            // error is recorded by the block producer hooks.
+            let mut stderr = stderr;
+            if let Some(template_err) = self.inner.last_gbt_error.read().as_deref() {
+                stderr.push_str("\nblock template error: ");
+                stderr.push_str(template_err);
+            }
             return Err(bins::CommandError::Stderr(stderr.into_bytes()).into());
         }
 

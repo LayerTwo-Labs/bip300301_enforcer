@@ -984,8 +984,8 @@ where
 pub(in crate::wallet) enum SuffixTxsInner {
     #[error(transparent)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
-    #[error("Failed to apply initial block template")]
-    InitialBlockTemplate,
+    #[error("Failed to apply initial block template: {reason}")]
+    InitialBlockTemplate { reason: String },
     #[error("Failed to generate coinbase txouts suffix")]
     GenerateSuffixCoinbaseTxouts(#[source] bitcoin::script::PushBytesError),
     #[error(transparent)]
