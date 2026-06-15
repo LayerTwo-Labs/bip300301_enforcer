@@ -348,7 +348,18 @@ impl SidechainDeclaration {
         const HASH_ID_1_LENGTH: usize = 32;
         const HASH_ID_2_LENGTH: usize = 20;
 
-        let description_length = input.len() - HASH_ID_1_LENGTH - HASH_ID_2_LENGTH;
+        // The description field's length is the remaining input minus the two
+        // trailing fixed-length hash fields. If fewer bytes remain than those
+        // fields require, the input is malformed: fail rather than underflow.
+        let description_length = input
+            .len()
+            .checked_sub(HASH_ID_1_LENGTH + HASH_ID_2_LENGTH)
+            .ok_or_else(|| {
+                failed_to_deserialize(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Eof,
+                )))
+            })?;
         let (input, description_bytes) =
             take(description_length)(input).map_err(failed_to_deserialize)?;
         let description = std::str::from_utf8(description_bytes).map_err(|err| {
@@ -1195,5 +1206,24 @@ mod tests {
         let sidechain_proposal = proposal(vec![]);
         let result: Result<SidechainDeclaration, _> = (&sidechain_proposal.description).try_into();
         assert!(result.is_err());
+    }
+
+    /// Regression: a version-0 declaration whose remaining bytes are too short
+    /// to hold the trailing 32+20-byte hash fields must return an error, not
+    /// panic on `input.len() - 52` underflow.
+    #[test]
+    fn test_try_deserialize_too_short_for_hashes() {
+        // version 0, title length 0, then fewer than 52 trailing bytes.
+        for tail_len in [0usize, 1, 51] {
+            let mut bytes = vec![0u8 /* version */, 0u8 /* title length */];
+            bytes.extend(std::iter::repeat_n(0u8, tail_len));
+            let sidechain_proposal = proposal(bytes);
+            let result: Result<SidechainDeclaration, _> =
+                (&sidechain_proposal.description).try_into();
+            assert!(
+                result.is_err(),
+                "expected error for tail_len {tail_len}, got Ok"
+            );
+        }
     }
 }
