@@ -328,8 +328,14 @@ impl SidechainDeclaration {
         }
         const VERSION_0: u8 = 0;
         let (input, _) = tag([VERSION_0].as_slice())(input).map_err(
-            |_: nom::Err<nom::error::Error<&[u8]>>| {
-                nom::Err::Error(ParseSidechainDeclarationError::UnknownVersion(input[0]))
+            |err: nom::Err<nom::error::Error<&[u8]>>| match input.first() {
+                // The version byte is present but unrecognized.
+                Some(&version) => {
+                    nom::Err::Error(ParseSidechainDeclarationError::UnknownVersion(version))
+                }
+                // Empty input: there is no version byte to report. Surface the
+                // underlying `tag` failure instead of indexing out of bounds.
+                None => failed_to_deserialize(err),
             },
         )?;
 
@@ -1179,5 +1185,15 @@ mod tests {
             BlindedM6::deserialize(&payload).is_err(),
             "oversized output_count must be a clean Err, not a panic/abort"
         );
+    }
+
+    /// Regression: an empty description (a valid M1 carries an arbitrary,
+    /// possibly empty, `rest`-encoded description) must return an error, not
+    /// panic indexing `input[0]` while building the version error.
+    #[test]
+    fn test_try_deserialize_empty_description() {
+        let sidechain_proposal = proposal(vec![]);
+        let result: Result<SidechainDeclaration, _> = (&sidechain_proposal.description).try_into();
+        assert!(result.is_err());
     }
 }
