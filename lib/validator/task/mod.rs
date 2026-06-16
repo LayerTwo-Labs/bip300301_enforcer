@@ -11,7 +11,7 @@ use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use error_fatality::Split as _;
+use error_fatality::{Fatality as _, Split as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
@@ -1565,10 +1565,22 @@ impl BlockHandler<'_> {
             });
 
             let start_block = Instant::now();
-            // We should not call out to `invalidateblock` in case of failures here,
-            // as that is handled by the cusf-enforcer-mempool crate.
             // FIXME: handle disconnects
-            let event = self.connect_block(rwtxn, block)?;
+            //
+            // Unlike the live path, the cusf-enforcer-mempool crate does not call
+            // `invalidateblock` during sync, it just propagates the error. Report a
+            // consensus rejection with the offending block hash, so that the caller
+            // can invalidate it. Fatal (infra/DB) errors are propagated as-is.
+            let event = match self.connect_block(rwtxn, block) {
+                Ok(event) => event,
+                Err(err) if !err.is_fatal() => {
+                    return Err(error::Sync::BlockRejected {
+                        block_hash,
+                        source: Box::new(err),
+                    });
+                }
+                Err(err) => return Err(err.into()),
+            };
 
             let connect_block_duration =
                 jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
@@ -1750,6 +1762,9 @@ impl BlockHandler<'_> {
             total_blocks_fetched += blocks.len();
 
             let mut rwtxn = dbs.write_txn()?;
+            // A `Sync::BlockRejected` error here aborts the write txn, discarding
+            // the partial batch. It is handled by the caller, which invalidates the
+            // block on the node and retries the sync.
             self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
             rwtxn.commit()?;
         }

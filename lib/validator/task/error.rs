@@ -445,6 +445,15 @@ pub(in crate::validator) enum Sync {
     #[error("Block not in active chain: `{block_hash}`")]
     #[fatal(true)]
     BlockNotInActiveChain { block_hash: bitcoin::BlockHash },
+    /// A block that the mainchain node accepted, but that violates BIP300/301.
+    /// Not a fatal sync failure: the block is invalidated on the node, and the
+    /// sync is retried against the resulting tip.
+    #[error("Consensus-invalid block `{block_hash}` rejected during sync")]
+    #[fatal(false)]
+    BlockRejected {
+        block_hash: bitcoin::BlockHash,
+        source: Box<ConnectBlock>,
+    },
     #[error(transparent)]
     #[fatal(true)]
     CommitWriteTxn(#[from] rwtxn::error::Commit),
