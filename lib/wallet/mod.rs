@@ -1443,6 +1443,36 @@ impl Wallet {
         }
         if broadcast_successfully {
             tracing::info!(%txid, "Broadcast deposit transaction successfully");
+
+            // Apply the unconfirmed deposit to the wallet so its funding input
+            // is marked spent. Otherwise a deposit created before this tx
+            // confirms can reselect the same UTXO, which Bitcoin Core rejects
+            // as an RBF replacement. Mirrors `send_wallet_transaction`.
+            let mut bdk_db_lock = self.inner.bdk_db.lock().await;
+            let last_seen = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            let applied_changes = self
+                .inner
+                .write_wallet()
+                .await?
+                .with_mut(|wallet| {
+                    wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
+                    wallet.persist_async(&mut bdk_db_lock)
+                })
+                .await?;
+            if applied_changes {
+                tracing::debug!(%txid, "Applied unconfirmed deposit transaction to wallet");
+            } else {
+                // A deposit can be funded entirely by the sidechain's CTIP
+                // foreign UTXO, with no wallet-owned input or change, in which
+                // case there is nothing for the wallet to track.
+                tracing::warn!(
+                    %txid,
+                    "No wallet changes after applying unconfirmed deposit transaction",
+                );
+            }
+
             Ok(convert::bdk_txid_to_bitcoin_txid(txid))
         } else {
             Err(error::CreateDeposit::BroadcastUnsuccessful { txid })
