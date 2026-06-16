@@ -275,18 +275,32 @@ impl CusfEnforcer for Wallet {
                     let inner = self.inner.clone();
                     let tx = tx.clone();
                     || async move {
-                        let mut wallet_write = match inner.write_wallet().await {
-                            Ok(wallet_write) => wallet_write,
-                            Err(err) => {
-                                tracing::error!("{:#}", ErrorChain::new(&err));
-                                return;
-                            }
+                        // Apply the unconfirmed tx and persist, so the spent
+                        // inputs survive a restart before the tx confirms. The
+                        // locks are scoped so they are released before logging.
+                        let persist_res = {
+                            let mut bdk_db_lock = inner.bdk_db.lock().await;
+                            let mut wallet_write = match inner.write_wallet().await {
+                                Ok(wallet_write) => wallet_write,
+                                Err(err) => {
+                                    tracing::error!("{:#}", ErrorChain::new(&err));
+                                    return;
+                                }
+                            };
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs();
+                            wallet_write
+                                .with_mut(|wallet| {
+                                    wallet.apply_unconfirmed_txs([(tx, now)]);
+                                    wallet.persist_async(&mut bdk_db_lock)
+                                })
+                                .await
                         };
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        wallet_write.with_mut(|wallet| wallet.apply_unconfirmed_txs([(tx, now)]));
+                        if let Err(err) = persist_res {
+                            tracing::error!("{:#}", ErrorChain::new(&err));
+                        }
                     }
                 }());
             }
