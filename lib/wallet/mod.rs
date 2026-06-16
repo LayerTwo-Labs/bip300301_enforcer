@@ -1674,15 +1674,20 @@ impl Wallet {
                     .validator()
                     .try_get_ctip_value_seq(&treasury_outpoint)?
                 {
-                    Some((_, _, seq)) => {
-                        let spent_treasury_utxo = self
-                            .validator()
-                            .get_treasury_utxo(sidechain_number, seq - 1)?;
-                        Some(crate::types::Ctip {
-                            outpoint: spent_treasury_utxo.outpoint,
-                            value: spent_treasury_utxo.total_value,
-                        })
-                    }
+                    // `seq == 0` is the sidechain's first deposit, which created
+                    // the first treasury UTXO, so there is no previous spent ctip.
+                    Some((_, _, seq)) => match seq.checked_sub(1) {
+                        Some(prev_seq) => {
+                            let spent_treasury_utxo = self
+                                .validator()
+                                .get_treasury_utxo(sidechain_number, prev_seq)?;
+                            Some(crate::types::Ctip {
+                                outpoint: spent_treasury_utxo.outpoint,
+                                value: spent_treasury_utxo.total_value,
+                            })
+                        }
+                        None => None,
+                    },
                     None => {
                         // May be unconfirmed
                         // check if current ctip in inputs
