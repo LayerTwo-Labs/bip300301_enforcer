@@ -222,7 +222,13 @@ impl BlockHandler<'_> {
             activated: false,
         };
 
-        let sidechain_proposal_age = height - sidechain.status.proposal_height;
+        // `height - proposal_height` can underflow if the enforcer holds a
+        // proposal from a previous sync that is not on the active chain (the
+        // same case `handle_failed_sidechain_proposals` guards with
+        // `saturating_sub`). Without this, an M2 ack at a height below the
+        // stored proposal height panics under overflow checks, and wraps to a
+        // huge age in release (so the sidechain silently fails to activate).
+        let sidechain_proposal_age = height.saturating_sub(sidechain.status.proposal_height);
 
         let sidechain_slot_is_used = dbs
             .active_sidechains
