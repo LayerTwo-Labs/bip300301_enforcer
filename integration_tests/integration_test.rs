@@ -8,7 +8,8 @@ use bip300301_enforcer_lib::{
         mainchain::{
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
             CreateNewAddressRequest, CreateSidechainProposalRequest, GetSidechainProposalsRequest,
-            GetSidechainsRequest, block_info, withdrawal_bundle_event,
+            GetSidechainsRequest, ListSidechainDepositTransactionsRequest, block_info,
+            withdrawal_bundle_event,
         },
     },
 };
@@ -324,6 +325,20 @@ where
     let () = sidechain
         .confirm_deposit(post_setup, sidechain_address, deposit_amount, deposit_txid)
         .await?;
+    // Listing deposits must succeed even for a sidechain's first deposit, whose
+    // treasury UTXO is stored at sequence number 0. This is a regression test
+    // for the `seq - 1` underflow that made this RPC fail with
+    // "Missing value from db active_sidechain_slot_sequence_to_treasury_utxo".
+    let deposits = post_setup
+        .wallet_service_client
+        .list_sidechain_deposit_transactions(ListSidechainDepositTransactionsRequest {})
+        .await?
+        .into_inner()
+        .transactions;
+    anyhow::ensure!(
+        !deposits.is_empty(),
+        "expected the deposit just made to be listed, found none",
+    );
     Ok(())
 }
 
