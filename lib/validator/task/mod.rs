@@ -2424,6 +2424,85 @@ mod tests {
 
     // ── handle_m2 ──
 
+    /// Regression: activating a proposal into an already-used slot overwrites
+    /// the active sidechain. A disconnect (reorg) must restore the overwritten
+    /// sidechain, not delete the slot — otherwise the reorg permanently deletes
+    /// a previously-active sidechain (and orphans any treasury it held).
+    #[test]
+    fn ack_sidechain_undo_restores_overwritten_active_sidechain() -> Result<()> {
+        use crate::{
+            types::{Sidechain, SidechainProposalStatus},
+            validator::dbs::diff::Diff as _,
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let handler = test_handler(&dbs);
+        let slot = SidechainNumber(1);
+
+        // Active sidechain A occupies slot 1.
+        let sidechain_a = test_sidechain(1, 0);
+        let desc_a = sidechain_a.proposal.description.clone();
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &slot, &sidechain_a)
+            .into_diagnostic()?;
+
+        // Competing proposal B for slot 1, one vote short of the used-slot
+        // activation threshold so the next ack activates it.
+        let threshold = handler.thresholds.used_sidechain_slot_activation_threshold;
+        let proposal_b = SidechainProposal {
+            sidechain_number: slot,
+            description: SidechainDescription(vec![0x00, 0x01, 0xBB]),
+        };
+        let id_b = proposal_b.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(
+                &mut rwtxn,
+                &id_b,
+                &Sidechain {
+                    proposal: proposal_b,
+                    status: SidechainProposalStatus {
+                        vote_count: threshold,
+                        proposal_height: 0,
+                        activation_height: None,
+                    },
+                },
+            )
+            .into_diagnostic()?;
+
+        // Ack B -> activates over the used slot, overwriting A.
+        let diff = handler
+            .handle_m2_ack_sidechain(&rwtxn, 1, slot, id_b.description_hash)
+            .into_diagnostic()?
+            .expect("ack should produce a diff");
+        assert!(diff.activated, "B should activate over the used slot");
+        diff.apply(&mut rwtxn, &dbs, 1).into_diagnostic()?;
+        assert_eq!(
+            dbs.active_sidechains
+                .sidechain()
+                .get(&rwtxn, &slot)
+                .into_diagnostic()?
+                .proposal
+                .description,
+            SidechainDescription(vec![0x00, 0x01, 0xBB]),
+            "slot should now hold B"
+        );
+
+        // Disconnect: A must be restored, not deleted.
+        diff.undo(&mut rwtxn, &dbs).into_diagnostic()?;
+        let restored = dbs
+            .active_sidechains
+            .sidechain()
+            .try_get(&rwtxn, &slot)
+            .into_diagnostic()?
+            .expect("slot must still be active after undo (A restored)");
+        assert_eq!(
+            restored.proposal.description, desc_a,
+            "previously-active sidechain A must be restored on disconnect"
+        );
+        Ok(())
+    }
+
     #[test]
     fn handle_m2_activation_thresholds() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
