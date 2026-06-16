@@ -2423,6 +2423,36 @@ mod tests {
 
     // ── handle_m2 ──
 
+    /// Regression: an M2 ack processed at a height below the stored proposal
+    /// height (e.g. a proposal from a previous sync that is not on the active
+    /// chain) must not underflow `height - proposal_height`. The sibling
+    /// `handle_failed_sidechain_proposals` already guards this case.
+    #[test]
+    fn handle_m2_ack_below_proposal_height_does_not_underflow() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let handler = test_handler(&dbs);
+
+        let sidechain = test_sidechain(1, 100);
+        let proposal_id = sidechain.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &proposal_id, &sidechain)
+            .into_diagnostic()?;
+
+        // height 0 < proposal_height 100 must not panic / error.
+        let res = handler.handle_m2_ack_sidechain(
+            &rwtxn,
+            0,
+            SidechainNumber(1),
+            proposal_id.description_hash,
+        );
+        assert!(
+            res.is_ok(),
+            "M2 ack below proposal height must not underflow"
+        );
+        Ok(())
+    }
+
     #[test]
     fn handle_m2_activation_thresholds() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
