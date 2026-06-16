@@ -11,7 +11,7 @@ use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use error_fatality::Split as _;
+use error_fatality::{Fatality as _, Split as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
@@ -1565,10 +1565,23 @@ impl BlockHandler<'_> {
             });
 
             let start_block = Instant::now();
-            // We should not call out to `invalidateblock` in case of failures here,
-            // as that is handled by the cusf-enforcer-mempool crate.
             // FIXME: handle disconnects
-            let event = self.connect_block(rwtxn, block)?;
+            //
+            // The old comment here said `invalidateblock` is handled by the
+            // cusf-enforcer-mempool crate. That only holds for the live path; during
+            // sync the crate just propagates the error, so a non-fatal (consensus-
+            // invalid) block halted the enforcer. Surface it with the block hash so
+            // the sync loop can invalidate it. Fatal (infra/DB) errors still abort.
+            let event = match self.connect_block(rwtxn, block) {
+                Ok(event) => event,
+                Err(err) if !err.is_fatal() => {
+                    return Err(error::Sync::BlockRejected {
+                        block_hash,
+                        source: Box::new(err),
+                    });
+                }
+                Err(err) => return Err(err.into()),
+            };
 
             let connect_block_duration =
                 jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
@@ -1750,8 +1763,37 @@ impl BlockHandler<'_> {
             total_blocks_fetched += blocks.len();
 
             let mut rwtxn = dbs.write_txn()?;
-            self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
-            rwtxn.commit()?;
+            match self.handle_block_batch(&mut rwtxn, &blocks, event_tx) {
+                Ok(()) => {
+                    rwtxn.commit()?;
+                }
+                // A consensus-invalid block in the active chain must be invalidated
+                // on the node so it reorgs away, not treated as a fatal sync error
+                // that halts the enforcer. Without this, a bootstrapping or
+                // catching-up enforcer halts forever on such a block (e.g. an
+                // anyone-can-spend treasury UTXO spent without a replacement CTIP).
+                // This mirrors the live `ConnectBlockAction::Reject` handling.
+                Err(error::Sync::BlockRejected { block_hash, source }) => {
+                    // Drop the write txn (discard the partial batch) before awaiting.
+                    drop(rwtxn);
+                    tracing::warn!(
+                        %block_hash,
+                        "invalidating consensus-invalid block during sync and re-syncing: {:#}",
+                        crate::errors::ErrorChain::new(source.as_ref()),
+                    );
+                    main_rpc_client
+                        .invalidate_block(block_hash)
+                        .await
+                        .map_err(|err| error::Sync::JsonRpc {
+                            method: "invalidateblock".to_owned(),
+                            source: err,
+                        })?;
+                    // The node has reorged away from the rejected block; stop here
+                    // and let the caller re-sync to the new tip.
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         tracing::info!(
@@ -2081,6 +2123,7 @@ mod tests {
         );
         Ok(())
     }
+
 
     #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
