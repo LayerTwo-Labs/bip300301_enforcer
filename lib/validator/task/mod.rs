@@ -2124,6 +2124,52 @@ mod tests {
         Ok(())
     }
 
+    // Regression test for the sync-path DoS: a block the mainchain node accepts
+    // but that is consensus-invalid per BIP300/301 (here an M8 BMM request with no
+    // matching M7 accept; the motivating real case is a treasury UTXO spent
+    // without a replacement CTIP) must be surfaced by `handle_block_batch` as the
+    // *recoverable* `Sync::BlockRejected` carrying the offending block hash — so
+    // the sync loop can `invalidateblock` it and re-sync — NOT propagated as a
+    // fatal error that halts a bootstrapping/catching-up enforcer.
+    #[test]
+    fn handle_block_batch_rejects_consensus_invalid_block_without_halting() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let m8_tx = build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash);
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![m8_tx],
+                ..Default::default()
+            },
+        );
+        let block_hash = block.block_hash();
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let (event_tx, _event_rx) = async_broadcast::broadcast(16);
+        let err = test_handler(&dbs)
+            .handle_block_batch(&mut rwtxn, std::slice::from_ref(&block), &event_tx)
+            .expect_err("consensus-invalid block must be rejected");
+
+        // Must be recoverable (so the sync loop invalidates + re-syncs), not fatal.
+        assert!(!err.is_fatal(), "a consensus rejection must not be fatal");
+        match err {
+            error::Sync::BlockRejected {
+                block_hash: rejected,
+                ..
+            } => assert_eq!(
+                rejected, block_hash,
+                "BlockRejected must carry the offending block hash for invalidateblock"
+            ),
+            other => panic!("expected Sync::BlockRejected, got: {other:?}"),
+        }
+        Ok(())
+    }
 
     #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
