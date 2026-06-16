@@ -95,6 +95,13 @@ pub struct AckSidechain {
     /// true IFF the sidechain should be activated due to this ack causing the
     /// proposal to reach the vote threshold
     pub activated: bool,
+    /// When `activated` and the slot was *already* occupied by an active
+    /// sidechain, that prior sidechain (which `apply` overwrites). `undo` must
+    /// restore it instead of deleting the slot, otherwise a reorg of the
+    /// activating block permanently deletes the previously-active sidechain.
+    /// `serde(default)` keeps diffs stored before this field was added readable.
+    #[serde(default)]
+    pub replaced_active: Option<Sidechain>,
 }
 
 impl Diff for AckSidechain {
@@ -131,9 +138,25 @@ impl Diff for AckSidechain {
                 .active_sidechains
                 .sidechain()
                 .get(rwtxn, &self.id.sidechain_number)?;
-            let () = dbs
-                .active_sidechains
-                .delete_sidechain(rwtxn, &self.id.sidechain_number)?;
+            match &self.replaced_active {
+                // `apply` overwrote an already-active sidechain in this slot;
+                // restore it (leaving its pending_m6ids, which `apply` did not
+                // touch) instead of deleting the slot.
+                Some(prev) => {
+                    let () = dbs.active_sidechains.put_sidechain(
+                        rwtxn,
+                        &self.id.sidechain_number,
+                        prev,
+                    )?;
+                }
+                // The slot was empty before activation; `apply` created it, so
+                // undo removes it entirely.
+                None => {
+                    let () = dbs
+                        .active_sidechains
+                        .delete_sidechain(rwtxn, &self.id.sidechain_number)?;
+                }
+            }
             sidechain.status.activation_height = None;
             sidechain
         } else {
@@ -705,6 +728,7 @@ mod tests {
         let diff = AckSidechain {
             id: proposal_id,
             activated: false,
+            replaced_active: None,
         };
 
         diff.apply(&mut rwtxn, &dbs, 101).into_diagnostic()?;

@@ -220,15 +220,19 @@ impl BlockHandler<'_> {
         let mut diff = diff::AckSidechain {
             id: proposal_id,
             activated: false,
+            replaced_active: None,
         };
 
         let sidechain_proposal_age = height - sidechain.status.proposal_height;
 
-        let sidechain_slot_is_used = dbs
+        // The active sidechain currently occupying this slot, if any. If this
+        // ack activates the proposal, `apply` overwrites it, so the diff must
+        // remember it for `undo` to restore on a reorg.
+        let existing_active_sidechain = dbs
             .active_sidechains
             .sidechain()
-            .try_get(rotxn, &sidechain_number)?
-            .is_some();
+            .try_get(rotxn, &sidechain_number)?;
+        let sidechain_slot_is_used = existing_active_sidechain.is_some();
 
         let new_sidechain_activated = {
             sidechain_slot_is_used
@@ -244,6 +248,9 @@ impl BlockHandler<'_> {
 
         if new_sidechain_activated {
             diff.activated = true;
+            // Record the sidechain this activation will overwrite (if the slot
+            // was already in use) so a disconnect restores it.
+            diff.replaced_active = existing_active_sidechain;
         }
         Ok(Some(diff))
     }
