@@ -79,7 +79,7 @@ tokio-stream = "0.1.15"
 tokio-util = "0.7.18"
 # needs to line up with jsonrpsee tower version...
 tower = "0.5.3"
-tower-http = "0.6.11"
+tower-http = "0.7.0"
 tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-indicatif = "0.3.14"
