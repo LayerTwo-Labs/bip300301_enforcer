@@ -1889,12 +1889,18 @@ impl Wallet {
             })
             .await?;
 
-        // sanity check that we did things correctly
-        if !applied_changes {
-            panic!("PROGRAMMER ERROR: no changes in wallet after applying unconfirmed transaction");
+        // We used to do a sanity check here that changes were applied. However,
+        // `applied_changes` may be false if the transaction was already
+        // applied to the wallet by the mempool `accept_tx` hook, which runs in
+        // a background task once bitcoind accepts the broadcast.
+        if applied_changes {
+            tracing::debug!(%txid, "Applied unconfirmed transaction to wallet");
+        } else {
+            tracing::debug!(
+                %txid,
+                "Unconfirmed transaction already applied to wallet (likely by mempool accept_tx)"
+            );
         }
-
-        tracing::debug!(%txid, "Applied unconfirmed transaction to wallet");
 
         Ok(convert::bdk_txid_to_bitcoin_txid(txid))
     }
