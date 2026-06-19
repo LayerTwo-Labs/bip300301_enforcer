@@ -2124,6 +2124,55 @@ mod tests {
         Ok(())
     }
 
+    /// Disconnecting the only deposit to a sidechain must restore the
+    /// pre-deposit state: the treasury utxo count key is removed, not left at 0.
+    /// put_ctip creates the key at a count of 1 for the first treasury UTXO, so
+    /// delete_ctip must delete it again on disconnect.
+    #[test]
+    fn disconnect_first_deposit_removes_treasury_utxo_count() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let deposit = build_m5_deposit_tx(
+            sc,
+            OutPoint::default(),
+            Amount::ZERO,
+            Amount::from_sat(10_000),
+        );
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_txs: vec![deposit],
+                ..Default::default()
+            },
+        );
+        let block_hash = block.header.block_hash();
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let (event_tx, _) = async_broadcast::broadcast(16);
+        let _event = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+        test_handler(&dbs)
+            .disconnect_block(&mut rwtxn, &event_tx, block_hash)
+            .into_diagnostic()?;
+
+        assert_eq!(
+            dbs.active_sidechains
+                .treasury_utxo_count
+                .try_get(&rwtxn, &sc)
+                .into_diagnostic()?,
+            None,
+        );
+        Ok(())
+    }
+
     // ── handle_m5_m6 ──
 
     #[test]
