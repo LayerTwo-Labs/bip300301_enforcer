@@ -58,6 +58,9 @@ pub enum ParseBlockFileError {
     #[error("Block size too large: {size} bytes")]
     BlockSizeTooLarge { size: u32 },
 
+    #[error("Block size too small: {size} bytes, minimum is the 80 byte header")]
+    BlockSizeTooSmall { size: u32 },
+
     #[error("Failed to decode TX data")]
     TxDataDecode(#[source] bitcoin::consensus::encode::Error),
 
@@ -242,11 +245,18 @@ impl BlockFileParser {
             .map_err(ParseBlockFileError::UintDecode)? as usize;
 
         // Read the block header
-        let header = Header::consensus_decode(&mut self.reader).unwrap();
+        let header = Header::consensus_decode(&mut self.reader)
+            .map_err(ParseBlockFileError::HeaderDecode)?;
 
-        // Skip the rest of the block
-        let mut txdata = vec![0; size - 80];
-        bitcoin::io::Read::read_exact(&mut self.reader, &mut txdata).unwrap();
+        // Skip the rest of the block. The size covers the 80 byte header plus
+        // the transaction data, so a size below 80 is malformed and must not
+        // underflow the length calculation.
+        let txdata_len = size
+            .checked_sub(80)
+            .ok_or(ParseBlockFileError::BlockSizeTooSmall { size: size as u32 })?;
+        let mut txdata = vec![0; txdata_len];
+        bitcoin::io::Read::read_exact(&mut self.reader, &mut txdata)
+            .map_err(|e| ParseBlockFileError::Io(e.into()))?;
 
         Ok(Some(ParsedBlock {
             header,
