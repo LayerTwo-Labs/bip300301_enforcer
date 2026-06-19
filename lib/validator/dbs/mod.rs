@@ -156,8 +156,15 @@ impl ActiveSidechainDbs {
             .delete(rwtxn, &ctip.outpoint)?;
         let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
         let sequence_number = treasury_utxo_count - 1;
-        self.treasury_utxo_count
-            .put(rwtxn, &sidechain_number, &sequence_number)?;
+        // put_ctip creates this key at a count of 1 for the first treasury utxo,
+        // so disconnecting the last one must delete the key to restore the
+        // pre-deposit state, rather than leaving a stale count of 0.
+        if sequence_number == 0 {
+            let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
+        } else {
+            self.treasury_utxo_count
+                .put(rwtxn, &sidechain_number, &sequence_number)?;
+        }
         let _ = self
             .slot_sequence_to_treasury_utxo
             .delete(rwtxn, &(sidechain_number, sequence_number))?;
