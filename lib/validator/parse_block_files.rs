@@ -816,6 +816,24 @@ mod tests {
 
     use super::*;
 
+    /// A block whose declared size is below the 80 byte header length must be
+    /// rejected gracefully, not panic via a `size - 80` underflow. A truncated
+    /// or corrupt blk*.dat triggers this.
+    #[test]
+    fn next_block_rejects_undersized_block_without_panicking() {
+        use std::io::Write as _;
+        let mut bytes = REGTEST_MAGIC.to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // size = 0, below the 80 byte header
+        bytes.extend_from_slice(&[0u8; 80]); // a well-formed 80 byte header
+        let path = std::env::temp_dir().join("bip300_undersized_blk00000.dat");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let mut parser = BlockFileParser::new(None, path, Network::Regtest).unwrap();
+        assert!(parser.next_block().is_err());
+    }
+
     #[test]
     fn test_parse_real_file_with_xor_key() {
         let path =
