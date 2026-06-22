@@ -417,6 +417,11 @@ pub struct Validator {
     mainchain_rest_client: MainRestClient,
     mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
+    /// The single unconfirmed mempool deposit recorded per sidechain treasury.
+    /// A second deposit competing for the same treasury is rejected in
+    /// `accept_tx` (at most one can be mined), so a block template never
+    /// contains two.
+    seen_deposit_txs: Arc<parking_lot::RwLock<HashMap<SidechainNumber, Txid>>>,
 }
 
 impl Validator {
@@ -449,6 +454,7 @@ impl Validator {
             mainchain_rest_client,
             mainchain_blocks_dir,
             network,
+            seen_deposit_txs: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         })
     }
 

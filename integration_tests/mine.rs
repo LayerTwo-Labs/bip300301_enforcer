@@ -395,3 +395,24 @@ where
     }
     Ok(())
 }
+
+/// Poll the enforcer's `getblocktemplate` until it includes `txid`. Lets
+/// callers deterministically wait for a just-broadcast tx to be ingested into
+/// the enforcer's mempool before mining, since the template is served from the
+/// enforcer's own mempool mirror, which lags Bitcoin Core's.
+pub async fn wait_for_tx_in_block_template(
+    post_setup: &mut PostSetup,
+    txid: bitcoin::Txid,
+) -> anyhow::Result<()> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+    for _ in 0..40 {
+        let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+        request.capabilities.insert("coinbasetxn".to_owned());
+        let template = post_setup.gbt_client.get_block_template(request).await?;
+        if template.transactions.iter().any(|tx| tx.txid == txid) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    anyhow::bail!("tx {txid} did not appear in the enforcer block template in time")
+}
