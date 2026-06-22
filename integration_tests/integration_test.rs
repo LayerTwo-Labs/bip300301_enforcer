@@ -8,8 +8,8 @@ use bip300301_enforcer_lib::{
         mainchain::{
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
             CreateNewAddressRequest, CreateSidechainProposalRequest, GetSidechainProposalsRequest,
-            GetSidechainsRequest, ListSidechainDepositTransactionsRequest, block_info,
-            withdrawal_bundle_event,
+            GetSidechainsRequest, ListSidechainDepositTransactionsRequest,
+            ListUnspentOutputsRequest, SendTransactionRequest, block_info, withdrawal_bundle_event,
         },
     },
 };
@@ -269,6 +269,72 @@ where
     tracing::debug!("Waiting for wallet sync...");
     let () = wait_for_wallet_sync().await?;
     Ok(())
+}
+
+/// Number of unspent outputs (confirmed + unconfirmed) in the enforcer wallet.
+pub async fn unspent_output_count(post_setup: &mut PostSetup) -> anyhow::Result<usize> {
+    let utxos = post_setup
+        .wallet_service_client
+        .list_unspent_outputs(ListUnspentOutputsRequest {})
+        .await?
+        .into_owned();
+    Ok(utxos.outputs.len())
+}
+
+/// Mine `blocks` to Bitcoin Core's own address (not the enforcer wallet), so
+/// the coinbases do not add new UTXOs to the enforcer wallet.
+pub async fn mine_to_core(post_setup: &mut PostSetup, blocks: u32) -> anyhow::Result<()> {
+    let core_address = post_setup.receive_address.to_string();
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "generatetoaddress", [blocks.to_string(), core_address])
+        .run_utf8()
+        .await?;
+    Ok(())
+}
+
+/// Collapse the entire wallet into a single confirmed UTXO. With one funding
+/// UTXO, two deposits created without a block in between are forced into a
+/// parent→child chain: the second can only be funded from the first's change.
+pub async fn consolidate_to_single_utxo(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    // The funding coinbases are mostly immature (coinbase maturity is 100
+    // blocks), so a drain can only sweep the few mature ones. Advance the
+    // chain so every funding coinbase matures and a single drain can sweep the
+    // whole wallet.
+    let () = mine_to_core(post_setup, 100).await?;
+    let () = wait_for_wallet_sync().await?;
+
+    for _ in 0..6 {
+        if unspent_output_count(post_setup).await? <= 1 {
+            return Ok(());
+        }
+        let drain_address = post_setup
+            .wallet_service_client
+            .create_new_address(CreateNewAddressRequest {})
+            .await?
+            .into_owned()
+            .address;
+        let _drain = post_setup
+            .wallet_service_client
+            .send_transaction(SendTransactionRequest {
+                drain_wallet_to: Some(drain_address),
+                ..Default::default()
+            })
+            .await?;
+        sleep(std::time::Duration::from_secs(1)).await;
+        let () = mine_to_core(post_setup, 1).await?;
+        // Poll for the enforcer wallet to ingest the confirmed drain.
+        for _ in 0..10 {
+            sleep(std::time::Duration::from_secs(2)).await;
+            if unspent_output_count(post_setup).await? == 1 {
+                return Ok(());
+            }
+        }
+    }
+    anyhow::bail!(
+        "failed to consolidate wallet to a single UTXO, still have {}",
+        unspent_output_count(post_setup).await?
+    )
 }
 
 const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
@@ -707,6 +773,17 @@ pub fn tests(
             failure_collector: failure_collector.clone(),
         },
         crate::test_inactive_drivechain_output::test_inactive_slot_drivechain_output,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "competing_unconfirmed_deposits".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_competing_deposits::test_competing_unconfirmed_deposits,
     ));
     async_trials.push(new_trial_with_setup(
         "consecutive_deposits".to_string(),

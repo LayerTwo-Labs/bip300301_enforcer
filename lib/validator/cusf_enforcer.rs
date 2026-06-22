@@ -22,11 +22,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     errors::ErrorChain,
-    messages::parse_m8_tx,
+    messages::{parse_m8_tx, parse_op_drivechain},
     proto::mainchain::HeaderSyncProgress,
-    types::{Ctip, Event, SidechainNumber},
+    types::{
+        BlockEvent, BlockInfo, Ctip, Event, SidechainNumber, WithdrawalBundleEvent,
+        WithdrawalBundleEventKind,
+    },
     validator::{
         Validator,
+        dbs::Dbs,
         task::{self, BlockHandler, error::ValidateTransaction as ValidateTransactionError},
     },
 };
@@ -232,7 +236,7 @@ fn connect_block_no_commit<'validator>(
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
         .into_nested()?
     {
-        Ok(event) => {
+        Ok((header_info, block_info)) => {
             let remove_mempool_txs = parent_child_rwtxn
                 .with_child(|child_rotxn| {
                     validator
@@ -243,6 +247,10 @@ fn connect_block_no_commit<'validator>(
                 .into_values()
                 .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
                 .collect();
+            let event = Event::ConnectBlock {
+                header_info,
+                block_info,
+            };
             Ok(ConnectBlockRwTxnAction::Accept {
                 event,
                 remove_mempool_txs,
@@ -255,6 +263,85 @@ fn connect_block_no_commit<'validator>(
                 header_rwtxn,
                 reason: RejectReason::ConnectBlock(jfyi),
             })
+        }
+    }
+}
+
+/// Record `tx` as the sole unconfirmed deposit for each active treasury slot
+/// it creates a UTXO for. Two deposits into the same treasury cannot both be
+/// mined. BIP300 M5/M6 require spending the treasury's current Ctip, so the
+/// second to be included is invalid). If a slot already holds a different
+/// unconfirmed deposit this tx competes with it: `Some(existing)` is returned
+/// and nothing is recorded, signalling that `tx` must be rejected.
+fn track_deposit_tx(
+    dbs: &Dbs,
+    rotxn: &RoTxn,
+    seen_deposit_txs: &mut HashMap<SidechainNumber, Txid>,
+    tx: &Transaction,
+    txid: Txid,
+) -> Result<Option<Txid>, db::Error> {
+    // Sidechains for which this tx creates a treasury UTXO.
+    let mut treasury_slots = Vec::new();
+    for output in &tx.output {
+        let Ok((_, sidechain_number)) = parse_op_drivechain(output.script_pubkey.as_bytes()) else {
+            continue;
+        };
+        // An OP_DRIVECHAIN output for an inactive slot is an ordinary
+        // output, not a treasury UTXO
+        if !dbs
+            .active_sidechains
+            .sidechain()
+            .contains_key(rotxn, &sidechain_number)?
+        {
+            continue;
+        }
+        // A different unconfirmed deposit already holds this treasury: `tx`
+        // competes with it and must be rejected.
+        if let Some(existing) = seen_deposit_txs.get(&sidechain_number)
+            && *existing != txid
+        {
+            return Ok(Some(*existing));
+        }
+        treasury_slots.push(sidechain_number);
+    }
+    for sidechain_number in treasury_slots {
+        seen_deposit_txs.insert(sidechain_number, txid);
+        tracing::debug!(
+            %txid,
+            sidechain = sidechain_number.0,
+            "deposit conflict tracking: recorded sole treasury deposit"
+        );
+    }
+    Ok(None)
+}
+
+/// Clear the recorded unconfirmed deposit for every treasury that this block
+/// updates, so that a later deposit spending the new Ctip is accepted rather
+/// than rejected as a competitor of the now-confirmed one.
+fn clear_confirmed_deposit_slots(
+    seen_deposit_txs: &mut HashMap<SidechainNumber, Txid>,
+    block_info: &BlockInfo,
+) {
+    let updated_treasuries: HashSet<SidechainNumber> = block_info
+        .events
+        .iter()
+        .flat_map(|block_event| match block_event {
+            BlockEvent::Deposits(deposits) => deposits.keys().copied().collect(),
+            BlockEvent::WithdrawalBundle(WithdrawalBundleEvent {
+                sidechain_id,
+                kind: WithdrawalBundleEventKind::Succeeded { .. },
+                ..
+            }) => vec![*sidechain_id],
+            BlockEvent::SidechainProposal { .. } | BlockEvent::WithdrawalBundle(_) => Vec::new(),
+        })
+        .collect();
+    for sidechain_number in updated_treasuries {
+        if let Some(txid) = seen_deposit_txs.remove(&sidechain_number) {
+            tracing::debug!(
+                sidechain = sidechain_number.0,
+                %txid,
+                "deposit conflict tracking: treasury updated, cleared recorded deposit"
+            );
         }
     }
 }
@@ -291,6 +378,16 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
                 tracing::info!("accepted block");
                 let rwtxn = rwtxns.commit_child()?;
                 rwtxn.commit()?;
+                // The block's treasury updates are now final, so clear the
+                // recorded unconfirmed deposit for each updated treasury. Done
+                // post-commit so a failed commit or a dry run leaves the set
+                // untouched.
+                if let Event::ConnectBlock { block_info, .. } = &event {
+                    clear_confirmed_deposit_slots(
+                        &mut validator.seen_deposit_txs.write(),
+                        block_info,
+                    );
+                }
                 // Events should only ever be sent after committing DB txs, see
                 // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
                 let _send_err: Result<Option<_>, TrySendError<_>> =
@@ -443,53 +540,65 @@ impl CusfEnforcer for Validator {
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
         let handler = BlockHandler::new(&self.dbs, self.network);
-        let res = if handler.validate_tx(&mut rwtxn, tx)? {
-            let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
-                let txid = tx.compute_txid();
-                let conflicts_with = {
-                    let mut seen_bmm_request_txs = self
-                        .dbs
-                        .block_hashes
-                        .get_seen_bmm_requests(
-                            &rwtxn,
-                            bmm_request.prev_mainchain_block_hash,
-                            bmm_request.sidechain_number,
-                        )?
-                        .into_values()
-                        .flatten()
-                        .collect::<HashSet<_>>();
-                    seen_bmm_request_txs.remove(&txid);
-                    seen_bmm_request_txs
-                };
-                let () = self
-                    .dbs
-                    .block_hashes
-                    .put_seen_bmm_request(
-                        &mut rwtxn,
-                        bmm_request.prev_mainchain_block_hash,
-                        bmm_request.sidechain_number,
-                        txid,
-                        bmm_request.sidechain_block_hash,
-                    )
-                    .map_err(db::Error::from)?;
-                rwtxn.commit()?;
-                // Size in bytes of a BMM accept output
-                const BMM_ACCEPT_OUTPUT_SIZE: i64 = {
-                    let spk_size: i64 = 39;
-                    spk_size + 1 + 8
-                };
-                (conflicts_with, BMM_ACCEPT_OUTPUT_SIZE)
-            } else {
-                (HashSet::new(), 0)
+        if !handler.validate_tx(&mut rwtxn, tx)? {
+            return Ok(TxAcceptAction::Reject);
+        }
+        let txid = tx.compute_txid();
+        let mut conflicts_with = HashSet::new();
+        let mut weight_tweak = 0;
+        if let Some(bmm_request) = parse_m8_tx(tx) {
+            let mut seen_bmm_request_txs = self
+                .dbs
+                .block_hashes
+                .get_seen_bmm_requests(
+                    &rwtxn,
+                    bmm_request.prev_mainchain_block_hash,
+                    bmm_request.sidechain_number,
+                )?
+                .into_values()
+                .flatten()
+                .collect::<HashSet<_>>();
+            seen_bmm_request_txs.remove(&txid);
+            conflicts_with.extend(seen_bmm_request_txs);
+            let () = self
+                .dbs
+                .block_hashes
+                .put_seen_bmm_request(
+                    &mut rwtxn,
+                    bmm_request.prev_mainchain_block_hash,
+                    bmm_request.sidechain_number,
+                    txid,
+                    bmm_request.sidechain_block_hash,
+                )
+                .map_err(db::Error::from)?;
+            // Size in bytes of a BMM accept output
+            const BMM_ACCEPT_OUTPUT_SIZE: i64 = {
+                let spk_size: i64 = 39;
+                spk_size + 1 + 8
             };
-            TxAcceptAction::Accept {
-                conflicts_with,
-                weight_tweak,
+            weight_tweak = BMM_ACCEPT_OUTPUT_SIZE;
+        }
+        {
+            let mut seen_deposit_txs = self.seen_deposit_txs.write();
+            // A deposit competing with another for the same treasury can never
+            // be mined alongside it, so reject it rather than letting the block
+            // template contain two. Dropping the open rwtxn here also discards
+            // any BMM tracking above, which is correct since the tx is rejected.
+            if let Some(competitor) =
+                track_deposit_tx(&self.dbs, &rwtxn, &mut seen_deposit_txs, tx, txid)?
+            {
+                tracing::debug!(
+                    %txid, %competitor,
+                    "rejecting deposit: competes with an existing deposit for the same treasury"
+                );
+                return Ok(TxAcceptAction::Reject);
             }
-        } else {
-            TxAcceptAction::Reject
-        };
-        Ok(res)
+        }
+        rwtxn.commit()?;
+        Ok(TxAcceptAction::Accept {
+            conflicts_with,
+            weight_tweak,
+        })
     }
 }
 
@@ -521,5 +630,260 @@ pub(crate) fn get_ctips_after(
     {
         Ok(ctips) => Ok(Ok(ctips?)),
         Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{Amount, OutPoint, TxIn, TxOut, hashes::Hash as _};
+    use miette::{IntoDiagnostic, Result};
+
+    use super::*;
+    use crate::{
+        messages::create_m5_deposit_output,
+        types::{BmmCommitments, Deposit},
+        validator::test_utils::{create_test_dbs, test_m6id, test_sidechain},
+    };
+
+    const ACTIVE_SLOT: SidechainNumber = SidechainNumber(1);
+
+    /// A tx with a treasury (OP_DRIVECHAIN) output for the given slot,
+    /// spending `input` to make the txid unique
+    fn treasury_tx(slot: SidechainNumber, input: u8) -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_byte_array([input; 32]),
+                    vout: 0,
+                },
+                ..TxIn::default()
+            }],
+            output: vec![create_m5_deposit_output(
+                slot,
+                Amount::ZERO,
+                Amount::from_sat(1_000),
+            )],
+        }
+    }
+
+    /// Run the tracker; returns the competing deposit if `tx` must be rejected,
+    /// or `None` if it was recorded.
+    fn track(
+        dbs: &Dbs,
+        rotxn: &RoTxn,
+        seen: &mut HashMap<SidechainNumber, Txid>,
+        tx: &Transaction,
+    ) -> Result<Option<Txid>> {
+        track_deposit_tx(dbs, rotxn, seen, tx, tx.compute_txid()).into_diagnostic()
+    }
+
+    /// A treasury (OP_DRIVECHAIN) deposit for `slot` that spends `parent`'s
+    /// (non-treasury) output — i.e. a deposit funded from a competing deposit's
+    /// change.
+    fn child_treasury_tx(slot: SidechainNumber, parent: Txid) -> Transaction {
+        Transaction {
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: parent,
+                    vout: 1,
+                },
+                ..TxIn::default()
+            }],
+            ..treasury_tx(slot, 0)
+        }
+    }
+
+    fn block_info(events: Vec<BlockEvent>) -> BlockInfo {
+        BlockInfo {
+            bmm_commitments: BmmCommitments::new(),
+            coinbase_txid: Txid::all_zeros(),
+            events,
+        }
+    }
+
+    fn deposits_event(slot: SidechainNumber) -> BlockEvent {
+        let deposit = Deposit {
+            sequence_number: 0,
+            outpoint: OutPoint::default(),
+            address: Vec::new(),
+            value: Amount::from_sat(1_000),
+        };
+        BlockEvent::Deposits(HashMap::from([(slot, deposit)]))
+    }
+
+    fn withdrawal_bundle_event(
+        slot: SidechainNumber,
+        kind: WithdrawalBundleEventKind,
+    ) -> BlockEvent {
+        BlockEvent::WithdrawalBundle(WithdrawalBundleEvent {
+            sidechain_id: slot,
+            m6id: test_m6id(0x33),
+            kind,
+        })
+    }
+
+    #[test]
+    fn competing_deposit_is_rejected() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let other_slot = SidechainNumber(2);
+        for slot in [ACTIVE_SLOT, other_slot] {
+            dbs.active_sidechains
+                .put_sidechain(&mut rwtxn, &slot, &test_sidechain(slot.0, 0))
+                .into_diagnostic()?;
+        }
+        let mut seen = HashMap::new();
+
+        let tx1 = treasury_tx(ACTIVE_SLOT, 1);
+        let tx1_txid = tx1.compute_txid();
+        let sibling = treasury_tx(ACTIVE_SLOT, 2);
+        let child = child_treasury_tx(ACTIVE_SLOT, tx1_txid);
+        let other_slot_tx = treasury_tx(other_slot, 3);
+
+        assert_eq!(
+            track(&dbs, &rwtxn, &mut seen, &tx1)?,
+            None,
+            "the first deposit into a treasury is accepted"
+        );
+        assert_eq!(
+            track(&dbs, &rwtxn, &mut seen, &tx1)?,
+            None,
+            "re-accepting the same deposit is not a conflict"
+        );
+        assert_eq!(
+            track(&dbs, &rwtxn, &mut seen, &other_slot_tx)?,
+            None,
+            "a deposit into a different treasury is accepted"
+        );
+        assert_eq!(
+            track(&dbs, &rwtxn, &mut seen, &sibling)?,
+            Some(tx1_txid),
+            "an independent deposit competing for the same treasury is rejected"
+        );
+        assert_eq!(
+            track(&dbs, &rwtxn, &mut seen, &child)?,
+            Some(tx1_txid),
+            "a competing deposit funded from the first's change is rejected"
+        );
+        assert_eq!(
+            seen.get(&ACTIVE_SLOT).copied(),
+            Some(tx1_txid),
+            "rejected competitors must not be recorded"
+        );
+        assert_eq!(
+            seen.get(&other_slot).copied(),
+            Some(other_slot_tx.compute_txid())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inactive_slot_and_plain_txs_are_ignored() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rwtxn = dbs.write_txn().into_diagnostic()?;
+        let inactive_slot = SidechainNumber(42);
+        let mut seen = HashMap::new();
+
+        let tx1 = treasury_tx(inactive_slot, 1);
+        let tx2 = treasury_tx(inactive_slot, 2);
+        let plain_tx = Transaction {
+            output: vec![TxOut {
+                script_pubkey: bitcoin::ScriptBuf::new(),
+                value: Amount::from_sat(1_000),
+            }],
+            ..treasury_tx(inactive_slot, 3)
+        };
+
+        for tx in [&tx1, &tx2, &plain_tx] {
+            assert_eq!(
+                track(&dbs, &rwtxn, &mut seen, tx)?,
+                None,
+                "txs for inactive slots or without treasury outputs are accepted"
+            );
+        }
+        assert!(
+            !seen.contains_key(&inactive_slot),
+            "txs for an inactive slot must not be recorded"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn confirmed_deposit_slot_is_cleared() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let other_slot = SidechainNumber(2);
+        for slot in [ACTIVE_SLOT, other_slot] {
+            dbs.active_sidechains
+                .put_sidechain(&mut rwtxn, &slot, &test_sidechain(slot.0, 0))
+                .into_diagnostic()?;
+        }
+        let mut seen = HashMap::new();
+
+        let tx1 = treasury_tx(ACTIVE_SLOT, 1);
+        let other_slot_tx = treasury_tx(other_slot, 3);
+        track(&dbs, &rwtxn, &mut seen, &tx1)?;
+        track(&dbs, &rwtxn, &mut seen, &other_slot_tx)?;
+
+        clear_confirmed_deposit_slots(&mut seen, &block_info(vec![deposits_event(ACTIVE_SLOT)]));
+        assert!(
+            !seen.contains_key(&ACTIVE_SLOT),
+            "the updated treasury's recorded deposit must be cleared"
+        );
+        assert_eq!(
+            seen.get(&other_slot).copied(),
+            Some(other_slot_tx.compute_txid()),
+            "other treasuries must be unaffected"
+        );
+
+        // With the slot cleared, a subsequent deposit into it is accepted.
+        let tx2 = treasury_tx(ACTIVE_SLOT, 2);
+        assert_eq!(track(&dbs, &rwtxn, &mut seen, &tx2)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn deposit_slot_only_cleared_on_successful_withdrawal_bundle() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &ACTIVE_SLOT, &test_sidechain(ACTIVE_SLOT.0, 0))
+            .into_diagnostic()?;
+        let mut seen = HashMap::new();
+
+        let tx = treasury_tx(ACTIVE_SLOT, 1);
+        let tx_txid = tx.compute_txid();
+        track(&dbs, &rwtxn, &mut seen, &tx)?;
+
+        for kind in [
+            WithdrawalBundleEventKind::Submitted,
+            WithdrawalBundleEventKind::Failed,
+        ] {
+            clear_confirmed_deposit_slots(
+                &mut seen,
+                &block_info(vec![withdrawal_bundle_event(ACTIVE_SLOT, kind)]),
+            );
+            assert_eq!(
+                seen.get(&ACTIVE_SLOT).copied(),
+                Some(tx_txid),
+                "a bundle event that does not spend the treasury must not clear the deposit"
+            );
+        }
+
+        let succeeded = WithdrawalBundleEventKind::Succeeded {
+            sequence_number: 0,
+            transaction: treasury_tx(ACTIVE_SLOT, 2),
+        };
+        clear_confirmed_deposit_slots(
+            &mut seen,
+            &block_info(vec![withdrawal_bundle_event(ACTIVE_SLOT, succeeded)]),
+        );
+        assert!(
+            !seen.contains_key(&ACTIVE_SLOT),
+            "a successful bundle spends the treasury and must clear the deposit"
+        );
+        Ok(())
     }
 }

@@ -1006,7 +1006,7 @@ impl BlockHandler<'_> {
         &self,
         rwtxn: &mut RwTxn,
         block: &Block,
-    ) -> Result<Event, error::ConnectBlock> {
+    ) -> Result<(HeaderInfo, BlockInfo), error::ConnectBlock> {
         let dbs = self.dbs;
         let parent = block.header.prev_blockhash;
 
@@ -1218,20 +1218,14 @@ impl BlockHandler<'_> {
             dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
             tracing::trace!("updated current chain tip: {}", height);
         }
-        let event = {
-            let header_info = HeaderInfo {
-                block_hash,
-                prev_block_hash: prev_mainchain_block_hash,
-                height,
-                work: block.header.work(),
-                timestamp: block.header.time,
-            };
-            Event::ConnectBlock {
-                header_info,
-                block_info,
-            }
+        let header_info = HeaderInfo {
+            block_hash,
+            prev_block_hash: prev_mainchain_block_hash,
+            height,
+            work: block.header.work(),
+            timestamp: block.header.time,
         };
-        Ok(event)
+        Ok((header_info, block_info))
     }
 
     // TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
@@ -1568,58 +1562,49 @@ impl BlockHandler<'_> {
             // We should not call out to `invalidateblock` in case of failures here,
             // as that is handled by the cusf-enforcer-mempool crate.
             // FIXME: handle disconnects
-            let event = self.connect_block(rwtxn, block)?;
+            let (header_info, block_info) = self.connect_block(rwtxn, block)?;
 
             let connect_block_duration =
                 jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
 
-            // Create dynamic fields using a HashMap for structured logging
-            match &event {
-                Event::ConnectBlock {
-                    header_info,
-                    block_info,
-                } => {
-                    // Keep all the blocks at info level in the beginning,
-                    // and then taper off into less log noise
-                    let log_interval = match header_info.height {
-                        0..=999 => 1,
-                        1000..=9999 => 10,
-                        10_000..=99_999 => 100,
-                        100_000.. => 1000,
-                    };
+            // Keep all the blocks at info level in the beginning,
+            // and then taper off into less log noise
+            let log_interval = match header_info.height {
+                0..=999 => 1,
+                1000..=9999 => 10,
+                10_000..=99_999 => 100,
+                100_000.. => 1000,
+            };
 
-                    total_txs += block.txdata.len();
-                    total_bmm_commitments += block_info.bmm_commitments.len();
-                    total_events += block_info.events.len();
+            total_txs += block.txdata.len();
+            total_bmm_commitments += block_info.bmm_commitments.len();
+            total_events += block_info.events.len();
 
-                    // Apparently it isn't possible to do dynamic levels? wtf
-                    // https://github.com/tokio-rs/tracing/issues/2730
-                    if header_info.height % log_interval == 0 {
-                        tracing::info!(
-                            total_txs = block.txdata.len(),
-                            bmm_commitments = block_info.bmm_commitments.len(),
-                            sc_events = block_info.events.len(),
-                            "Synced block #{}: `{}` in {connect_block_duration}",
-                            header_info.height,
-                            header_info.block_hash,
-                        );
-                    } else {
-                        tracing::debug!(
-                            total_txs = block.txdata.len(),
-                            bmm_commitments = block_info.bmm_commitments.len(),
-                            sc_events = block_info.events.len(),
-                            "Synced block #{}: `{}` in {connect_block_duration}",
-                            header_info.height,
-                            header_info.block_hash,
-                        );
-                    };
-                }
-                Event::DisconnectBlock { block_hash } => {
-                    tracing::debug!(
-                        "Disconnected block: `{block_hash}` in {connect_block_duration}",
-                    );
-                }
-            }
+            // Apparently it isn't possible to do dynamic levels? wtf
+            // https://github.com/tokio-rs/tracing/issues/2730
+            if header_info.height % log_interval == 0 {
+                tracing::info!(
+                    total_txs = block.txdata.len(),
+                    bmm_commitments = block_info.bmm_commitments.len(),
+                    sc_events = block_info.events.len(),
+                    "Synced block #{}: `{}` in {connect_block_duration}",
+                    header_info.height,
+                    header_info.block_hash,
+                );
+            } else {
+                tracing::debug!(
+                    total_txs = block.txdata.len(),
+                    bmm_commitments = block_info.bmm_commitments.len(),
+                    sc_events = block_info.events.len(),
+                    "Synced block #{}: `{}` in {connect_block_duration}",
+                    header_info.height,
+                    header_info.block_hash,
+                );
+            };
+            let event = Event::ConnectBlock {
+                header_info,
+                block_info,
+            };
             // Events should only ever be sent after committing DB txs, see
             // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
             let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
