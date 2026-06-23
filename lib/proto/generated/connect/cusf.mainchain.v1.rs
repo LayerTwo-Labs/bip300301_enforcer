@@ -120,6 +120,18 @@ pub type OwnedGetTwoWayPegDataResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<GetWithdrawalBundleProposalsRequestView<'static>>`.
+pub type OwnedGetWithdrawalBundleProposalsRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetWithdrawalBundleProposalsResponseView<'static>>`.
+pub type OwnedGetWithdrawalBundleProposalsResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsResponseView<
+        'static,
+    >,
+>;
 ///Shorthand for `OwnedView<SubscribeEventsRequestView<'static>>`.
 pub type OwnedSubscribeEventsRequestView = ::buffa::view::OwnedView<
     crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SubscribeEventsRequestView<
@@ -437,6 +449,34 @@ for ::buffa::view::OwnedView<
     }
 }
 impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
     crate::proto::generated::buffa::cusf::mainchain::v1::SubscribeEventsResponse,
 >
 for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SubscribeEventsResponseView<
@@ -609,6 +649,15 @@ pub const VALIDATOR_SERVICE_GET_SIDECHAINS_SPEC: ::connectrpc::Spec = ::connectr
 /// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
 pub const VALIDATOR_SERVICE_GET_TWO_WAY_PEG_DATA_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
         "/cusf.mainchain.v1.ValidatorService/GetTwoWayPegData",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `GetWithdrawalBundleProposals` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const VALIDATOR_SERVICE_GET_WITHDRAWAL_BUNDLE_PROPOSALS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.ValidatorService/GetWithdrawalBundleProposals",
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
@@ -920,6 +969,29 @@ pub trait ValidatorService: Send + Sync + 'static {
         Output = ::connectrpc::ServiceResult<
             impl ::connectrpc::Encodable<
                 crate::proto::generated::buffa::cusf::mainchain::v1::GetTwoWayPegDataResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the GetWithdrawalBundleProposals RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn get_withdrawal_bundle_proposals<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsResponse,
             > + Send + use<'a, Self>,
         >,
     > + Send;
@@ -1313,6 +1385,35 @@ impl<S: ValidatorService> ValidatorServiceExt for S {
                 },
             )
             .with_spec(VALIDATOR_SERVICE_GET_TWO_WAY_PEG_DATA_SPEC)
+            .route_view_idempotent(
+                VALIDATOR_SERVICE_SERVICE_NAME,
+                "GetWithdrawalBundleProposals",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.get_withdrawal_bundle_proposals(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(VALIDATOR_SERVICE_GET_WITHDRAWAL_BUNDLE_PROPOSALS_SPEC)
             .route_view_server_stream::<
                 _,
                 _,
@@ -1501,6 +1602,14 @@ impl<T: ValidatorService> ::connectrpc::Dispatcher for ValidatorServiceServer<T>
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
                         .with_spec(VALIDATOR_SERVICE_GET_TWO_WAY_PEG_DATA_SPEC),
+                )
+            }
+            "GetWithdrawalBundleProposals" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(
+                            VALIDATOR_SERVICE_GET_WITHDRAWAL_BUNDLE_PROPOSALS_SPEC,
+                        ),
                 )
             }
             "SubscribeEvents" => {
@@ -1743,6 +1852,27 @@ impl<T: ValidatorService> ::connectrpc::Dispatcher for ValidatorServiceServer<T>
                         .await?
                         .encode::<
                             crate::proto::generated::buffa::cusf::mainchain::v1::GetTwoWayPegDataResponse,
+                        >(format)
+                })
+            }
+            "GetWithdrawalBundleProposals" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsRequest,
+                    >::from_parts(&req, &body);
+                    svc.get_withdrawal_bundle_proposals(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsResponse,
                         >(format)
                 })
             }
@@ -2386,6 +2516,51 @@ where
                 &self.config,
                 VALIDATOR_SERVICE_SERVICE_NAME,
                 "GetTwoWayPegData",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the GetWithdrawalBundleProposals RPC. Sends a request to /cusf.mainchain.v1.ValidatorService/GetWithdrawalBundleProposals.
+    pub async fn get_withdrawal_bundle_proposals(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.get_withdrawal_bundle_proposals_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GetWithdrawalBundleProposals RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn get_withdrawal_bundle_proposals_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundleProposalsRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundleProposalsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                VALIDATOR_SERVICE_SERVICE_NAME,
+                "GetWithdrawalBundleProposals",
                 request,
                 options,
             )
