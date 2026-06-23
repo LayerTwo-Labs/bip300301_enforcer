@@ -195,7 +195,7 @@ impl BlockHandler<'_> {
         height: u32,
         sidechain_number: SidechainNumber,
         description_hash: sha256d::Hash,
-    ) -> Result<Option<diff::AckSidechain>, error::HandleM2AckSidechain> {
+    ) -> Result<Option<diff::AckSidechainProposal>, error::HandleM2AckSidechain> {
         let dbs = self.dbs;
         let thresholds = self.thresholds;
         let proposal_id = SidechainProposalId {
@@ -213,15 +213,11 @@ impl BlockHandler<'_> {
         };
         sidechain.status.vote_count += 1;
         tracing::debug!(
-        %sidechain_number,
-        %description_hash,
-        vote_count = %sidechain.status.vote_count,
-        "ACK'd sidechain proposal");
-        let mut diff = diff::AckSidechain {
-            id: proposal_id,
-            activated: false,
-            replaced_active: None,
-        };
+            %sidechain_number,
+            %description_hash,
+            vote_count = %sidechain.status.vote_count,
+            "ACK'd sidechain proposal",
+        );
 
         let sidechain_proposal_age = height - sidechain.status.proposal_height;
 
@@ -246,12 +242,19 @@ impl BlockHandler<'_> {
                     <= thresholds.unused_sidechain_slot_proposal_max_age as u32
         };
 
-        if new_sidechain_activated {
-            diff.activated = true;
-            // Record the sidechain this activation will overwrite (if the slot
-            // was already in use) so a disconnect restores it.
-            diff.replaced_active = existing_active_sidechain;
-        }
+        let effect = if new_sidechain_activated {
+            if let Some(replaced) = existing_active_sidechain {
+                diff::ack_sidechain_proposal::Effect::ReplaceActive(replaced)
+            } else {
+                diff::ack_sidechain_proposal::Effect::SlotActivation
+            }
+        } else {
+            diff::ack_sidechain_proposal::Effect::NoActivation
+        };
+        let diff = diff::AckSidechainProposal {
+            id: proposal_id,
+            effect,
+        };
         Ok(Some(diff))
     }
 
@@ -892,7 +895,7 @@ impl BlockHandler<'_> {
                 );
                 let diff = self
                     .handle_m2_ack_sidechain(rotxn, height, sidechain_number, description_hash)?
-                    .map(diff::CoinbaseMsg::AckSidechain);
+                    .map(diff::CoinbaseMsg::AckSidechainProposal);
                 Ok((None, diff))
             }
             CoinbaseMessage::M3ProposeBundle(M3ProposeBundle {
@@ -2475,7 +2478,7 @@ mod tests {
             .handle_m2_ack_sidechain(&rwtxn, 1, slot, id_b.description_hash)
             .into_diagnostic()?
             .expect("ack should produce a diff");
-        assert!(diff.activated, "B should activate over the used slot");
+        assert!(diff.activated(), "B should activate over the used slot");
         diff.apply(&mut rwtxn, &dbs, 1).into_diagnostic()?;
         assert_eq!(
             dbs.active_sidechains
@@ -2529,7 +2532,7 @@ mod tests {
             )
             .into_diagnostic()?
             .expect("M2 for known proposal must produce a diff");
-        assert!(!diff.activated, "1 vote should not activate");
+        assert!(!diff.activated(), "1 vote should not activate");
 
         sidechain.status.vote_count = activation_threshold;
         dbs.proposal_id_to_sidechain
@@ -2545,7 +2548,7 @@ mod tests {
             .into_diagnostic()?
             .expect("M2 for known proposal must produce a diff");
         assert!(
-            diff.activated,
+            diff.activated(),
             "vote_count > threshold within max age should activate"
         );
 
@@ -2562,7 +2565,7 @@ mod tests {
             .into_diagnostic()?
             .expect("M2 for known proposal must produce a diff");
         assert!(
-            !diff.activated,
+            !diff.activated(),
             "proposal exceeding max age should not activate"
         );
         Ok(())

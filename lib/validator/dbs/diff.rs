@@ -88,90 +88,129 @@ impl Diff for NewSidechainProposal {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[must_use]
-pub struct AckSidechain {
-    pub id: SidechainProposalId,
-    /// true IFF the sidechain should be activated due to this ack causing the
-    /// proposal to reach the vote threshold
-    pub activated: bool,
-    /// When `activated` and the slot was *already* occupied by an active
-    /// sidechain, that prior sidechain (which `apply` overwrites). `undo` must
-    /// restore it instead of deleting the slot, otherwise a reorg of the
-    /// activating block permanently deletes the previously-active sidechain.
-    /// `serde(default)` keeps diffs stored before this field was added readable.
-    #[serde(default)]
-    pub replaced_active: Option<Sidechain>,
-}
+pub mod ack_sidechain_proposal {
+    use serde::{Deserialize, Serialize};
+    use sneed::{DbError, RwTxn};
 
-impl Diff for AckSidechain {
-    type Dbs = dbs::Dbs;
-    type ApplyError = db::Error;
-    type UndoError = UndoError;
+    use crate::validator::{
+        SidechainProposalId,
+        dbs::{self, diff},
+    };
 
-    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
-        let mut sidechain = dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?;
-        sidechain.status.vote_count += 1;
-        if self.activated {
-            sidechain.status.activation_height = Some(height);
-            tracing::info!(
-                "sidechain {} in slot {} was activated",
-                String::from_utf8_lossy(&sidechain.proposal.description.0),
-                self.id.sidechain_number.0
-            );
-            let () = dbs.active_sidechains.put_sidechain(
-                rwtxn,
-                &self.id.sidechain_number,
-                &sidechain,
-            )?;
-            let _ = dbs.proposal_id_to_sidechain.delete(rwtxn, &self.id)?;
-        } else {
-            dbs.proposal_id_to_sidechain
-                .put(rwtxn, &self.id, &sidechain)?;
-        }
-        Ok(())
+    /// Effect of a sidechain proposal ack
+    #[derive(Debug, Deserialize, Serialize)]
+    #[must_use]
+    pub enum Effect {
+        /// No sidechain activation
+        NoActivation,
+        /// Replace active sidechain
+        ReplaceActive(crate::types::Sidechain),
+        /// Activation in an unoccupied slot
+        SlotActivation,
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
-        let mut sidechain = if self.activated {
-            let mut sidechain = dbs
-                .active_sidechains
-                .sidechain()
-                .get(rwtxn, &self.id.sidechain_number)?;
-            match &self.replaced_active {
-                // `apply` overwrote an already-active sidechain in this slot;
-                // restore it (leaving its pending_m6ids, which `apply` did not
-                // touch) instead of deleting the slot.
-                Some(prev) => {
+    impl Effect {
+        /// Returns `true` if a new sidechain was activated
+        #[cfg(test)]
+        pub fn activated(&self) -> bool {
+            match self {
+                Self::NoActivation => false,
+                Self::ReplaceActive(_) | Self::SlotActivation => true,
+            }
+        }
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct Diff {
+        pub id: SidechainProposalId,
+        pub effect: Effect,
+    }
+
+    impl Diff {
+        /// Returns `true` if a new sidechain was activated
+        #[cfg(test)]
+        #[inline(always)]
+        pub fn activated(&self) -> bool {
+            self.effect.activated()
+        }
+    }
+
+    impl diff::Diff for Diff {
+        type Dbs = dbs::Dbs;
+        type ApplyError = DbError;
+        type UndoError = diff::UndoError;
+
+        fn apply(
+            &self,
+            rwtxn: &mut RwTxn,
+            dbs: &Self::Dbs,
+            height: u32,
+        ) -> Result<(), Self::ApplyError> {
+            let mut sidechain = dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?;
+            sidechain.status.vote_count += 1;
+            match self.effect {
+                Effect::NoActivation => {
+                    dbs.proposal_id_to_sidechain
+                        .put(rwtxn, &self.id, &sidechain)?;
+                }
+                Effect::SlotActivation | Effect::ReplaceActive(_) => {
+                    sidechain.status.activation_height = Some(height);
+                    tracing::info!(
+                        "sidechain {} in slot {} was activated",
+                        String::from_utf8_lossy(&sidechain.proposal.description.0),
+                        self.id.sidechain_number.0
+                    );
+                    let () = dbs.active_sidechains.put_sidechain(
+                        rwtxn,
+                        &self.id.sidechain_number,
+                        &sidechain,
+                    )?;
+                    let _ = dbs.proposal_id_to_sidechain.delete(rwtxn, &self.id)?;
+                }
+            }
+            Ok(())
+        }
+
+        fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), Self::UndoError> {
+            let mut sidechain = match &self.effect {
+                Effect::NoActivation => dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?,
+                Effect::ReplaceActive(prev) => {
+                    let mut sidechain = dbs
+                        .active_sidechains
+                        .sidechain()
+                        .get(rwtxn, &self.id.sidechain_number)?;
                     let () = dbs.active_sidechains.put_sidechain(
                         rwtxn,
                         &self.id.sidechain_number,
                         prev,
                     )?;
+                    sidechain.status.activation_height = None;
+                    sidechain
                 }
-                // The slot was empty before activation; `apply` created it, so
-                // undo removes it entirely.
-                None => {
+                Effect::SlotActivation => {
+                    let mut sidechain = dbs
+                        .active_sidechains
+                        .sidechain()
+                        .get(rwtxn, &self.id.sidechain_number)?;
                     let () = dbs
                         .active_sidechains
                         .delete_sidechain(rwtxn, &self.id.sidechain_number)?;
+                    sidechain.status.activation_height = None;
+                    sidechain
                 }
-            }
-            sidechain.status.activation_height = None;
-            sidechain
-        } else {
-            dbs.proposal_id_to_sidechain.get(rwtxn, &self.id)?
-        };
-        sidechain.status.vote_count = sidechain.status.vote_count.checked_sub(1).ok_or(
-            UndoError::SidechainVoteCountUnderflow {
-                sidechain_number: self.id.sidechain_number,
-            },
-        )?;
-        dbs.proposal_id_to_sidechain
-            .put(rwtxn, &self.id, &sidechain)?;
-        Ok(())
+            };
+            sidechain.status.vote_count = sidechain.status.vote_count.checked_sub(1).ok_or(
+                Self::UndoError::SidechainVoteCountUnderflow {
+                    sidechain_number: self.id.sidechain_number,
+                },
+            )?;
+            dbs.proposal_id_to_sidechain
+                .put(rwtxn, &self.id, &sidechain)?;
+            Ok(())
+        }
     }
 }
+pub use ack_sidechain_proposal::Diff as AckSidechainProposal;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[must_use]
@@ -311,7 +350,7 @@ impl Diff for AckBundles {
 #[must_use]
 pub enum CoinbaseMsg {
     AckBundles(AckBundles),
-    AckSidechain(AckSidechain),
+    AckSidechainProposal(AckSidechainProposal),
     NewSidechainProposal(NewSidechainProposal),
     ProposeBundle(ProposeBundle),
 }
@@ -326,7 +365,7 @@ impl Diff for CoinbaseMsg {
             Self::AckBundles(diff) => {
                 let () = diff.apply(rwtxn, &dbs.active_sidechains, height)?;
             }
-            Self::AckSidechain(diff) => {
+            Self::AckSidechainProposal(diff) => {
                 let () = diff.apply(rwtxn, dbs, height)?;
             }
             Self::NewSidechainProposal(diff) => {
@@ -344,7 +383,7 @@ impl Diff for CoinbaseMsg {
             Self::AckBundles(diff) => {
                 let () = diff.undo(rwtxn, &dbs.active_sidechains)?;
             }
-            Self::AckSidechain(diff) => {
+            Self::AckSidechainProposal(diff) => {
                 let () = diff.undo(rwtxn, dbs)?;
             }
             Self::NewSidechainProposal(diff) => {
@@ -707,15 +746,18 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use miette::{IntoDiagnostic, Result};
+    use sneed::RoTxn;
 
-    use super::*;
     use crate::{
-        types::SidechainNumber,
-        validator::test_utils::{create_test_dbs, test_m6id, test_sidechain},
+        types::{M6id, SidechainNumber},
+        validator::{
+            dbs::diff::{self, Diff as _, UndoError},
+            test_utils::{create_test_dbs, test_m6id, test_sidechain},
+        },
     };
 
     #[test]
-    fn ack_sidechain_apply_undo_roundtrip_and_underflow_error() -> Result<()> {
+    fn ack_sidechain_proposal_apply_undo_roundtrip_and_underflow_error() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
 
@@ -725,10 +767,9 @@ mod tests {
             .put(&mut rwtxn, &proposal_id, &sidechain)
             .into_diagnostic()?;
 
-        let diff = AckSidechain {
+        let diff = diff::AckSidechainProposal {
             id: proposal_id,
-            activated: false,
-            replaced_active: None,
+            effect: diff::ack_sidechain_proposal::Effect::NoActivation,
         };
 
         diff.apply(&mut rwtxn, &dbs, 101).into_diagnostic()?;
@@ -778,10 +819,10 @@ mod tests {
                 .put_pending_m6id(&mut rwtxn, &sc, m, 0)
                 .into_diagnostic()?;
         }
-        let order = |rwtxn: &RoTxn| -> Vec<M6id> {
+        let order = |rotxn: &RoTxn| -> Vec<M6id> {
             dbs.active_sidechains
                 .pending_m6ids()
-                .get(rwtxn, &sc)
+                .get(rotxn, &sc)
                 .unwrap()
                 .keys()
                 .copied()
@@ -790,7 +831,7 @@ mod tests {
         assert_eq!(order(&rwtxn), vec![a, b, c]);
 
         // A successful M6 withdraws the middle bundle b (index 1).
-        let m6 = M6 {
+        let m6 = diff::M6 {
             sidechain_number: sc,
             new_ctip: Ctip {
                 outpoint: bitcoin::OutPoint::null(),
@@ -826,11 +867,11 @@ mod tests {
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
             .into_diagnostic()?;
 
-        let diff = AckBundles({
+        let diff = diff::AckBundles({
             let mut map = HashMap::new();
             map.insert(
                 sc,
-                AckBundleAction::Upvote {
+                diff::AckBundleAction::Upvote {
                     m6id,
                     downvoted_others: Vec::new(),
                 },
@@ -887,11 +928,11 @@ mod tests {
                 .into_diagnostic()?;
         }
 
-        let diff = AckBundles({
+        let diff = diff::AckBundles({
             let mut map = HashMap::new();
             map.insert(
                 sc,
-                AckBundleAction::Alarm {
+                diff::AckBundleAction::Alarm {
                     positive_votes_proposals: HashSet::from([m6id_a, m6id_b]),
                 },
             );
@@ -948,11 +989,11 @@ mod tests {
             })
             .into_diagnostic()?;
 
-        let upvote_diff = AckBundles({
+        let upvote_diff = diff::AckBundles({
             let mut map = HashMap::new();
             map.insert(
                 sc,
-                AckBundleAction::Upvote {
+                diff::AckBundleAction::Upvote {
                     m6id,
                     downvoted_others: Vec::new(),
                 },
