@@ -16,13 +16,14 @@ use crate::{
             GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
             GetCoinbasePSBTRequest, GetCoinbasePSBTResponse, GetCtipRequest, GetCtipResponse,
             GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, Network,
+            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
+            GetWithdrawalBundleProposalsRequest, GetWithdrawalBundleProposalsResponse, Network,
             StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
             SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
             get_block_info_response, get_bmm_h_star_commitment_response,
             get_chain_info_response::Bip300Constants, get_ctip_response::Ctip,
             get_sidechain_proposals_response::SidechainProposal,
-            get_sidechains_response::SidechainInfo,
+            get_sidechains_response::SidechainInfo, get_withdrawal_bundle_proposals_response,
         },
         mainchain_service::ValidatorService,
         wrap_u32,
@@ -391,6 +392,36 @@ impl ValidatorService for Server {
             .filter_map(|d| d.into_proto(sidechain_id))
             .collect();
         Ok(Response::new(GetTwoWayPegDataResponse { blocks }))
+    }
+
+    async fn get_withdrawal_bundle_proposals(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetWithdrawalBundleProposalsRequest>,
+    ) -> ServiceResult<GetWithdrawalBundleProposalsResponse> {
+        use get_withdrawal_bundle_proposals_response::ResponseItem;
+        let GetWithdrawalBundleProposalsRequest { sidechain_id } = request.to_owned_message();
+        let sidechain_id =
+            parse_sidechain_id::<GetTwoWayPegDataRequest>(sidechain_id, "sidechain_id")?;
+        let proposals = self
+            .validator
+            .get_pending_withdrawals(&sidechain_id)
+            .map_err(internal_err)?
+            .into_iter()
+            .map(|(m6id, info)| {
+                let crate::types::PendingM6idInfo {
+                    vote_count,
+                    proposal_height,
+                } = info;
+                ResponseItem {
+                    m6id: MessageField::some(ConsensusHex::encode(&m6id.0)),
+                    vote_count: MessageField::some((vote_count as u32).into()),
+                    proposal_height: MessageField::some(proposal_height.into()),
+                }
+            })
+            .collect();
+        let resp = GetWithdrawalBundleProposalsResponse { proposals };
+        Ok(Response::new(resp))
     }
 
     async fn subscribe_events(
