@@ -15,7 +15,7 @@ jobs:
     name: Check Prettier
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check Prettier formatting
         uses: actionsx/prettier@v3
@@ -26,7 +26,7 @@ jobs:
     name: Check Generated Proto
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install buf
         uses: bufbuild/buf-action@v1
@@ -51,7 +51,7 @@ jobs:
     name: Check Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # nightly is needed for formatting imports correctly
       - name: Install latest nightly toolchain
@@ -73,7 +73,7 @@ jobs:
     name: Check Clippy (nightly)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Must happen /after/ the checkout step, to pick up the toolchain
       # from the `rust-toolchain.toml` file.
@@ -118,7 +118,7 @@ jobs:
     name: Check unused deps
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
@@ -142,7 +142,7 @@ jobs:
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Parse CI_BITCOIN_CORE_VERSIONS from lib/version.rs
         id: build
@@ -256,7 +256,7 @@ jobs:
           cd ${{ runner.temp }}/electrs
           cargo build --locked --release
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # `rustup` is already installed on GitHub Actions runners, so
       # this reads the content from our `rust-toolchain.toml` file.
@@ -361,7 +361,7 @@ jobs:
       contents: write
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Must happen /after/ the checkout step, to pick up the toolchain
       - run: rustup target add ${{ matrix.name }}
