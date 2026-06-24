@@ -244,7 +244,7 @@ jobs:
 
       - name: Cache electrs binary
         id: cache-electrs
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/electrs/target/release/electrs
           key: electrs-binary-${{ env.ELECTRS_VERSION }}
@@ -285,7 +285,7 @@ jobs:
       - name: Cache grpcurl
         if: matrix.flavor == 'patched'
         id: cache-grpcurl
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/grpcurl-bin
           key: grpcurl-v${{ env.GRPCURL_VERSION }}
