@@ -31,6 +31,14 @@ use crate::{
     types::Thresholds,
 };
 
+/// Age of a sidechain proposal at the given mainchain tip height. A proposal
+/// retained from a previous sync can have a `proposal_height` above the active
+/// tip, so this saturates instead of underflowing, matching the same
+/// computation in `validator::task`.
+fn proposal_age(mainchain_tip_height: u32, proposal_height: u32) -> u32 {
+    mainchain_tip_height.saturating_sub(proposal_height)
+}
+
 #[expect(refining_impl_trait_reachable)]
 impl ValidatorService for Server {
     async fn get_block_header_info(
@@ -331,7 +339,10 @@ impl ValidatorService for Server {
                     )),
                     vote_count: wrap_u32(sidechain.status.vote_count as u32),
                     proposal_height: wrap_u32(sidechain.status.proposal_height),
-                    proposal_age: wrap_u32(mainchain_tip_height - sidechain.status.proposal_height),
+                    proposal_age: wrap_u32(proposal_age(
+                        mainchain_tip_height,
+                        sidechain.status.proposal_height,
+                    )),
                 }
             })
             .collect();
