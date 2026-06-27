@@ -840,3 +840,34 @@ impl Wallet {
         .fuse()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::Amount;
+
+    use crate::{types::AmountUnderflowError, wallet::Wallet};
+
+    #[test]
+    fn new_treasury_value_rejects_bundle_exceeding_treasury() {
+        // A withdrawal bundle whose payout plus fee is larger than the current
+        // treasury must error rather than underflow the treasury subtraction.
+        let value = Amount::from_sat(100_000);
+        let fee = Amount::from_sat(1_000);
+        let payout = Amount::from_sat(200_000);
+        assert!(matches!(
+            Wallet::new_treasury_value(value, fee, payout),
+            Err(AmountUnderflowError)
+        ));
+    }
+
+    #[test]
+    fn new_treasury_value_subtracts_fee_and_payout() {
+        let value = Amount::from_sat(100_000);
+        let fee = Amount::from_sat(1_000);
+        let payout = Amount::from_sat(60_000);
+        assert_eq!(
+            Wallet::new_treasury_value(value, fee, payout).unwrap(),
+            Amount::from_sat(39_000)
+        );
+    }
+}
