@@ -455,3 +455,20 @@ impl ValidatorService for Server {
         Ok(Response::new(StopResponse::default()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::proposal_age;
+
+    #[test]
+    fn proposal_age_saturates_below_tip() {
+        // A proposal retained from a previous sync can sit above the active
+        // tip; its age must saturate to zero rather than underflow.
+        assert_eq!(proposal_age(10, 25), 0);
+    }
+
+    #[test]
+    fn proposal_age_is_tip_minus_proposal_height() {
+        assert_eq!(proposal_age(25, 10), 15);
+    }
+}
