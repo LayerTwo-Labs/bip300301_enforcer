@@ -32,7 +32,7 @@ use crate::{
     bins::{self, CommandExt as _},
     errors::ErrorChain,
     messages::{CoinbaseBuilder, M4AckBundles},
-    types::{Ctip, SidechainAck, SidechainNumber, Thresholds},
+    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, Thresholds},
     wallet::{
         Wallet,
         error::{self, BitcoinCoreRPC},
@@ -228,6 +228,21 @@ impl Wallet {
         Ok(())
     }
 
+    /// Treasury value remaining after a withdrawal bundle spends `fee` and
+    /// `payout`, returning an error instead of underflowing when their sum
+    /// exceeds the current treasury. Mirrors the checked subtraction in
+    /// `BlindedM6::into_m6`.
+    fn new_treasury_value(
+        value: Amount,
+        fee: Amount,
+        payout: Amount,
+    ) -> Result<Amount, AmountUnderflowError> {
+        value
+            .checked_sub(fee)
+            .and_then(|value| value.checked_sub(payout))
+            .ok_or(AmountUnderflowError)
+    }
+
     /// Generate suffix txs for a new block
     pub(in crate::wallet) async fn generate_suffix_txs(
         &self,
@@ -247,7 +262,8 @@ impl Wallet {
                             .get(&sidechain_id)
                             .ok_or_else(|| error::GenerateSuffixTxs::MissingCtip { sidechain_id })?
                     };
-                    let new_value = (value - *blinded_m6.fee()) - *blinded_m6.payout();
+                    let new_value =
+                        Self::new_treasury_value(value, *blinded_m6.fee(), *blinded_m6.payout())?;
                     let m6 = blinded_m6.into_m6(sidechain_id, outpoint, value)?;
                     ctip = Some(Ctip {
                         outpoint: OutPoint {
