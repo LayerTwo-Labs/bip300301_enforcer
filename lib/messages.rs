@@ -1023,6 +1023,34 @@ mod tests {
     }
 
     #[test]
+    fn coinbase_parse_rejects_non_minimal_push() {
+        // A valid M2 message, encoded canonically (the encoder uses a minimal
+        // push), parses.
+        let minimal = ScriptBuf::try_from(M2AckSidechain {
+            sidechain_number: SidechainNumber(0),
+            description_hash: sha256d::Hash::from_byte_array([0x11; 32]),
+        })
+        .unwrap();
+        assert!(CoinbaseMessage::parse(&minimal).is_ok());
+
+        // Re-wrap the same payload with a non-minimal OP_PUSHDATA1 push. The
+        // minimal script is `OP_RETURN <OP_PUSHBYTES_n> <data>`, so the data
+        // follows the two leading bytes.
+        let data = &minimal.as_bytes()[2..];
+        let mut bytes = vec![
+            OP_RETURN.to_u8(),
+            bitcoin::opcodes::all::OP_PUSHDATA1.to_u8(),
+            data.len() as u8,
+        ];
+        bytes.extend_from_slice(data);
+        let non_minimal = ScriptBuf::from_bytes(bytes);
+        assert!(
+            CoinbaseMessage::parse(&non_minimal).is_err(),
+            "non-minimal OP_PUSHDATA1 encoding of a coinbase message must be rejected"
+        );
+    }
+
+    #[test]
     fn test_roundtrip() {
         let declaration = SidechainDeclaration {
             title: "title".to_owned(),
