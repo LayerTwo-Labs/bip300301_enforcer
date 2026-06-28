@@ -2246,6 +2246,55 @@ mod tests {
     }
 
     #[test]
+    fn handle_m5_m6_rejects_deposit_without_address_output() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let old_outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        let old_value = Amount::from_sat(5_000);
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_outpoint,
+                    value: old_value,
+                },
+            )
+            .into_diagnostic()?;
+
+        // A deposit that creates the treasury UTXO but omits the required
+        // address OP_RETURN output. Per BIP300 it must be rejected, not
+        // accepted with an empty address.
+        let treasury_output = create_m5_deposit_output(sc, old_value, Amount::from_sat(3_000));
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: old_outpoint,
+                ..TxIn::default()
+            }],
+            output: vec![treasury_output],
+        };
+
+        assert!(
+            matches!(
+                test_handler(&dbs).handle_m5_m6(&rwtxn, Cow::Borrowed(&tx)),
+                Err(error::HandleM5M6::MissingDepositAddress { sidechain_number })
+                    if sidechain_number == sc
+            ),
+            "M5 deposit without an address OP_RETURN output must be rejected"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn handle_m5_m6_old_ctip_unspent_is_not_fatal() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
