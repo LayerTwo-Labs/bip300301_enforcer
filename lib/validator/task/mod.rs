@@ -1049,7 +1049,9 @@ impl BlockHandler<'_> {
 
         tracing::trace!("starting block processing");
         let height = dbs.block_hashes.height().get(rwtxn, &block.block_hash())?;
-        let coinbase = &block.txdata[0];
+        let Some(coinbase) = block.txdata.first() else {
+            return Err(error::ConnectBlock::NoCoinbase);
+        };
         let mut coinbase_messages = CoinbaseMessages::default();
         // map of sidechain proposals to first vout
         let mut m1_sidechain_proposals = HashMap::new();
