@@ -252,7 +252,9 @@ impl Wallet {
                     ctip = Some(Ctip {
                         outpoint: OutPoint {
                             txid: m6.compute_txid(),
-                            vout: (m6.output.len() - 1) as u32,
+                            // into_m6 places the new treasury output at index 0,
+                            // and the validator requires the CTIP at vout 0.
+                            vout: 0,
                         },
                         value: new_value,
                     });
