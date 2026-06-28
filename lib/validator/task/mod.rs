@@ -1877,7 +1877,7 @@ mod tests {
         deposit_amount: Amount,
     ) -> Transaction {
         let treasury_output =
-            create_m5_deposit_output(sidechain_number, old_ctip_value, deposit_amount);
+            create_m5_deposit_output(sidechain_number, old_ctip_value, deposit_amount).unwrap();
         let address_output = TxOut {
             script_pubkey: ScriptBuf::new_op_return(
                 bitcoin::script::PushBytesBuf::try_from(b"sidechain_address".to_vec()).unwrap(),
@@ -1911,7 +1911,7 @@ mod tests {
                 previous_output: input_outpoint,
                 ..TxIn::default()
             }],
-            output: vec![create_m5_deposit_output(slot, Amount::ZERO, value)],
+            output: vec![create_m5_deposit_output(slot, Amount::ZERO, value).unwrap()],
         }
     }
 

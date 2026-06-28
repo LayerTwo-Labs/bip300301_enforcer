@@ -25,8 +25,8 @@ use crate::{
     errors::ErrorChain,
     proto::{StatusBuilder, ToStatus},
     types::{
-        BmmCommitment, M6id, OP_DRIVECHAIN, SidechainDeclaration, SidechainDescription,
-        SidechainNumber, SidechainProposal, SidechainProposalId,
+        AmountOverflowError, BmmCommitment, M6id, OP_DRIVECHAIN, SidechainDeclaration,
+        SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalId,
     },
 };
 
@@ -827,18 +827,22 @@ pub fn create_m5_deposit_output(
     sidechain_number: SidechainNumber,
     old_ctip_amount: Amount,
     deposit_amount: Amount,
-) -> TxOut {
+) -> Result<TxOut, AmountOverflowError> {
     let script_pubkey = ScriptBuf::from_bytes(vec![
         OP_DRIVECHAIN.to_u8(),
         OP_PUSHBYTES_1.to_u8(),
         sidechain_number.into(),
         OP_TRUE.to_u8(),
     ]);
-    TxOut {
+    // All deposits increase the amount locked in the OP_DRIVECHAIN output; a
+    // checked add rejects an out-of-range deposit value instead of panicking.
+    let value = old_ctip_amount
+        .checked_add(deposit_amount)
+        .ok_or(AmountOverflowError)?;
+    Ok(TxOut {
         script_pubkey,
-        // All deposits INCREASE the amount locked in the OP_DRIVECHAIN output.
-        value: old_ctip_amount + deposit_amount,
-    }
+        value,
+    })
 }
 
 pub fn create_op_return_output<Msg>(
@@ -1226,7 +1230,8 @@ mod tests {
     #[test]
     fn create_m5_deposit_output_value_and_script() -> miette::Result<()> {
         let sc = SidechainNumber(3);
-        let output = create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000));
+        let output =
+            create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000)).unwrap();
         assert_eq!(output.value, Amount::from_sat(6_000));
         let bytes = output.script_pubkey.to_bytes();
         let (_, parsed_sc) =
@@ -1234,7 +1239,8 @@ mod tests {
         assert_eq!(parsed_sc, sc);
 
         let output =
-            create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100));
+            create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100))
+                .unwrap();
         assert_eq!(output.value, Amount::from_sat(100));
         Ok(())
     }
