@@ -1245,6 +1245,18 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn create_m5_deposit_output_rejects_overflow() {
+        // A deposit value that overflows the treasury total must error rather
+        // than panic on the addition.
+        let result = create_m5_deposit_output(
+            SidechainNumber(0),
+            Amount::from_sat(u64::MAX),
+            Amount::from_sat(1),
+        );
+        assert!(matches!(result, Err(AmountOverflowError)));
+    }
+
     // ── compute_m6id ──
 
     /// Build a minimal M6-shaped transaction: 1 input + OP_DRIVECHAIN treasury
