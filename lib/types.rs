@@ -1198,6 +1198,39 @@ mod tests {
         );
     }
 
+    /// `into_m6` overwrites the first output with the new treasury (CTIP), so
+    /// the CTIP lives at output index 0 — the validator enforces the same via
+    /// `InvalidM6::TreasuryOutputIndex`. The wallet's chained-CTIP logic in
+    /// `generate_suffix_txs` must therefore reference vout 0, not the last
+    /// output (a payout).
+    #[test]
+    fn into_m6_places_treasury_output_at_index_0() {
+        use bitcoin::{Amount, OutPoint, Txid, hashes::Hash as _};
+        let blinded = BlindedM6::try_from(Cow::Owned(blinded_m6_tx())).unwrap();
+        let sidechain_number = SidechainNumber(1);
+        let m6 = blinded
+            .into_m6(
+                sidechain_number,
+                OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout: 0,
+                },
+                Amount::from_sat(100_000),
+            )
+            .unwrap();
+        let treasury_spk = super::op_drivechain_script(sidechain_number);
+        assert_eq!(
+            m6.output[0].script_pubkey, treasury_spk,
+            "into_m6 must place the new treasury (CTIP) at output index 0"
+        );
+        assert!(m6.output.len() > 1);
+        assert_ne!(
+            m6.output[m6.output.len() - 1].script_pubkey,
+            treasury_spk,
+            "last output is a payout; a chained CTIP must use vout 0, not len-1"
+        );
+    }
+
     /// Regression: an empty description (a valid M1 carries an arbitrary,
     /// possibly empty, `rest`-encoded description) must return an error, not
     /// panic indexing `input[0]` while building the version error.
