@@ -8,7 +8,7 @@ use bitcoin::{
         OP_TRUE,
         all::{OP_PUSHBYTES_1, OP_RETURN},
     },
-    script::{Instruction, Instructions, PushBytesBuf},
+    script::{Instruction, PushBytesBuf},
 };
 use byteorder::{ByteOrder, LittleEndian};
 use miette::Diagnostic;
@@ -307,10 +307,10 @@ impl CoinbaseMessage {
     pub fn parse(script: &Script) -> IResult<&[u8], Self> {
         fn instruction_failure<'a>(
             err_msg: Option<&'static str>,
-            instructions: Instructions<'a>,
+            script: &'a Script,
         ) -> nom::Err<nom::error::Error<&'a [u8]>> {
             use nom::error::ContextError as _;
-            let input = instructions.as_script().as_bytes();
+            let input = script.as_bytes();
             let err = nom::error::Error {
                 input,
                 code: nom::error::ErrorKind::Fail,
@@ -321,17 +321,22 @@ impl CoinbaseMessage {
             };
             nom::Err::Failure(err)
         }
-        let mut instructions = script.instructions();
+        // Use minimal-push decoding so a coinbase message encoded with a
+        // non-minimal push (e.g. OP_PUSHDATA1 for a short payload) is rejected
+        // rather than parsed identically to its canonical form. The messages
+        // are consensus data, so accepting a second encoding of the same
+        // message is a malleability/divergence risk.
+        let mut instructions = script.instructions_minimal();
         let Some(Ok(Instruction::Op(OP_RETURN))) = instructions.next() else {
             return Err(instruction_failure(
                 Some("expected OP_RETURN instruction"),
-                instructions,
+                script,
             ));
         };
         let Some(Ok(Instruction::PushBytes(data))) = instructions.next() else {
             return Err(instruction_failure(
                 Some("expected PushBytes instruction"),
-                instructions,
+                script,
             ));
         };
         // BIP 300/301 coinbase messages are exactly `OP_RETURN <push>`. M2/M3
@@ -341,7 +346,7 @@ impl CoinbaseMessage {
         if instructions.next().is_some() {
             return Err(instruction_failure(
                 Some("unexpected trailing instructions after message"),
-                instructions,
+                script,
             ));
         }
         let input = data.as_bytes();
