@@ -2091,6 +2091,32 @@ mod tests {
     }
 
     #[test]
+    fn connect_block_rejects_empty_block_without_panicking() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        // A block whose txdata is empty (no coinbase) is reachable via the
+        // block-file sync path from a crafted blk*.dat. Indexing txdata[0]
+        // would panic; connect_block must reject it instead.
+        let mut block = build_test_block(prev_hash, TestBlockParts::default());
+        block.txdata.clear();
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        assert!(
+            matches!(
+                test_handler(&dbs).connect_block(&mut rwtxn, &block),
+                Err(error::ConnectBlock::NoCoinbase)
+            ),
+            "connect_block must reject an empty block, not panic"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
