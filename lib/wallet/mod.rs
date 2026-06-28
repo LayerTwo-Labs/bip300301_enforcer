@@ -1109,16 +1109,16 @@ impl Wallet {
         sidechain_number: SidechainNumber,
         sidechain_ctip_amount: Amount,
         value: Amount,
-    ) -> bdk_wallet::bitcoin::TxOut {
+    ) -> Result<bdk_wallet::bitcoin::TxOut, crate::types::AmountOverflowError> {
         let deposit_txout =
-            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value);
+            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value)?;
 
-        bdk_wallet::bitcoin::TxOut {
+        Ok(bdk_wallet::bitcoin::TxOut {
             script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
                 deposit_txout.script_pubkey.to_bytes(),
             ),
             value: deposit_txout.value,
-        }
+        })
     }
 
     fn create_op_return_output<Msg>(
@@ -1400,7 +1400,7 @@ impl Wallet {
             sidechain_number,
             sidechain_ctip_amount,
             value,
-        );
+        )?;
         tracing::debug!(
             value = %op_drivechain_output.value,
             spk = %op_drivechain_output.script_pubkey.to_asm_string(),

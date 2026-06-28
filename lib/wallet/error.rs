@@ -713,6 +713,8 @@ pub enum CreateDeposit {
     #[error("failed to convert sidechain address to PushBytesBuf")]
     ConvertSidechainAddress(#[source] bitcoin::script::PushBytesError),
     #[error(transparent)]
+    OutputAmountOverflow(#[from] crate::types::AmountOverflowError),
+    #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
     #[error(transparent)]
     Persistence(#[from] Persistence),
@@ -733,6 +735,7 @@ impl ToStatus for CreateDeposit {
             | Self::BroadcastNonstandardTx { .. }
             | Self::BroadcastUnsuccessful { .. }
             | Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
+            Self::OutputAmountOverflow(err) => err.builder(),
             Self::NotUnlocked(err) => err.builder(),
             Self::Persistence(err) => StatusBuilder::new(err),
             Self::Psbt(err) => err.builder(),
