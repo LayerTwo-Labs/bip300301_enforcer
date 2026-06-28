@@ -799,13 +799,17 @@ impl BlockHandler<'_> {
                 }
                 // M5
                 Ordering::Greater => {
-                    let address = if let Some(address_output) =
+                    // BIP 300 requires the address OP_RETURN output immediately
+                    // after the treasury UTXO; a deposit without it is invalid.
+                    let Some(address_output) =
                         transaction.output.get(new_ctip.outpoint.vout as usize + 1)
-                    {
+                    else {
+                        return Err(error::HandleM5M6::MissingDepositAddress { sidechain_number });
+                    };
+                    let Some(address) =
                         crate::messages::try_parse_op_return_address(&address_output.script_pubkey)
-                            .unwrap_or_default()
-                    } else {
-                        Vec::new()
+                    else {
+                        return Err(error::HandleM5M6::MissingDepositAddress { sidechain_number });
                     };
                     let sequence_number = dbs
                         .treasury_utxo_count

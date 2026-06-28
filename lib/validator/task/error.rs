@@ -245,6 +245,14 @@ pub(in crate::validator) enum HandleM5M6 {
     #[error(transparent)]
     #[fatal(false)]
     M6id(#[from] crate::messages::M6idError),
+    /// BIP 300 M5: a transaction with a treasury UTXO output and no address
+    /// OP_RETURN output immediately after it must be considered invalid.
+    #[error(
+        "M5 deposit for sidechain {} has no address OP_RETURN output",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    MissingDepositAddress { sidechain_number: SidechainNumber },
     #[error("Multiple OP_DRIVECHAIN outputs for sidechain {0}")]
     #[fatal(false)]
     MultipleOpDrivechainOutputs(SidechainNumber),
