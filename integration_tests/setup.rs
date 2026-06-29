@@ -334,8 +334,11 @@ pub async fn wait_for_port(
 /// Polls bitcoind via `getblockchaininfo` until it responds successfully.
 /// The RPC port opens before bitcoind is ready to serve commands, so a TCP
 /// probe alone is not enough.
-async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
-    const TIMEOUT: Duration = Duration::from_secs(30);
+pub async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
+    // When the whole suite runs at once, many bitcoind/electrs/enforcer
+    // processes cold-start together. Apply a generous limit here that
+    // doesn't crash long running tests, but catches stuck ones.
+    const TIMEOUT: Duration = Duration::from_secs(120);
     const CHECK_INTERVAL: Duration = Duration::from_millis(200);
     let task = async {
         loop {

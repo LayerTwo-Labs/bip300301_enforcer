@@ -12,7 +12,7 @@ use futures::channel::mpsc;
 use tokio::time::sleep;
 
 use crate::{
-    setup::{PreSetup, new_bitcoind, wait_for_port},
+    setup::{PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port},
     util::Enforcer,
 };
 
@@ -36,10 +36,9 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         }
     });
 
-    // wait for startup
-    sleep(std::time::Duration::from_secs(1)).await;
-
     let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?.clone());
+
+    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
 
     tracing::info!("Generating blocks");
     // just generate to a random regtest address. we don't actually need the coins!
@@ -71,8 +70,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         }
     });
 
-    // wait for startup
-    sleep(std::time::Duration::from_secs(1)).await;
+    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
 
     let enforcer = Enforcer {
         path: setup.bin_paths.bip300301_enforcer()?.clone(),

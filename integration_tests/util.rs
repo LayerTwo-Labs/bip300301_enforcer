@@ -75,6 +75,42 @@ impl TestFailureCollector {
     }
 }
 
+/// `(test name, wall-clock duration, passed)`, recorded as each test finishes.
+type TestTiming = (String, Duration, bool);
+
+static TEST_TIMINGS: std::sync::LazyLock<parking_lot::Mutex<Vec<TestTiming>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
+
+#[expect(clippy::print_stderr)]
+pub fn display_timing_summary(wall: Duration) {
+    const SHOW_SLOWEST: usize = 3;
+    let mut timings = TEST_TIMINGS.lock().clone();
+    if timings.is_empty() {
+        return;
+    }
+
+    timings.sort_by_key(|(_, dur, _)| std::cmp::Reverse(*dur));
+    let total: Duration = timings.iter().map(|(_, dur, _)| *dur).sum();
+    let wall_secs = wall.as_secs_f64();
+    let parallelism = if wall_secs > 0.0 {
+        total.as_secs_f64() / wall_secs
+    } else {
+        0.0
+    };
+    let n = timings.len();
+    eprintln!(
+        "\n{n} test{} in {wall_secs:.1}s wall · {:.1}s total test-time · {parallelism:.1}× parallel",
+        if n == 1 { "" } else { "s" },
+        total.as_secs_f64(),
+    );
+    if n > 1 {
+        eprintln!("slowest:");
+        for (name, dur, _) in timings.iter().take(SHOW_SLOWEST) {
+            eprintln!("  {:>6.1}s  {name}", dur.as_secs_f64());
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("Error resolving environment variable (`{key}`): {err:#}")]
 pub struct VarError {
@@ -338,44 +374,47 @@ impl<Fut> AsyncTrial<Fut> {
         /// Global per-test cap
         const TEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-        let span = tracing::info_span!("test", name = %self.name);
         let test_name = self.name.clone();
+        let report_name = self.name.clone();
         let file_registry = self.file_registry;
         let failure_collector = self.failure_collector;
 
         libtest_mimic::Trial::test(self.name, move || {
-            span.in_scope(|| {
-                // Use spawn_blocking to avoid nested runtime issues
-                std::thread::spawn(move || {
-                    rt_handle.block_on(async {
-                        let record_failure = |error_message: String| {
-                            failure_collector.add_failure(TestFailure {
-                                test_name: test_name.clone(),
-                                error_message,
-                                output_files: file_registry.get_files(&test_name),
-                            });
-                        };
-                        match tokio::time::timeout(TEST_TIMEOUT, self.test).await {
-                            Ok(result) => {
-                                if let Err(err) = &result {
-                                    // Alternate Display gives anyhow's chained
-                                    // "top: cause: root" form without a backtrace.
-                                    record_failure(format!("{err:#}"));
-                                }
-                                result.map_err(libtest_mimic::Failed::from)
+            let started = std::time::Instant::now();
+            // Use a dedicated thread to avoid nested runtime issues
+            let result = std::thread::spawn(move || {
+                rt_handle.block_on(async {
+                    let record_failure = |error_message: String| {
+                        failure_collector.add_failure(TestFailure {
+                            test_name: test_name.clone(),
+                            error_message,
+                            output_files: file_registry.get_files(&test_name),
+                        });
+                    };
+                    match tokio::time::timeout(TEST_TIMEOUT, self.test).await {
+                        Ok(result) => {
+                            if let Err(err) = &result {
+                                // Alternate Display gives anyhow's chained
+                                // "top: cause: root" form without a backtrace.
+                                record_failure(format!("{err:#}"));
                             }
-                            Err(_elapsed) => {
-                                let error_message =
-                                    format!("test `{test_name}` timed out after {TEST_TIMEOUT:?}");
-                                record_failure(error_message.clone());
-                                Err(error_message.into())
-                            }
+                            result.map_err(libtest_mimic::Failed::from)
                         }
-                    })
+                        Err(_elapsed) => {
+                            let error_message =
+                                format!("test `{test_name}` timed out after {TEST_TIMEOUT:?}");
+                            record_failure(error_message.clone());
+                            Err(error_message.into())
+                        }
+                    }
                 })
-                .join()
-                .unwrap()
             })
+            .join()
+            .unwrap();
+            TEST_TIMINGS
+                .lock()
+                .push((report_name, started.elapsed(), result.is_ok()));
+            result
         })
     }
 }
