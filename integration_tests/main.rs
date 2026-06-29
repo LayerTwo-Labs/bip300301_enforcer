@@ -1,16 +1,18 @@
-use std::io::IsTerminal as _;
-
 use bip300301_enforcer_integration_tests::{
     integration_test,
-    util::{BinPaths, TestFailureCollector, TestFileRegistry},
+    util::{BinPaths, TestFailureCollector, TestFileRegistry, display_timing_summary},
 };
 use clap::Parser;
-use tracing_subscriber::{
-    filter as tracing_filter, fmt::writer::BoxMakeWriter, layer::SubscriberExt,
-};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
 #[derive(Parser)]
 struct Cli {
+    /// Stream test-harness logs at this level while tests run: off, error,
+    /// warn, info, debug, or trace. Off by default; the progress lines, the
+    /// pass/fail summary, and per-failure log dumps are always shown.
+    #[arg(long, default_value = "off", value_name = "LEVEL")]
+    log_level: LevelFilter,
     #[command(flatten)]
     test_args: libtest_mimic::Arguments,
 }
@@ -45,12 +47,18 @@ where
         .join(",")
 }
 
-// Configure logger.
-fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
+// Configure logger. `log_level` gates streaming of harness log events: `off`
+// (the default) streams nothing — the progress lines, results, and per-failure
+// dumps are printed directly, not via tracing — and any other level streams the
+// harness crate at that level (deps one level lower).
+fn set_tracing_subscriber(log_level: LevelFilter) -> anyhow::Result<()> {
+    let Some(level) = log_level.into_level() else {
+        return Ok(());
+    };
     let targets_filter = {
         let default_directives_str = targets_directive_str([
-            ("", saturating_pred_level(log_level)),
-            ("bip300301_enforcer_integration_tests", log_level),
+            ("", saturating_pred_level(level)),
+            ("bip300301_enforcer_integration_tests", level),
         ]);
         let directives_str = match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
             Ok(env_directives) => format!("{default_directives_str},{env_directives}"),
@@ -59,28 +67,44 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
         };
         tracing_filter::EnvFilter::builder().parse(directives_str)?
     };
-    // Only attach the indicatif progress-bar layer when stderr is a TTY.
-    // In non-TTY environments (e.g. CI) tracing-indicatif 0.3 has a bug
-    // that leads to a panic.
-    // See https://github.com/emersonford/tracing-indicatif/issues/24.
-    let (indicatif_layer, stderr_writer) = if std::io::stderr().is_terminal() {
-        let layer = tracing_indicatif::IndicatifLayer::new();
-        let writer = BoxMakeWriter::new(layer.get_stderr_writer());
-        (Some(layer), writer)
-    } else {
-        (None, BoxMakeWriter::new(std::io::stderr))
-    };
-    let stdout_layer = tracing_subscriber::fmt::layer()
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_file(false)
         .with_line_number(false)
-        .with_writer(stderr_writer);
+        .with_writer(std::io::stderr);
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
-        .with(stdout_layer)
-        .with(indicatif_layer);
+        .with(fmt_layer);
     tracing::subscriber::set_global_default(tracing_subscriber)
         .map_err(|err| anyhow::anyhow!("setting default subscriber failed: {err:#}"))
+}
+
+/// Whether `trial` would run under `args`, mirroring libtest_mimic's
+/// name-based filtering (substring match, or exact with `--exact`, minus any
+/// `--skip` patterns). Lets us detect an empty filter result before running.
+fn filter_matches(args: &libtest_mimic::Arguments, trial: &libtest_mimic::Trial) -> bool {
+    let name = trial.name();
+    if let Some(filter) = &args.filter {
+        let hit = if args.exact {
+            name == filter
+        } else {
+            name.contains(filter)
+        };
+        if !hit {
+            return false;
+        }
+    }
+    for skip in &args.skip {
+        let hit = if args.exact {
+            name == skip
+        } else {
+            name.contains(skip)
+        };
+        if hit {
+            return false;
+        }
+    }
+    true
 }
 
 #[tokio::main]
@@ -100,7 +124,7 @@ async fn main() -> std::process::ExitCode {
 async fn run() -> anyhow::Result<std::process::ExitCode> {
     // Parse command line arguments
     let args = Cli::parse();
-    let () = set_tracing_subscriber(tracing::Level::DEBUG)?;
+    let () = set_tracing_subscriber(args.log_level)?;
     let rt_handle = tokio::runtime::Handle::current();
     // Read env vars
     if let Some(env_filepath) = std::env::var_os("BIP300301_ENFORCER_INTEGRATION_TEST_ENV") {
@@ -132,23 +156,28 @@ async fn run() -> anyhow::Result<std::process::ExitCode> {
             .map(|trial| trial.run_blocking(rt_handle.clone())),
     );
 
-    // Run all tests and collect the exit code
-    let filter_provided = args.test_args.filter.is_some();
-    let conclusion = libtest_mimic::run(&args.test_args, tests);
-    let nothing_ran = conclusion.num_passed
-        + conclusion.num_failed
-        + conclusion.num_ignored
-        + conclusion.num_measured
-        == 0;
-    if filter_provided && nothing_ran {
+    // Bail *before* running if a filter was provided but matches nothing —
+    // otherwise libtest prints its "running 0 tests" banner and an "ok" result
+    // line before we get a chance to error out.
+    if args.test_args.filter.is_some()
+        && !tests
+            .iter()
+            .any(|trial| filter_matches(&args.test_args, trial))
+    {
         anyhow::bail!(
             "no integration test matched the provided filter `{}`",
             args.test_args.filter.as_deref().unwrap_or("")
         );
     }
+
+    // Run all tests and collect the exit code
+    let started = std::time::Instant::now();
+    let conclusion = libtest_mimic::run(&args.test_args, tests);
+    let wall = started.elapsed();
     let exit_code = conclusion.exit_code();
 
-    // Display all collected failures at the end
+    // Per-test timing, then any failures at the end
+    display_timing_summary(wall);
     failure_collector.display_all_failures();
 
     Ok(exit_code)

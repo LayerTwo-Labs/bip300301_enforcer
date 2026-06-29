@@ -79,7 +79,7 @@ async fn consolidate_to_single_utxo(post_setup: &mut PostSetup) -> anyhow::Resul
     // chain so every funding coinbase matures and a single drain can sweep the
     // whole wallet.
     let () = mine_to_core(post_setup, 100).await?;
-    let () = wait_for_wallet_sync().await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
 
     for _ in 0..6 {
         if unspent_output_count(post_setup).await? <= 1 {

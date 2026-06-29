@@ -19,7 +19,6 @@ dotenvy = { workspace = true }
 either = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-indicatif = { workspace = true, features = ["futures"] }
 jsonrpsee = { workspace = true }
 thiserror = { workspace = true }
 libtest-mimic = { workspace = true }
@@ -31,8 +30,6 @@ tokio = { workspace = true }
 connectrpc = { workspace = true }
 http = { workspace = true }
 tracing = { workspace = true }
-tracing-indicatif = { workspace = true }
-tokio-stream = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 

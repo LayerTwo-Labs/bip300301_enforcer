@@ -7,16 +7,15 @@ use bip300301_enforcer_lib::{
         common::{ConsensusHex, Hex},
         mainchain::{
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateSidechainProposalRequest, GetSidechainProposalsRequest,
-            GetSidechainsRequest, ListSidechainDepositTransactionsRequest, block_info,
-            withdrawal_bundle_event,
+            CreateNewAddressRequest, CreateSidechainProposalRequest, GetInfoRequest,
+            GetSidechainProposalsRequest, GetSidechainsRequest,
+            ListSidechainDepositTransactionsRequest, block_info, withdrawal_bundle_event,
         },
     },
 };
 use bitcoin::Amount;
-use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
+use futures::{FutureExt as _, channel::mpsc};
 use tokio::time::sleep;
-use tokio_stream::wrappers::IntervalStream;
 use tracing::Instrument as _;
 
 use crate::{
@@ -208,25 +207,44 @@ where
     Ok(())
 }
 
-pub async fn wait_for_wallet_sync() -> anyhow::Result<()> {
-    // Wait 15s for a re-sync
-    const WAIT: Duration = Duration::from_secs(15);
-    let progress_bar = indicatif::ProgressBar::new(WAIT.as_secs()).with_style(
-        indicatif::ProgressStyle::with_template(&format!(
-            "[{{bar:15}}] {{elapsed}}/{}",
-            indicatif::HumanDuration(WAIT)
-        ))?
-        .progress_chars("%%-"),
-    );
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-    interval.tick().await;
-    let () = progress_bar
-        .wrap_stream(IntervalStream::new(interval))
-        .map(|_| ())
-        .take(WAIT.as_secs() as usize)
-        .collect()
-        .await;
-    Ok(())
+/// Wait until the enforcer wallet has applied every block Bitcoin Core has
+/// mined. The wallet connects blocks as the node advances, so poll its tip
+/// until it has caught up rather than sleeping a fixed duration — this returns
+/// as soon as the wallet is in sync, and fails loudly if it never catches up.
+pub async fn wait_for_wallet_sync(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(250);
+    const TIMEOUT: Duration = Duration::from_secs(60);
+
+    let target_height: u32 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    tracing::debug!("Waiting for wallet to sync to block {target_height}");
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let wallet_height = post_setup
+            .wallet_service_client
+            .get_info(GetInfoRequest::default())
+            .await?
+            .into_owned()
+            .tip
+            .into_option()
+            .map(|tip| tip.height)
+            .unwrap_or(0);
+        if wallet_height >= target_height {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "wallet did not sync to block {target_height} within {TIMEOUT:?} \
+             (stuck at {wallet_height})"
+        );
+        sleep(POLL_INTERVAL).await;
+    }
 }
 
 pub async fn fund_enforcer<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
@@ -235,9 +253,6 @@ where
 {
     use std::convert::Infallible;
     const BLOCKS: u32 = 100;
-    let progress_bar = indicatif::ProgressBar::new(BLOCKS as u64).with_style(
-        indicatif::ProgressStyle::with_template("[{bar:100}] {pos}/{len}")?.progress_chars("#>-"),
-    );
     tracing::info!("Funding enforcer");
     let () = match post_setup.network {
         Network::Regtest => {
@@ -259,15 +274,11 @@ where
                 .await?;
         }
         Network::Signet => {
-            mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| {
-                progress_bar.inc(1);
-                Ok(())
-            })
-            .await?;
+            mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| Ok(())).await?;
         }
     };
     tracing::debug!("Waiting for wallet sync...");
-    let () = wait_for_wallet_sync().await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
     Ok(())
 }
 
@@ -552,7 +563,7 @@ where
     tracing::info!("Deposited to sidechain successfully");
     // Wait for mempool to catch up before attempting second deposit
     tracing::debug!("Waiting for wallet sync...");
-    let () = wait_for_wallet_sync().await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
     tracing::info!("Attempting second deposit");
     let () = deposit(
         post_setup,
