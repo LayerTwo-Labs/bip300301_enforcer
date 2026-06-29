@@ -321,6 +321,12 @@ jobs:
           export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
+          # Each test leaks a TempDir holding per-component stdout/stderr (the
+          # enforcer runs at --log-level=trace). Point TMPDIR at a known
+          # directory so the "Upload integration test logs" step can collect
+          # them as artifacts when a test fails.
+          export TMPDIR="$RUNNER_TEMP/it-logs"
+          mkdir -p "$TMPDIR"
           if [ '${{ matrix.flavor }}' = 'patched' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
             cargo run --example integration_tests
@@ -328,6 +334,23 @@ jobs:
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
             cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip
           fi
+
+      - name: Upload integration test logs
+        # Only on failure: the leaked TempDirs contain full trace-level
+        # enforcer logs plus bitcoind/electrs output, which is what we need to
+        # diagnose flakes. Restricted to log files so we don't upload bitcoind
+        # block/chainstate data.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name:
+            integration-test-logs-${{ matrix.flavor == 'patched' && 'patched' ||
+            format('stock-{0}', matrix.version) }}
+          path: |
+            ${{ runner.temp }}/it-logs/**/*.txt
+            ${{ runner.temp }}/it-logs/**/*.log
+          retention-days: 14
+          if-no-files-found: warn
 
   test-build-release:
     strategy:
