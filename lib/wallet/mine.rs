@@ -342,14 +342,19 @@ impl Wallet {
         transactions: Vec<Transaction>,
     ) -> Result<Block, error::FinalizeBlock> {
         let best_block_hash = self.validator().get_mainchain_tip()?;
-        let best_block_height = self.validator().get_header_info(&best_block_hash)?.height;
+        let tip_header = self.validator().get_header_info(&best_block_hash)?;
+        let best_block_height = tip_header.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
 
         let coinbase_tx = self
             .finalize_coinbase(best_block_height, coinbase_outputs)
             .await?;
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+        // Keep block times strictly increasing so blocks mined faster than once
+        // per second are not rejected as `time-too-old` (timestamp must exceed
+        // the median-time-past). This mirrors `getblocktemplate`'s `mintime`.
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+        let timestamp = now.max(tip_header.timestamp.saturating_add(1));
         let genesis_block = genesis_block(bitcoin::Network::Regtest);
         let bits = genesis_block.header.bits;
         let header = bitcoin::block::Header {
