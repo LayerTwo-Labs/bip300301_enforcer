@@ -571,6 +571,7 @@ dependencies = [
  "parking_lot",
  "rand 0.10.1",
  "reqwest 0.13.4",
+ "reusable-payments",
  "rusqlite",
  "rusqlite_migration",
  "rusty-leveldb",
@@ -3551,6 +3552,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94070964579245eb2f76e62a7668fe87bd9969ed6c41256f3bf614e3323dd3cc"
 dependencies = [
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "reusable-payments"
+version = "0.1.0"
+source = "git+https://github.com/LayerTwo-Labs/reusable-payments.git?tag=v0.1.0#a56235016889426b8facf8fa62ea0393fa392012"
+dependencies = [
+ "bitcoin",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
