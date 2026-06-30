@@ -95,6 +95,10 @@ rev = "db1fdfd5ecddfc7855cd872546b47429cb29a0bf"
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
 rev = "e6c0ca5620c926c8b3a1df67ac83c45ce9cb4acd"
 
+[workspace.dependencies.reusable-payments]
+git = "https://github.com/LayerTwo-Labs/reusable-payments.git"
+tag = "v0.1.0"
+
 [workspace.dependencies.educe]
 version = "0.6.0"
 default-features = false

@@ -13082,6 +13082,152 @@ pub const __STOP_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buf
     from_json: ::buffa::type_registry::any_from_json::<StopResponse>,
     is_wkt: false,
 };
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum Bip47Version {
+    BIP47_VERSION_UNSPECIFIED = 0i32,
+    BIP47_VERSION_V1 = 1i32,
+    BIP47_VERSION_V3 = 3i32,
+}
+impl Bip47Version {
+    ///Idiomatic alias for [`Self::BIP47_VERSION_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::BIP47_VERSION_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::BIP47_VERSION_V1`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const V1: Self = Self::BIP47_VERSION_V1;
+    ///Idiomatic alias for [`Self::BIP47_VERSION_V3`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const V3: Self = Self::BIP47_VERSION_V3;
+}
+impl ::core::default::Default for Bip47Version {
+    fn default() -> Self {
+        Self::BIP47_VERSION_UNSPECIFIED
+    }
+}
+impl ::serde::Serialize for Bip47Version {
+    fn serialize<S: ::serde::Serializer>(
+        &self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        s.serialize_str(::buffa::Enumeration::proto_name(self))
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for Bip47Version {
+    fn deserialize<D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        struct _V;
+        impl ::serde::de::Visitor<'_> for _V {
+            type Value = Bip47Version;
+            fn expecting(
+                &self,
+                f: &mut ::core::fmt::Formatter<'_>,
+            ) -> ::core::fmt::Result {
+                f.write_str(
+                    concat!("a string, integer, or null for ", stringify!(Bip47Version)),
+                )
+            }
+            fn visit_str<E: ::serde::de::Error>(
+                self,
+                v: &str,
+            ) -> ::core::result::Result<Bip47Version, E> {
+                <Bip47Version as ::buffa::Enumeration>::from_proto_name(v)
+                    .ok_or_else(|| { ::serde::de::Error::unknown_variant(v, &[]) })
+            }
+            fn visit_i64<E: ::serde::de::Error>(
+                self,
+                v: i64,
+            ) -> ::core::result::Result<Bip47Version, E> {
+                let v32 = i32::try_from(v)
+                    .map_err(|_| {
+                        ::serde::de::Error::custom(
+                            ::buffa::alloc::format!("enum value {v} out of i32 range"),
+                        )
+                    })?;
+                <Bip47Version as ::buffa::Enumeration>::from_i32(v32)
+                    .ok_or_else(|| {
+                        ::serde::de::Error::custom(
+                            ::buffa::alloc::format!("unknown enum value {v32}"),
+                        )
+                    })
+            }
+            fn visit_u64<E: ::serde::de::Error>(
+                self,
+                v: u64,
+            ) -> ::core::result::Result<Bip47Version, E> {
+                let v32 = i32::try_from(v)
+                    .map_err(|_| {
+                        ::serde::de::Error::custom(
+                            ::buffa::alloc::format!("enum value {v} out of i32 range"),
+                        )
+                    })?;
+                <Bip47Version as ::buffa::Enumeration>::from_i32(v32)
+                    .ok_or_else(|| {
+                        ::serde::de::Error::custom(
+                            ::buffa::alloc::format!("unknown enum value {v32}"),
+                        )
+                    })
+            }
+            fn visit_unit<E: ::serde::de::Error>(
+                self,
+            ) -> ::core::result::Result<Bip47Version, E> {
+                ::core::result::Result::Ok(::core::default::Default::default())
+            }
+        }
+        d.deserialize_any(_V)
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for Bip47Version {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+impl ::buffa::Enumeration for Bip47Version {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::BIP47_VERSION_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::BIP47_VERSION_V1),
+            3i32 => ::core::option::Option::Some(Self::BIP47_VERSION_V3),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::BIP47_VERSION_UNSPECIFIED => "BIP47_VERSION_UNSPECIFIED",
+            Self::BIP47_VERSION_V1 => "BIP47_VERSION_V1",
+            Self::BIP47_VERSION_V3 => "BIP47_VERSION_V3",
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "BIP47_VERSION_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::BIP47_VERSION_UNSPECIFIED)
+            }
+            "BIP47_VERSION_V1" => ::core::option::Option::Some(Self::BIP47_VERSION_V1),
+            "BIP47_VERSION_V3" => ::core::option::Option::Some(Self::BIP47_VERSION_V3),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::BIP47_VERSION_UNSPECIFIED,
+            Self::BIP47_VERSION_V1,
+            Self::BIP47_VERSION_V3,
+        ]
+    }
+}
 #[derive(Clone, PartialEq, Default)]
 #[derive(::serde::Serialize, ::serde::Deserialize)]
 #[serde(default)]
@@ -21637,6 +21783,4868 @@ pub mod list_unspent_outputs_response {
     #[doc(inline)]
     pub use super::__buffa::view::list_unspent_outputs_response::OutputOwnedView;
 }
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct Bip47InboundPayer {
+    /// Field 1: `payment_code`
+    #[serde(
+        rename = "paymentCode",
+        alias = "payment_code",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub payment_code: ::buffa::alloc::string::String,
+    /// Field 2: `version`
+    #[serde(
+        rename = "version",
+        with = "::buffa::json_helpers::proto_enum",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_default_enum_value"
+    )]
+    pub version: ::buffa::EnumValue<Bip47Version>,
+    /// Field 3: `next_receive_index`
+    #[serde(
+        rename = "nextReceiveIndex",
+        alias = "next_receive_index",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub next_receive_index: u32,
+    /// Field 4: `total_received_sats`
+    #[serde(
+        rename = "totalReceivedSats",
+        alias = "total_received_sats",
+        with = "::buffa::json_helpers::uint64",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u64"
+    )]
+    pub total_received_sats: u64,
+    /// When we first observed the notification tx.
+    ///
+    /// Field 5: `first_seen`
+    #[serde(
+        rename = "firstSeen",
+        alias = "first_seen",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+    )]
+    pub first_seen: ::buffa::MessageField<::buffa_types::google::protobuf::Timestamp>,
+}
+impl ::core::fmt::Debug for Bip47InboundPayer {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("Bip47InboundPayer")
+            .field("payment_code", &self.payment_code)
+            .field("version", &self.version)
+            .field("next_receive_index", &self.next_receive_index)
+            .field("total_received_sats", &self.total_received_sats)
+            .field("first_seen", &self.first_seen)
+            .finish()
+    }
+}
+impl Bip47InboundPayer {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.Bip47InboundPayer";
+}
+impl ::buffa::DefaultInstance for Bip47InboundPayer {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<Bip47InboundPayer> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for Bip47InboundPayer {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for Bip47InboundPayer {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "Bip47InboundPayer";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.Bip47InboundPayer";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.Bip47InboundPayer";
+}
+impl ::buffa::Message for Bip47InboundPayer {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.payment_code.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.payment_code) as u32;
+        }
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if self.next_receive_index != 0u32 {
+            size
+                += 1u32
+                    + ::buffa::types::uint32_encoded_len(self.next_receive_index) as u32;
+        }
+        if self.total_received_sats != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.total_received_sats)
+                        as u32;
+        }
+        if self.first_seen.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.first_seen.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.payment_code.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.payment_code, buf);
+        }
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_int32(val, buf);
+            }
+        }
+        if self.next_receive_index != 0u32 {
+            ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.next_receive_index, buf);
+        }
+        if self.total_received_sats != 0u64 {
+            ::buffa::encoding::Tag::new(4u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint64(self.total_received_sats, buf);
+        }
+        if self.first_seen.is_set() {
+            ::buffa::encoding::Tag::new(
+                    5u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            self.first_seen.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.payment_code, buf)?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.version = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.next_receive_index = ::buffa::types::decode_uint32(buf)?;
+            }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.total_received_sats = ::buffa::types::decode_uint64(buf)?;
+            }
+            5u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 5u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.first_seen.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.payment_code.clear();
+        self.version = ::buffa::EnumValue::from(0);
+        self.next_receive_index = 0u32;
+        self.total_received_sats = 0u64;
+        self.first_seen = ::buffa::MessageField::none();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for Bip47InboundPayer {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __BIP47INBOUND_PAYER_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.Bip47InboundPayer",
+    to_json: ::buffa::type_registry::any_to_json::<Bip47InboundPayer>,
+    from_json: ::buffa::type_registry::any_from_json::<Bip47InboundPayer>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct SilentPaymentLabel {
+    /// Label index. m=0 is reserved for change.
+    ///
+    /// Field 1: `m`
+    #[serde(
+        rename = "m",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub m: u32,
+    /// Field 2: `name`
+    #[serde(
+        rename = "name",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub name: ::buffa::alloc::string::String,
+    /// Field 3: `address`
+    #[serde(
+        rename = "address",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub address: ::buffa::alloc::string::String,
+}
+impl ::core::fmt::Debug for SilentPaymentLabel {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SilentPaymentLabel")
+            .field("m", &self.m)
+            .field("name", &self.name)
+            .field("address", &self.address)
+            .finish()
+    }
+}
+impl SilentPaymentLabel {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SilentPaymentLabel";
+}
+impl ::buffa::DefaultInstance for SilentPaymentLabel {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<SilentPaymentLabel> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for SilentPaymentLabel {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for SilentPaymentLabel {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "SilentPaymentLabel";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.SilentPaymentLabel";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SilentPaymentLabel";
+}
+impl ::buffa::Message for SilentPaymentLabel {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.m != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.m) as u32;
+        }
+        if !self.name.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.name) as u32;
+        }
+        if !self.address.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.address) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.m != 0u32 {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.m, buf);
+        }
+        if !self.name.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.name, buf);
+        }
+        if !self.address.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    3u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.address, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.m = ::buffa::types::decode_uint32(buf)?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.name, buf)?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.address, buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.m = 0u32;
+        self.name.clear();
+        self.address.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for SilentPaymentLabel {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __SILENT_PAYMENT_LABEL_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.SilentPaymentLabel",
+    to_json: ::buffa::type_registry::any_to_json::<SilentPaymentLabel>,
+    from_json: ::buffa::type_registry::any_from_json::<SilentPaymentLabel>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct SilentPaymentReceive {
+    /// Field 1: `txid`
+    #[serde(
+        rename = "txid",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+    )]
+    pub txid: ::buffa::MessageField<super::super::common::v1::ReverseHex>,
+    /// Field 2: `vout`
+    #[serde(
+        rename = "vout",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub vout: u32,
+    /// X-only taproot output pubkey, 32 bytes.
+    ///
+    /// Field 3: `output_pubkey`
+    #[serde(
+        rename = "outputPubkey",
+        alias = "output_pubkey",
+        with = "::buffa::json_helpers::bytes",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_bytes"
+    )]
+    pub output_pubkey: ::buffa::alloc::vec::Vec<u8>,
+    /// Field 4: `amount_sats`
+    #[serde(
+        rename = "amountSats",
+        alias = "amount_sats",
+        with = "::buffa::json_helpers::uint64",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u64"
+    )]
+    pub amount_sats: u64,
+    /// Field 5: `tweak_k`
+    #[serde(
+        rename = "tweakK",
+        alias = "tweak_k",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub tweak_k: u32,
+    /// Set when the output was paid to a labeled address. Absent =
+    /// base address; 0 = change; \>=1 = user label.
+    ///
+    /// Field 6: `label_m`
+    #[serde(
+        rename = "labelM",
+        alias = "label_m",
+        with = "::buffa::json_helpers::opt_uint32",
+        skip_serializing_if = "::core::option::Option::is_none"
+    )]
+    pub label_m: ::core::option::Option<u32>,
+    /// Field 7: `label_name`
+    #[serde(
+        rename = "labelName",
+        alias = "label_name",
+        skip_serializing_if = "::core::option::Option::is_none"
+    )]
+    pub label_name: ::core::option::Option<::buffa::alloc::string::String>,
+    /// Field 8: `height`
+    #[serde(
+        rename = "height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub height: u32,
+    /// Set if we have observed an on-chain spend of this UTXO.
+    ///
+    /// Field 9: `spent_in_txid`
+    #[serde(
+        rename = "spentInTxid",
+        alias = "spent_in_txid",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+    )]
+    pub spent_in_txid: ::buffa::MessageField<super::super::common::v1::ReverseHex>,
+}
+impl ::core::fmt::Debug for SilentPaymentReceive {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SilentPaymentReceive")
+            .field("txid", &self.txid)
+            .field("vout", &self.vout)
+            .field("output_pubkey", &self.output_pubkey)
+            .field("amount_sats", &self.amount_sats)
+            .field("tweak_k", &self.tweak_k)
+            .field("label_m", &self.label_m)
+            .field("label_name", &self.label_name)
+            .field("height", &self.height)
+            .field("spent_in_txid", &self.spent_in_txid)
+            .finish()
+    }
+}
+impl SilentPaymentReceive {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SilentPaymentReceive";
+}
+impl SilentPaymentReceive {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::label_m`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_label_m(mut self, value: u32) -> Self {
+        self.label_m = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::label_name`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_label_name(
+        mut self,
+        value: impl Into<::buffa::alloc::string::String>,
+    ) -> Self {
+        self.label_name = Some(value.into());
+        self
+    }
+}
+impl ::buffa::DefaultInstance for SilentPaymentReceive {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<SilentPaymentReceive> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for SilentPaymentReceive {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for SilentPaymentReceive {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "SilentPaymentReceive";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.SilentPaymentReceive";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SilentPaymentReceive";
+}
+impl ::buffa::Message for SilentPaymentReceive {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.txid.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.txid.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.vout != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.vout) as u32;
+        }
+        if !self.output_pubkey.is_empty() {
+            size += 1u32 + ::buffa::types::bytes_encoded_len(&self.output_pubkey) as u32;
+        }
+        if self.amount_sats != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.amount_sats) as u32;
+        }
+        if self.tweak_k != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.tweak_k) as u32;
+        }
+        if let Some(v) = self.label_m {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+        }
+        if let Some(ref v) = self.label_name {
+            size += 1u32 + ::buffa::types::string_encoded_len(v) as u32;
+        }
+        if self.height != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.height) as u32;
+        }
+        if self.spent_in_txid.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.spent_in_txid.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.txid.is_set() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            self.txid.write_to(__cache, buf);
+        }
+        if self.vout != 0u32 {
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.vout, buf);
+        }
+        if !self.output_pubkey.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    3u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_bytes(&self.output_pubkey, buf);
+        }
+        if self.amount_sats != 0u64 {
+            ::buffa::encoding::Tag::new(4u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint64(self.amount_sats, buf);
+        }
+        if self.tweak_k != 0u32 {
+            ::buffa::encoding::Tag::new(5u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.tweak_k, buf);
+        }
+        if let Some(v) = self.label_m {
+            ::buffa::encoding::Tag::new(6u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(v, buf);
+        }
+        if let Some(ref v) = self.label_name {
+            ::buffa::encoding::Tag::new(
+                    7u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(v, buf);
+        }
+        if self.height != 0u32 {
+            ::buffa::encoding::Tag::new(8u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.height, buf);
+        }
+        if self.spent_in_txid.is_set() {
+            ::buffa::encoding::Tag::new(
+                    9u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            self.spent_in_txid.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.txid.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.vout = ::buffa::types::decode_uint32(buf)?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_bytes(&mut self.output_pubkey, buf)?;
+            }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.amount_sats = ::buffa::types::decode_uint64(buf)?;
+            }
+            5u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 5u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.tweak_k = ::buffa::types::decode_uint32(buf)?;
+            }
+            6u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 6u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.label_m = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint32(buf)?,
+                );
+            }
+            7u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 7u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(
+                    self
+                        .label_name
+                        .get_or_insert_with(::buffa::alloc::string::String::new),
+                    buf,
+                )?;
+            }
+            8u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 8u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.height = ::buffa::types::decode_uint32(buf)?;
+            }
+            9u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 9u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.spent_in_txid.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.txid = ::buffa::MessageField::none();
+        self.vout = 0u32;
+        self.output_pubkey.clear();
+        self.amount_sats = 0u64;
+        self.tweak_k = 0u32;
+        self.label_m = ::core::option::Option::None;
+        self.label_name = ::core::option::Option::None;
+        self.height = 0u32;
+        self.spent_in_txid = ::buffa::MessageField::none();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for SilentPaymentReceive {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __SILENT_PAYMENT_RECEIVE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.SilentPaymentReceive",
+    to_json: ::buffa::type_registry::any_to_json::<SilentPaymentReceive>,
+    from_json: ::buffa::type_registry::any_from_json::<SilentPaymentReceive>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetBip47PaymentCodeRequest {
+    /// Field 1: `version`
+    #[serde(
+        rename = "version",
+        with = "::buffa::json_helpers::proto_enum",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_default_enum_value"
+    )]
+    pub version: ::buffa::EnumValue<Bip47Version>,
+}
+impl ::core::fmt::Debug for GetBip47PaymentCodeRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetBip47PaymentCodeRequest")
+            .field("version", &self.version)
+            .finish()
+    }
+}
+impl GetBip47PaymentCodeRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeRequest";
+}
+impl ::buffa::DefaultInstance for GetBip47PaymentCodeRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<GetBip47PaymentCodeRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for GetBip47PaymentCodeRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for GetBip47PaymentCodeRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetBip47PaymentCodeRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetBip47PaymentCodeRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeRequest";
+}
+impl ::buffa::Message for GetBip47PaymentCodeRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_int32(val, buf);
+            }
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.version = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.version = ::buffa::EnumValue::from(0);
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetBip47PaymentCodeRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_BIP47PAYMENT_CODE_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeRequest",
+    to_json: ::buffa::type_registry::any_to_json::<GetBip47PaymentCodeRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<GetBip47PaymentCodeRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetBip47PaymentCodeResponse {
+    /// Field 1: `payment_code`
+    #[serde(
+        rename = "paymentCode",
+        alias = "payment_code",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub payment_code: ::buffa::alloc::string::String,
+    /// P2PKH address that notification txs to us pay to.
+    ///
+    /// Field 2: `notification_address`
+    #[serde(
+        rename = "notificationAddress",
+        alias = "notification_address",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub notification_address: ::buffa::alloc::string::String,
+    /// Field 3: `version`
+    #[serde(
+        rename = "version",
+        with = "::buffa::json_helpers::proto_enum",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_default_enum_value"
+    )]
+    pub version: ::buffa::EnumValue<Bip47Version>,
+}
+impl ::core::fmt::Debug for GetBip47PaymentCodeResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetBip47PaymentCodeResponse")
+            .field("payment_code", &self.payment_code)
+            .field("notification_address", &self.notification_address)
+            .field("version", &self.version)
+            .finish()
+    }
+}
+impl GetBip47PaymentCodeResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeResponse";
+}
+impl ::buffa::DefaultInstance for GetBip47PaymentCodeResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<GetBip47PaymentCodeResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for GetBip47PaymentCodeResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for GetBip47PaymentCodeResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetBip47PaymentCodeResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetBip47PaymentCodeResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeResponse";
+}
+impl ::buffa::Message for GetBip47PaymentCodeResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.payment_code.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.payment_code) as u32;
+        }
+        if !self.notification_address.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.notification_address)
+                        as u32;
+        }
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.payment_code.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.payment_code, buf);
+        }
+        if !self.notification_address.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.notification_address, buf);
+        }
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_int32(val, buf);
+            }
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.payment_code, buf)?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.notification_address, buf)?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.version = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.payment_code.clear();
+        self.notification_address.clear();
+        self.version = ::buffa::EnumValue::from(0);
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetBip47PaymentCodeResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_BIP47PAYMENT_CODE_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeResponse",
+    to_json: ::buffa::type_registry::any_to_json::<GetBip47PaymentCodeResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<GetBip47PaymentCodeResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct SendToBip47PaymentCodeRequest {
+    /// Field 1: `payment_code`
+    #[serde(
+        rename = "paymentCode",
+        alias = "payment_code",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub payment_code: ::buffa::alloc::string::String,
+    /// Field 2: `amount_sats`
+    #[serde(
+        rename = "amountSats",
+        alias = "amount_sats",
+        with = "::buffa::json_helpers::uint64",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u64"
+    )]
+    pub amount_sats: u64,
+    /// Field 3: `fee_sat_per_vbyte`
+    #[serde(
+        rename = "feeSatPerVbyte",
+        alias = "fee_sat_per_vbyte",
+        with = "::buffa::json_helpers::uint64",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u64"
+    )]
+    pub fee_sat_per_vbyte: u64,
+}
+impl ::core::fmt::Debug for SendToBip47PaymentCodeRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SendToBip47PaymentCodeRequest")
+            .field("payment_code", &self.payment_code)
+            .field("amount_sats", &self.amount_sats)
+            .field("fee_sat_per_vbyte", &self.fee_sat_per_vbyte)
+            .finish()
+    }
+}
+impl SendToBip47PaymentCodeRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeRequest";
+}
+impl ::buffa::DefaultInstance for SendToBip47PaymentCodeRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<SendToBip47PaymentCodeRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for SendToBip47PaymentCodeRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for SendToBip47PaymentCodeRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "SendToBip47PaymentCodeRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToBip47PaymentCodeRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeRequest";
+}
+impl ::buffa::Message for SendToBip47PaymentCodeRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.payment_code.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.payment_code) as u32;
+        }
+        if self.amount_sats != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.amount_sats) as u32;
+        }
+        if self.fee_sat_per_vbyte != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.fee_sat_per_vbyte) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.payment_code.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.payment_code, buf);
+        }
+        if self.amount_sats != 0u64 {
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint64(self.amount_sats, buf);
+        }
+        if self.fee_sat_per_vbyte != 0u64 {
+            ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint64(self.fee_sat_per_vbyte, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.payment_code, buf)?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.amount_sats = ::buffa::types::decode_uint64(buf)?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.fee_sat_per_vbyte = ::buffa::types::decode_uint64(buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.payment_code.clear();
+        self.amount_sats = 0u64;
+        self.fee_sat_per_vbyte = 0u64;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for SendToBip47PaymentCodeRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __SEND_TO_BIP47PAYMENT_CODE_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeRequest",
+    to_json: ::buffa::type_registry::any_to_json::<SendToBip47PaymentCodeRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<SendToBip47PaymentCodeRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct SendToBip47PaymentCodeResponse {
+    /// Set on the first send to a given recipient; unset on subsequent sends
+    /// (per BIP47, notification happens only on first interaction).
+    ///
+    /// Field 1: `notification_txid`
+    #[serde(
+        rename = "notificationTxid",
+        alias = "notification_txid",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+    )]
+    pub notification_txid: ::buffa::MessageField<super::super::common::v1::ReverseHex>,
+    /// Field 2: `payment_txid`
+    #[serde(
+        rename = "paymentTxid",
+        alias = "payment_txid",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+    )]
+    pub payment_txid: ::buffa::MessageField<super::super::common::v1::ReverseHex>,
+    /// Field 3: `sender_index`
+    #[serde(
+        rename = "senderIndex",
+        alias = "sender_index",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub sender_index: u32,
+    /// Field 4: `version`
+    #[serde(
+        rename = "version",
+        with = "::buffa::json_helpers::proto_enum",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_default_enum_value"
+    )]
+    pub version: ::buffa::EnumValue<Bip47Version>,
+}
+impl ::core::fmt::Debug for SendToBip47PaymentCodeResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SendToBip47PaymentCodeResponse")
+            .field("notification_txid", &self.notification_txid)
+            .field("payment_txid", &self.payment_txid)
+            .field("sender_index", &self.sender_index)
+            .field("version", &self.version)
+            .finish()
+    }
+}
+impl SendToBip47PaymentCodeResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeResponse";
+}
+impl ::buffa::DefaultInstance for SendToBip47PaymentCodeResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<SendToBip47PaymentCodeResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for SendToBip47PaymentCodeResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for SendToBip47PaymentCodeResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "SendToBip47PaymentCodeResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToBip47PaymentCodeResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeResponse";
+}
+impl ::buffa::Message for SendToBip47PaymentCodeResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.notification_txid.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.notification_txid.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.payment_txid.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.payment_txid.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.sender_index != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.sender_index) as u32;
+        }
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.notification_txid.is_set() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            self.notification_txid.write_to(__cache, buf);
+        }
+        if self.payment_txid.is_set() {
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            self.payment_txid.write_to(__cache, buf);
+        }
+        if self.sender_index != 0u32 {
+            ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.sender_index, buf);
+        }
+        {
+            let val = self.version.to_i32();
+            if val != 0 {
+                ::buffa::encoding::Tag::new(4u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_int32(val, buf);
+            }
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.notification_txid.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.payment_txid.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.sender_index = ::buffa::types::decode_uint32(buf)?;
+            }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.version = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.notification_txid = ::buffa::MessageField::none();
+        self.payment_txid = ::buffa::MessageField::none();
+        self.sender_index = 0u32;
+        self.version = ::buffa::EnumValue::from(0);
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for SendToBip47PaymentCodeResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __SEND_TO_BIP47PAYMENT_CODE_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeResponse",
+    to_json: ::buffa::type_registry::any_to_json::<SendToBip47PaymentCodeResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<SendToBip47PaymentCodeResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct ListBip47InboundPayersRequest {}
+impl ::core::fmt::Debug for ListBip47InboundPayersRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ListBip47InboundPayersRequest").finish()
+    }
+}
+impl ListBip47InboundPayersRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersRequest";
+}
+impl ::buffa::DefaultInstance for ListBip47InboundPayersRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ListBip47InboundPayersRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for ListBip47InboundPayersRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for ListBip47InboundPayersRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "ListBip47InboundPayersRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.ListBip47InboundPayersRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersRequest";
+}
+impl ::buffa::Message for ListBip47InboundPayersRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let size = 0u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        _buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {}
+}
+impl ::buffa::json_helpers::ProtoElemJson for ListBip47InboundPayersRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __LIST_BIP47INBOUND_PAYERS_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersRequest",
+    to_json: ::buffa::type_registry::any_to_json::<ListBip47InboundPayersRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<ListBip47InboundPayersRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct ListBip47InboundPayersResponse {
+    /// Field 1: `payers`
+    #[serde(
+        rename = "payers",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+        deserialize_with = "::buffa::json_helpers::null_as_default"
+    )]
+    pub payers: ::buffa::alloc::vec::Vec<Bip47InboundPayer>,
+}
+impl ::core::fmt::Debug for ListBip47InboundPayersResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ListBip47InboundPayersResponse")
+            .field("payers", &self.payers)
+            .finish()
+    }
+}
+impl ListBip47InboundPayersResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersResponse";
+}
+impl ::buffa::DefaultInstance for ListBip47InboundPayersResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ListBip47InboundPayersResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for ListBip47InboundPayersResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for ListBip47InboundPayersResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "ListBip47InboundPayersResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.ListBip47InboundPayersResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersResponse";
+}
+impl ::buffa::Message for ListBip47InboundPayersResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        for v in &self.payers {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        for v in &self.payers {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            v.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                let mut elem = ::core::default::Default::default();
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, depth)?;
+                self.payers.push(elem);
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.payers.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for ListBip47InboundPayersResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __LIST_BIP47INBOUND_PAYERS_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersResponse",
+    to_json: ::buffa::type_registry::any_to_json::<ListBip47InboundPayersResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<ListBip47InboundPayersResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetSilentPaymentAddressRequest {
+    /// If set, return the labeled address instead of the base address.
+    ///
+    /// Field 1: `label`
+    #[serde(
+        rename = "label",
+        with = "::buffa::json_helpers::opt_uint32",
+        skip_serializing_if = "::core::option::Option::is_none"
+    )]
+    pub label: ::core::option::Option<u32>,
+}
+impl ::core::fmt::Debug for GetSilentPaymentAddressRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetSilentPaymentAddressRequest")
+            .field("label", &self.label)
+            .finish()
+    }
+}
+impl GetSilentPaymentAddressRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressRequest";
+}
+impl GetSilentPaymentAddressRequest {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::label`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_label(mut self, value: u32) -> Self {
+        self.label = Some(value);
+        self
+    }
+}
+impl ::buffa::DefaultInstance for GetSilentPaymentAddressRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<GetSilentPaymentAddressRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for GetSilentPaymentAddressRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for GetSilentPaymentAddressRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetSilentPaymentAddressRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetSilentPaymentAddressRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressRequest";
+}
+impl ::buffa::Message for GetSilentPaymentAddressRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if let Some(v) = self.label {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if let Some(v) = self.label {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(v, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.label = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint32(buf)?,
+                );
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.label = ::core::option::Option::None;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetSilentPaymentAddressRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_SILENT_PAYMENT_ADDRESS_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressRequest",
+    to_json: ::buffa::type_registry::any_to_json::<GetSilentPaymentAddressRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<GetSilentPaymentAddressRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetSilentPaymentAddressResponse {
+    /// Field 1: `address`
+    #[serde(
+        rename = "address",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub address: ::buffa::alloc::string::String,
+}
+impl ::core::fmt::Debug for GetSilentPaymentAddressResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetSilentPaymentAddressResponse")
+            .field("address", &self.address)
+            .finish()
+    }
+}
+impl GetSilentPaymentAddressResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressResponse";
+}
+impl ::buffa::DefaultInstance for GetSilentPaymentAddressResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<GetSilentPaymentAddressResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for GetSilentPaymentAddressResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for GetSilentPaymentAddressResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetSilentPaymentAddressResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetSilentPaymentAddressResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressResponse";
+}
+impl ::buffa::Message for GetSilentPaymentAddressResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.address.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.address) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.address.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.address, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.address, buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.address.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetSilentPaymentAddressResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_SILENT_PAYMENT_ADDRESS_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressResponse",
+    to_json: ::buffa::type_registry::any_to_json::<GetSilentPaymentAddressResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<GetSilentPaymentAddressResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct CreateSilentPaymentLabelRequest {
+    /// Field 1: `name`
+    #[serde(
+        rename = "name",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub name: ::buffa::alloc::string::String,
+}
+impl ::core::fmt::Debug for CreateSilentPaymentLabelRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("CreateSilentPaymentLabelRequest")
+            .field("name", &self.name)
+            .finish()
+    }
+}
+impl CreateSilentPaymentLabelRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelRequest";
+}
+impl ::buffa::DefaultInstance for CreateSilentPaymentLabelRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<CreateSilentPaymentLabelRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for CreateSilentPaymentLabelRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for CreateSilentPaymentLabelRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "CreateSilentPaymentLabelRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.CreateSilentPaymentLabelRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelRequest";
+}
+impl ::buffa::Message for CreateSilentPaymentLabelRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.name.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.name) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.name.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.name, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.name, buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.name.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for CreateSilentPaymentLabelRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __CREATE_SILENT_PAYMENT_LABEL_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelRequest",
+    to_json: ::buffa::type_registry::any_to_json::<CreateSilentPaymentLabelRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<CreateSilentPaymentLabelRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct CreateSilentPaymentLabelResponse {
+    /// Field 1: `label_m`
+    #[serde(
+        rename = "labelM",
+        alias = "label_m",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub label_m: u32,
+    /// Field 2: `labeled_address`
+    #[serde(
+        rename = "labeledAddress",
+        alias = "labeled_address",
+        with = "::buffa::json_helpers::proto_string",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+    )]
+    pub labeled_address: ::buffa::alloc::string::String,
+}
+impl ::core::fmt::Debug for CreateSilentPaymentLabelResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("CreateSilentPaymentLabelResponse")
+            .field("label_m", &self.label_m)
+            .field("labeled_address", &self.labeled_address)
+            .finish()
+    }
+}
+impl CreateSilentPaymentLabelResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelResponse";
+}
+impl ::buffa::DefaultInstance for CreateSilentPaymentLabelResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<CreateSilentPaymentLabelResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for CreateSilentPaymentLabelResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for CreateSilentPaymentLabelResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "CreateSilentPaymentLabelResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.CreateSilentPaymentLabelResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelResponse";
+}
+impl ::buffa::Message for CreateSilentPaymentLabelResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.label_m != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.label_m) as u32;
+        }
+        if !self.labeled_address.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.labeled_address) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.label_m != 0u32 {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.label_m, buf);
+        }
+        if !self.labeled_address.is_empty() {
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(&self.labeled_address, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.label_m = ::buffa::types::decode_uint32(buf)?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::types::merge_string(&mut self.labeled_address, buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.label_m = 0u32;
+        self.labeled_address.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for CreateSilentPaymentLabelResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __CREATE_SILENT_PAYMENT_LABEL_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelResponse",
+    to_json: ::buffa::type_registry::any_to_json::<CreateSilentPaymentLabelResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<CreateSilentPaymentLabelResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct ListSilentPaymentLabelsRequest {}
+impl ::core::fmt::Debug for ListSilentPaymentLabelsRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ListSilentPaymentLabelsRequest").finish()
+    }
+}
+impl ListSilentPaymentLabelsRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsRequest";
+}
+impl ::buffa::DefaultInstance for ListSilentPaymentLabelsRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ListSilentPaymentLabelsRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for ListSilentPaymentLabelsRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for ListSilentPaymentLabelsRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "ListSilentPaymentLabelsRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentLabelsRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsRequest";
+}
+impl ::buffa::Message for ListSilentPaymentLabelsRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let size = 0u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        _buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {}
+}
+impl ::buffa::json_helpers::ProtoElemJson for ListSilentPaymentLabelsRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __LIST_SILENT_PAYMENT_LABELS_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsRequest",
+    to_json: ::buffa::type_registry::any_to_json::<ListSilentPaymentLabelsRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<ListSilentPaymentLabelsRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct ListSilentPaymentLabelsResponse {
+    /// Field 1: `labels`
+    #[serde(
+        rename = "labels",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+        deserialize_with = "::buffa::json_helpers::null_as_default"
+    )]
+    pub labels: ::buffa::alloc::vec::Vec<SilentPaymentLabel>,
+}
+impl ::core::fmt::Debug for ListSilentPaymentLabelsResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ListSilentPaymentLabelsResponse")
+            .field("labels", &self.labels)
+            .finish()
+    }
+}
+impl ListSilentPaymentLabelsResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsResponse";
+}
+impl ::buffa::DefaultInstance for ListSilentPaymentLabelsResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ListSilentPaymentLabelsResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for ListSilentPaymentLabelsResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for ListSilentPaymentLabelsResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "ListSilentPaymentLabelsResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentLabelsResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsResponse";
+}
+impl ::buffa::Message for ListSilentPaymentLabelsResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        for v in &self.labels {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        for v in &self.labels {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            v.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                let mut elem = ::core::default::Default::default();
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, depth)?;
+                self.labels.push(elem);
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.labels.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for ListSilentPaymentLabelsResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __LIST_SILENT_PAYMENT_LABELS_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsResponse",
+    to_json: ::buffa::type_registry::any_to_json::<ListSilentPaymentLabelsResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<ListSilentPaymentLabelsResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct SendToSilentPaymentRequest {
+    /// Field 1: `recipients`
+    #[serde(
+        rename = "recipients",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+        deserialize_with = "::buffa::json_helpers::null_as_default"
+    )]
+    pub recipients: ::buffa::alloc::vec::Vec<send_to_silent_payment_request::Recipient>,
+    /// Field 2: `fee_sat_per_vbyte`
+    #[serde(
+        rename = "feeSatPerVbyte",
+        alias = "fee_sat_per_vbyte",
+        with = "::buffa::json_helpers::uint64",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u64"
+    )]
+    pub fee_sat_per_vbyte: u64,
+}
+impl ::core::fmt::Debug for SendToSilentPaymentRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SendToSilentPaymentRequest")
+            .field("recipients", &self.recipients)
+            .field("fee_sat_per_vbyte", &self.fee_sat_per_vbyte)
+            .finish()
+    }
+}
+impl SendToSilentPaymentRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest";
+}
+impl ::buffa::DefaultInstance for SendToSilentPaymentRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<SendToSilentPaymentRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for SendToSilentPaymentRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for SendToSilentPaymentRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "SendToSilentPaymentRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToSilentPaymentRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest";
+}
+impl ::buffa::Message for SendToSilentPaymentRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        for v in &self.recipients {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.fee_sat_per_vbyte != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.fee_sat_per_vbyte) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        for v in &self.recipients {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            v.write_to(__cache, buf);
+        }
+        if self.fee_sat_per_vbyte != 0u64 {
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint64(self.fee_sat_per_vbyte, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                let mut elem = ::core::default::Default::default();
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, depth)?;
+                self.recipients.push(elem);
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.fee_sat_per_vbyte = ::buffa::types::decode_uint64(buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.recipients.clear();
+        self.fee_sat_per_vbyte = 0u64;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for SendToSilentPaymentRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __SEND_TO_SILENT_PAYMENT_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest",
+    to_json: ::buffa::type_registry::any_to_json::<SendToSilentPaymentRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<SendToSilentPaymentRequest>,
+    is_wkt: false,
+};
+pub mod send_to_silent_payment_request {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, PartialEq, Default)]
+    #[derive(::serde::Serialize, ::serde::Deserialize)]
+    #[serde(default)]
+    pub struct Recipient {
+        /// Field 1: `sp_address`
+        #[serde(
+            rename = "spAddress",
+            alias = "sp_address",
+            with = "::buffa::json_helpers::proto_string",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_str"
+        )]
+        pub sp_address: ::buffa::alloc::string::String,
+        /// Field 2: `amount_sats`
+        #[serde(
+            rename = "amountSats",
+            alias = "amount_sats",
+            with = "::buffa::json_helpers::uint64",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u64"
+        )]
+        pub amount_sats: u64,
+    }
+    impl ::core::fmt::Debug for Recipient {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+            f.debug_struct("Recipient")
+                .field("sp_address", &self.sp_address)
+                .field("amount_sats", &self.amount_sats)
+                .finish()
+        }
+    }
+    impl Recipient {
+        /// Protobuf type URL for this message, for use with `Any::pack` and
+        /// `Any::unpack_if`.
+        ///
+        /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+        pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest.Recipient";
+    }
+    impl ::buffa::DefaultInstance for Recipient {
+        fn default_instance() -> &'static Self {
+            static VALUE: ::buffa::__private::OnceBox<Recipient> = ::buffa::__private::OnceBox::new();
+            VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+        }
+    }
+    impl ::buffa_descriptor::reflect::Reflectable for Recipient {
+        /// Bridge-mode reflective handle: encodes `self` and decodes
+        /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+        /// against the package's embedded descriptor pool.
+        ///
+        /// # Performance
+        ///
+        /// One full encode/decode round-trip plus a heap allocation per
+        /// call. Hold onto the returned handle for repeated field reads
+        /// rather than calling `reflect()` per field.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the embedded `FileDescriptorSet` is malformed or
+        /// `Self::FULL_NAME` is not registered. Both indicate codegen
+        /// emitted inconsistent output, not consumer misuse — except
+        /// when this type was re-exported from a different
+        /// `buffa-build` invocation, whose pool is a different
+        /// instance. Each `generate_reflection(true)` codegen run
+        /// embeds its own pool; do not mix `reflect()` calls across
+        /// independently-generated crates.
+        fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+            let pool = __buffa::reflect::descriptor_pool();
+            let idx = pool
+                .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                        < Self as ::buffa::MessageName > ::FULL_NAME,
+                    )
+                });
+            ::buffa_descriptor::reflect::ReflectCow::Owned(
+                ::buffa::alloc::boxed::Box::new(
+                    ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                        self,
+                        ::buffa::alloc::sync::Arc::clone(pool),
+                        idx,
+                    ),
+                ),
+            )
+        }
+    }
+    impl ::buffa::MessageName for Recipient {
+        const PACKAGE: &'static str = "cusf.mainchain.v1";
+        const NAME: &'static str = "SendToSilentPaymentRequest.Recipient";
+        const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToSilentPaymentRequest.Recipient";
+        const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest.Recipient";
+    }
+    impl ::buffa::Message for Recipient {
+        /// Returns the total encoded size in bytes.
+        ///
+        /// The result is a `u32`; the protobuf specification requires all
+        /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+        /// compliant message will never overflow this type.
+        #[allow(clippy::let_and_return)]
+        fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            let mut size = 0u32;
+            if !self.sp_address.is_empty() {
+                size
+                    += 1u32
+                        + ::buffa::types::string_encoded_len(&self.sp_address) as u32;
+            }
+            if self.amount_sats != 0u64 {
+                size
+                    += 1u32
+                        + ::buffa::types::uint64_encoded_len(self.amount_sats) as u32;
+            }
+            size
+        }
+        fn write_to(
+            &self,
+            _cache: &mut ::buffa::SizeCache,
+            buf: &mut impl ::buffa::bytes::BufMut,
+        ) {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            if !self.sp_address.is_empty() {
+                ::buffa::encoding::Tag::new(
+                        1u32,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )
+                    .encode(buf);
+                ::buffa::types::encode_string(&self.sp_address, buf);
+            }
+            if self.amount_sats != 0u64 {
+                ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                    .encode(buf);
+                ::buffa::types::encode_uint64(self.amount_sats, buf);
+            }
+        }
+        fn merge_field(
+            &mut self,
+            tag: ::buffa::encoding::Tag,
+            buf: &mut impl ::buffa::bytes::Buf,
+            depth: u32,
+        ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+            #[allow(unused_imports)]
+            use ::buffa::bytes::Buf as _;
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            match tag.field_number() {
+                1u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 1u32,
+                            expected: 2u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    ::buffa::types::merge_string(&mut self.sp_address, buf)?;
+                }
+                2u32 => {
+                    if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                        return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                            field_number: 2u32,
+                            expected: 0u8,
+                            actual: tag.wire_type() as u8,
+                        });
+                    }
+                    self.amount_sats = ::buffa::types::decode_uint64(buf)?;
+                }
+                _ => {
+                    ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+                }
+            }
+            ::core::result::Result::Ok(())
+        }
+        fn clear(&mut self) {
+            self.sp_address.clear();
+            self.amount_sats = 0u64;
+        }
+    }
+    impl ::buffa::json_helpers::ProtoElemJson for Recipient {
+        fn serialize_proto_json<S: ::serde::Serializer>(
+            v: &Self,
+            s: S,
+        ) -> ::core::result::Result<S::Ok, S::Error> {
+            ::serde::Serialize::serialize(v, s)
+        }
+        fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+            d: D,
+        ) -> ::core::result::Result<Self, D::Error> {
+            <Self as ::serde::Deserialize>::deserialize(d)
+        }
+    }
+    #[doc(hidden)]
+    pub const __RECIPIENT_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+        type_url: "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest.Recipient",
+        to_json: ::buffa::type_registry::any_to_json::<Recipient>,
+        from_json: ::buffa::type_registry::any_from_json::<Recipient>,
+        is_wkt: false,
+    };
+    #[doc(inline)]
+    pub use super::__buffa::view::send_to_silent_payment_request::RecipientView;
+    #[doc(inline)]
+    pub use super::__buffa::view::send_to_silent_payment_request::RecipientOwnedView;
+}
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct SendToSilentPaymentResponse {
+    /// Field 1: `txid`
+    #[serde(
+        rename = "txid",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+    )]
+    pub txid: ::buffa::MessageField<super::super::common::v1::ReverseHex>,
+}
+impl ::core::fmt::Debug for SendToSilentPaymentResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SendToSilentPaymentResponse").field("txid", &self.txid).finish()
+    }
+}
+impl SendToSilentPaymentResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentResponse";
+}
+impl ::buffa::DefaultInstance for SendToSilentPaymentResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<SendToSilentPaymentResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for SendToSilentPaymentResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for SendToSilentPaymentResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "SendToSilentPaymentResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToSilentPaymentResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentResponse";
+}
+impl ::buffa::Message for SendToSilentPaymentResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.txid.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.txid.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.txid.is_set() {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            self.txid.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                ::buffa::Message::merge_length_delimited(
+                    self.txid.get_or_insert_default(),
+                    buf,
+                    depth,
+                )?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.txid = ::buffa::MessageField::none();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for SendToSilentPaymentResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __SEND_TO_SILENT_PAYMENT_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentResponse",
+    to_json: ::buffa::type_registry::any_to_json::<SendToSilentPaymentResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<SendToSilentPaymentResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct ListSilentPaymentReceivesRequest {
+    /// Field 1: `min_confirmations`
+    #[serde(
+        rename = "minConfirmations",
+        alias = "min_confirmations",
+        with = "::buffa::json_helpers::opt_uint32",
+        skip_serializing_if = "::core::option::Option::is_none"
+    )]
+    pub min_confirmations: ::core::option::Option<u32>,
+    /// If not set, the server may apply a default ceiling.
+    ///
+    /// Field 2: `limit`
+    #[serde(
+        rename = "limit",
+        with = "::buffa::json_helpers::opt_uint32",
+        skip_serializing_if = "::core::option::Option::is_none"
+    )]
+    pub limit: ::core::option::Option<u32>,
+}
+impl ::core::fmt::Debug for ListSilentPaymentReceivesRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ListSilentPaymentReceivesRequest")
+            .field("min_confirmations", &self.min_confirmations)
+            .field("limit", &self.limit)
+            .finish()
+    }
+}
+impl ListSilentPaymentReceivesRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesRequest";
+}
+impl ListSilentPaymentReceivesRequest {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::min_confirmations`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_min_confirmations(mut self, value: u32) -> Self {
+        self.min_confirmations = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::limit`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_limit(mut self, value: u32) -> Self {
+        self.limit = Some(value);
+        self
+    }
+}
+impl ::buffa::DefaultInstance for ListSilentPaymentReceivesRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ListSilentPaymentReceivesRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for ListSilentPaymentReceivesRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for ListSilentPaymentReceivesRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "ListSilentPaymentReceivesRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentReceivesRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesRequest";
+}
+impl ::buffa::Message for ListSilentPaymentReceivesRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if let Some(v) = self.min_confirmations {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.limit {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if let Some(v) = self.min_confirmations {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(v, buf);
+        }
+        if let Some(v) = self.limit {
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(v, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.min_confirmations = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint32(buf)?,
+                );
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.limit = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint32(buf)?,
+                );
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.min_confirmations = ::core::option::Option::None;
+        self.limit = ::core::option::Option::None;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for ListSilentPaymentReceivesRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __LIST_SILENT_PAYMENT_RECEIVES_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesRequest",
+    to_json: ::buffa::type_registry::any_to_json::<ListSilentPaymentReceivesRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<ListSilentPaymentReceivesRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct ListSilentPaymentReceivesResponse {
+    /// Field 1: `items`
+    #[serde(
+        rename = "items",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+        deserialize_with = "::buffa::json_helpers::null_as_default"
+    )]
+    pub items: ::buffa::alloc::vec::Vec<SilentPaymentReceive>,
+    /// Field 2: `scan_tip_height`
+    #[serde(
+        rename = "scanTipHeight",
+        alias = "scan_tip_height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub scan_tip_height: u32,
+}
+impl ::core::fmt::Debug for ListSilentPaymentReceivesResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ListSilentPaymentReceivesResponse")
+            .field("items", &self.items)
+            .field("scan_tip_height", &self.scan_tip_height)
+            .finish()
+    }
+}
+impl ListSilentPaymentReceivesResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesResponse";
+}
+impl ::buffa::DefaultInstance for ListSilentPaymentReceivesResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<ListSilentPaymentReceivesResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for ListSilentPaymentReceivesResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for ListSilentPaymentReceivesResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "ListSilentPaymentReceivesResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentReceivesResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesResponse";
+}
+impl ::buffa::Message for ListSilentPaymentReceivesResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        for v in &self.items {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.scan_tip_height != 0u32 {
+            size
+                += 1u32
+                    + ::buffa::types::uint32_encoded_len(self.scan_tip_height) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        for v in &self.items {
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+            v.write_to(__cache, buf);
+        }
+        if self.scan_tip_height != 0u32 {
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.scan_tip_height, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::LengthDelimited {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 2u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                let mut elem = ::core::default::Default::default();
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, depth)?;
+                self.items.push(elem);
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.scan_tip_height = ::buffa::types::decode_uint32(buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.items.clear();
+        self.scan_tip_height = 0u32;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for ListSilentPaymentReceivesResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __LIST_SILENT_PAYMENT_RECEIVES_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesResponse",
+    to_json: ::buffa::type_registry::any_to_json::<ListSilentPaymentReceivesResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<
+        ListSilentPaymentReceivesResponse,
+    >,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetReusableScanStatusRequest {}
+impl ::core::fmt::Debug for GetReusableScanStatusRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetReusableScanStatusRequest").finish()
+    }
+}
+impl GetReusableScanStatusRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusRequest";
+}
+impl ::buffa::DefaultInstance for GetReusableScanStatusRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<GetReusableScanStatusRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for GetReusableScanStatusRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for GetReusableScanStatusRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetReusableScanStatusRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetReusableScanStatusRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusRequest";
+}
+impl ::buffa::Message for GetReusableScanStatusRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let size = 0u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        _buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {}
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetReusableScanStatusRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_REUSABLE_SCAN_STATUS_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusRequest",
+    to_json: ::buffa::type_registry::any_to_json::<GetReusableScanStatusRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<GetReusableScanStatusRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetReusableScanStatusResponse {
+    /// Field 1: `tip_height`
+    #[serde(
+        rename = "tipHeight",
+        alias = "tip_height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub tip_height: u32,
+    /// Field 2: `last_scanned_height`
+    #[serde(
+        rename = "lastScannedHeight",
+        alias = "last_scanned_height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub last_scanned_height: u32,
+    /// Field 3: `birthday_height`
+    #[serde(
+        rename = "birthdayHeight",
+        alias = "birthday_height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub birthday_height: u32,
+    /// Field 4: `catching_up`
+    #[serde(
+        rename = "catchingUp",
+        alias = "catching_up",
+        with = "::buffa::json_helpers::proto_bool",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_false"
+    )]
+    pub catching_up: bool,
+}
+impl ::core::fmt::Debug for GetReusableScanStatusResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetReusableScanStatusResponse")
+            .field("tip_height", &self.tip_height)
+            .field("last_scanned_height", &self.last_scanned_height)
+            .field("birthday_height", &self.birthday_height)
+            .field("catching_up", &self.catching_up)
+            .finish()
+    }
+}
+impl GetReusableScanStatusResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusResponse";
+}
+impl ::buffa::DefaultInstance for GetReusableScanStatusResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<GetReusableScanStatusResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for GetReusableScanStatusResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for GetReusableScanStatusResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetReusableScanStatusResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetReusableScanStatusResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusResponse";
+}
+impl ::buffa::Message for GetReusableScanStatusResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.tip_height != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.tip_height) as u32;
+        }
+        if self.last_scanned_height != 0u32 {
+            size
+                += 1u32
+                    + ::buffa::types::uint32_encoded_len(self.last_scanned_height)
+                        as u32;
+        }
+        if self.birthday_height != 0u32 {
+            size
+                += 1u32
+                    + ::buffa::types::uint32_encoded_len(self.birthday_height) as u32;
+        }
+        if self.catching_up {
+            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.tip_height != 0u32 {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.tip_height, buf);
+        }
+        if self.last_scanned_height != 0u32 {
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.last_scanned_height, buf);
+        }
+        if self.birthday_height != 0u32 {
+            ::buffa::encoding::Tag::new(3u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.birthday_height, buf);
+        }
+        if self.catching_up {
+            ::buffa::encoding::Tag::new(4u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_bool(self.catching_up, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.tip_height = ::buffa::types::decode_uint32(buf)?;
+            }
+            2u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 2u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.last_scanned_height = ::buffa::types::decode_uint32(buf)?;
+            }
+            3u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 3u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.birthday_height = ::buffa::types::decode_uint32(buf)?;
+            }
+            4u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 4u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.catching_up = ::buffa::types::decode_bool(buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.tip_height = 0u32;
+        self.last_scanned_height = 0u32;
+        self.birthday_height = 0u32;
+        self.catching_up = false;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetReusableScanStatusResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_REUSABLE_SCAN_STATUS_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusResponse",
+    to_json: ::buffa::type_registry::any_to_json::<GetReusableScanStatusResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<GetReusableScanStatusResponse>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct RescanReusablePaymentsRequest {
+    /// All matches at or above this height are dropped before rescanning.
+    ///
+    /// Field 1: `from_height`
+    #[serde(
+        rename = "fromHeight",
+        alias = "from_height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub from_height: u32,
+}
+impl ::core::fmt::Debug for RescanReusablePaymentsRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("RescanReusablePaymentsRequest")
+            .field("from_height", &self.from_height)
+            .finish()
+    }
+}
+impl RescanReusablePaymentsRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsRequest";
+}
+impl ::buffa::DefaultInstance for RescanReusablePaymentsRequest {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<RescanReusablePaymentsRequest> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for RescanReusablePaymentsRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for RescanReusablePaymentsRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "RescanReusablePaymentsRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.RescanReusablePaymentsRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsRequest";
+}
+impl ::buffa::Message for RescanReusablePaymentsRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.from_height != 0u32 {
+            size += 1u32 + ::buffa::types::uint32_encoded_len(self.from_height) as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.from_height != 0u32 {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.from_height, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.from_height = ::buffa::types::decode_uint32(buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.from_height = 0u32;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for RescanReusablePaymentsRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __RESCAN_REUSABLE_PAYMENTS_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsRequest",
+    to_json: ::buffa::type_registry::any_to_json::<RescanReusablePaymentsRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<RescanReusablePaymentsRequest>,
+    is_wkt: false,
+};
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct RescanReusablePaymentsResponse {
+    /// Field 1: `scheduled_from_height`
+    #[serde(
+        rename = "scheduledFromHeight",
+        alias = "scheduled_from_height",
+        with = "::buffa::json_helpers::uint32",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_zero_u32"
+    )]
+    pub scheduled_from_height: u32,
+}
+impl ::core::fmt::Debug for RescanReusablePaymentsResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("RescanReusablePaymentsResponse")
+            .field("scheduled_from_height", &self.scheduled_from_height)
+            .finish()
+    }
+}
+impl RescanReusablePaymentsResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsResponse";
+}
+impl ::buffa::DefaultInstance for RescanReusablePaymentsResponse {
+    fn default_instance() -> &'static Self {
+        static VALUE: ::buffa::__private::OnceBox<RescanReusablePaymentsResponse> = ::buffa::__private::OnceBox::new();
+        VALUE.get_or_init(|| ::buffa::alloc::boxed::Box::new(Self::default()))
+    }
+}
+impl ::buffa_descriptor::reflect::Reflectable for RescanReusablePaymentsResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa::MessageName for RescanReusablePaymentsResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "RescanReusablePaymentsResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.RescanReusablePaymentsResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsResponse";
+}
+impl ::buffa::Message for RescanReusablePaymentsResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.scheduled_from_height != 0u32 {
+            size
+                += 1u32
+                    + ::buffa::types::uint32_encoded_len(self.scheduled_from_height)
+                        as u32;
+        }
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.scheduled_from_height != 0u32 {
+            ::buffa::encoding::Tag::new(1u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_uint32(self.scheduled_from_height, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        depth: u32,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                        field_number: 1u32,
+                        expected: 0u8,
+                        actual: tag.wire_type() as u8,
+                    });
+                }
+                self.scheduled_from_height = ::buffa::types::decode_uint32(buf)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, depth)?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.scheduled_from_height = 0u32;
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for RescanReusablePaymentsResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __RESCAN_REUSABLE_PAYMENTS_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsResponse",
+    to_json: ::buffa::type_registry::any_to_json::<RescanReusablePaymentsResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<RescanReusablePaymentsResponse>,
+    is_wkt: false,
+};
 #[allow(
     non_camel_case_types,
     dead_code,
@@ -59482,6 +64490,8675 @@ pub mod __buffa {
                 }
             }
         }
+        #[derive(Clone, Debug, Default)]
+        pub struct Bip47InboundPayerView<'a> {
+            /// Field 1: `payment_code`
+            pub payment_code: &'a str,
+            /// Field 2: `version`
+            pub version: ::buffa::EnumValue<super::super::Bip47Version>,
+            /// Field 3: `next_receive_index`
+            pub next_receive_index: u32,
+            /// Field 4: `total_received_sats`
+            pub total_received_sats: u64,
+            /// When we first observed the notification tx.
+            ///
+            /// Field 5: `first_seen`
+            pub first_seen: ::buffa::MessageFieldView<
+                ::buffa_types::google::protobuf::__buffa::view::TimestampView<'a>,
+            >,
+        }
+        impl<'a> Bip47InboundPayerView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.payment_code = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.version = ::buffa::EnumValue::from(
+                                ::buffa::types::decode_int32(&mut cur)?,
+                            );
+                        }
+                        3u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.next_receive_index = ::buffa::types::decode_uint32(
+                                &mut cur,
+                            )?;
+                        }
+                        4u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 4u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.total_received_sats = ::buffa::types::decode_uint64(
+                                &mut cur,
+                            )?;
+                        }
+                        5u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 5u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.first_seen.as_mut() {
+                                Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                                None => {
+                                    view.first_seen = ::buffa::MessageFieldView::set(
+                                        ::buffa_types::google::protobuf::__buffa::view::TimestampView::_decode_depth(
+                                            sub,
+                                            depth - 1,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for Bip47InboundPayerView<'a> {
+            type Owned = super::super::Bip47InboundPayer;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::Bip47InboundPayer {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::Bip47InboundPayer {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::Bip47InboundPayer {
+                    payment_code: self.payment_code.to_string(),
+                    version: self.version,
+                    next_receive_index: self.next_receive_index,
+                    total_received_sats: self.total_received_sats,
+                    first_seen: match self.first_seen.as_option() {
+                        Some(v) => {
+                            ::buffa::MessageField::<
+                                ::buffa_types::google::protobuf::Timestamp,
+                            >::some(v.to_owned_from_source(__buffa_src))
+                        }
+                        None => ::buffa::MessageField::none(),
+                    },
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for Bip47InboundPayerView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if !self.payment_code.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(&self.payment_code)
+                                as u32;
+                }
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+                    }
+                }
+                if self.next_receive_index != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.next_receive_index)
+                                as u32;
+                }
+                if self.total_received_sats != 0u64 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint64_encoded_len(
+                                self.total_received_sats,
+                            ) as u32;
+                }
+                if self.first_seen.is_set() {
+                    let __slot = __cache.reserve();
+                    let inner_size = self.first_seen.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if !self.payment_code.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.payment_code, buf);
+                }
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        ::buffa::encoding::Tag::new(
+                                2u32,
+                                ::buffa::encoding::WireType::Varint,
+                            )
+                            .encode(buf);
+                        ::buffa::types::encode_int32(val, buf);
+                    }
+                }
+                if self.next_receive_index != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            3u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.next_receive_index, buf);
+                }
+                if self.total_received_sats != 0u64 {
+                    ::buffa::encoding::Tag::new(
+                            4u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint64(self.total_received_sats, buf);
+                }
+                if self.first_seen.is_set() {
+                    ::buffa::encoding::Tag::new(
+                            5u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    self.first_seen.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for Bip47InboundPayerView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.payment_code) {
+                    __map.serialize_entry("paymentCode", self.payment_code)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_default_enum_value(
+                    &self.version,
+                ) {
+                    __map.serialize_entry("version", &self.version)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(
+                    &self.next_receive_index,
+                ) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map
+                        .serialize_entry(
+                            "nextReceiveIndex",
+                            &_W(self.next_receive_index),
+                        )?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u64(
+                    &self.total_received_sats,
+                ) {
+                    struct _W(u64);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint64::serialize(&self.0, __s)
+                        }
+                    }
+                    __map
+                        .serialize_entry(
+                            "totalReceivedSats",
+                            &_W(self.total_received_sats),
+                        )?;
+                }
+                {
+                    if let ::core::option::Option::Some(__v) = self
+                        .first_seen
+                        .as_option()
+                    {
+                        __map.serialize_entry("firstSeen", __v)?;
+                    }
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for Bip47InboundPayerView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "Bip47InboundPayer";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.Bip47InboundPayer";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.Bip47InboundPayer";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for Bip47InboundPayerView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    Bip47InboundPayerView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <Bip47InboundPayerView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for Bip47InboundPayerView<'static> {
+            type Reborrowed<'b> = Bip47InboundPayerView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `Bip47InboundPayer` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`Bip47InboundPayerView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`Bip47InboundPayerView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct Bip47InboundPayerOwnedView(
+            ::buffa::OwnedView<Bip47InboundPayerView<'static>>,
+        );
+        impl Bip47InboundPayerOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    Bip47InboundPayerOwnedView(::buffa::OwnedView::decode(bytes)?),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    Bip47InboundPayerOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::Bip47InboundPayer,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    Bip47InboundPayerOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                )
+            }
+            /// Borrow the full [`Bip47InboundPayerView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &Bip47InboundPayerView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::Bip47InboundPayer {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `payment_code`
+            #[must_use]
+            pub fn payment_code(&self) -> &'_ str {
+                self.0.reborrow().payment_code
+            }
+            /// Field 2: `version`
+            #[must_use]
+            pub fn version(&self) -> ::buffa::EnumValue<super::super::Bip47Version> {
+                self.0.reborrow().version
+            }
+            /// Field 3: `next_receive_index`
+            #[must_use]
+            pub fn next_receive_index(&self) -> u32 {
+                self.0.reborrow().next_receive_index
+            }
+            /// Field 4: `total_received_sats`
+            #[must_use]
+            pub fn total_received_sats(&self) -> u64 {
+                self.0.reborrow().total_received_sats
+            }
+            /// When we first observed the notification tx.
+            ///
+            /// Field 5: `first_seen`
+            #[must_use]
+            pub fn first_seen(
+                &self,
+            ) -> &::buffa::MessageFieldView<
+                ::buffa_types::google::protobuf::__buffa::view::TimestampView<'_>,
+            > {
+                &self.0.reborrow().first_seen
+            }
+        }
+        impl ::core::convert::From<::buffa::OwnedView<Bip47InboundPayerView<'static>>>
+        for Bip47InboundPayerOwnedView {
+            fn from(inner: ::buffa::OwnedView<Bip47InboundPayerView<'static>>) -> Self {
+                Bip47InboundPayerOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<Bip47InboundPayerOwnedView>
+        for ::buffa::OwnedView<Bip47InboundPayerView<'static>> {
+            fn from(wrapper: Bip47InboundPayerOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<::buffa::OwnedView<Bip47InboundPayerView<'static>>>
+        for Bip47InboundPayerOwnedView {
+            fn as_ref(&self) -> &::buffa::OwnedView<Bip47InboundPayerView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::Bip47InboundPayer {
+            type View<'a> = Bip47InboundPayerView<'a>;
+            type ViewHandle = Bip47InboundPayerOwnedView;
+        }
+        impl ::serde::Serialize for Bip47InboundPayerOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct SilentPaymentLabelView<'a> {
+            /// Label index. m=0 is reserved for change.
+            ///
+            /// Field 1: `m`
+            pub m: u32,
+            /// Field 2: `name`
+            pub name: &'a str,
+            /// Field 3: `address`
+            pub address: &'a str,
+        }
+        impl<'a> SilentPaymentLabelView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.m = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        2u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.name = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        3u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.address = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for SilentPaymentLabelView<'a> {
+            type Owned = super::super::SilentPaymentLabel;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::SilentPaymentLabel {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::SilentPaymentLabel {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::SilentPaymentLabel {
+                    m: self.m,
+                    name: self.name.to_string(),
+                    address: self.address.to_string(),
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for SilentPaymentLabelView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.m != 0u32 {
+                    size += 1u32 + ::buffa::types::uint32_encoded_len(self.m) as u32;
+                }
+                if !self.name.is_empty() {
+                    size += 1u32 + ::buffa::types::string_encoded_len(&self.name) as u32;
+                }
+                if !self.address.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(&self.address) as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.m != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.m, buf);
+                }
+                if !self.name.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.name, buf);
+                }
+                if !self.address.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            3u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.address, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for SilentPaymentLabelView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.m) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("m", &_W(self.m))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.name) {
+                    __map.serialize_entry("name", self.name)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.address) {
+                    __map.serialize_entry("address", self.address)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for SilentPaymentLabelView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "SilentPaymentLabel";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.SilentPaymentLabel";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SilentPaymentLabel";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for SilentPaymentLabelView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    SilentPaymentLabelView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <SilentPaymentLabelView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for SilentPaymentLabelView<'static> {
+            type Reborrowed<'b> = SilentPaymentLabelView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `SilentPaymentLabel` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SilentPaymentLabelView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SilentPaymentLabelView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct SilentPaymentLabelOwnedView(
+            ::buffa::OwnedView<SilentPaymentLabelView<'static>>,
+        );
+        impl SilentPaymentLabelOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SilentPaymentLabelOwnedView(::buffa::OwnedView::decode(bytes)?),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SilentPaymentLabelOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::SilentPaymentLabel,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SilentPaymentLabelOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                )
+            }
+            /// Borrow the full [`SilentPaymentLabelView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &SilentPaymentLabelView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::SilentPaymentLabel {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Label index. m=0 is reserved for change.
+            ///
+            /// Field 1: `m`
+            #[must_use]
+            pub fn m(&self) -> u32 {
+                self.0.reborrow().m
+            }
+            /// Field 2: `name`
+            #[must_use]
+            pub fn name(&self) -> &'_ str {
+                self.0.reborrow().name
+            }
+            /// Field 3: `address`
+            #[must_use]
+            pub fn address(&self) -> &'_ str {
+                self.0.reborrow().address
+            }
+        }
+        impl ::core::convert::From<::buffa::OwnedView<SilentPaymentLabelView<'static>>>
+        for SilentPaymentLabelOwnedView {
+            fn from(inner: ::buffa::OwnedView<SilentPaymentLabelView<'static>>) -> Self {
+                SilentPaymentLabelOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<SilentPaymentLabelOwnedView>
+        for ::buffa::OwnedView<SilentPaymentLabelView<'static>> {
+            fn from(wrapper: SilentPaymentLabelOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<::buffa::OwnedView<SilentPaymentLabelView<'static>>>
+        for SilentPaymentLabelOwnedView {
+            fn as_ref(&self) -> &::buffa::OwnedView<SilentPaymentLabelView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::SilentPaymentLabel {
+            type View<'a> = SilentPaymentLabelView<'a>;
+            type ViewHandle = SilentPaymentLabelOwnedView;
+        }
+        impl ::serde::Serialize for SilentPaymentLabelOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct SilentPaymentReceiveView<'a> {
+            /// Field 1: `txid`
+            pub txid: ::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'a>,
+            >,
+            /// Field 2: `vout`
+            pub vout: u32,
+            /// X-only taproot output pubkey, 32 bytes.
+            ///
+            /// Field 3: `output_pubkey`
+            pub output_pubkey: &'a [u8],
+            /// Field 4: `amount_sats`
+            pub amount_sats: u64,
+            /// Field 5: `tweak_k`
+            pub tweak_k: u32,
+            /// Set when the output was paid to a labeled address. Absent =
+            /// base address; 0 = change; \>=1 = user label.
+            ///
+            /// Field 6: `label_m`
+            pub label_m: ::core::option::Option<u32>,
+            /// Field 7: `label_name`
+            pub label_name: ::core::option::Option<&'a str>,
+            /// Field 8: `height`
+            pub height: u32,
+            /// Set if we have observed an on-chain spend of this UTXO.
+            ///
+            /// Field 9: `spent_in_txid`
+            pub spent_in_txid: ::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'a>,
+            >,
+        }
+        impl<'a> SilentPaymentReceiveView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.txid.as_mut() {
+                                Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                                None => {
+                                    view.txid = ::buffa::MessageFieldView::set(
+                                        super::super::super::super::common::v1::__buffa::view::ReverseHexView::_decode_depth(
+                                            sub,
+                                            depth - 1,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.vout = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        3u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.output_pubkey = ::buffa::types::borrow_bytes(&mut cur)?;
+                        }
+                        4u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 4u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.amount_sats = ::buffa::types::decode_uint64(&mut cur)?;
+                        }
+                        5u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 5u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.tweak_k = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        6u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 6u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.label_m = Some(
+                                ::buffa::types::decode_uint32(&mut cur)?,
+                            );
+                        }
+                        7u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 7u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.label_name = Some(
+                                ::buffa::types::borrow_str(&mut cur)?,
+                            );
+                        }
+                        8u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 8u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.height = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        9u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 9u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.spent_in_txid.as_mut() {
+                                Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                                None => {
+                                    view.spent_in_txid = ::buffa::MessageFieldView::set(
+                                        super::super::super::super::common::v1::__buffa::view::ReverseHexView::_decode_depth(
+                                            sub,
+                                            depth - 1,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for SilentPaymentReceiveView<'a> {
+            type Owned = super::super::SilentPaymentReceive;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::SilentPaymentReceive {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::SilentPaymentReceive {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::SilentPaymentReceive {
+                    txid: match self.txid.as_option() {
+                        Some(v) => {
+                            ::buffa::MessageField::<
+                                super::super::super::super::common::v1::ReverseHex,
+                            >::some(v.to_owned_from_source(__buffa_src))
+                        }
+                        None => ::buffa::MessageField::none(),
+                    },
+                    vout: self.vout,
+                    output_pubkey: (self.output_pubkey).to_vec(),
+                    amount_sats: self.amount_sats,
+                    tweak_k: self.tweak_k,
+                    label_m: self.label_m,
+                    label_name: self.label_name.map(|s| s.to_string()),
+                    height: self.height,
+                    spent_in_txid: match self.spent_in_txid.as_option() {
+                        Some(v) => {
+                            ::buffa::MessageField::<
+                                super::super::super::super::common::v1::ReverseHex,
+                            >::some(v.to_owned_from_source(__buffa_src))
+                        }
+                        None => ::buffa::MessageField::none(),
+                    },
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for SilentPaymentReceiveView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.txid.is_set() {
+                    let __slot = __cache.reserve();
+                    let inner_size = self.txid.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                if self.vout != 0u32 {
+                    size += 1u32 + ::buffa::types::uint32_encoded_len(self.vout) as u32;
+                }
+                if !self.output_pubkey.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::bytes_encoded_len(&self.output_pubkey)
+                                as u32;
+                }
+                if self.amount_sats != 0u64 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint64_encoded_len(self.amount_sats)
+                                as u32;
+                }
+                if self.tweak_k != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.tweak_k) as u32;
+                }
+                if let Some(v) = self.label_m {
+                    size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+                }
+                if let Some(ref v) = self.label_name {
+                    size += 1u32 + ::buffa::types::string_encoded_len(v) as u32;
+                }
+                if self.height != 0u32 {
+                    size
+                        += 1u32 + ::buffa::types::uint32_encoded_len(self.height) as u32;
+                }
+                if self.spent_in_txid.is_set() {
+                    let __slot = __cache.reserve();
+                    let inner_size = self.spent_in_txid.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.txid.is_set() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    self.txid.write_to(__cache, buf);
+                }
+                if self.vout != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.vout, buf);
+                }
+                if !self.output_pubkey.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            3u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_bytes(&self.output_pubkey, buf);
+                }
+                if self.amount_sats != 0u64 {
+                    ::buffa::encoding::Tag::new(
+                            4u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint64(self.amount_sats, buf);
+                }
+                if self.tweak_k != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            5u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.tweak_k, buf);
+                }
+                if let Some(v) = self.label_m {
+                    ::buffa::encoding::Tag::new(
+                            6u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(v, buf);
+                }
+                if let Some(ref v) = self.label_name {
+                    ::buffa::encoding::Tag::new(
+                            7u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(v, buf);
+                }
+                if self.height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            8u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.height, buf);
+                }
+                if self.spent_in_txid.is_set() {
+                    ::buffa::encoding::Tag::new(
+                            9u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    self.spent_in_txid.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for SilentPaymentReceiveView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                {
+                    if let ::core::option::Option::Some(__v) = self.txid.as_option() {
+                        __map.serialize_entry("txid", __v)?;
+                    }
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.vout) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("vout", &_W(self.vout))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_empty_bytes(self.output_pubkey) {
+                    struct _W<'__x>(&'__x [u8]);
+                    impl ::serde::Serialize for _W<'_> {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::bytes::serialize(self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("outputPubkey", &_W(self.output_pubkey))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u64(&self.amount_sats) {
+                    struct _W(u64);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint64::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("amountSats", &_W(self.amount_sats))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.tweak_k) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("tweakK", &_W(self.tweak_k))?;
+                }
+                if let ::core::option::Option::Some(__v) = self.label_m {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("labelM", &_W(__v))?;
+                }
+                if let ::core::option::Option::Some(__v) = self.label_name {
+                    __map.serialize_entry("labelName", __v)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.height) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("height", &_W(self.height))?;
+                }
+                {
+                    if let ::core::option::Option::Some(__v) = self
+                        .spent_in_txid
+                        .as_option()
+                    {
+                        __map.serialize_entry("spentInTxid", __v)?;
+                    }
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for SilentPaymentReceiveView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "SilentPaymentReceive";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.SilentPaymentReceive";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SilentPaymentReceive";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for SilentPaymentReceiveView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    SilentPaymentReceiveView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <SilentPaymentReceiveView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for SilentPaymentReceiveView<'static> {
+            type Reborrowed<'b> = SilentPaymentReceiveView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `SilentPaymentReceive` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SilentPaymentReceiveView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SilentPaymentReceiveView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct SilentPaymentReceiveOwnedView(
+            ::buffa::OwnedView<SilentPaymentReceiveView<'static>>,
+        );
+        impl SilentPaymentReceiveOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SilentPaymentReceiveOwnedView(::buffa::OwnedView::decode(bytes)?),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SilentPaymentReceiveOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::SilentPaymentReceive,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SilentPaymentReceiveOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                )
+            }
+            /// Borrow the full [`SilentPaymentReceiveView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &SilentPaymentReceiveView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::SilentPaymentReceive {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `txid`
+            #[must_use]
+            pub fn txid(
+                &self,
+            ) -> &::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'_>,
+            > {
+                &self.0.reborrow().txid
+            }
+            /// Field 2: `vout`
+            #[must_use]
+            pub fn vout(&self) -> u32 {
+                self.0.reborrow().vout
+            }
+            /// X-only taproot output pubkey, 32 bytes.
+            ///
+            /// Field 3: `output_pubkey`
+            #[must_use]
+            pub fn output_pubkey(&self) -> &'_ [u8] {
+                self.0.reborrow().output_pubkey
+            }
+            /// Field 4: `amount_sats`
+            #[must_use]
+            pub fn amount_sats(&self) -> u64 {
+                self.0.reborrow().amount_sats
+            }
+            /// Field 5: `tweak_k`
+            #[must_use]
+            pub fn tweak_k(&self) -> u32 {
+                self.0.reborrow().tweak_k
+            }
+            /// Set when the output was paid to a labeled address. Absent =
+            /// base address; 0 = change; \>=1 = user label.
+            ///
+            /// Field 6: `label_m`
+            #[must_use]
+            pub fn label_m(&self) -> ::core::option::Option<u32> {
+                self.0.reborrow().label_m
+            }
+            /// Field 7: `label_name`
+            #[must_use]
+            pub fn label_name(&self) -> ::core::option::Option<&'_ str> {
+                self.0.reborrow().label_name
+            }
+            /// Field 8: `height`
+            #[must_use]
+            pub fn height(&self) -> u32 {
+                self.0.reborrow().height
+            }
+            /// Set if we have observed an on-chain spend of this UTXO.
+            ///
+            /// Field 9: `spent_in_txid`
+            #[must_use]
+            pub fn spent_in_txid(
+                &self,
+            ) -> &::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'_>,
+            > {
+                &self.0.reborrow().spent_in_txid
+            }
+        }
+        impl ::core::convert::From<::buffa::OwnedView<SilentPaymentReceiveView<'static>>>
+        for SilentPaymentReceiveOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<SilentPaymentReceiveView<'static>>,
+            ) -> Self {
+                SilentPaymentReceiveOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<SilentPaymentReceiveOwnedView>
+        for ::buffa::OwnedView<SilentPaymentReceiveView<'static>> {
+            fn from(wrapper: SilentPaymentReceiveOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<SilentPaymentReceiveView<'static>>,
+        > for SilentPaymentReceiveOwnedView {
+            fn as_ref(&self) -> &::buffa::OwnedView<SilentPaymentReceiveView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::SilentPaymentReceive {
+            type View<'a> = SilentPaymentReceiveView<'a>;
+            type ViewHandle = SilentPaymentReceiveOwnedView;
+        }
+        impl ::serde::Serialize for SilentPaymentReceiveOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetBip47PaymentCodeRequestView<'a> {
+            /// Field 1: `version`
+            pub version: ::buffa::EnumValue<super::super::Bip47Version>,
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> GetBip47PaymentCodeRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.version = ::buffa::EnumValue::from(
+                                ::buffa::types::decode_int32(&mut cur)?,
+                            );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetBip47PaymentCodeRequestView<'a> {
+            type Owned = super::super::GetBip47PaymentCodeRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::GetBip47PaymentCodeRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::GetBip47PaymentCodeRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::GetBip47PaymentCodeRequest {
+                    version: self.version,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetBip47PaymentCodeRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+                    }
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        ::buffa::encoding::Tag::new(
+                                1u32,
+                                ::buffa::encoding::WireType::Varint,
+                            )
+                            .encode(buf);
+                        ::buffa::types::encode_int32(val, buf);
+                    }
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetBip47PaymentCodeRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_default_enum_value(
+                    &self.version,
+                ) {
+                    __map.serialize_entry("version", &self.version)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetBip47PaymentCodeRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetBip47PaymentCodeRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetBip47PaymentCodeRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for GetBip47PaymentCodeRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    GetBip47PaymentCodeRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <GetBip47PaymentCodeRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for GetBip47PaymentCodeRequestView<'static> {
+            type Reborrowed<'b> = GetBip47PaymentCodeRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `GetBip47PaymentCodeRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetBip47PaymentCodeRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetBip47PaymentCodeRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetBip47PaymentCodeRequestOwnedView(
+            ::buffa::OwnedView<GetBip47PaymentCodeRequestView<'static>>,
+        );
+        impl GetBip47PaymentCodeRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetBip47PaymentCodeRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetBip47PaymentCodeRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetBip47PaymentCodeRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetBip47PaymentCodeRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetBip47PaymentCodeRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetBip47PaymentCodeRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::GetBip47PaymentCodeRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `version`
+            #[must_use]
+            pub fn version(&self) -> ::buffa::EnumValue<super::super::Bip47Version> {
+                self.0.reborrow().version
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetBip47PaymentCodeRequestView<'static>>,
+        > for GetBip47PaymentCodeRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetBip47PaymentCodeRequestView<'static>>,
+            ) -> Self {
+                GetBip47PaymentCodeRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetBip47PaymentCodeRequestOwnedView>
+        for ::buffa::OwnedView<GetBip47PaymentCodeRequestView<'static>> {
+            fn from(wrapper: GetBip47PaymentCodeRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetBip47PaymentCodeRequestView<'static>>,
+        > for GetBip47PaymentCodeRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetBip47PaymentCodeRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetBip47PaymentCodeRequest {
+            type View<'a> = GetBip47PaymentCodeRequestView<'a>;
+            type ViewHandle = GetBip47PaymentCodeRequestOwnedView;
+        }
+        impl ::serde::Serialize for GetBip47PaymentCodeRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetBip47PaymentCodeResponseView<'a> {
+            /// Field 1: `payment_code`
+            pub payment_code: &'a str,
+            /// P2PKH address that notification txs to us pay to.
+            ///
+            /// Field 2: `notification_address`
+            pub notification_address: &'a str,
+            /// Field 3: `version`
+            pub version: ::buffa::EnumValue<super::super::Bip47Version>,
+        }
+        impl<'a> GetBip47PaymentCodeResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.payment_code = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        2u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.notification_address = ::buffa::types::borrow_str(
+                                &mut cur,
+                            )?;
+                        }
+                        3u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.version = ::buffa::EnumValue::from(
+                                ::buffa::types::decode_int32(&mut cur)?,
+                            );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetBip47PaymentCodeResponseView<'a> {
+            type Owned = super::super::GetBip47PaymentCodeResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::GetBip47PaymentCodeResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::GetBip47PaymentCodeResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::GetBip47PaymentCodeResponse {
+                    payment_code: self.payment_code.to_string(),
+                    notification_address: self.notification_address.to_string(),
+                    version: self.version,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetBip47PaymentCodeResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if !self.payment_code.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(&self.payment_code)
+                                as u32;
+                }
+                if !self.notification_address.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(
+                                &self.notification_address,
+                            ) as u32;
+                }
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+                    }
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if !self.payment_code.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.payment_code, buf);
+                }
+                if !self.notification_address.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.notification_address, buf);
+                }
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        ::buffa::encoding::Tag::new(
+                                3u32,
+                                ::buffa::encoding::WireType::Varint,
+                            )
+                            .encode(buf);
+                        ::buffa::types::encode_int32(val, buf);
+                    }
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetBip47PaymentCodeResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.payment_code) {
+                    __map.serialize_entry("paymentCode", self.payment_code)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_empty_str(
+                    self.notification_address,
+                ) {
+                    __map
+                        .serialize_entry(
+                            "notificationAddress",
+                            self.notification_address,
+                        )?;
+                }
+                if !::buffa::json_helpers::skip_if::is_default_enum_value(
+                    &self.version,
+                ) {
+                    __map.serialize_entry("version", &self.version)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetBip47PaymentCodeResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetBip47PaymentCodeResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetBip47PaymentCodeResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetBip47PaymentCodeResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for GetBip47PaymentCodeResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    GetBip47PaymentCodeResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <GetBip47PaymentCodeResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for GetBip47PaymentCodeResponseView<'static> {
+            type Reborrowed<'b> = GetBip47PaymentCodeResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `GetBip47PaymentCodeResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetBip47PaymentCodeResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetBip47PaymentCodeResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetBip47PaymentCodeResponseOwnedView(
+            ::buffa::OwnedView<GetBip47PaymentCodeResponseView<'static>>,
+        );
+        impl GetBip47PaymentCodeResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetBip47PaymentCodeResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetBip47PaymentCodeResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetBip47PaymentCodeResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetBip47PaymentCodeResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetBip47PaymentCodeResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetBip47PaymentCodeResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::GetBip47PaymentCodeResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `payment_code`
+            #[must_use]
+            pub fn payment_code(&self) -> &'_ str {
+                self.0.reborrow().payment_code
+            }
+            /// P2PKH address that notification txs to us pay to.
+            ///
+            /// Field 2: `notification_address`
+            #[must_use]
+            pub fn notification_address(&self) -> &'_ str {
+                self.0.reborrow().notification_address
+            }
+            /// Field 3: `version`
+            #[must_use]
+            pub fn version(&self) -> ::buffa::EnumValue<super::super::Bip47Version> {
+                self.0.reborrow().version
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetBip47PaymentCodeResponseView<'static>>,
+        > for GetBip47PaymentCodeResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetBip47PaymentCodeResponseView<'static>>,
+            ) -> Self {
+                GetBip47PaymentCodeResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetBip47PaymentCodeResponseOwnedView>
+        for ::buffa::OwnedView<GetBip47PaymentCodeResponseView<'static>> {
+            fn from(wrapper: GetBip47PaymentCodeResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetBip47PaymentCodeResponseView<'static>>,
+        > for GetBip47PaymentCodeResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetBip47PaymentCodeResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetBip47PaymentCodeResponse {
+            type View<'a> = GetBip47PaymentCodeResponseView<'a>;
+            type ViewHandle = GetBip47PaymentCodeResponseOwnedView;
+        }
+        impl ::serde::Serialize for GetBip47PaymentCodeResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct SendToBip47PaymentCodeRequestView<'a> {
+            /// Field 1: `payment_code`
+            pub payment_code: &'a str,
+            /// Field 2: `amount_sats`
+            pub amount_sats: u64,
+            /// Field 3: `fee_sat_per_vbyte`
+            pub fee_sat_per_vbyte: u64,
+        }
+        impl<'a> SendToBip47PaymentCodeRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.payment_code = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.amount_sats = ::buffa::types::decode_uint64(&mut cur)?;
+                        }
+                        3u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.fee_sat_per_vbyte = ::buffa::types::decode_uint64(
+                                &mut cur,
+                            )?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for SendToBip47PaymentCodeRequestView<'a> {
+            type Owned = super::super::SendToBip47PaymentCodeRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::SendToBip47PaymentCodeRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::SendToBip47PaymentCodeRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::SendToBip47PaymentCodeRequest {
+                    payment_code: self.payment_code.to_string(),
+                    amount_sats: self.amount_sats,
+                    fee_sat_per_vbyte: self.fee_sat_per_vbyte,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for SendToBip47PaymentCodeRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if !self.payment_code.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(&self.payment_code)
+                                as u32;
+                }
+                if self.amount_sats != 0u64 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint64_encoded_len(self.amount_sats)
+                                as u32;
+                }
+                if self.fee_sat_per_vbyte != 0u64 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint64_encoded_len(self.fee_sat_per_vbyte)
+                                as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if !self.payment_code.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.payment_code, buf);
+                }
+                if self.amount_sats != 0u64 {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint64(self.amount_sats, buf);
+                }
+                if self.fee_sat_per_vbyte != 0u64 {
+                    ::buffa::encoding::Tag::new(
+                            3u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint64(self.fee_sat_per_vbyte, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for SendToBip47PaymentCodeRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.payment_code) {
+                    __map.serialize_entry("paymentCode", self.payment_code)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u64(&self.amount_sats) {
+                    struct _W(u64);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint64::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("amountSats", &_W(self.amount_sats))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u64(
+                    &self.fee_sat_per_vbyte,
+                ) {
+                    struct _W(u64);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint64::serialize(&self.0, __s)
+                        }
+                    }
+                    __map
+                        .serialize_entry("feeSatPerVbyte", &_W(self.fee_sat_per_vbyte))?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for SendToBip47PaymentCodeRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "SendToBip47PaymentCodeRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToBip47PaymentCodeRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for SendToBip47PaymentCodeRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    SendToBip47PaymentCodeRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <SendToBip47PaymentCodeRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for SendToBip47PaymentCodeRequestView<'static> {
+            type Reborrowed<'b> = SendToBip47PaymentCodeRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `SendToBip47PaymentCodeRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SendToBip47PaymentCodeRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SendToBip47PaymentCodeRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct SendToBip47PaymentCodeRequestOwnedView(
+            ::buffa::OwnedView<SendToBip47PaymentCodeRequestView<'static>>,
+        );
+        impl SendToBip47PaymentCodeRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToBip47PaymentCodeRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToBip47PaymentCodeRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::SendToBip47PaymentCodeRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToBip47PaymentCodeRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`SendToBip47PaymentCodeRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &SendToBip47PaymentCodeRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::SendToBip47PaymentCodeRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `payment_code`
+            #[must_use]
+            pub fn payment_code(&self) -> &'_ str {
+                self.0.reborrow().payment_code
+            }
+            /// Field 2: `amount_sats`
+            #[must_use]
+            pub fn amount_sats(&self) -> u64 {
+                self.0.reborrow().amount_sats
+            }
+            /// Field 3: `fee_sat_per_vbyte`
+            #[must_use]
+            pub fn fee_sat_per_vbyte(&self) -> u64 {
+                self.0.reborrow().fee_sat_per_vbyte
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<SendToBip47PaymentCodeRequestView<'static>>,
+        > for SendToBip47PaymentCodeRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<SendToBip47PaymentCodeRequestView<'static>>,
+            ) -> Self {
+                SendToBip47PaymentCodeRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<SendToBip47PaymentCodeRequestOwnedView>
+        for ::buffa::OwnedView<SendToBip47PaymentCodeRequestView<'static>> {
+            fn from(wrapper: SendToBip47PaymentCodeRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<SendToBip47PaymentCodeRequestView<'static>>,
+        > for SendToBip47PaymentCodeRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<SendToBip47PaymentCodeRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::SendToBip47PaymentCodeRequest {
+            type View<'a> = SendToBip47PaymentCodeRequestView<'a>;
+            type ViewHandle = SendToBip47PaymentCodeRequestOwnedView;
+        }
+        impl ::serde::Serialize for SendToBip47PaymentCodeRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct SendToBip47PaymentCodeResponseView<'a> {
+            /// Set on the first send to a given recipient; unset on subsequent sends
+            /// (per BIP47, notification happens only on first interaction).
+            ///
+            /// Field 1: `notification_txid`
+            pub notification_txid: ::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'a>,
+            >,
+            /// Field 2: `payment_txid`
+            pub payment_txid: ::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'a>,
+            >,
+            /// Field 3: `sender_index`
+            pub sender_index: u32,
+            /// Field 4: `version`
+            pub version: ::buffa::EnumValue<super::super::Bip47Version>,
+        }
+        impl<'a> SendToBip47PaymentCodeResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.notification_txid.as_mut() {
+                                Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                                None => {
+                                    view.notification_txid = ::buffa::MessageFieldView::set(
+                                        super::super::super::super::common::v1::__buffa::view::ReverseHexView::_decode_depth(
+                                            sub,
+                                            depth - 1,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        2u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.payment_txid.as_mut() {
+                                Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                                None => {
+                                    view.payment_txid = ::buffa::MessageFieldView::set(
+                                        super::super::super::super::common::v1::__buffa::view::ReverseHexView::_decode_depth(
+                                            sub,
+                                            depth - 1,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        3u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.sender_index = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        4u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 4u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.version = ::buffa::EnumValue::from(
+                                ::buffa::types::decode_int32(&mut cur)?,
+                            );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for SendToBip47PaymentCodeResponseView<'a> {
+            type Owned = super::super::SendToBip47PaymentCodeResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::SendToBip47PaymentCodeResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::SendToBip47PaymentCodeResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::SendToBip47PaymentCodeResponse {
+                    notification_txid: match self.notification_txid.as_option() {
+                        Some(v) => {
+                            ::buffa::MessageField::<
+                                super::super::super::super::common::v1::ReverseHex,
+                            >::some(v.to_owned_from_source(__buffa_src))
+                        }
+                        None => ::buffa::MessageField::none(),
+                    },
+                    payment_txid: match self.payment_txid.as_option() {
+                        Some(v) => {
+                            ::buffa::MessageField::<
+                                super::super::super::super::common::v1::ReverseHex,
+                            >::some(v.to_owned_from_source(__buffa_src))
+                        }
+                        None => ::buffa::MessageField::none(),
+                    },
+                    sender_index: self.sender_index,
+                    version: self.version,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for SendToBip47PaymentCodeResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.notification_txid.is_set() {
+                    let __slot = __cache.reserve();
+                    let inner_size = self.notification_txid.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                if self.payment_txid.is_set() {
+                    let __slot = __cache.reserve();
+                    let inner_size = self.payment_txid.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                if self.sender_index != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.sender_index)
+                                as u32;
+                }
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+                    }
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.notification_txid.is_set() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    self.notification_txid.write_to(__cache, buf);
+                }
+                if self.payment_txid.is_set() {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    self.payment_txid.write_to(__cache, buf);
+                }
+                if self.sender_index != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            3u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.sender_index, buf);
+                }
+                {
+                    let val = self.version.to_i32();
+                    if val != 0 {
+                        ::buffa::encoding::Tag::new(
+                                4u32,
+                                ::buffa::encoding::WireType::Varint,
+                            )
+                            .encode(buf);
+                        ::buffa::types::encode_int32(val, buf);
+                    }
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for SendToBip47PaymentCodeResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                {
+                    if let ::core::option::Option::Some(__v) = self
+                        .notification_txid
+                        .as_option()
+                    {
+                        __map.serialize_entry("notificationTxid", __v)?;
+                    }
+                }
+                {
+                    if let ::core::option::Option::Some(__v) = self
+                        .payment_txid
+                        .as_option()
+                    {
+                        __map.serialize_entry("paymentTxid", __v)?;
+                    }
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.sender_index) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("senderIndex", &_W(self.sender_index))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_default_enum_value(
+                    &self.version,
+                ) {
+                    __map.serialize_entry("version", &self.version)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for SendToBip47PaymentCodeResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "SendToBip47PaymentCodeResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToBip47PaymentCodeResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToBip47PaymentCodeResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for SendToBip47PaymentCodeResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    SendToBip47PaymentCodeResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <SendToBip47PaymentCodeResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for SendToBip47PaymentCodeResponseView<'static> {
+            type Reborrowed<'b> = SendToBip47PaymentCodeResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `SendToBip47PaymentCodeResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SendToBip47PaymentCodeResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SendToBip47PaymentCodeResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct SendToBip47PaymentCodeResponseOwnedView(
+            ::buffa::OwnedView<SendToBip47PaymentCodeResponseView<'static>>,
+        );
+        impl SendToBip47PaymentCodeResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToBip47PaymentCodeResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToBip47PaymentCodeResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::SendToBip47PaymentCodeResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToBip47PaymentCodeResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`SendToBip47PaymentCodeResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &SendToBip47PaymentCodeResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::SendToBip47PaymentCodeResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Set on the first send to a given recipient; unset on subsequent sends
+            /// (per BIP47, notification happens only on first interaction).
+            ///
+            /// Field 1: `notification_txid`
+            #[must_use]
+            pub fn notification_txid(
+                &self,
+            ) -> &::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'_>,
+            > {
+                &self.0.reborrow().notification_txid
+            }
+            /// Field 2: `payment_txid`
+            #[must_use]
+            pub fn payment_txid(
+                &self,
+            ) -> &::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'_>,
+            > {
+                &self.0.reborrow().payment_txid
+            }
+            /// Field 3: `sender_index`
+            #[must_use]
+            pub fn sender_index(&self) -> u32 {
+                self.0.reborrow().sender_index
+            }
+            /// Field 4: `version`
+            #[must_use]
+            pub fn version(&self) -> ::buffa::EnumValue<super::super::Bip47Version> {
+                self.0.reborrow().version
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<SendToBip47PaymentCodeResponseView<'static>>,
+        > for SendToBip47PaymentCodeResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<SendToBip47PaymentCodeResponseView<'static>>,
+            ) -> Self {
+                SendToBip47PaymentCodeResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<SendToBip47PaymentCodeResponseOwnedView>
+        for ::buffa::OwnedView<SendToBip47PaymentCodeResponseView<'static>> {
+            fn from(wrapper: SendToBip47PaymentCodeResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<SendToBip47PaymentCodeResponseView<'static>>,
+        > for SendToBip47PaymentCodeResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<SendToBip47PaymentCodeResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::SendToBip47PaymentCodeResponse {
+            type View<'a> = SendToBip47PaymentCodeResponseView<'a>;
+            type ViewHandle = SendToBip47PaymentCodeResponseOwnedView;
+        }
+        impl ::serde::Serialize for SendToBip47PaymentCodeResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct ListBip47InboundPayersRequestView<'a> {
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> ListBip47InboundPayersRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for ListBip47InboundPayersRequestView<'a> {
+            type Owned = super::super::ListBip47InboundPayersRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::ListBip47InboundPayersRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::ListBip47InboundPayersRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::ListBip47InboundPayersRequest {
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for ListBip47InboundPayersRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let size = 0u32;
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                _buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for ListBip47InboundPayersRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for ListBip47InboundPayersRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "ListBip47InboundPayersRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.ListBip47InboundPayersRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for ListBip47InboundPayersRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    ListBip47InboundPayersRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <ListBip47InboundPayersRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for ListBip47InboundPayersRequestView<'static> {
+            type Reborrowed<'b> = ListBip47InboundPayersRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `ListBip47InboundPayersRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`ListBip47InboundPayersRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`ListBip47InboundPayersRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct ListBip47InboundPayersRequestOwnedView(
+            ::buffa::OwnedView<ListBip47InboundPayersRequestView<'static>>,
+        );
+        impl ListBip47InboundPayersRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListBip47InboundPayersRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListBip47InboundPayersRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::ListBip47InboundPayersRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListBip47InboundPayersRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`ListBip47InboundPayersRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &ListBip47InboundPayersRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::ListBip47InboundPayersRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<ListBip47InboundPayersRequestView<'static>>,
+        > for ListBip47InboundPayersRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<ListBip47InboundPayersRequestView<'static>>,
+            ) -> Self {
+                ListBip47InboundPayersRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<ListBip47InboundPayersRequestOwnedView>
+        for ::buffa::OwnedView<ListBip47InboundPayersRequestView<'static>> {
+            fn from(wrapper: ListBip47InboundPayersRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<ListBip47InboundPayersRequestView<'static>>,
+        > for ListBip47InboundPayersRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<ListBip47InboundPayersRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::ListBip47InboundPayersRequest {
+            type View<'a> = ListBip47InboundPayersRequestView<'a>;
+            type ViewHandle = ListBip47InboundPayersRequestOwnedView;
+        }
+        impl ::serde::Serialize for ListBip47InboundPayersRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct ListBip47InboundPayersResponseView<'a> {
+            /// Field 1: `payers`
+            pub payers: ::buffa::RepeatedView<
+                'a,
+                super::super::__buffa::view::Bip47InboundPayerView<'a>,
+            >,
+        }
+        impl<'a> ListBip47InboundPayersResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            view.payers
+                                .push(
+                                    super::super::__buffa::view::Bip47InboundPayerView::_decode_depth(
+                                        sub,
+                                        depth - 1,
+                                    )?,
+                                );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for ListBip47InboundPayersResponseView<'a> {
+            type Owned = super::super::ListBip47InboundPayersResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::ListBip47InboundPayersResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::ListBip47InboundPayersResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::ListBip47InboundPayersResponse {
+                    payers: self
+                        .payers
+                        .iter()
+                        .map(|v| v.to_owned_from_source(__buffa_src))
+                        .collect(),
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for ListBip47InboundPayersResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                for v in &self.payers {
+                    let __slot = __cache.reserve();
+                    let inner_size = v.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                for v in &self.payers {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    v.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for ListBip47InboundPayersResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !self.payers.is_empty() {
+                    __map.serialize_entry("payers", &*self.payers)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for ListBip47InboundPayersResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "ListBip47InboundPayersResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.ListBip47InboundPayersResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListBip47InboundPayersResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for ListBip47InboundPayersResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    ListBip47InboundPayersResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <ListBip47InboundPayersResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for ListBip47InboundPayersResponseView<'static> {
+            type Reborrowed<'b> = ListBip47InboundPayersResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `ListBip47InboundPayersResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`ListBip47InboundPayersResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`ListBip47InboundPayersResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct ListBip47InboundPayersResponseOwnedView(
+            ::buffa::OwnedView<ListBip47InboundPayersResponseView<'static>>,
+        );
+        impl ListBip47InboundPayersResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListBip47InboundPayersResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListBip47InboundPayersResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::ListBip47InboundPayersResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListBip47InboundPayersResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`ListBip47InboundPayersResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &ListBip47InboundPayersResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::ListBip47InboundPayersResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `payers`
+            #[must_use]
+            pub fn payers(
+                &self,
+            ) -> &::buffa::RepeatedView<
+                '_,
+                super::super::__buffa::view::Bip47InboundPayerView<'_>,
+            > {
+                &self.0.reborrow().payers
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<ListBip47InboundPayersResponseView<'static>>,
+        > for ListBip47InboundPayersResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<ListBip47InboundPayersResponseView<'static>>,
+            ) -> Self {
+                ListBip47InboundPayersResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<ListBip47InboundPayersResponseOwnedView>
+        for ::buffa::OwnedView<ListBip47InboundPayersResponseView<'static>> {
+            fn from(wrapper: ListBip47InboundPayersResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<ListBip47InboundPayersResponseView<'static>>,
+        > for ListBip47InboundPayersResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<ListBip47InboundPayersResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::ListBip47InboundPayersResponse {
+            type View<'a> = ListBip47InboundPayersResponseView<'a>;
+            type ViewHandle = ListBip47InboundPayersResponseOwnedView;
+        }
+        impl ::serde::Serialize for ListBip47InboundPayersResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetSilentPaymentAddressRequestView<'a> {
+            /// If set, return the labeled address instead of the base address.
+            ///
+            /// Field 1: `label`
+            pub label: ::core::option::Option<u32>,
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> GetSilentPaymentAddressRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.label = Some(::buffa::types::decode_uint32(&mut cur)?);
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetSilentPaymentAddressRequestView<'a> {
+            type Owned = super::super::GetSilentPaymentAddressRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::GetSilentPaymentAddressRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::GetSilentPaymentAddressRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::GetSilentPaymentAddressRequest {
+                    label: self.label,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetSilentPaymentAddressRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if let Some(v) = self.label {
+                    size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if let Some(v) = self.label {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(v, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetSilentPaymentAddressRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if let ::core::option::Option::Some(__v) = self.label {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("label", &_W(__v))?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetSilentPaymentAddressRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetSilentPaymentAddressRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetSilentPaymentAddressRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for GetSilentPaymentAddressRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    GetSilentPaymentAddressRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <GetSilentPaymentAddressRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for GetSilentPaymentAddressRequestView<'static> {
+            type Reborrowed<'b> = GetSilentPaymentAddressRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `GetSilentPaymentAddressRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetSilentPaymentAddressRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetSilentPaymentAddressRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetSilentPaymentAddressRequestOwnedView(
+            ::buffa::OwnedView<GetSilentPaymentAddressRequestView<'static>>,
+        );
+        impl GetSilentPaymentAddressRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetSilentPaymentAddressRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetSilentPaymentAddressRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetSilentPaymentAddressRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetSilentPaymentAddressRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetSilentPaymentAddressRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetSilentPaymentAddressRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::GetSilentPaymentAddressRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// If set, return the labeled address instead of the base address.
+            ///
+            /// Field 1: `label`
+            #[must_use]
+            pub fn label(&self) -> ::core::option::Option<u32> {
+                self.0.reborrow().label
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetSilentPaymentAddressRequestView<'static>>,
+        > for GetSilentPaymentAddressRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetSilentPaymentAddressRequestView<'static>>,
+            ) -> Self {
+                GetSilentPaymentAddressRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetSilentPaymentAddressRequestOwnedView>
+        for ::buffa::OwnedView<GetSilentPaymentAddressRequestView<'static>> {
+            fn from(wrapper: GetSilentPaymentAddressRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetSilentPaymentAddressRequestView<'static>>,
+        > for GetSilentPaymentAddressRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetSilentPaymentAddressRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetSilentPaymentAddressRequest {
+            type View<'a> = GetSilentPaymentAddressRequestView<'a>;
+            type ViewHandle = GetSilentPaymentAddressRequestOwnedView;
+        }
+        impl ::serde::Serialize for GetSilentPaymentAddressRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetSilentPaymentAddressResponseView<'a> {
+            /// Field 1: `address`
+            pub address: &'a str,
+        }
+        impl<'a> GetSilentPaymentAddressResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.address = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetSilentPaymentAddressResponseView<'a> {
+            type Owned = super::super::GetSilentPaymentAddressResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::GetSilentPaymentAddressResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::GetSilentPaymentAddressResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::GetSilentPaymentAddressResponse {
+                    address: self.address.to_string(),
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetSilentPaymentAddressResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if !self.address.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(&self.address) as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if !self.address.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.address, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetSilentPaymentAddressResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.address) {
+                    __map.serialize_entry("address", self.address)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetSilentPaymentAddressResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetSilentPaymentAddressResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetSilentPaymentAddressResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetSilentPaymentAddressResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for GetSilentPaymentAddressResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    GetSilentPaymentAddressResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <GetSilentPaymentAddressResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for GetSilentPaymentAddressResponseView<'static> {
+            type Reborrowed<'b> = GetSilentPaymentAddressResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `GetSilentPaymentAddressResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetSilentPaymentAddressResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetSilentPaymentAddressResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetSilentPaymentAddressResponseOwnedView(
+            ::buffa::OwnedView<GetSilentPaymentAddressResponseView<'static>>,
+        );
+        impl GetSilentPaymentAddressResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetSilentPaymentAddressResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetSilentPaymentAddressResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetSilentPaymentAddressResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetSilentPaymentAddressResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetSilentPaymentAddressResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetSilentPaymentAddressResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::GetSilentPaymentAddressResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `address`
+            #[must_use]
+            pub fn address(&self) -> &'_ str {
+                self.0.reborrow().address
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetSilentPaymentAddressResponseView<'static>>,
+        > for GetSilentPaymentAddressResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetSilentPaymentAddressResponseView<'static>>,
+            ) -> Self {
+                GetSilentPaymentAddressResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetSilentPaymentAddressResponseOwnedView>
+        for ::buffa::OwnedView<GetSilentPaymentAddressResponseView<'static>> {
+            fn from(wrapper: GetSilentPaymentAddressResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetSilentPaymentAddressResponseView<'static>>,
+        > for GetSilentPaymentAddressResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetSilentPaymentAddressResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetSilentPaymentAddressResponse {
+            type View<'a> = GetSilentPaymentAddressResponseView<'a>;
+            type ViewHandle = GetSilentPaymentAddressResponseOwnedView;
+        }
+        impl ::serde::Serialize for GetSilentPaymentAddressResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct CreateSilentPaymentLabelRequestView<'a> {
+            /// Field 1: `name`
+            pub name: &'a str,
+        }
+        impl<'a> CreateSilentPaymentLabelRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.name = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for CreateSilentPaymentLabelRequestView<'a> {
+            type Owned = super::super::CreateSilentPaymentLabelRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::CreateSilentPaymentLabelRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::CreateSilentPaymentLabelRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::CreateSilentPaymentLabelRequest {
+                    name: self.name.to_string(),
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for CreateSilentPaymentLabelRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if !self.name.is_empty() {
+                    size += 1u32 + ::buffa::types::string_encoded_len(&self.name) as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if !self.name.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.name, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for CreateSilentPaymentLabelRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.name) {
+                    __map.serialize_entry("name", self.name)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for CreateSilentPaymentLabelRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "CreateSilentPaymentLabelRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.CreateSilentPaymentLabelRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for CreateSilentPaymentLabelRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    CreateSilentPaymentLabelRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <CreateSilentPaymentLabelRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for CreateSilentPaymentLabelRequestView<'static> {
+            type Reborrowed<'b> = CreateSilentPaymentLabelRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `CreateSilentPaymentLabelRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`CreateSilentPaymentLabelRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`CreateSilentPaymentLabelRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct CreateSilentPaymentLabelRequestOwnedView(
+            ::buffa::OwnedView<CreateSilentPaymentLabelRequestView<'static>>,
+        );
+        impl CreateSilentPaymentLabelRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    CreateSilentPaymentLabelRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    CreateSilentPaymentLabelRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::CreateSilentPaymentLabelRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    CreateSilentPaymentLabelRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`CreateSilentPaymentLabelRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &CreateSilentPaymentLabelRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::CreateSilentPaymentLabelRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `name`
+            #[must_use]
+            pub fn name(&self) -> &'_ str {
+                self.0.reborrow().name
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<CreateSilentPaymentLabelRequestView<'static>>,
+        > for CreateSilentPaymentLabelRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<CreateSilentPaymentLabelRequestView<'static>>,
+            ) -> Self {
+                CreateSilentPaymentLabelRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<CreateSilentPaymentLabelRequestOwnedView>
+        for ::buffa::OwnedView<CreateSilentPaymentLabelRequestView<'static>> {
+            fn from(wrapper: CreateSilentPaymentLabelRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<CreateSilentPaymentLabelRequestView<'static>>,
+        > for CreateSilentPaymentLabelRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<CreateSilentPaymentLabelRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::CreateSilentPaymentLabelRequest {
+            type View<'a> = CreateSilentPaymentLabelRequestView<'a>;
+            type ViewHandle = CreateSilentPaymentLabelRequestOwnedView;
+        }
+        impl ::serde::Serialize for CreateSilentPaymentLabelRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct CreateSilentPaymentLabelResponseView<'a> {
+            /// Field 1: `label_m`
+            pub label_m: u32,
+            /// Field 2: `labeled_address`
+            pub labeled_address: &'a str,
+        }
+        impl<'a> CreateSilentPaymentLabelResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.label_m = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        2u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.labeled_address = ::buffa::types::borrow_str(&mut cur)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for CreateSilentPaymentLabelResponseView<'a> {
+            type Owned = super::super::CreateSilentPaymentLabelResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(
+                &self,
+            ) -> super::super::CreateSilentPaymentLabelResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::CreateSilentPaymentLabelResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::CreateSilentPaymentLabelResponse {
+                    label_m: self.label_m,
+                    labeled_address: self.labeled_address.to_string(),
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for CreateSilentPaymentLabelResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.label_m != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.label_m) as u32;
+                }
+                if !self.labeled_address.is_empty() {
+                    size
+                        += 1u32
+                            + ::buffa::types::string_encoded_len(&self.labeled_address)
+                                as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.label_m != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.label_m, buf);
+                }
+                if !self.labeled_address.is_empty() {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_string(&self.labeled_address, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for CreateSilentPaymentLabelResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.label_m) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("labelM", &_W(self.label_m))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_empty_str(self.labeled_address) {
+                    __map.serialize_entry("labeledAddress", self.labeled_address)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for CreateSilentPaymentLabelResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "CreateSilentPaymentLabelResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.CreateSilentPaymentLabelResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.CreateSilentPaymentLabelResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for CreateSilentPaymentLabelResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    CreateSilentPaymentLabelResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <CreateSilentPaymentLabelResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for CreateSilentPaymentLabelResponseView<'static> {
+            type Reborrowed<'b> = CreateSilentPaymentLabelResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `CreateSilentPaymentLabelResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`CreateSilentPaymentLabelResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`CreateSilentPaymentLabelResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct CreateSilentPaymentLabelResponseOwnedView(
+            ::buffa::OwnedView<CreateSilentPaymentLabelResponseView<'static>>,
+        );
+        impl CreateSilentPaymentLabelResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    CreateSilentPaymentLabelResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    CreateSilentPaymentLabelResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::CreateSilentPaymentLabelResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    CreateSilentPaymentLabelResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`CreateSilentPaymentLabelResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &CreateSilentPaymentLabelResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::CreateSilentPaymentLabelResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `label_m`
+            #[must_use]
+            pub fn label_m(&self) -> u32 {
+                self.0.reborrow().label_m
+            }
+            /// Field 2: `labeled_address`
+            #[must_use]
+            pub fn labeled_address(&self) -> &'_ str {
+                self.0.reborrow().labeled_address
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<CreateSilentPaymentLabelResponseView<'static>>,
+        > for CreateSilentPaymentLabelResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<CreateSilentPaymentLabelResponseView<'static>>,
+            ) -> Self {
+                CreateSilentPaymentLabelResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<CreateSilentPaymentLabelResponseOwnedView>
+        for ::buffa::OwnedView<CreateSilentPaymentLabelResponseView<'static>> {
+            fn from(wrapper: CreateSilentPaymentLabelResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<CreateSilentPaymentLabelResponseView<'static>>,
+        > for CreateSilentPaymentLabelResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<CreateSilentPaymentLabelResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::CreateSilentPaymentLabelResponse {
+            type View<'a> = CreateSilentPaymentLabelResponseView<'a>;
+            type ViewHandle = CreateSilentPaymentLabelResponseOwnedView;
+        }
+        impl ::serde::Serialize for CreateSilentPaymentLabelResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct ListSilentPaymentLabelsRequestView<'a> {
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> ListSilentPaymentLabelsRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for ListSilentPaymentLabelsRequestView<'a> {
+            type Owned = super::super::ListSilentPaymentLabelsRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::ListSilentPaymentLabelsRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::ListSilentPaymentLabelsRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::ListSilentPaymentLabelsRequest {
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for ListSilentPaymentLabelsRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let size = 0u32;
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                _buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for ListSilentPaymentLabelsRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for ListSilentPaymentLabelsRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "ListSilentPaymentLabelsRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentLabelsRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for ListSilentPaymentLabelsRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    ListSilentPaymentLabelsRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <ListSilentPaymentLabelsRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for ListSilentPaymentLabelsRequestView<'static> {
+            type Reborrowed<'b> = ListSilentPaymentLabelsRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `ListSilentPaymentLabelsRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`ListSilentPaymentLabelsRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`ListSilentPaymentLabelsRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct ListSilentPaymentLabelsRequestOwnedView(
+            ::buffa::OwnedView<ListSilentPaymentLabelsRequestView<'static>>,
+        );
+        impl ListSilentPaymentLabelsRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentLabelsRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentLabelsRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::ListSilentPaymentLabelsRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentLabelsRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`ListSilentPaymentLabelsRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &ListSilentPaymentLabelsRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::ListSilentPaymentLabelsRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<ListSilentPaymentLabelsRequestView<'static>>,
+        > for ListSilentPaymentLabelsRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<ListSilentPaymentLabelsRequestView<'static>>,
+            ) -> Self {
+                ListSilentPaymentLabelsRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<ListSilentPaymentLabelsRequestOwnedView>
+        for ::buffa::OwnedView<ListSilentPaymentLabelsRequestView<'static>> {
+            fn from(wrapper: ListSilentPaymentLabelsRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<ListSilentPaymentLabelsRequestView<'static>>,
+        > for ListSilentPaymentLabelsRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<ListSilentPaymentLabelsRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::ListSilentPaymentLabelsRequest {
+            type View<'a> = ListSilentPaymentLabelsRequestView<'a>;
+            type ViewHandle = ListSilentPaymentLabelsRequestOwnedView;
+        }
+        impl ::serde::Serialize for ListSilentPaymentLabelsRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct ListSilentPaymentLabelsResponseView<'a> {
+            /// Field 1: `labels`
+            pub labels: ::buffa::RepeatedView<
+                'a,
+                super::super::__buffa::view::SilentPaymentLabelView<'a>,
+            >,
+        }
+        impl<'a> ListSilentPaymentLabelsResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            view.labels
+                                .push(
+                                    super::super::__buffa::view::SilentPaymentLabelView::_decode_depth(
+                                        sub,
+                                        depth - 1,
+                                    )?,
+                                );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for ListSilentPaymentLabelsResponseView<'a> {
+            type Owned = super::super::ListSilentPaymentLabelsResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::ListSilentPaymentLabelsResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::ListSilentPaymentLabelsResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::ListSilentPaymentLabelsResponse {
+                    labels: self
+                        .labels
+                        .iter()
+                        .map(|v| v.to_owned_from_source(__buffa_src))
+                        .collect(),
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for ListSilentPaymentLabelsResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                for v in &self.labels {
+                    let __slot = __cache.reserve();
+                    let inner_size = v.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                for v in &self.labels {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    v.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for ListSilentPaymentLabelsResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !self.labels.is_empty() {
+                    __map.serialize_entry("labels", &*self.labels)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for ListSilentPaymentLabelsResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "ListSilentPaymentLabelsResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentLabelsResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentLabelsResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for ListSilentPaymentLabelsResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    ListSilentPaymentLabelsResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <ListSilentPaymentLabelsResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for ListSilentPaymentLabelsResponseView<'static> {
+            type Reborrowed<'b> = ListSilentPaymentLabelsResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `ListSilentPaymentLabelsResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`ListSilentPaymentLabelsResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`ListSilentPaymentLabelsResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct ListSilentPaymentLabelsResponseOwnedView(
+            ::buffa::OwnedView<ListSilentPaymentLabelsResponseView<'static>>,
+        );
+        impl ListSilentPaymentLabelsResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentLabelsResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentLabelsResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::ListSilentPaymentLabelsResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentLabelsResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`ListSilentPaymentLabelsResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &ListSilentPaymentLabelsResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::ListSilentPaymentLabelsResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `labels`
+            #[must_use]
+            pub fn labels(
+                &self,
+            ) -> &::buffa::RepeatedView<
+                '_,
+                super::super::__buffa::view::SilentPaymentLabelView<'_>,
+            > {
+                &self.0.reborrow().labels
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<ListSilentPaymentLabelsResponseView<'static>>,
+        > for ListSilentPaymentLabelsResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<ListSilentPaymentLabelsResponseView<'static>>,
+            ) -> Self {
+                ListSilentPaymentLabelsResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<ListSilentPaymentLabelsResponseOwnedView>
+        for ::buffa::OwnedView<ListSilentPaymentLabelsResponseView<'static>> {
+            fn from(wrapper: ListSilentPaymentLabelsResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<ListSilentPaymentLabelsResponseView<'static>>,
+        > for ListSilentPaymentLabelsResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<ListSilentPaymentLabelsResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::ListSilentPaymentLabelsResponse {
+            type View<'a> = ListSilentPaymentLabelsResponseView<'a>;
+            type ViewHandle = ListSilentPaymentLabelsResponseOwnedView;
+        }
+        impl ::serde::Serialize for ListSilentPaymentLabelsResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct SendToSilentPaymentRequestView<'a> {
+            /// Field 1: `recipients`
+            pub recipients: ::buffa::RepeatedView<
+                'a,
+                super::super::__buffa::view::send_to_silent_payment_request::RecipientView<
+                    'a,
+                >,
+            >,
+            /// Field 2: `fee_sat_per_vbyte`
+            pub fee_sat_per_vbyte: u64,
+        }
+        impl<'a> SendToSilentPaymentRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.fee_sat_per_vbyte = ::buffa::types::decode_uint64(
+                                &mut cur,
+                            )?;
+                        }
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            view.recipients
+                                .push(
+                                    super::super::__buffa::view::send_to_silent_payment_request::RecipientView::_decode_depth(
+                                        sub,
+                                        depth - 1,
+                                    )?,
+                                );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for SendToSilentPaymentRequestView<'a> {
+            type Owned = super::super::SendToSilentPaymentRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::SendToSilentPaymentRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::SendToSilentPaymentRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::SendToSilentPaymentRequest {
+                    recipients: self
+                        .recipients
+                        .iter()
+                        .map(|v| v.to_owned_from_source(__buffa_src))
+                        .collect(),
+                    fee_sat_per_vbyte: self.fee_sat_per_vbyte,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for SendToSilentPaymentRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                for v in &self.recipients {
+                    let __slot = __cache.reserve();
+                    let inner_size = v.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                if self.fee_sat_per_vbyte != 0u64 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint64_encoded_len(self.fee_sat_per_vbyte)
+                                as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                for v in &self.recipients {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    v.write_to(__cache, buf);
+                }
+                if self.fee_sat_per_vbyte != 0u64 {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint64(self.fee_sat_per_vbyte, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for SendToSilentPaymentRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !self.recipients.is_empty() {
+                    __map.serialize_entry("recipients", &*self.recipients)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u64(
+                    &self.fee_sat_per_vbyte,
+                ) {
+                    struct _W(u64);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint64::serialize(&self.0, __s)
+                        }
+                    }
+                    __map
+                        .serialize_entry("feeSatPerVbyte", &_W(self.fee_sat_per_vbyte))?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for SendToSilentPaymentRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "SendToSilentPaymentRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToSilentPaymentRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for SendToSilentPaymentRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    SendToSilentPaymentRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <SendToSilentPaymentRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for SendToSilentPaymentRequestView<'static> {
+            type Reborrowed<'b> = SendToSilentPaymentRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `SendToSilentPaymentRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SendToSilentPaymentRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SendToSilentPaymentRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct SendToSilentPaymentRequestOwnedView(
+            ::buffa::OwnedView<SendToSilentPaymentRequestView<'static>>,
+        );
+        impl SendToSilentPaymentRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToSilentPaymentRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToSilentPaymentRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::SendToSilentPaymentRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToSilentPaymentRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`SendToSilentPaymentRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &SendToSilentPaymentRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::SendToSilentPaymentRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `recipients`
+            #[must_use]
+            pub fn recipients(
+                &self,
+            ) -> &::buffa::RepeatedView<
+                '_,
+                super::super::__buffa::view::send_to_silent_payment_request::RecipientView<
+                    '_,
+                >,
+            > {
+                &self.0.reborrow().recipients
+            }
+            /// Field 2: `fee_sat_per_vbyte`
+            #[must_use]
+            pub fn fee_sat_per_vbyte(&self) -> u64 {
+                self.0.reborrow().fee_sat_per_vbyte
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<SendToSilentPaymentRequestView<'static>>,
+        > for SendToSilentPaymentRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<SendToSilentPaymentRequestView<'static>>,
+            ) -> Self {
+                SendToSilentPaymentRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<SendToSilentPaymentRequestOwnedView>
+        for ::buffa::OwnedView<SendToSilentPaymentRequestView<'static>> {
+            fn from(wrapper: SendToSilentPaymentRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<SendToSilentPaymentRequestView<'static>>,
+        > for SendToSilentPaymentRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<SendToSilentPaymentRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::SendToSilentPaymentRequest {
+            type View<'a> = SendToSilentPaymentRequestView<'a>;
+            type ViewHandle = SendToSilentPaymentRequestOwnedView;
+        }
+        impl ::serde::Serialize for SendToSilentPaymentRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        pub mod send_to_silent_payment_request {
+            #[allow(unused_imports)]
+            use super::*;
+            #[derive(Clone, Debug, Default)]
+            pub struct RecipientView<'a> {
+                /// Field 1: `sp_address`
+                pub sp_address: &'a str,
+                /// Field 2: `amount_sats`
+                pub amount_sats: u64,
+            }
+            impl<'a> RecipientView<'a> {
+                /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+                ///
+                /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+                /// and by generated sub-message decode arms with `depth - 1`.
+                ///
+                /// **Not part of the public API.** Named with a leading underscore to
+                /// signal that it is for generated-code use only.
+                #[doc(hidden)]
+                pub fn _decode_depth(
+                    buf: &'a [u8],
+                    depth: u32,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    let mut view = Self::default();
+                    view._merge_into_view(buf, depth)?;
+                    ::core::result::Result::Ok(view)
+                }
+                /// Merge fields from `buf` into this view (proto merge semantics).
+                ///
+                /// Repeated fields append; singular fields last-wins; singular
+                /// MESSAGE fields merge recursively. Used by sub-message decode
+                /// arms when the same field appears multiple times on the wire.
+                ///
+                /// **Not part of the public API.**
+                #[doc(hidden)]
+                pub fn _merge_into_view(
+                    &mut self,
+                    buf: &'a [u8],
+                    depth: u32,
+                ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                    let _ = depth;
+                    #[allow(unused_variables)]
+                    let view = self;
+                    let mut cur: &'a [u8] = buf;
+                    while !cur.is_empty() {
+                        let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                        match tag.field_number() {
+                            1u32 => {
+                                if tag.wire_type()
+                                    != ::buffa::encoding::WireType::LengthDelimited
+                                {
+                                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                        field_number: 1u32,
+                                        expected: 2u8,
+                                        actual: tag.wire_type() as u8,
+                                    });
+                                }
+                                view.sp_address = ::buffa::types::borrow_str(&mut cur)?;
+                            }
+                            2u32 => {
+                                if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                    return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                        field_number: 2u32,
+                                        expected: 0u8,
+                                        actual: tag.wire_type() as u8,
+                                    });
+                                }
+                                view.amount_sats = ::buffa::types::decode_uint64(&mut cur)?;
+                            }
+                            _ => {
+                                ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                            }
+                        }
+                    }
+                    ::core::result::Result::Ok(())
+                }
+            }
+            impl<'a> ::buffa::MessageView<'a> for RecipientView<'a> {
+                type Owned = super::super::super::send_to_silent_payment_request::Recipient;
+                fn decode_view(
+                    buf: &'a [u8],
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+                }
+                fn decode_view_with_limit(
+                    buf: &'a [u8],
+                    depth: u32,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    Self::_decode_depth(buf, depth)
+                }
+                fn to_owned_message(
+                    &self,
+                ) -> super::super::super::send_to_silent_payment_request::Recipient {
+                    self.to_owned_from_source(None)
+                }
+                #[allow(clippy::useless_conversion, clippy::needless_update)]
+                fn to_owned_from_source(
+                    &self,
+                    __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+                ) -> super::super::super::send_to_silent_payment_request::Recipient {
+                    #[allow(unused_imports)]
+                    use ::buffa::alloc::string::ToString as _;
+                    let _ = __buffa_src;
+                    super::super::super::send_to_silent_payment_request::Recipient {
+                        sp_address: self.sp_address.to_string(),
+                        amount_sats: self.amount_sats,
+                        ..::core::default::Default::default()
+                    }
+                }
+            }
+            impl<'a> ::buffa::ViewEncode<'a> for RecipientView<'a> {
+                #[allow(clippy::needless_borrow, clippy::let_and_return)]
+                fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    let mut size = 0u32;
+                    if !self.sp_address.is_empty() {
+                        size
+                            += 1u32
+                                + ::buffa::types::string_encoded_len(&self.sp_address)
+                                    as u32;
+                    }
+                    if self.amount_sats != 0u64 {
+                        size
+                            += 1u32
+                                + ::buffa::types::uint64_encoded_len(self.amount_sats)
+                                    as u32;
+                    }
+                    size
+                }
+                #[allow(clippy::needless_borrow)]
+                fn write_to(
+                    &self,
+                    _cache: &mut ::buffa::SizeCache,
+                    buf: &mut impl ::buffa::bytes::BufMut,
+                ) {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    if !self.sp_address.is_empty() {
+                        ::buffa::encoding::Tag::new(
+                                1u32,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )
+                            .encode(buf);
+                        ::buffa::types::encode_string(&self.sp_address, buf);
+                    }
+                    if self.amount_sats != 0u64 {
+                        ::buffa::encoding::Tag::new(
+                                2u32,
+                                ::buffa::encoding::WireType::Varint,
+                            )
+                            .encode(buf);
+                        ::buffa::types::encode_uint64(self.amount_sats, buf);
+                    }
+                }
+            }
+            /// Serializes this view as protobuf JSON.
+            ///
+            /// Implicit-presence fields with default values are omitted, `required`
+            /// fields are always emitted, explicit-presence (`optional`) fields are
+            /// emitted only when set, bytes fields are base64-encoded, and enum
+            /// values are their proto name strings.
+            ///
+            /// This impl uses `serialize_map(None)` because the number of emitted
+            /// fields depends on default-omission rules; serializers that require
+            /// known map lengths (e.g. `bincode`) will return a runtime error.
+            /// Use the owned message type for those formats.
+            impl<'__a> ::serde::Serialize for RecipientView<'__a> {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    use ::serde::ser::SerializeMap as _;
+                    let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                    if !::buffa::json_helpers::skip_if::is_empty_str(self.sp_address) {
+                        __map.serialize_entry("spAddress", self.sp_address)?;
+                    }
+                    if !::buffa::json_helpers::skip_if::is_zero_u64(&self.amount_sats) {
+                        struct _W(u64);
+                        impl ::serde::Serialize for _W {
+                            fn serialize<__S: ::serde::Serializer>(
+                                &self,
+                                __s: __S,
+                            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                                ::buffa::json_helpers::uint64::serialize(&self.0, __s)
+                            }
+                        }
+                        __map.serialize_entry("amountSats", &_W(self.amount_sats))?;
+                    }
+                    __map.end()
+                }
+            }
+            impl<'a> ::buffa::MessageName for RecipientView<'a> {
+                const PACKAGE: &'static str = "cusf.mainchain.v1";
+                const NAME: &'static str = "SendToSilentPaymentRequest.Recipient";
+                const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToSilentPaymentRequest.Recipient";
+                const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentRequest.Recipient";
+            }
+            impl<'v> ::buffa::DefaultViewInstance for RecipientView<'v> {
+                fn default_view_instance<'a>() -> &'a Self
+                where
+                    Self: 'a,
+                {
+                    static VALUE: ::buffa::__private::OnceBox<RecipientView<'static>> = ::buffa::__private::OnceBox::new();
+                    VALUE
+                        .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                            <RecipientView<'static>>::default(),
+                        ))
+                }
+            }
+            impl ::buffa::ViewReborrow for RecipientView<'static> {
+                type Reborrowed<'b> = RecipientView<'b>;
+                fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                    this
+                }
+            }
+            /** Self-contained, `'static` owned view of a `Recipient` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`RecipientView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`RecipientView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+            #[derive(Clone, Debug)]
+            pub struct RecipientOwnedView(::buffa::OwnedView<RecipientView<'static>>);
+            impl RecipientOwnedView {
+                /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+                ///
+                /// The view borrows directly from the buffer's data; the buffer is
+                /// retained inside the returned handle.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+                /// protobuf data.
+                pub fn decode(
+                    bytes: ::buffa::bytes::Bytes,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        RecipientOwnedView(::buffa::OwnedView::decode(bytes)?),
+                    )
+                }
+                /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+                /// max message size).
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+                /// exceeds the configured limits.
+                pub fn decode_with_options(
+                    bytes: ::buffa::bytes::Bytes,
+                    opts: &::buffa::DecodeOptions,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        RecipientOwnedView(
+                            ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                        ),
+                    )
+                }
+                /// Build from an owned message via an encode → decode round-trip.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+                /// somehow invalid (should not happen for well-formed messages).
+                pub fn from_owned(
+                    msg: &super::super::super::send_to_silent_payment_request::Recipient,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        RecipientOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                    )
+                }
+                /// Borrow the full [`RecipientView`] with its lifetime tied to `&self`.
+                #[must_use]
+                pub fn view(&self) -> &RecipientView<'_> {
+                    self.0.reborrow()
+                }
+                /// Convert to the owned message type.
+                #[must_use]
+                pub fn to_owned_message(
+                    &self,
+                ) -> super::super::super::send_to_silent_payment_request::Recipient {
+                    self.0.to_owned_message()
+                }
+                /// The underlying bytes buffer.
+                #[must_use]
+                pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                    self.0.bytes()
+                }
+                /// Consume the handle, returning the underlying bytes buffer.
+                #[must_use]
+                pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                    self.0.into_bytes()
+                }
+                /// Field 1: `sp_address`
+                #[must_use]
+                pub fn sp_address(&self) -> &'_ str {
+                    self.0.reborrow().sp_address
+                }
+                /// Field 2: `amount_sats`
+                #[must_use]
+                pub fn amount_sats(&self) -> u64 {
+                    self.0.reborrow().amount_sats
+                }
+            }
+            impl ::core::convert::From<::buffa::OwnedView<RecipientView<'static>>>
+            for RecipientOwnedView {
+                fn from(inner: ::buffa::OwnedView<RecipientView<'static>>) -> Self {
+                    RecipientOwnedView(inner)
+                }
+            }
+            impl ::core::convert::From<RecipientOwnedView>
+            for ::buffa::OwnedView<RecipientView<'static>> {
+                fn from(wrapper: RecipientOwnedView) -> Self {
+                    wrapper.0
+                }
+            }
+            impl ::core::convert::AsRef<::buffa::OwnedView<RecipientView<'static>>>
+            for RecipientOwnedView {
+                fn as_ref(&self) -> &::buffa::OwnedView<RecipientView<'static>> {
+                    &self.0
+                }
+            }
+            impl ::buffa::HasMessageView
+            for super::super::super::send_to_silent_payment_request::Recipient {
+                type View<'a> = RecipientView<'a>;
+                type ViewHandle = RecipientOwnedView;
+            }
+            impl ::serde::Serialize for RecipientOwnedView {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    ::serde::Serialize::serialize(&self.0, __s)
+                }
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct SendToSilentPaymentResponseView<'a> {
+            /// Field 1: `txid`
+            pub txid: ::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'a>,
+            >,
+        }
+        impl<'a> SendToSilentPaymentResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.txid.as_mut() {
+                                Some(existing) => existing._merge_into_view(sub, depth - 1)?,
+                                None => {
+                                    view.txid = ::buffa::MessageFieldView::set(
+                                        super::super::super::super::common::v1::__buffa::view::ReverseHexView::_decode_depth(
+                                            sub,
+                                            depth - 1,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for SendToSilentPaymentResponseView<'a> {
+            type Owned = super::super::SendToSilentPaymentResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::SendToSilentPaymentResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::SendToSilentPaymentResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::SendToSilentPaymentResponse {
+                    txid: match self.txid.as_option() {
+                        Some(v) => {
+                            ::buffa::MessageField::<
+                                super::super::super::super::common::v1::ReverseHex,
+                            >::some(v.to_owned_from_source(__buffa_src))
+                        }
+                        None => ::buffa::MessageField::none(),
+                    },
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for SendToSilentPaymentResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.txid.is_set() {
+                    let __slot = __cache.reserve();
+                    let inner_size = self.txid.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.txid.is_set() {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    self.txid.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for SendToSilentPaymentResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                {
+                    if let ::core::option::Option::Some(__v) = self.txid.as_option() {
+                        __map.serialize_entry("txid", __v)?;
+                    }
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for SendToSilentPaymentResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "SendToSilentPaymentResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.SendToSilentPaymentResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.SendToSilentPaymentResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for SendToSilentPaymentResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    SendToSilentPaymentResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <SendToSilentPaymentResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for SendToSilentPaymentResponseView<'static> {
+            type Reborrowed<'b> = SendToSilentPaymentResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `SendToSilentPaymentResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SendToSilentPaymentResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SendToSilentPaymentResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct SendToSilentPaymentResponseOwnedView(
+            ::buffa::OwnedView<SendToSilentPaymentResponseView<'static>>,
+        );
+        impl SendToSilentPaymentResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToSilentPaymentResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToSilentPaymentResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::SendToSilentPaymentResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    SendToSilentPaymentResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`SendToSilentPaymentResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &SendToSilentPaymentResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::SendToSilentPaymentResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `txid`
+            #[must_use]
+            pub fn txid(
+                &self,
+            ) -> &::buffa::MessageFieldView<
+                super::super::super::super::common::v1::__buffa::view::ReverseHexView<'_>,
+            > {
+                &self.0.reborrow().txid
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<SendToSilentPaymentResponseView<'static>>,
+        > for SendToSilentPaymentResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<SendToSilentPaymentResponseView<'static>>,
+            ) -> Self {
+                SendToSilentPaymentResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<SendToSilentPaymentResponseOwnedView>
+        for ::buffa::OwnedView<SendToSilentPaymentResponseView<'static>> {
+            fn from(wrapper: SendToSilentPaymentResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<SendToSilentPaymentResponseView<'static>>,
+        > for SendToSilentPaymentResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<SendToSilentPaymentResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::SendToSilentPaymentResponse {
+            type View<'a> = SendToSilentPaymentResponseView<'a>;
+            type ViewHandle = SendToSilentPaymentResponseOwnedView;
+        }
+        impl ::serde::Serialize for SendToSilentPaymentResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct ListSilentPaymentReceivesRequestView<'a> {
+            /// Field 1: `min_confirmations`
+            pub min_confirmations: ::core::option::Option<u32>,
+            /// If not set, the server may apply a default ceiling.
+            ///
+            /// Field 2: `limit`
+            pub limit: ::core::option::Option<u32>,
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> ListSilentPaymentReceivesRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.min_confirmations = Some(
+                                ::buffa::types::decode_uint32(&mut cur)?,
+                            );
+                        }
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.limit = Some(::buffa::types::decode_uint32(&mut cur)?);
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for ListSilentPaymentReceivesRequestView<'a> {
+            type Owned = super::super::ListSilentPaymentReceivesRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(
+                &self,
+            ) -> super::super::ListSilentPaymentReceivesRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::ListSilentPaymentReceivesRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::ListSilentPaymentReceivesRequest {
+                    min_confirmations: self.min_confirmations,
+                    limit: self.limit,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for ListSilentPaymentReceivesRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if let Some(v) = self.min_confirmations {
+                    size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+                }
+                if let Some(v) = self.limit {
+                    size += 1u32 + ::buffa::types::uint32_encoded_len(v) as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if let Some(v) = self.min_confirmations {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(v, buf);
+                }
+                if let Some(v) = self.limit {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(v, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for ListSilentPaymentReceivesRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if let ::core::option::Option::Some(__v) = self.min_confirmations {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("minConfirmations", &_W(__v))?;
+                }
+                if let ::core::option::Option::Some(__v) = self.limit {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("limit", &_W(__v))?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for ListSilentPaymentReceivesRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "ListSilentPaymentReceivesRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentReceivesRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for ListSilentPaymentReceivesRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    ListSilentPaymentReceivesRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <ListSilentPaymentReceivesRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for ListSilentPaymentReceivesRequestView<'static> {
+            type Reborrowed<'b> = ListSilentPaymentReceivesRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `ListSilentPaymentReceivesRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`ListSilentPaymentReceivesRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`ListSilentPaymentReceivesRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct ListSilentPaymentReceivesRequestOwnedView(
+            ::buffa::OwnedView<ListSilentPaymentReceivesRequestView<'static>>,
+        );
+        impl ListSilentPaymentReceivesRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentReceivesRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentReceivesRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::ListSilentPaymentReceivesRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentReceivesRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`ListSilentPaymentReceivesRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &ListSilentPaymentReceivesRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::ListSilentPaymentReceivesRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `min_confirmations`
+            #[must_use]
+            pub fn min_confirmations(&self) -> ::core::option::Option<u32> {
+                self.0.reborrow().min_confirmations
+            }
+            /// If not set, the server may apply a default ceiling.
+            ///
+            /// Field 2: `limit`
+            #[must_use]
+            pub fn limit(&self) -> ::core::option::Option<u32> {
+                self.0.reborrow().limit
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<ListSilentPaymentReceivesRequestView<'static>>,
+        > for ListSilentPaymentReceivesRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<ListSilentPaymentReceivesRequestView<'static>>,
+            ) -> Self {
+                ListSilentPaymentReceivesRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<ListSilentPaymentReceivesRequestOwnedView>
+        for ::buffa::OwnedView<ListSilentPaymentReceivesRequestView<'static>> {
+            fn from(wrapper: ListSilentPaymentReceivesRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<ListSilentPaymentReceivesRequestView<'static>>,
+        > for ListSilentPaymentReceivesRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<ListSilentPaymentReceivesRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::ListSilentPaymentReceivesRequest {
+            type View<'a> = ListSilentPaymentReceivesRequestView<'a>;
+            type ViewHandle = ListSilentPaymentReceivesRequestOwnedView;
+        }
+        impl ::serde::Serialize for ListSilentPaymentReceivesRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct ListSilentPaymentReceivesResponseView<'a> {
+            /// Field 1: `items`
+            pub items: ::buffa::RepeatedView<
+                'a,
+                super::super::__buffa::view::SilentPaymentReceiveView<'a>,
+            >,
+            /// Field 2: `scan_tip_height`
+            pub scan_tip_height: u32,
+        }
+        impl<'a> ListSilentPaymentReceivesResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.scan_tip_height = ::buffa::types::decode_uint32(
+                                &mut cur,
+                            )?;
+                        }
+                        1u32 => {
+                            if tag.wire_type()
+                                != ::buffa::encoding::WireType::LengthDelimited
+                            {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 2u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            if depth == 0 {
+                                return Err(::buffa::DecodeError::RecursionLimitExceeded);
+                            }
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            view.items
+                                .push(
+                                    super::super::__buffa::view::SilentPaymentReceiveView::_decode_depth(
+                                        sub,
+                                        depth - 1,
+                                    )?,
+                                );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for ListSilentPaymentReceivesResponseView<'a> {
+            type Owned = super::super::ListSilentPaymentReceivesResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(
+                &self,
+            ) -> super::super::ListSilentPaymentReceivesResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::ListSilentPaymentReceivesResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::ListSilentPaymentReceivesResponse {
+                    items: self
+                        .items
+                        .iter()
+                        .map(|v| v.to_owned_from_source(__buffa_src))
+                        .collect(),
+                    scan_tip_height: self.scan_tip_height,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for ListSilentPaymentReceivesResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                for v in &self.items {
+                    let __slot = __cache.reserve();
+                    let inner_size = v.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                            + inner_size;
+                }
+                if self.scan_tip_height != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.scan_tip_height)
+                                as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                for v in &self.items {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )
+                        .encode(buf);
+                    ::buffa::encoding::encode_varint(__cache.consume_next() as u64, buf);
+                    v.write_to(__cache, buf);
+                }
+                if self.scan_tip_height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.scan_tip_height, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for ListSilentPaymentReceivesResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !self.items.is_empty() {
+                    __map.serialize_entry("items", &*self.items)?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.scan_tip_height) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("scanTipHeight", &_W(self.scan_tip_height))?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for ListSilentPaymentReceivesResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "ListSilentPaymentReceivesResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.ListSilentPaymentReceivesResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.ListSilentPaymentReceivesResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for ListSilentPaymentReceivesResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    ListSilentPaymentReceivesResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <ListSilentPaymentReceivesResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for ListSilentPaymentReceivesResponseView<'static> {
+            type Reborrowed<'b> = ListSilentPaymentReceivesResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `ListSilentPaymentReceivesResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`ListSilentPaymentReceivesResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`ListSilentPaymentReceivesResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct ListSilentPaymentReceivesResponseOwnedView(
+            ::buffa::OwnedView<ListSilentPaymentReceivesResponseView<'static>>,
+        );
+        impl ListSilentPaymentReceivesResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentReceivesResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentReceivesResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::ListSilentPaymentReceivesResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    ListSilentPaymentReceivesResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`ListSilentPaymentReceivesResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &ListSilentPaymentReceivesResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::ListSilentPaymentReceivesResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `items`
+            #[must_use]
+            pub fn items(
+                &self,
+            ) -> &::buffa::RepeatedView<
+                '_,
+                super::super::__buffa::view::SilentPaymentReceiveView<'_>,
+            > {
+                &self.0.reborrow().items
+            }
+            /// Field 2: `scan_tip_height`
+            #[must_use]
+            pub fn scan_tip_height(&self) -> u32 {
+                self.0.reborrow().scan_tip_height
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<ListSilentPaymentReceivesResponseView<'static>>,
+        > for ListSilentPaymentReceivesResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<ListSilentPaymentReceivesResponseView<'static>>,
+            ) -> Self {
+                ListSilentPaymentReceivesResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<ListSilentPaymentReceivesResponseOwnedView>
+        for ::buffa::OwnedView<ListSilentPaymentReceivesResponseView<'static>> {
+            fn from(wrapper: ListSilentPaymentReceivesResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<ListSilentPaymentReceivesResponseView<'static>>,
+        > for ListSilentPaymentReceivesResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<ListSilentPaymentReceivesResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView
+        for super::super::ListSilentPaymentReceivesResponse {
+            type View<'a> = ListSilentPaymentReceivesResponseView<'a>;
+            type ViewHandle = ListSilentPaymentReceivesResponseOwnedView;
+        }
+        impl ::serde::Serialize for ListSilentPaymentReceivesResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetReusableScanStatusRequestView<'a> {
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> GetReusableScanStatusRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetReusableScanStatusRequestView<'a> {
+            type Owned = super::super::GetReusableScanStatusRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::GetReusableScanStatusRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::GetReusableScanStatusRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::GetReusableScanStatusRequest {
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetReusableScanStatusRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let size = 0u32;
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                _buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetReusableScanStatusRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetReusableScanStatusRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetReusableScanStatusRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetReusableScanStatusRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for GetReusableScanStatusRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    GetReusableScanStatusRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <GetReusableScanStatusRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for GetReusableScanStatusRequestView<'static> {
+            type Reborrowed<'b> = GetReusableScanStatusRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `GetReusableScanStatusRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetReusableScanStatusRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetReusableScanStatusRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetReusableScanStatusRequestOwnedView(
+            ::buffa::OwnedView<GetReusableScanStatusRequestView<'static>>,
+        );
+        impl GetReusableScanStatusRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetReusableScanStatusRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetReusableScanStatusRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetReusableScanStatusRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetReusableScanStatusRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetReusableScanStatusRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetReusableScanStatusRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::GetReusableScanStatusRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetReusableScanStatusRequestView<'static>>,
+        > for GetReusableScanStatusRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetReusableScanStatusRequestView<'static>>,
+            ) -> Self {
+                GetReusableScanStatusRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetReusableScanStatusRequestOwnedView>
+        for ::buffa::OwnedView<GetReusableScanStatusRequestView<'static>> {
+            fn from(wrapper: GetReusableScanStatusRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetReusableScanStatusRequestView<'static>>,
+        > for GetReusableScanStatusRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetReusableScanStatusRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetReusableScanStatusRequest {
+            type View<'a> = GetReusableScanStatusRequestView<'a>;
+            type ViewHandle = GetReusableScanStatusRequestOwnedView;
+        }
+        impl ::serde::Serialize for GetReusableScanStatusRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetReusableScanStatusResponseView<'a> {
+            /// Field 1: `tip_height`
+            pub tip_height: u32,
+            /// Field 2: `last_scanned_height`
+            pub last_scanned_height: u32,
+            /// Field 3: `birthday_height`
+            pub birthday_height: u32,
+            /// Field 4: `catching_up`
+            pub catching_up: bool,
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> GetReusableScanStatusResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.tip_height = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        2u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 2u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.last_scanned_height = ::buffa::types::decode_uint32(
+                                &mut cur,
+                            )?;
+                        }
+                        3u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 3u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.birthday_height = ::buffa::types::decode_uint32(
+                                &mut cur,
+                            )?;
+                        }
+                        4u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 4u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.catching_up = ::buffa::types::decode_bool(&mut cur)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetReusableScanStatusResponseView<'a> {
+            type Owned = super::super::GetReusableScanStatusResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::GetReusableScanStatusResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::GetReusableScanStatusResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::GetReusableScanStatusResponse {
+                    tip_height: self.tip_height,
+                    last_scanned_height: self.last_scanned_height,
+                    birthday_height: self.birthday_height,
+                    catching_up: self.catching_up,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetReusableScanStatusResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.tip_height != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.tip_height) as u32;
+                }
+                if self.last_scanned_height != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(
+                                self.last_scanned_height,
+                            ) as u32;
+                }
+                if self.birthday_height != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.birthday_height)
+                                as u32;
+                }
+                if self.catching_up {
+                    size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.tip_height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.tip_height, buf);
+                }
+                if self.last_scanned_height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            2u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.last_scanned_height, buf);
+                }
+                if self.birthday_height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            3u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.birthday_height, buf);
+                }
+                if self.catching_up {
+                    ::buffa::encoding::Tag::new(
+                            4u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_bool(self.catching_up, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetReusableScanStatusResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.tip_height) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("tipHeight", &_W(self.tip_height))?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(
+                    &self.last_scanned_height,
+                ) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map
+                        .serialize_entry(
+                            "lastScannedHeight",
+                            &_W(self.last_scanned_height),
+                        )?;
+                }
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.birthday_height) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("birthdayHeight", &_W(self.birthday_height))?;
+                }
+                if self.catching_up {
+                    __map.serialize_entry("catchingUp", &self.catching_up)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetReusableScanStatusResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetReusableScanStatusResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetReusableScanStatusResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetReusableScanStatusResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for GetReusableScanStatusResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    GetReusableScanStatusResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <GetReusableScanStatusResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for GetReusableScanStatusResponseView<'static> {
+            type Reborrowed<'b> = GetReusableScanStatusResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `GetReusableScanStatusResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetReusableScanStatusResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetReusableScanStatusResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetReusableScanStatusResponseOwnedView(
+            ::buffa::OwnedView<GetReusableScanStatusResponseView<'static>>,
+        );
+        impl GetReusableScanStatusResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetReusableScanStatusResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetReusableScanStatusResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetReusableScanStatusResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetReusableScanStatusResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetReusableScanStatusResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetReusableScanStatusResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::GetReusableScanStatusResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `tip_height`
+            #[must_use]
+            pub fn tip_height(&self) -> u32 {
+                self.0.reborrow().tip_height
+            }
+            /// Field 2: `last_scanned_height`
+            #[must_use]
+            pub fn last_scanned_height(&self) -> u32 {
+                self.0.reborrow().last_scanned_height
+            }
+            /// Field 3: `birthday_height`
+            #[must_use]
+            pub fn birthday_height(&self) -> u32 {
+                self.0.reborrow().birthday_height
+            }
+            /// Field 4: `catching_up`
+            #[must_use]
+            pub fn catching_up(&self) -> bool {
+                self.0.reborrow().catching_up
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetReusableScanStatusResponseView<'static>>,
+        > for GetReusableScanStatusResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetReusableScanStatusResponseView<'static>>,
+            ) -> Self {
+                GetReusableScanStatusResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetReusableScanStatusResponseOwnedView>
+        for ::buffa::OwnedView<GetReusableScanStatusResponseView<'static>> {
+            fn from(wrapper: GetReusableScanStatusResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetReusableScanStatusResponseView<'static>>,
+        > for GetReusableScanStatusResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetReusableScanStatusResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetReusableScanStatusResponse {
+            type View<'a> = GetReusableScanStatusResponseView<'a>;
+            type ViewHandle = GetReusableScanStatusResponseOwnedView;
+        }
+        impl ::serde::Serialize for GetReusableScanStatusResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct RescanReusablePaymentsRequestView<'a> {
+            /// All matches at or above this height are dropped before rescanning.
+            ///
+            /// Field 1: `from_height`
+            pub from_height: u32,
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> RescanReusablePaymentsRequestView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.from_height = ::buffa::types::decode_uint32(&mut cur)?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for RescanReusablePaymentsRequestView<'a> {
+            type Owned = super::super::RescanReusablePaymentsRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::RescanReusablePaymentsRequest {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::RescanReusablePaymentsRequest {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::RescanReusablePaymentsRequest {
+                    from_height: self.from_height,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for RescanReusablePaymentsRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.from_height != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(self.from_height)
+                                as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.from_height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.from_height, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for RescanReusablePaymentsRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_zero_u32(&self.from_height) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map.serialize_entry("fromHeight", &_W(self.from_height))?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for RescanReusablePaymentsRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "RescanReusablePaymentsRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.RescanReusablePaymentsRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsRequest";
+        }
+        impl<'v> ::buffa::DefaultViewInstance for RescanReusablePaymentsRequestView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    RescanReusablePaymentsRequestView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <RescanReusablePaymentsRequestView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for RescanReusablePaymentsRequestView<'static> {
+            type Reborrowed<'b> = RescanReusablePaymentsRequestView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `RescanReusablePaymentsRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`RescanReusablePaymentsRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`RescanReusablePaymentsRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct RescanReusablePaymentsRequestOwnedView(
+            ::buffa::OwnedView<RescanReusablePaymentsRequestView<'static>>,
+        );
+        impl RescanReusablePaymentsRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    RescanReusablePaymentsRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    RescanReusablePaymentsRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::RescanReusablePaymentsRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    RescanReusablePaymentsRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`RescanReusablePaymentsRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &RescanReusablePaymentsRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::RescanReusablePaymentsRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// All matches at or above this height are dropped before rescanning.
+            ///
+            /// Field 1: `from_height`
+            #[must_use]
+            pub fn from_height(&self) -> u32 {
+                self.0.reborrow().from_height
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<RescanReusablePaymentsRequestView<'static>>,
+        > for RescanReusablePaymentsRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<RescanReusablePaymentsRequestView<'static>>,
+            ) -> Self {
+                RescanReusablePaymentsRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<RescanReusablePaymentsRequestOwnedView>
+        for ::buffa::OwnedView<RescanReusablePaymentsRequestView<'static>> {
+            fn from(wrapper: RescanReusablePaymentsRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<RescanReusablePaymentsRequestView<'static>>,
+        > for RescanReusablePaymentsRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<RescanReusablePaymentsRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::RescanReusablePaymentsRequest {
+            type View<'a> = RescanReusablePaymentsRequestView<'a>;
+            type ViewHandle = RescanReusablePaymentsRequestOwnedView;
+        }
+        impl ::serde::Serialize for RescanReusablePaymentsRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct RescanReusablePaymentsResponseView<'a> {
+            /// Field 1: `scheduled_from_height`
+            pub scheduled_from_height: u32,
+            #[doc(hidden)]
+            pub __buffa_phantom: ::core::marker::PhantomData<&'a ()>,
+        }
+        impl<'a> RescanReusablePaymentsResponseView<'a> {
+            /// Decode from `buf`, enforcing a recursion depth limit for nested messages.
+            ///
+            /// Called by [`::buffa::MessageView::decode_view`] with [`::buffa::RECURSION_LIMIT`]
+            /// and by generated sub-message decode arms with `depth - 1`.
+            ///
+            /// **Not part of the public API.** Named with a leading underscore to
+            /// signal that it is for generated-code use only.
+            #[doc(hidden)]
+            pub fn _decode_depth(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let mut view = Self::default();
+                view._merge_into_view(buf, depth)?;
+                ::core::result::Result::Ok(view)
+            }
+            /// Merge fields from `buf` into this view (proto merge semantics).
+            ///
+            /// Repeated fields append; singular fields last-wins; singular
+            /// MESSAGE fields merge recursively. Used by sub-message decode
+            /// arms when the same field appears multiple times on the wire.
+            ///
+            /// **Not part of the public API.**
+            #[doc(hidden)]
+            pub fn _merge_into_view(
+                &mut self,
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+                let _ = depth;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur: &'a [u8] = buf;
+                while !cur.is_empty() {
+                    let tag = ::buffa::encoding::Tag::decode(&mut cur)?;
+                    match tag.field_number() {
+                        1u32 => {
+                            if tag.wire_type() != ::buffa::encoding::WireType::Varint {
+                                return ::core::result::Result::Err(::buffa::DecodeError::WireTypeMismatch {
+                                    field_number: 1u32,
+                                    expected: 0u8,
+                                    actual: tag.wire_type() as u8,
+                                });
+                            }
+                            view.scheduled_from_height = ::buffa::types::decode_uint32(
+                                &mut cur,
+                            )?;
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(tag, &mut cur, depth)?;
+                        }
+                    }
+                }
+                ::core::result::Result::Ok(())
+            }
+        }
+        impl<'a> ::buffa::MessageView<'a> for RescanReusablePaymentsResponseView<'a> {
+            type Owned = super::super::RescanReusablePaymentsResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, ::buffa::RECURSION_LIMIT)
+            }
+            fn decode_view_with_limit(
+                buf: &'a [u8],
+                depth: u32,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                Self::_decode_depth(buf, depth)
+            }
+            fn to_owned_message(&self) -> super::super::RescanReusablePaymentsResponse {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> super::super::RescanReusablePaymentsResponse {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                super::super::RescanReusablePaymentsResponse {
+                    scheduled_from_height: self.scheduled_from_height,
+                    ..::core::default::Default::default()
+                }
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for RescanReusablePaymentsResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u32;
+                if self.scheduled_from_height != 0u32 {
+                    size
+                        += 1u32
+                            + ::buffa::types::uint32_encoded_len(
+                                self.scheduled_from_height,
+                            ) as u32;
+                }
+                size
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                _cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::bytes::BufMut,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                if self.scheduled_from_height != 0u32 {
+                    ::buffa::encoding::Tag::new(
+                            1u32,
+                            ::buffa::encoding::WireType::Varint,
+                        )
+                        .encode(buf);
+                    ::buffa::types::encode_uint32(self.scheduled_from_height, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for RescanReusablePaymentsResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !::buffa::json_helpers::skip_if::is_zero_u32(
+                    &self.scheduled_from_height,
+                ) {
+                    struct _W(u32);
+                    impl ::serde::Serialize for _W {
+                        fn serialize<__S: ::serde::Serializer>(
+                            &self,
+                            __s: __S,
+                        ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                            ::buffa::json_helpers::uint32::serialize(&self.0, __s)
+                        }
+                    }
+                    __map
+                        .serialize_entry(
+                            "scheduledFromHeight",
+                            &_W(self.scheduled_from_height),
+                        )?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for RescanReusablePaymentsResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "RescanReusablePaymentsResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.RescanReusablePaymentsResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.RescanReusablePaymentsResponse";
+        }
+        impl<'v> ::buffa::DefaultViewInstance
+        for RescanReusablePaymentsResponseView<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: ::buffa::__private::OnceBox<
+                    RescanReusablePaymentsResponseView<'static>,
+                > = ::buffa::__private::OnceBox::new();
+                VALUE
+                    .get_or_init(|| ::buffa::alloc::boxed::Box::new(
+                        <RescanReusablePaymentsResponseView<'static>>::default(),
+                    ))
+            }
+        }
+        impl ::buffa::ViewReborrow for RescanReusablePaymentsResponseView<'static> {
+            type Reborrowed<'b> = RescanReusablePaymentsResponseView<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+        /** Self-contained, `'static` owned view of a `RescanReusablePaymentsResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`RescanReusablePaymentsResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`RescanReusablePaymentsResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct RescanReusablePaymentsResponseOwnedView(
+            ::buffa::OwnedView<RescanReusablePaymentsResponseView<'static>>,
+        );
+        impl RescanReusablePaymentsResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    RescanReusablePaymentsResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    RescanReusablePaymentsResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::RescanReusablePaymentsResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    RescanReusablePaymentsResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`RescanReusablePaymentsResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &RescanReusablePaymentsResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::RescanReusablePaymentsResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `scheduled_from_height`
+            #[must_use]
+            pub fn scheduled_from_height(&self) -> u32 {
+                self.0.reborrow().scheduled_from_height
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<RescanReusablePaymentsResponseView<'static>>,
+        > for RescanReusablePaymentsResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<RescanReusablePaymentsResponseView<'static>>,
+            ) -> Self {
+                RescanReusablePaymentsResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<RescanReusablePaymentsResponseOwnedView>
+        for ::buffa::OwnedView<RescanReusablePaymentsResponseView<'static>> {
+            fn from(wrapper: RescanReusablePaymentsResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<RescanReusablePaymentsResponseView<'static>>,
+        > for RescanReusablePaymentsResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<RescanReusablePaymentsResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::RescanReusablePaymentsResponse {
+            type View<'a> = RescanReusablePaymentsResponseView<'a>;
+            type ViewHandle = RescanReusablePaymentsResponseOwnedView;
+        }
+        impl ::serde::Serialize for RescanReusablePaymentsResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
         pub mod oneof {
             #[allow(unused_imports)]
             use super::*;
@@ -60395,6 +74072,32 @@ pub mod __buffa {
         reg.register_json_any(super::__LIST_UNSPENT_OUTPUTS_REQUEST_JSON_ANY);
         reg.register_json_any(super::__LIST_UNSPENT_OUTPUTS_RESPONSE_JSON_ANY);
         reg.register_json_any(super::list_unspent_outputs_response::__OUTPUT_JSON_ANY);
+        reg.register_json_any(super::__BIP47INBOUND_PAYER_JSON_ANY);
+        reg.register_json_any(super::__SILENT_PAYMENT_LABEL_JSON_ANY);
+        reg.register_json_any(super::__SILENT_PAYMENT_RECEIVE_JSON_ANY);
+        reg.register_json_any(super::__GET_BIP47PAYMENT_CODE_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__GET_BIP47PAYMENT_CODE_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__SEND_TO_BIP47PAYMENT_CODE_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__SEND_TO_BIP47PAYMENT_CODE_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__LIST_BIP47INBOUND_PAYERS_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__LIST_BIP47INBOUND_PAYERS_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__GET_SILENT_PAYMENT_ADDRESS_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__GET_SILENT_PAYMENT_ADDRESS_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__CREATE_SILENT_PAYMENT_LABEL_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__CREATE_SILENT_PAYMENT_LABEL_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__LIST_SILENT_PAYMENT_LABELS_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__LIST_SILENT_PAYMENT_LABELS_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__SEND_TO_SILENT_PAYMENT_REQUEST_JSON_ANY);
+        reg.register_json_any(
+            super::send_to_silent_payment_request::__RECIPIENT_JSON_ANY,
+        );
+        reg.register_json_any(super::__SEND_TO_SILENT_PAYMENT_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__LIST_SILENT_PAYMENT_RECEIVES_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__LIST_SILENT_PAYMENT_RECEIVES_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__GET_REUSABLE_SCAN_STATUS_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__GET_REUSABLE_SCAN_STATUS_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__RESCAN_REUSABLE_PAYMENTS_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__RESCAN_REUSABLE_PAYMENTS_RESPONSE_JSON_ANY);
     }
     /// Reflection support: embedded descriptor pool shared by this
     /// package's [`Reflectable`](::buffa_descriptor::reflect::Reflectable)
@@ -63638,7 +77341,7 @@ pub mod __buffa {
             115u8, 105u8, 118u8, 101u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 0u8, 2u8,
             1u8, 1u8, 18u8, 4u8, 143u8, 1u8, 8u8, 13u8, 10u8, 13u8, 10u8, 5u8, 4u8, 0u8,
             2u8, 1u8, 3u8, 18u8, 4u8, 143u8, 1u8, 16u8, 17u8, 98u8, 6u8, 112u8, 114u8,
-            111u8, 116u8, 111u8, 51u8, 10u8, 202u8, 135u8, 1u8, 10u8, 30u8, 99u8, 117u8,
+            111u8, 116u8, 111u8, 51u8, 10u8, 198u8, 213u8, 1u8, 10u8, 30u8, 99u8, 117u8,
             115u8, 102u8, 47u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
             110u8, 47u8, 118u8, 49u8, 47u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8,
             46u8, 112u8, 114u8, 111u8, 116u8, 111u8, 18u8, 17u8, 99u8, 117u8, 115u8,
@@ -64148,44 +77851,308 @@ pub mod __buffa {
             11u8, 50u8, 28u8, 46u8, 103u8, 111u8, 111u8, 103u8, 108u8, 101u8, 46u8,
             112u8, 114u8, 111u8, 116u8, 111u8, 98u8, 117u8, 102u8, 46u8, 83u8, 116u8,
             114u8, 105u8, 110u8, 103u8, 86u8, 97u8, 108u8, 117u8, 101u8, 82u8, 7u8, 97u8,
-            100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 50u8, 148u8, 14u8, 10u8, 13u8,
-            87u8, 97u8, 108u8, 108u8, 101u8, 116u8, 83u8, 101u8, 114u8, 118u8, 105u8,
-            99u8, 101u8, 18u8, 139u8, 1u8, 10u8, 25u8, 66u8, 114u8, 111u8, 97u8, 100u8,
-            99u8, 97u8, 115u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8,
-            119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 18u8, 51u8,
-            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 66u8, 114u8, 111u8, 97u8,
-            100u8, 99u8, 97u8, 115u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8,
-            97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 82u8,
-            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 52u8, 46u8, 99u8, 117u8,
+            100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 34u8, 138u8, 2u8, 10u8, 17u8, 66u8,
+            105u8, 112u8, 52u8, 55u8, 73u8, 110u8, 98u8, 111u8, 117u8, 110u8, 100u8,
+            80u8, 97u8, 121u8, 101u8, 114u8, 18u8, 33u8, 10u8, 12u8, 112u8, 97u8, 121u8,
+            109u8, 101u8, 110u8, 116u8, 95u8, 99u8, 111u8, 100u8, 101u8, 24u8, 1u8, 32u8,
+            1u8, 40u8, 9u8, 82u8, 11u8, 112u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8,
+            67u8, 111u8, 100u8, 101u8, 18u8, 57u8, 10u8, 7u8, 118u8, 101u8, 114u8, 115u8,
+            105u8, 111u8, 110u8, 24u8, 2u8, 32u8, 1u8, 40u8, 14u8, 50u8, 31u8, 46u8,
+            99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8,
+            97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 66u8, 105u8, 112u8, 52u8, 55u8,
+            86u8, 101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 82u8, 7u8, 118u8, 101u8,
+            114u8, 115u8, 105u8, 111u8, 110u8, 18u8, 44u8, 10u8, 18u8, 110u8, 101u8,
+            120u8, 116u8, 95u8, 114u8, 101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 95u8,
+            105u8, 110u8, 100u8, 101u8, 120u8, 24u8, 3u8, 32u8, 1u8, 40u8, 13u8, 82u8,
+            16u8, 110u8, 101u8, 120u8, 116u8, 82u8, 101u8, 99u8, 101u8, 105u8, 118u8,
+            101u8, 73u8, 110u8, 100u8, 101u8, 120u8, 18u8, 46u8, 10u8, 19u8, 116u8,
+            111u8, 116u8, 97u8, 108u8, 95u8, 114u8, 101u8, 99u8, 101u8, 105u8, 118u8,
+            101u8, 100u8, 95u8, 115u8, 97u8, 116u8, 115u8, 24u8, 4u8, 32u8, 1u8, 40u8,
+            4u8, 82u8, 17u8, 116u8, 111u8, 116u8, 97u8, 108u8, 82u8, 101u8, 99u8, 101u8,
+            105u8, 118u8, 101u8, 100u8, 83u8, 97u8, 116u8, 115u8, 18u8, 57u8, 10u8, 10u8,
+            102u8, 105u8, 114u8, 115u8, 116u8, 95u8, 115u8, 101u8, 101u8, 110u8, 24u8,
+            5u8, 32u8, 1u8, 40u8, 11u8, 50u8, 26u8, 46u8, 103u8, 111u8, 111u8, 103u8,
+            108u8, 101u8, 46u8, 112u8, 114u8, 111u8, 116u8, 111u8, 98u8, 117u8, 102u8,
+            46u8, 84u8, 105u8, 109u8, 101u8, 115u8, 116u8, 97u8, 109u8, 112u8, 82u8, 9u8,
+            102u8, 105u8, 114u8, 115u8, 116u8, 83u8, 101u8, 101u8, 110u8, 34u8, 80u8,
+            10u8, 18u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8,
+            109u8, 101u8, 110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 18u8, 12u8, 10u8,
+            1u8, 109u8, 24u8, 1u8, 32u8, 1u8, 40u8, 13u8, 82u8, 1u8, 109u8, 18u8, 18u8,
+            10u8, 4u8, 110u8, 97u8, 109u8, 101u8, 24u8, 2u8, 32u8, 1u8, 40u8, 9u8, 82u8,
+            4u8, 110u8, 97u8, 109u8, 101u8, 18u8, 24u8, 10u8, 7u8, 97u8, 100u8, 100u8,
+            114u8, 101u8, 115u8, 115u8, 24u8, 3u8, 32u8, 1u8, 40u8, 9u8, 82u8, 7u8, 97u8,
+            100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 34u8, 133u8, 3u8, 10u8, 20u8, 83u8,
+            105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 82u8, 101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 18u8, 46u8, 10u8, 4u8,
+            116u8, 120u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 26u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 99u8, 111u8, 109u8, 109u8, 111u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 82u8, 101u8, 118u8, 101u8, 114u8, 115u8,
+            101u8, 72u8, 101u8, 120u8, 82u8, 4u8, 116u8, 120u8, 105u8, 100u8, 18u8, 18u8,
+            10u8, 4u8, 118u8, 111u8, 117u8, 116u8, 24u8, 2u8, 32u8, 1u8, 40u8, 13u8,
+            82u8, 4u8, 118u8, 111u8, 117u8, 116u8, 18u8, 35u8, 10u8, 13u8, 111u8, 117u8,
+            116u8, 112u8, 117u8, 116u8, 95u8, 112u8, 117u8, 98u8, 107u8, 101u8, 121u8,
+            24u8, 3u8, 32u8, 1u8, 40u8, 12u8, 82u8, 12u8, 111u8, 117u8, 116u8, 112u8,
+            117u8, 116u8, 80u8, 117u8, 98u8, 107u8, 101u8, 121u8, 18u8, 31u8, 10u8, 11u8,
+            97u8, 109u8, 111u8, 117u8, 110u8, 116u8, 95u8, 115u8, 97u8, 116u8, 115u8,
+            24u8, 4u8, 32u8, 1u8, 40u8, 4u8, 82u8, 10u8, 97u8, 109u8, 111u8, 117u8,
+            110u8, 116u8, 83u8, 97u8, 116u8, 115u8, 18u8, 23u8, 10u8, 7u8, 116u8, 119u8,
+            101u8, 97u8, 107u8, 95u8, 107u8, 24u8, 5u8, 32u8, 1u8, 40u8, 13u8, 82u8, 6u8,
+            116u8, 119u8, 101u8, 97u8, 107u8, 75u8, 18u8, 28u8, 10u8, 7u8, 108u8, 97u8,
+            98u8, 101u8, 108u8, 95u8, 109u8, 24u8, 6u8, 32u8, 1u8, 40u8, 13u8, 72u8, 0u8,
+            82u8, 6u8, 108u8, 97u8, 98u8, 101u8, 108u8, 77u8, 136u8, 1u8, 1u8, 18u8,
+            34u8, 10u8, 10u8, 108u8, 97u8, 98u8, 101u8, 108u8, 95u8, 110u8, 97u8, 109u8,
+            101u8, 24u8, 7u8, 32u8, 1u8, 40u8, 9u8, 72u8, 1u8, 82u8, 9u8, 108u8, 97u8,
+            98u8, 101u8, 108u8, 78u8, 97u8, 109u8, 101u8, 136u8, 1u8, 1u8, 18u8, 22u8,
+            10u8, 6u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 24u8, 8u8, 32u8, 1u8,
+            40u8, 13u8, 82u8, 6u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 18u8, 67u8,
+            10u8, 13u8, 115u8, 112u8, 101u8, 110u8, 116u8, 95u8, 105u8, 110u8, 95u8,
+            116u8, 120u8, 105u8, 100u8, 24u8, 9u8, 32u8, 1u8, 40u8, 11u8, 50u8, 26u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 99u8, 111u8, 109u8, 109u8, 111u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 82u8, 101u8, 118u8, 101u8, 114u8, 115u8,
+            101u8, 72u8, 101u8, 120u8, 72u8, 2u8, 82u8, 11u8, 115u8, 112u8, 101u8, 110u8,
+            116u8, 73u8, 110u8, 84u8, 120u8, 105u8, 100u8, 136u8, 1u8, 1u8, 66u8, 10u8,
+            10u8, 8u8, 95u8, 108u8, 97u8, 98u8, 101u8, 108u8, 95u8, 109u8, 66u8, 13u8,
+            10u8, 11u8, 95u8, 108u8, 97u8, 98u8, 101u8, 108u8, 95u8, 110u8, 97u8, 109u8,
+            101u8, 66u8, 16u8, 10u8, 14u8, 95u8, 115u8, 112u8, 101u8, 110u8, 116u8, 95u8,
+            105u8, 110u8, 95u8, 116u8, 120u8, 105u8, 100u8, 34u8, 87u8, 10u8, 26u8, 71u8,
+            101u8, 116u8, 66u8, 105u8, 112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 18u8, 57u8, 10u8, 7u8, 118u8, 101u8, 114u8, 115u8,
+            105u8, 111u8, 110u8, 24u8, 1u8, 32u8, 1u8, 40u8, 14u8, 50u8, 31u8, 46u8,
+            99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8,
+            97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 66u8, 105u8, 112u8, 52u8, 55u8,
+            86u8, 101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 82u8, 7u8, 118u8, 101u8,
+            114u8, 115u8, 105u8, 111u8, 110u8, 34u8, 174u8, 1u8, 10u8, 27u8, 71u8, 101u8,
+            116u8, 66u8, 105u8, 112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8, 101u8,
+            110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 82u8, 101u8, 115u8, 112u8, 111u8,
+            110u8, 115u8, 101u8, 18u8, 33u8, 10u8, 12u8, 112u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 95u8, 99u8, 111u8, 100u8, 101u8, 24u8, 1u8, 32u8, 1u8,
+            40u8, 9u8, 82u8, 11u8, 112u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 67u8,
+            111u8, 100u8, 101u8, 18u8, 49u8, 10u8, 20u8, 110u8, 111u8, 116u8, 105u8,
+            102u8, 105u8, 99u8, 97u8, 116u8, 105u8, 111u8, 110u8, 95u8, 97u8, 100u8,
+            100u8, 114u8, 101u8, 115u8, 115u8, 24u8, 2u8, 32u8, 1u8, 40u8, 9u8, 82u8,
+            19u8, 110u8, 111u8, 116u8, 105u8, 102u8, 105u8, 99u8, 97u8, 116u8, 105u8,
+            111u8, 110u8, 65u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 18u8, 57u8,
+            10u8, 7u8, 118u8, 101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 24u8, 3u8, 32u8,
+            1u8, 40u8, 14u8, 50u8, 31u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8,
+            97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8,
+            66u8, 105u8, 112u8, 52u8, 55u8, 86u8, 101u8, 114u8, 115u8, 105u8, 111u8,
+            110u8, 82u8, 7u8, 118u8, 101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 34u8,
+            142u8, 1u8, 10u8, 29u8, 83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 66u8, 105u8,
+            112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 67u8,
+            111u8, 100u8, 101u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8,
+            33u8, 10u8, 12u8, 112u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 95u8, 99u8,
+            111u8, 100u8, 101u8, 24u8, 1u8, 32u8, 1u8, 40u8, 9u8, 82u8, 11u8, 112u8,
+            97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 18u8,
+            31u8, 10u8, 11u8, 97u8, 109u8, 111u8, 117u8, 110u8, 116u8, 95u8, 115u8, 97u8,
+            116u8, 115u8, 24u8, 2u8, 32u8, 1u8, 40u8, 4u8, 82u8, 10u8, 97u8, 109u8,
+            111u8, 117u8, 110u8, 116u8, 83u8, 97u8, 116u8, 115u8, 18u8, 41u8, 10u8, 17u8,
+            102u8, 101u8, 101u8, 95u8, 115u8, 97u8, 116u8, 95u8, 112u8, 101u8, 114u8,
+            95u8, 118u8, 98u8, 121u8, 116u8, 101u8, 24u8, 3u8, 32u8, 1u8, 40u8, 4u8,
+            82u8, 14u8, 102u8, 101u8, 101u8, 83u8, 97u8, 116u8, 80u8, 101u8, 114u8, 86u8,
+            98u8, 121u8, 116u8, 101u8, 34u8, 161u8, 2u8, 10u8, 30u8, 83u8, 101u8, 110u8,
+            100u8, 84u8, 111u8, 66u8, 105u8, 112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 82u8, 101u8, 115u8, 112u8,
+            111u8, 110u8, 115u8, 101u8, 18u8, 76u8, 10u8, 17u8, 110u8, 111u8, 116u8,
+            105u8, 102u8, 105u8, 99u8, 97u8, 116u8, 105u8, 111u8, 110u8, 95u8, 116u8,
+            120u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 26u8, 46u8,
+            99u8, 117u8, 115u8, 102u8, 46u8, 99u8, 111u8, 109u8, 109u8, 111u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 82u8, 101u8, 118u8, 101u8, 114u8, 115u8, 101u8,
+            72u8, 101u8, 120u8, 72u8, 0u8, 82u8, 16u8, 110u8, 111u8, 116u8, 105u8, 102u8,
+            105u8, 99u8, 97u8, 116u8, 105u8, 111u8, 110u8, 84u8, 120u8, 105u8, 100u8,
+            136u8, 1u8, 1u8, 18u8, 61u8, 10u8, 12u8, 112u8, 97u8, 121u8, 109u8, 101u8,
+            110u8, 116u8, 95u8, 116u8, 120u8, 105u8, 100u8, 24u8, 2u8, 32u8, 1u8, 40u8,
+            11u8, 50u8, 26u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 99u8, 111u8, 109u8,
+            109u8, 111u8, 110u8, 46u8, 118u8, 49u8, 46u8, 82u8, 101u8, 118u8, 101u8,
+            114u8, 115u8, 101u8, 72u8, 101u8, 120u8, 82u8, 11u8, 112u8, 97u8, 121u8,
+            109u8, 101u8, 110u8, 116u8, 84u8, 120u8, 105u8, 100u8, 18u8, 33u8, 10u8,
+            12u8, 115u8, 101u8, 110u8, 100u8, 101u8, 114u8, 95u8, 105u8, 110u8, 100u8,
+            101u8, 120u8, 24u8, 3u8, 32u8, 1u8, 40u8, 13u8, 82u8, 11u8, 115u8, 101u8,
+            110u8, 100u8, 101u8, 114u8, 73u8, 110u8, 100u8, 101u8, 120u8, 18u8, 57u8,
+            10u8, 7u8, 118u8, 101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 24u8, 4u8, 32u8,
+            1u8, 40u8, 14u8, 50u8, 31u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8,
+            97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8,
+            66u8, 105u8, 112u8, 52u8, 55u8, 86u8, 101u8, 114u8, 115u8, 105u8, 111u8,
+            110u8, 82u8, 7u8, 118u8, 101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 66u8,
+            20u8, 10u8, 18u8, 95u8, 110u8, 111u8, 116u8, 105u8, 102u8, 105u8, 99u8, 97u8,
+            116u8, 105u8, 111u8, 110u8, 95u8, 116u8, 120u8, 105u8, 100u8, 34u8, 31u8,
+            10u8, 29u8, 76u8, 105u8, 115u8, 116u8, 66u8, 105u8, 112u8, 52u8, 55u8, 73u8,
+            110u8, 98u8, 111u8, 117u8, 110u8, 100u8, 80u8, 97u8, 121u8, 101u8, 114u8,
+            115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 34u8, 94u8, 10u8,
+            30u8, 76u8, 105u8, 115u8, 116u8, 66u8, 105u8, 112u8, 52u8, 55u8, 73u8, 110u8,
+            98u8, 111u8, 117u8, 110u8, 100u8, 80u8, 97u8, 121u8, 101u8, 114u8, 115u8,
+            82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 60u8, 10u8, 6u8,
+            112u8, 97u8, 121u8, 101u8, 114u8, 115u8, 24u8, 1u8, 32u8, 3u8, 40u8, 11u8,
+            50u8, 36u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8,
+            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 66u8, 105u8, 112u8,
+            52u8, 55u8, 73u8, 110u8, 98u8, 111u8, 117u8, 110u8, 100u8, 80u8, 97u8, 121u8,
+            101u8, 114u8, 82u8, 6u8, 112u8, 97u8, 121u8, 101u8, 114u8, 115u8, 34u8, 69u8,
+            10u8, 30u8, 71u8, 101u8, 116u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8,
+            80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 65u8, 100u8, 100u8, 114u8,
+            101u8, 115u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8,
+            25u8, 10u8, 5u8, 108u8, 97u8, 98u8, 101u8, 108u8, 24u8, 1u8, 32u8, 1u8, 40u8,
+            13u8, 72u8, 0u8, 82u8, 5u8, 108u8, 97u8, 98u8, 101u8, 108u8, 136u8, 1u8, 1u8,
+            66u8, 8u8, 10u8, 6u8, 95u8, 108u8, 97u8, 98u8, 101u8, 108u8, 34u8, 59u8,
+            10u8, 31u8, 71u8, 101u8, 116u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8,
+            80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 65u8, 100u8, 100u8, 114u8,
+            101u8, 115u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8,
+            18u8, 24u8, 10u8, 7u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 24u8,
+            1u8, 32u8, 1u8, 40u8, 9u8, 82u8, 7u8, 97u8, 100u8, 100u8, 114u8, 101u8,
+            115u8, 115u8, 34u8, 53u8, 10u8, 31u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8,
+            83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8,
+            110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 18u8, 18u8, 10u8, 4u8, 110u8, 97u8, 109u8, 101u8, 24u8,
+            1u8, 32u8, 1u8, 40u8, 9u8, 82u8, 4u8, 110u8, 97u8, 109u8, 101u8, 34u8, 100u8,
+            10u8, 32u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 83u8, 105u8, 108u8,
+            101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 76u8,
+            97u8, 98u8, 101u8, 108u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
+            101u8, 18u8, 23u8, 10u8, 7u8, 108u8, 97u8, 98u8, 101u8, 108u8, 95u8, 109u8,
+            24u8, 1u8, 32u8, 1u8, 40u8, 13u8, 82u8, 6u8, 108u8, 97u8, 98u8, 101u8, 108u8,
+            77u8, 18u8, 39u8, 10u8, 15u8, 108u8, 97u8, 98u8, 101u8, 108u8, 101u8, 100u8,
+            95u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 24u8, 2u8, 32u8, 1u8,
+            40u8, 9u8, 82u8, 14u8, 108u8, 97u8, 98u8, 101u8, 108u8, 101u8, 100u8, 65u8,
+            100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 34u8, 32u8, 10u8, 30u8, 76u8,
+            105u8, 115u8, 116u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8,
+            121u8, 109u8, 101u8, 110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 115u8,
+            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 34u8, 96u8, 10u8, 31u8, 76u8,
+            105u8, 115u8, 116u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8,
+            121u8, 109u8, 101u8, 110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 115u8,
+            82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 61u8, 10u8, 6u8,
+            108u8, 97u8, 98u8, 101u8, 108u8, 115u8, 24u8, 1u8, 32u8, 3u8, 40u8, 11u8,
+            50u8, 37u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8,
+            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 105u8, 108u8,
+            101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 76u8,
+            97u8, 98u8, 101u8, 108u8, 82u8, 6u8, 108u8, 97u8, 98u8, 101u8, 108u8, 115u8,
+            34u8, 237u8, 1u8, 10u8, 26u8, 83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 83u8,
+            105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8, 87u8, 10u8,
+            10u8, 114u8, 101u8, 99u8, 105u8, 112u8, 105u8, 101u8, 110u8, 116u8, 115u8,
+            24u8, 1u8, 32u8, 3u8, 40u8, 11u8, 50u8, 55u8, 46u8, 99u8, 117u8, 115u8,
+            102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 83u8, 105u8,
+            108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8,
+            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 46u8, 82u8, 101u8, 99u8,
+            105u8, 112u8, 105u8, 101u8, 110u8, 116u8, 82u8, 10u8, 114u8, 101u8, 99u8,
+            105u8, 112u8, 105u8, 101u8, 110u8, 116u8, 115u8, 18u8, 41u8, 10u8, 17u8,
+            102u8, 101u8, 101u8, 95u8, 115u8, 97u8, 116u8, 95u8, 112u8, 101u8, 114u8,
+            95u8, 118u8, 98u8, 121u8, 116u8, 101u8, 24u8, 2u8, 32u8, 1u8, 40u8, 4u8,
+            82u8, 14u8, 102u8, 101u8, 101u8, 83u8, 97u8, 116u8, 80u8, 101u8, 114u8, 86u8,
+            98u8, 121u8, 116u8, 101u8, 26u8, 75u8, 10u8, 9u8, 82u8, 101u8, 99u8, 105u8,
+            112u8, 105u8, 101u8, 110u8, 116u8, 18u8, 29u8, 10u8, 10u8, 115u8, 112u8,
+            95u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 24u8, 1u8, 32u8, 1u8,
+            40u8, 9u8, 82u8, 9u8, 115u8, 112u8, 65u8, 100u8, 100u8, 114u8, 101u8, 115u8,
+            115u8, 18u8, 31u8, 10u8, 11u8, 97u8, 109u8, 111u8, 117u8, 110u8, 116u8, 95u8,
+            115u8, 97u8, 116u8, 115u8, 24u8, 2u8, 32u8, 1u8, 40u8, 4u8, 82u8, 10u8, 97u8,
+            109u8, 111u8, 117u8, 110u8, 116u8, 83u8, 97u8, 116u8, 115u8, 34u8, 77u8,
+            10u8, 27u8, 83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 83u8, 105u8, 108u8,
+            101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 82u8,
+            101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 46u8, 10u8, 4u8,
+            116u8, 120u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 26u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 99u8, 111u8, 109u8, 109u8, 111u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 82u8, 101u8, 118u8, 101u8, 114u8, 115u8,
+            101u8, 72u8, 101u8, 120u8, 82u8, 4u8, 116u8, 120u8, 105u8, 100u8, 34u8,
+            143u8, 1u8, 10u8, 32u8, 76u8, 105u8, 115u8, 116u8, 83u8, 105u8, 108u8, 101u8,
+            110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 82u8, 101u8,
+            99u8, 101u8, 105u8, 118u8, 101u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8,
+            115u8, 116u8, 18u8, 48u8, 10u8, 17u8, 109u8, 105u8, 110u8, 95u8, 99u8, 111u8,
+            110u8, 102u8, 105u8, 114u8, 109u8, 97u8, 116u8, 105u8, 111u8, 110u8, 115u8,
+            24u8, 1u8, 32u8, 1u8, 40u8, 13u8, 72u8, 0u8, 82u8, 16u8, 109u8, 105u8, 110u8,
+            67u8, 111u8, 110u8, 102u8, 105u8, 114u8, 109u8, 97u8, 116u8, 105u8, 111u8,
+            110u8, 115u8, 136u8, 1u8, 1u8, 18u8, 25u8, 10u8, 5u8, 108u8, 105u8, 109u8,
+            105u8, 116u8, 24u8, 2u8, 32u8, 1u8, 40u8, 13u8, 72u8, 1u8, 82u8, 5u8, 108u8,
+            105u8, 109u8, 105u8, 116u8, 136u8, 1u8, 1u8, 66u8, 20u8, 10u8, 18u8, 95u8,
+            109u8, 105u8, 110u8, 95u8, 99u8, 111u8, 110u8, 102u8, 105u8, 114u8, 109u8,
+            97u8, 116u8, 105u8, 111u8, 110u8, 115u8, 66u8, 8u8, 10u8, 6u8, 95u8, 108u8,
+            105u8, 109u8, 105u8, 116u8, 34u8, 138u8, 1u8, 10u8, 33u8, 76u8, 105u8, 115u8,
+            116u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 82u8, 101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 115u8,
+            82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 61u8, 10u8, 5u8,
+            105u8, 116u8, 101u8, 109u8, 115u8, 24u8, 1u8, 32u8, 3u8, 40u8, 11u8, 50u8,
+            39u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 105u8, 108u8,
+            101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 82u8,
+            101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 82u8, 5u8, 105u8, 116u8, 101u8,
+            109u8, 115u8, 18u8, 38u8, 10u8, 15u8, 115u8, 99u8, 97u8, 110u8, 95u8, 116u8,
+            105u8, 112u8, 95u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 24u8, 2u8,
+            32u8, 1u8, 40u8, 13u8, 82u8, 13u8, 115u8, 99u8, 97u8, 110u8, 84u8, 105u8,
+            112u8, 72u8, 101u8, 105u8, 103u8, 104u8, 116u8, 34u8, 30u8, 10u8, 28u8, 71u8,
+            101u8, 116u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8, 101u8, 83u8,
+            99u8, 97u8, 110u8, 83u8, 116u8, 97u8, 116u8, 117u8, 115u8, 82u8, 101u8,
+            113u8, 117u8, 101u8, 115u8, 116u8, 34u8, 184u8, 1u8, 10u8, 29u8, 71u8, 101u8,
+            116u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8, 101u8, 83u8, 99u8, 97u8,
+            110u8, 83u8, 116u8, 97u8, 116u8, 117u8, 115u8, 82u8, 101u8, 115u8, 112u8,
+            111u8, 110u8, 115u8, 101u8, 18u8, 29u8, 10u8, 10u8, 116u8, 105u8, 112u8,
+            95u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 24u8, 1u8, 32u8, 1u8, 40u8,
+            13u8, 82u8, 9u8, 116u8, 105u8, 112u8, 72u8, 101u8, 105u8, 103u8, 104u8,
+            116u8, 18u8, 46u8, 10u8, 19u8, 108u8, 97u8, 115u8, 116u8, 95u8, 115u8, 99u8,
+            97u8, 110u8, 110u8, 101u8, 100u8, 95u8, 104u8, 101u8, 105u8, 103u8, 104u8,
+            116u8, 24u8, 2u8, 32u8, 1u8, 40u8, 13u8, 82u8, 17u8, 108u8, 97u8, 115u8,
+            116u8, 83u8, 99u8, 97u8, 110u8, 110u8, 101u8, 100u8, 72u8, 101u8, 105u8,
+            103u8, 104u8, 116u8, 18u8, 39u8, 10u8, 15u8, 98u8, 105u8, 114u8, 116u8,
+            104u8, 100u8, 97u8, 121u8, 95u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8,
+            24u8, 3u8, 32u8, 1u8, 40u8, 13u8, 82u8, 14u8, 98u8, 105u8, 114u8, 116u8,
+            104u8, 100u8, 97u8, 121u8, 72u8, 101u8, 105u8, 103u8, 104u8, 116u8, 18u8,
+            31u8, 10u8, 11u8, 99u8, 97u8, 116u8, 99u8, 104u8, 105u8, 110u8, 103u8, 95u8,
+            117u8, 112u8, 24u8, 4u8, 32u8, 1u8, 40u8, 8u8, 82u8, 10u8, 99u8, 97u8, 116u8,
+            99u8, 104u8, 105u8, 110u8, 103u8, 85u8, 112u8, 34u8, 64u8, 10u8, 29u8, 82u8,
+            101u8, 115u8, 99u8, 97u8, 110u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8,
+            108u8, 101u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 115u8, 82u8,
+            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8, 31u8, 10u8, 11u8, 102u8,
+            114u8, 111u8, 109u8, 95u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 24u8,
+            1u8, 32u8, 1u8, 40u8, 13u8, 82u8, 10u8, 102u8, 114u8, 111u8, 109u8, 72u8,
+            101u8, 105u8, 103u8, 104u8, 116u8, 34u8, 84u8, 10u8, 30u8, 82u8, 101u8,
+            115u8, 99u8, 97u8, 110u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8,
+            101u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8,
+            115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 50u8, 10u8, 21u8, 115u8,
+            99u8, 104u8, 101u8, 100u8, 117u8, 108u8, 101u8, 100u8, 95u8, 102u8, 114u8,
+            111u8, 109u8, 95u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 24u8, 1u8,
+            32u8, 1u8, 40u8, 13u8, 82u8, 19u8, 115u8, 99u8, 104u8, 101u8, 100u8, 117u8,
+            108u8, 101u8, 100u8, 70u8, 114u8, 111u8, 109u8, 72u8, 101u8, 105u8, 103u8,
+            104u8, 116u8, 42u8, 89u8, 10u8, 12u8, 66u8, 105u8, 112u8, 52u8, 55u8, 86u8,
+            101u8, 114u8, 115u8, 105u8, 111u8, 110u8, 18u8, 29u8, 10u8, 25u8, 66u8, 73u8,
+            80u8, 52u8, 55u8, 95u8, 86u8, 69u8, 82u8, 83u8, 73u8, 79u8, 78u8, 95u8, 85u8,
+            78u8, 83u8, 80u8, 69u8, 67u8, 73u8, 70u8, 73u8, 69u8, 68u8, 16u8, 0u8, 18u8,
+            20u8, 10u8, 16u8, 66u8, 73u8, 80u8, 52u8, 55u8, 95u8, 86u8, 69u8, 82u8, 83u8,
+            73u8, 79u8, 78u8, 95u8, 86u8, 49u8, 16u8, 1u8, 18u8, 20u8, 10u8, 16u8, 66u8,
+            73u8, 80u8, 52u8, 55u8, 95u8, 86u8, 69u8, 82u8, 83u8, 73u8, 79u8, 78u8, 95u8,
+            86u8, 51u8, 16u8, 3u8, 50u8, 179u8, 24u8, 10u8, 13u8, 87u8, 97u8, 108u8,
+            108u8, 101u8, 116u8, 83u8, 101u8, 114u8, 118u8, 105u8, 99u8, 101u8, 18u8,
+            139u8, 1u8, 10u8, 25u8, 66u8, 114u8, 111u8, 97u8, 100u8, 99u8, 97u8, 115u8,
+            116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8,
+            66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 18u8, 51u8, 46u8, 99u8, 117u8,
             115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
             110u8, 46u8, 118u8, 49u8, 46u8, 66u8, 114u8, 111u8, 97u8, 100u8, 99u8, 97u8,
             115u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8,
-            108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 82u8, 101u8, 115u8, 112u8,
-            111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 2u8, 18u8, 155u8, 1u8,
-            10u8, 32u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 66u8, 109u8, 109u8, 67u8,
-            114u8, 105u8, 116u8, 105u8, 99u8, 97u8, 108u8, 68u8, 97u8, 116u8, 97u8, 84u8,
-            114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 18u8,
-            58u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 26u8, 52u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8,
+            109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8,
+            49u8, 46u8, 66u8, 114u8, 111u8, 97u8, 100u8, 99u8, 97u8, 115u8, 116u8, 87u8,
+            105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
+            110u8, 100u8, 108u8, 101u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
+            101u8, 34u8, 3u8, 144u8, 2u8, 2u8, 18u8, 155u8, 1u8, 10u8, 32u8, 67u8, 114u8,
+            101u8, 97u8, 116u8, 101u8, 66u8, 109u8, 109u8, 67u8, 114u8, 105u8, 116u8,
+            105u8, 99u8, 97u8, 108u8, 68u8, 97u8, 116u8, 97u8, 84u8, 114u8, 97u8, 110u8,
+            115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 18u8, 58u8, 46u8, 99u8, 117u8,
+            115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 66u8,
+            109u8, 109u8, 67u8, 114u8, 105u8, 116u8, 105u8, 99u8, 97u8, 108u8, 68u8,
+            97u8, 116u8, 97u8, 84u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8,
+            111u8, 110u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 59u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
             104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8,
             116u8, 101u8, 66u8, 109u8, 109u8, 67u8, 114u8, 105u8, 116u8, 105u8, 99u8,
             97u8, 108u8, 68u8, 97u8, 116u8, 97u8, 84u8, 114u8, 97u8, 110u8, 115u8, 97u8,
-            99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8,
-            116u8, 26u8, 59u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
-            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8,
-            101u8, 97u8, 116u8, 101u8, 66u8, 109u8, 109u8, 67u8, 114u8, 105u8, 116u8,
-            105u8, 99u8, 97u8, 108u8, 68u8, 97u8, 116u8, 97u8, 84u8, 114u8, 97u8, 110u8,
-            115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 115u8, 112u8,
-            111u8, 110u8, 115u8, 101u8, 18u8, 131u8, 1u8, 10u8, 24u8, 67u8, 114u8, 101u8,
-            97u8, 116u8, 101u8, 68u8, 101u8, 112u8, 111u8, 115u8, 105u8, 116u8, 84u8,
-            114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 18u8,
-            50u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8,
-            116u8, 101u8, 68u8, 101u8, 112u8, 111u8, 115u8, 105u8, 116u8, 84u8, 114u8,
-            97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8,
-            113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 51u8, 46u8, 99u8, 117u8, 115u8,
-            102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8,
-            46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 68u8, 101u8,
+            99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
+            115u8, 101u8, 18u8, 131u8, 1u8, 10u8, 24u8, 67u8, 114u8, 101u8, 97u8, 116u8,
+            101u8, 68u8, 101u8, 112u8, 111u8, 115u8, 105u8, 116u8, 84u8, 114u8, 97u8,
+            110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 18u8, 50u8, 46u8, 99u8,
+            117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8, 116u8,
+            101u8, 68u8, 101u8, 112u8, 111u8, 115u8, 105u8, 116u8, 84u8, 114u8, 97u8,
+            110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 113u8,
+            117u8, 101u8, 115u8, 116u8, 26u8, 51u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
+            118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 68u8, 101u8,
             112u8, 111u8, 115u8, 105u8, 116u8, 84u8, 114u8, 97u8, 110u8, 115u8, 97u8,
             99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
             115u8, 101u8, 18u8, 107u8, 10u8, 16u8, 67u8, 114u8, 101u8, 97u8, 116u8,
@@ -64308,489 +78275,677 @@ pub mod __buffa {
             110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8,
             110u8, 101u8, 114u8, 97u8, 116u8, 101u8, 66u8, 108u8, 111u8, 99u8, 107u8,
             115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 48u8, 1u8,
-            74u8, 202u8, 75u8, 10u8, 7u8, 18u8, 5u8, 2u8, 0u8, 156u8, 2u8, 1u8, 10u8,
-            41u8, 10u8, 1u8, 12u8, 18u8, 3u8, 2u8, 0u8, 18u8, 50u8, 31u8, 32u8, 67u8,
-            85u8, 83u8, 70u8, 32u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 32u8, 115u8, 101u8,
-            114u8, 118u8, 105u8, 99u8, 101u8, 32u8, 10u8, 8u8, 10u8, 1u8, 2u8, 18u8, 3u8,
-            3u8, 0u8, 26u8, 10u8, 9u8, 10u8, 2u8, 3u8, 0u8, 18u8, 3u8, 5u8, 0u8, 37u8,
-            10u8, 9u8, 10u8, 2u8, 3u8, 1u8, 18u8, 3u8, 6u8, 0u8, 40u8, 10u8, 9u8, 10u8,
-            2u8, 3u8, 2u8, 18u8, 3u8, 7u8, 0u8, 41u8, 10u8, 9u8, 10u8, 2u8, 3u8, 3u8,
-            18u8, 3u8, 8u8, 0u8, 40u8, 10u8, 10u8, 10u8, 2u8, 4u8, 0u8, 18u8, 4u8, 10u8,
-            0u8, 25u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 0u8, 1u8, 18u8, 3u8, 10u8, 8u8,
-            25u8, 10u8, 12u8, 10u8, 4u8, 4u8, 0u8, 3u8, 0u8, 18u8, 4u8, 11u8, 2u8, 15u8,
-            3u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 3u8, 0u8, 1u8, 18u8, 3u8, 11u8, 10u8,
-            22u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 0u8, 5u8, 18u8, 3u8,
-            12u8, 4u8, 10u8, 10u8, 13u8, 10u8, 6u8, 4u8, 0u8, 3u8, 0u8, 2u8, 0u8, 18u8,
-            3u8, 12u8, 4u8, 22u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 0u8,
-            1u8, 18u8, 3u8, 12u8, 11u8, 17u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8,
-            2u8, 0u8, 3u8, 18u8, 3u8, 12u8, 20u8, 21u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8,
-            3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 3u8, 13u8, 4u8, 29u8, 10u8, 13u8, 10u8, 6u8,
-            4u8, 0u8, 3u8, 0u8, 2u8, 1u8, 18u8, 3u8, 13u8, 4u8, 45u8, 10u8, 14u8, 10u8,
-            7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 13u8, 30u8, 40u8, 10u8,
-            14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8, 3u8, 13u8, 43u8,
-            44u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 2u8, 6u8, 18u8, 3u8,
-            14u8, 4u8, 29u8, 10u8, 13u8, 10u8, 6u8, 4u8, 0u8, 3u8, 0u8, 2u8, 2u8, 18u8,
-            3u8, 14u8, 4u8, 44u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 2u8,
-            1u8, 18u8, 3u8, 14u8, 30u8, 39u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8,
-            2u8, 2u8, 3u8, 18u8, 3u8, 14u8, 42u8, 43u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8,
-            2u8, 0u8, 6u8, 18u8, 3u8, 17u8, 2u8, 27u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8,
-            2u8, 0u8, 18u8, 3u8, 17u8, 2u8, 37u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8,
-            0u8, 1u8, 18u8, 3u8, 17u8, 28u8, 32u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8,
-            0u8, 3u8, 18u8, 3u8, 17u8, 35u8, 36u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8,
-            1u8, 6u8, 18u8, 3u8, 18u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8,
-            1u8, 18u8, 3u8, 18u8, 2u8, 50u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 1u8,
-            1u8, 18u8, 3u8, 18u8, 30u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 1u8,
-            3u8, 18u8, 3u8, 18u8, 48u8, 49u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 2u8,
-            5u8, 18u8, 3u8, 20u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8, 2u8,
-            18u8, 3u8, 20u8, 2u8, 22u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 2u8, 1u8,
-            18u8, 3u8, 20u8, 9u8, 17u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 2u8, 3u8,
-            18u8, 3u8, 20u8, 20u8, 21u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 3u8, 5u8,
-            18u8, 3u8, 21u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8, 3u8, 18u8,
-            3u8, 21u8, 2u8, 27u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 3u8, 1u8, 18u8,
-            3u8, 21u8, 9u8, 22u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 3u8, 3u8, 18u8,
-            3u8, 21u8, 25u8, 26u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 4u8, 5u8, 18u8,
-            3u8, 22u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8, 4u8, 18u8, 3u8,
-            22u8, 2u8, 23u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 4u8, 1u8, 18u8, 3u8,
-            22u8, 9u8, 18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 4u8, 3u8, 18u8, 3u8,
-            22u8, 21u8, 22u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 5u8, 6u8, 18u8, 3u8,
-            24u8, 2u8, 14u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8, 5u8, 18u8, 3u8, 24u8,
-            2u8, 37u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 5u8, 1u8, 18u8, 3u8, 24u8,
-            15u8, 32u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 5u8, 3u8, 18u8, 3u8, 24u8,
-            35u8, 36u8, 10u8, 10u8, 10u8, 2u8, 6u8, 0u8, 18u8, 4u8, 27u8, 0u8, 67u8, 1u8,
-            10u8, 10u8, 10u8, 3u8, 6u8, 0u8, 1u8, 18u8, 3u8, 27u8, 8u8, 21u8, 10u8, 12u8,
-            10u8, 4u8, 6u8, 0u8, 2u8, 0u8, 18u8, 4u8, 28u8, 2u8, 30u8, 3u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 28u8, 6u8, 31u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 2u8, 18u8, 3u8, 28u8, 32u8, 64u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 28u8, 75u8, 108u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 4u8, 18u8, 3u8, 29u8, 4u8, 42u8, 10u8, 13u8,
-            10u8, 6u8, 6u8, 0u8, 2u8, 0u8, 4u8, 34u8, 18u8, 3u8, 29u8, 4u8, 42u8, 10u8,
-            12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 1u8, 18u8, 4u8, 31u8, 2u8, 131u8, 1u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 31u8, 6u8, 38u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 2u8, 18u8, 3u8, 31u8, 39u8, 78u8, 10u8,
-            13u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 3u8, 18u8, 4u8, 31u8, 89u8, 129u8, 1u8,
-            10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 2u8, 18u8, 3u8, 32u8, 2u8, 107u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 32u8, 6u8, 30u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 2u8, 18u8, 3u8, 32u8, 31u8, 62u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 32u8, 73u8, 105u8, 10u8,
-            11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 3u8, 18u8, 3u8, 33u8, 2u8, 83u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 1u8, 18u8, 3u8, 33u8, 6u8, 22u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 2u8, 18u8, 3u8, 33u8, 23u8, 46u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 3u8, 18u8, 3u8, 33u8, 57u8, 81u8, 10u8, 247u8,
-            2u8, 10u8, 4u8, 6u8, 0u8, 2u8, 4u8, 18u8, 3u8, 40u8, 2u8, 111u8, 26u8, 233u8,
-            2u8, 32u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 32u8, 97u8, 32u8, 110u8,
-            101u8, 119u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 32u8, 112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 32u8,
+            18u8, 121u8, 10u8, 19u8, 71u8, 101u8, 116u8, 66u8, 105u8, 112u8, 52u8, 55u8,
+            80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 67u8, 111u8, 100u8, 101u8,
+            18u8, 45u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8,
+            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8,
+            66u8, 105u8, 112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 67u8, 111u8, 100u8, 101u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8,
+            116u8, 26u8, 46u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
+            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8,
+            116u8, 66u8, 105u8, 112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8, 101u8,
+            110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 82u8, 101u8, 115u8, 112u8, 111u8,
+            110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 125u8, 10u8, 22u8,
+            83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 66u8, 105u8, 112u8, 52u8, 55u8, 80u8,
+            97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 18u8,
+            48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 110u8,
+            100u8, 84u8, 111u8, 66u8, 105u8, 112u8, 52u8, 55u8, 80u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 67u8, 111u8, 100u8, 101u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 26u8, 49u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8,
+            109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8,
+            49u8, 46u8, 83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 66u8, 105u8, 112u8, 52u8,
+            55u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 67u8, 111u8, 100u8,
+            101u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 130u8,
+            1u8, 10u8, 22u8, 76u8, 105u8, 115u8, 116u8, 66u8, 105u8, 112u8, 52u8, 55u8,
+            73u8, 110u8, 98u8, 111u8, 117u8, 110u8, 100u8, 80u8, 97u8, 121u8, 101u8,
+            114u8, 115u8, 18u8, 48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8,
+            105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 76u8,
+            105u8, 115u8, 116u8, 66u8, 105u8, 112u8, 52u8, 55u8, 73u8, 110u8, 98u8,
+            111u8, 117u8, 110u8, 100u8, 80u8, 97u8, 121u8, 101u8, 114u8, 115u8, 82u8,
+            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 49u8, 46u8, 99u8, 117u8,
+            115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 76u8, 105u8, 115u8, 116u8, 66u8, 105u8,
+            112u8, 52u8, 55u8, 73u8, 110u8, 98u8, 111u8, 117u8, 110u8, 100u8, 80u8, 97u8,
+            121u8, 101u8, 114u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
+            101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 133u8, 1u8, 10u8, 23u8, 71u8, 101u8,
+            116u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 65u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 18u8,
+            49u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 83u8,
+            105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 65u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 82u8, 101u8, 113u8,
+            117u8, 101u8, 115u8, 116u8, 26u8, 50u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
+            118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 83u8, 105u8, 108u8, 101u8, 110u8,
+            116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 65u8, 100u8, 100u8,
+            114u8, 101u8, 115u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
+            101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 131u8, 1u8, 10u8, 24u8, 67u8, 114u8,
+            101u8, 97u8, 116u8, 101u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8,
+            97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8,
+            18u8, 50u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8,
+            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8,
+            97u8, 116u8, 101u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8,
+            121u8, 109u8, 101u8, 110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 82u8,
+            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 51u8, 46u8, 99u8, 117u8,
+            115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 83u8,
+            105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 82u8, 101u8, 115u8, 112u8, 111u8,
+            110u8, 115u8, 101u8, 18u8, 133u8, 1u8, 10u8, 23u8, 76u8, 105u8, 115u8, 116u8,
+            83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8,
+            110u8, 116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 115u8, 18u8, 49u8, 46u8, 99u8,
+            117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 76u8, 105u8, 115u8, 116u8, 83u8,
+            105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 76u8, 97u8, 98u8, 101u8, 108u8, 115u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 26u8, 50u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8,
+            109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8,
+            49u8, 46u8, 76u8, 105u8, 115u8, 116u8, 83u8, 105u8, 108u8, 101u8, 110u8,
+            116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 76u8, 97u8, 98u8,
+            101u8, 108u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8,
+            34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 116u8, 10u8, 19u8, 83u8, 101u8, 110u8,
+            100u8, 84u8, 111u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8,
+            121u8, 109u8, 101u8, 110u8, 116u8, 18u8, 45u8, 46u8, 99u8, 117u8, 115u8,
+            102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 110u8, 100u8, 84u8, 111u8, 83u8, 105u8,
+            108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8,
+            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 46u8, 46u8, 99u8,
+            117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 110u8, 100u8, 84u8,
+            111u8, 83u8, 105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8,
+            101u8, 110u8, 116u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8,
+            18u8, 139u8, 1u8, 10u8, 25u8, 76u8, 105u8, 115u8, 116u8, 83u8, 105u8, 108u8,
+            101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 82u8,
+            101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 115u8, 18u8, 51u8, 46u8, 99u8,
+            117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 76u8, 105u8, 115u8, 116u8, 83u8,
+            105u8, 108u8, 101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8,
+            116u8, 82u8, 101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 115u8, 82u8, 101u8,
+            113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 52u8, 46u8, 99u8, 117u8, 115u8,
+            102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 76u8, 105u8, 115u8, 116u8, 83u8, 105u8, 108u8,
+            101u8, 110u8, 116u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 82u8,
+            101u8, 99u8, 101u8, 105u8, 118u8, 101u8, 115u8, 82u8, 101u8, 115u8, 112u8,
+            111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 127u8, 10u8,
+            21u8, 71u8, 101u8, 116u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8,
+            101u8, 83u8, 99u8, 97u8, 110u8, 83u8, 116u8, 97u8, 116u8, 117u8, 115u8, 18u8,
+            47u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 82u8,
+            101u8, 117u8, 115u8, 97u8, 98u8, 108u8, 101u8, 83u8, 99u8, 97u8, 110u8, 83u8,
+            116u8, 97u8, 116u8, 117u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8,
+            116u8, 26u8, 48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
+            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8,
+            116u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8, 101u8, 83u8, 99u8, 97u8,
+            110u8, 83u8, 116u8, 97u8, 116u8, 117u8, 115u8, 82u8, 101u8, 115u8, 112u8,
+            111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 130u8, 1u8,
+            10u8, 22u8, 82u8, 101u8, 115u8, 99u8, 97u8, 110u8, 82u8, 101u8, 117u8, 115u8,
+            97u8, 98u8, 108u8, 101u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8,
+            115u8, 18u8, 48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
+            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 82u8, 101u8,
+            115u8, 99u8, 97u8, 110u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8,
+            101u8, 80u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8,
+            113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 49u8, 46u8, 99u8, 117u8, 115u8,
+            102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 82u8, 101u8, 115u8, 99u8, 97u8, 110u8, 82u8, 101u8,
+            117u8, 115u8, 97u8, 98u8, 108u8, 101u8, 80u8, 97u8, 121u8, 109u8, 101u8,
+            110u8, 116u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8,
+            34u8, 3u8, 144u8, 2u8, 2u8, 74u8, 175u8, 119u8, 10u8, 7u8, 18u8, 5u8, 2u8,
+            0u8, 193u8, 3u8, 1u8, 10u8, 41u8, 10u8, 1u8, 12u8, 18u8, 3u8, 2u8, 0u8, 18u8,
+            50u8, 31u8, 32u8, 67u8, 85u8, 83u8, 70u8, 32u8, 109u8, 97u8, 105u8, 110u8,
+            99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8,
+            116u8, 32u8, 115u8, 101u8, 114u8, 118u8, 105u8, 99u8, 101u8, 32u8, 10u8, 8u8,
+            10u8, 1u8, 2u8, 18u8, 3u8, 3u8, 0u8, 26u8, 10u8, 9u8, 10u8, 2u8, 3u8, 0u8,
+            18u8, 3u8, 5u8, 0u8, 37u8, 10u8, 9u8, 10u8, 2u8, 3u8, 1u8, 18u8, 3u8, 6u8,
+            0u8, 40u8, 10u8, 9u8, 10u8, 2u8, 3u8, 2u8, 18u8, 3u8, 7u8, 0u8, 41u8, 10u8,
+            9u8, 10u8, 2u8, 3u8, 3u8, 18u8, 3u8, 8u8, 0u8, 40u8, 10u8, 10u8, 10u8, 2u8,
+            4u8, 0u8, 18u8, 4u8, 10u8, 0u8, 25u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 0u8,
+            1u8, 18u8, 3u8, 10u8, 8u8, 25u8, 10u8, 12u8, 10u8, 4u8, 4u8, 0u8, 3u8, 0u8,
+            18u8, 4u8, 11u8, 2u8, 15u8, 3u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 3u8, 0u8,
+            1u8, 18u8, 3u8, 11u8, 10u8, 22u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8,
+            2u8, 0u8, 5u8, 18u8, 3u8, 12u8, 4u8, 10u8, 10u8, 13u8, 10u8, 6u8, 4u8, 0u8,
+            3u8, 0u8, 2u8, 0u8, 18u8, 3u8, 12u8, 4u8, 22u8, 10u8, 14u8, 10u8, 7u8, 4u8,
+            0u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 12u8, 11u8, 17u8, 10u8, 14u8, 10u8,
+            7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 12u8, 20u8, 21u8, 10u8,
+            14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 3u8, 13u8, 4u8,
+            29u8, 10u8, 13u8, 10u8, 6u8, 4u8, 0u8, 3u8, 0u8, 2u8, 1u8, 18u8, 3u8, 13u8,
+            4u8, 45u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8,
+            3u8, 13u8, 30u8, 40u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 1u8,
+            3u8, 18u8, 3u8, 13u8, 43u8, 44u8, 10u8, 14u8, 10u8, 7u8, 4u8, 0u8, 3u8, 0u8,
+            2u8, 2u8, 6u8, 18u8, 3u8, 14u8, 4u8, 29u8, 10u8, 13u8, 10u8, 6u8, 4u8, 0u8,
+            3u8, 0u8, 2u8, 2u8, 18u8, 3u8, 14u8, 4u8, 44u8, 10u8, 14u8, 10u8, 7u8, 4u8,
+            0u8, 3u8, 0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 14u8, 30u8, 39u8, 10u8, 14u8, 10u8,
+            7u8, 4u8, 0u8, 3u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 14u8, 42u8, 43u8, 10u8,
+            12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 0u8, 6u8, 18u8, 3u8, 17u8, 2u8, 27u8, 10u8,
+            11u8, 10u8, 4u8, 4u8, 0u8, 2u8, 0u8, 18u8, 3u8, 17u8, 2u8, 37u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 17u8, 28u8, 32u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 17u8, 35u8, 36u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 0u8, 2u8, 1u8, 6u8, 18u8, 3u8, 18u8, 2u8, 29u8, 10u8, 11u8,
+            10u8, 4u8, 4u8, 0u8, 2u8, 1u8, 18u8, 3u8, 18u8, 2u8, 50u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 18u8, 30u8, 45u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 0u8, 2u8, 1u8, 3u8, 18u8, 3u8, 18u8, 48u8, 49u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 0u8, 2u8, 2u8, 5u8, 18u8, 3u8, 20u8, 2u8, 8u8, 10u8, 11u8, 10u8,
+            4u8, 4u8, 0u8, 2u8, 2u8, 18u8, 3u8, 20u8, 2u8, 22u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 20u8, 9u8, 17u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 20u8, 20u8, 21u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 0u8, 2u8, 3u8, 5u8, 18u8, 3u8, 21u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8,
+            4u8, 0u8, 2u8, 3u8, 18u8, 3u8, 21u8, 2u8, 27u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            0u8, 2u8, 3u8, 1u8, 18u8, 3u8, 21u8, 9u8, 22u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            0u8, 2u8, 3u8, 3u8, 18u8, 3u8, 21u8, 25u8, 26u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            0u8, 2u8, 4u8, 5u8, 18u8, 3u8, 22u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8, 4u8,
+            0u8, 2u8, 4u8, 18u8, 3u8, 22u8, 2u8, 23u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8,
+            2u8, 4u8, 1u8, 18u8, 3u8, 22u8, 9u8, 18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8,
+            2u8, 4u8, 3u8, 18u8, 3u8, 22u8, 21u8, 22u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8,
+            2u8, 5u8, 6u8, 18u8, 3u8, 24u8, 2u8, 14u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8,
+            2u8, 5u8, 18u8, 3u8, 24u8, 2u8, 37u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8,
+            5u8, 1u8, 18u8, 3u8, 24u8, 15u8, 32u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8,
+            5u8, 3u8, 18u8, 3u8, 24u8, 35u8, 36u8, 10u8, 10u8, 10u8, 2u8, 6u8, 0u8, 18u8,
+            4u8, 27u8, 0u8, 95u8, 1u8, 10u8, 10u8, 10u8, 3u8, 6u8, 0u8, 1u8, 18u8, 3u8,
+            27u8, 8u8, 21u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 0u8, 18u8, 4u8, 28u8,
+            2u8, 30u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8,
+            28u8, 6u8, 31u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 2u8, 18u8, 3u8,
+            28u8, 32u8, 64u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8,
+            28u8, 75u8, 108u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 4u8, 18u8, 3u8,
+            29u8, 4u8, 42u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 0u8, 4u8, 34u8, 18u8,
+            3u8, 29u8, 4u8, 42u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 1u8, 18u8, 4u8,
+            31u8, 2u8, 131u8, 1u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 1u8, 18u8,
+            3u8, 31u8, 6u8, 38u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 2u8, 18u8,
+            3u8, 31u8, 39u8, 78u8, 10u8, 13u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 3u8, 18u8,
+            4u8, 31u8, 89u8, 129u8, 1u8, 10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 2u8, 18u8,
+            3u8, 32u8, 2u8, 107u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 1u8, 18u8,
+            3u8, 32u8, 6u8, 30u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 2u8, 18u8,
+            3u8, 32u8, 31u8, 62u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 3u8, 18u8,
+            3u8, 32u8, 73u8, 105u8, 10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 3u8, 18u8, 3u8,
+            33u8, 2u8, 83u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 1u8, 18u8, 3u8,
+            33u8, 6u8, 22u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 2u8, 18u8, 3u8,
+            33u8, 23u8, 46u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 3u8, 18u8, 3u8,
+            33u8, 57u8, 81u8, 10u8, 247u8, 2u8, 10u8, 4u8, 6u8, 0u8, 2u8, 4u8, 18u8, 3u8,
+            40u8, 2u8, 111u8, 26u8, 233u8, 2u8, 32u8, 67u8, 114u8, 101u8, 97u8, 116u8,
+            101u8, 32u8, 97u8, 32u8, 110u8, 101u8, 119u8, 32u8, 115u8, 105u8, 100u8,
+            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 112u8, 114u8, 111u8, 112u8,
+            111u8, 115u8, 97u8, 108u8, 32u8, 40u8, 77u8, 49u8, 32u8, 105u8, 110u8, 32u8,
+            66u8, 73u8, 80u8, 51u8, 48u8, 48u8, 41u8, 32u8, 97u8, 110u8, 100u8, 32u8,
+            112u8, 101u8, 114u8, 115u8, 105u8, 115u8, 116u8, 32u8, 116u8, 111u8, 32u8,
+            116u8, 104u8, 101u8, 32u8, 108u8, 111u8, 99u8, 97u8, 108u8, 10u8, 32u8,
+            100u8, 97u8, 116u8, 97u8, 98u8, 97u8, 115u8, 101u8, 32u8, 102u8, 111u8,
+            114u8, 32u8, 102u8, 117u8, 114u8, 116u8, 104u8, 101u8, 114u8, 32u8, 112u8,
+            114u8, 111u8, 99u8, 101u8, 115u8, 115u8, 105u8, 110u8, 103u8, 46u8, 10u8,
+            32u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8,
+            112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 115u8, 32u8, 109u8,
+            117u8, 115u8, 116u8, 32u8, 98u8, 101u8, 32u8, 105u8, 110u8, 99u8, 108u8,
+            117u8, 100u8, 101u8, 100u8, 32u8, 105u8, 110u8, 32u8, 116u8, 104u8, 101u8,
+            32u8, 99u8, 111u8, 105u8, 110u8, 98u8, 97u8, 115u8, 101u8, 32u8, 116u8,
+            114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 32u8,
+            111u8, 102u8, 32u8, 97u8, 10u8, 32u8, 110u8, 101u8, 119u8, 108u8, 121u8,
+            32u8, 109u8, 105u8, 110u8, 101u8, 100u8, 32u8, 98u8, 108u8, 111u8, 99u8,
+            107u8, 44u8, 32u8, 115u8, 111u8, 32u8, 116u8, 104u8, 105u8, 115u8, 32u8,
+            112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 32u8, 105u8, 115u8,
+            32u8, 110u8, 111u8, 116u8, 32u8, 97u8, 99u8, 116u8, 105u8, 118u8, 101u8,
+            32u8, 117u8, 110u8, 116u8, 105u8, 108u8, 32u8, 116u8, 104u8, 101u8, 32u8,
+            119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 32u8, 104u8, 97u8, 115u8, 10u8,
+            32u8, 98u8, 101u8, 101u8, 110u8, 32u8, 97u8, 98u8, 108u8, 101u8, 32u8, 116u8,
+            111u8, 32u8, 103u8, 101u8, 110u8, 101u8, 114u8, 97u8, 116u8, 101u8, 32u8,
+            97u8, 32u8, 110u8, 101u8, 119u8, 32u8, 98u8, 108u8, 111u8, 99u8, 107u8, 46u8,
+            10u8, 32u8, 82u8, 101u8, 116u8, 117u8, 114u8, 110u8, 115u8, 32u8, 97u8, 32u8,
+            115u8, 116u8, 114u8, 101u8, 97u8, 109u8, 32u8, 111u8, 102u8, 32u8, 40u8,
+            110u8, 111u8, 110u8, 45u8, 41u8, 99u8, 111u8, 110u8, 102u8, 105u8, 114u8,
+            109u8, 97u8, 116u8, 105u8, 111u8, 110u8, 32u8, 101u8, 118u8, 101u8, 110u8,
+            116u8, 115u8, 32u8, 102u8, 111u8, 114u8, 32u8, 116u8, 104u8, 101u8, 32u8,
+            115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 112u8,
+            114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 46u8, 10u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 4u8, 1u8, 18u8, 3u8, 40u8, 6u8, 29u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 4u8, 2u8, 18u8, 3u8, 40u8, 30u8, 60u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 4u8, 6u8, 18u8, 3u8, 40u8, 71u8, 77u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 4u8, 3u8, 18u8, 3u8, 40u8, 78u8, 109u8, 10u8, 229u8, 1u8,
+            10u8, 4u8, 6u8, 0u8, 2u8, 5u8, 18u8, 3u8, 44u8, 2u8, 104u8, 26u8, 215u8, 1u8,
+            32u8, 85u8, 110u8, 97u8, 114u8, 121u8, 32u8, 118u8, 97u8, 114u8, 105u8, 97u8,
+            110u8, 116u8, 32u8, 111u8, 102u8, 32u8, 96u8, 67u8, 114u8, 101u8, 97u8,
+            116u8, 101u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 96u8, 46u8, 32u8, 67u8,
+            114u8, 101u8, 97u8, 116u8, 101u8, 115u8, 32u8, 97u8, 32u8, 110u8, 101u8,
+            119u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            10u8, 32u8, 112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 32u8,
             40u8, 77u8, 49u8, 32u8, 105u8, 110u8, 32u8, 66u8, 73u8, 80u8, 51u8, 48u8,
             48u8, 41u8, 32u8, 97u8, 110u8, 100u8, 32u8, 112u8, 101u8, 114u8, 115u8,
-            105u8, 115u8, 116u8, 32u8, 116u8, 111u8, 32u8, 116u8, 104u8, 101u8, 32u8,
-            108u8, 111u8, 99u8, 97u8, 108u8, 10u8, 32u8, 100u8, 97u8, 116u8, 97u8, 98u8,
-            97u8, 115u8, 101u8, 32u8, 102u8, 111u8, 114u8, 32u8, 102u8, 117u8, 114u8,
-            116u8, 104u8, 101u8, 114u8, 32u8, 112u8, 114u8, 111u8, 99u8, 101u8, 115u8,
-            115u8, 105u8, 110u8, 103u8, 46u8, 10u8, 32u8, 83u8, 105u8, 100u8, 101u8,
-            99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 112u8, 114u8, 111u8, 112u8, 111u8,
-            115u8, 97u8, 108u8, 115u8, 32u8, 109u8, 117u8, 115u8, 116u8, 32u8, 98u8,
-            101u8, 32u8, 105u8, 110u8, 99u8, 108u8, 117u8, 100u8, 101u8, 100u8, 32u8,
-            105u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8, 99u8, 111u8, 105u8, 110u8,
-            98u8, 97u8, 115u8, 101u8, 32u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8,
-            116u8, 105u8, 111u8, 110u8, 32u8, 111u8, 102u8, 32u8, 97u8, 10u8, 32u8,
-            110u8, 101u8, 119u8, 108u8, 121u8, 32u8, 109u8, 105u8, 110u8, 101u8, 100u8,
-            32u8, 98u8, 108u8, 111u8, 99u8, 107u8, 44u8, 32u8, 115u8, 111u8, 32u8, 116u8,
-            104u8, 105u8, 115u8, 32u8, 112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8,
-            108u8, 32u8, 105u8, 115u8, 32u8, 110u8, 111u8, 116u8, 32u8, 97u8, 99u8,
-            116u8, 105u8, 118u8, 101u8, 32u8, 117u8, 110u8, 116u8, 105u8, 108u8, 32u8,
-            116u8, 104u8, 101u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 32u8,
-            104u8, 97u8, 115u8, 10u8, 32u8, 98u8, 101u8, 101u8, 110u8, 32u8, 97u8, 98u8,
-            108u8, 101u8, 32u8, 116u8, 111u8, 32u8, 103u8, 101u8, 110u8, 101u8, 114u8,
-            97u8, 116u8, 101u8, 32u8, 97u8, 32u8, 110u8, 101u8, 119u8, 32u8, 98u8, 108u8,
-            111u8, 99u8, 107u8, 46u8, 10u8, 32u8, 82u8, 101u8, 116u8, 117u8, 114u8,
-            110u8, 115u8, 32u8, 97u8, 32u8, 115u8, 116u8, 114u8, 101u8, 97u8, 109u8,
-            32u8, 111u8, 102u8, 32u8, 40u8, 110u8, 111u8, 110u8, 45u8, 41u8, 99u8, 111u8,
-            110u8, 102u8, 105u8, 114u8, 109u8, 97u8, 116u8, 105u8, 111u8, 110u8, 32u8,
-            101u8, 118u8, 101u8, 110u8, 116u8, 115u8, 32u8, 102u8, 111u8, 114u8, 32u8,
-            116u8, 104u8, 101u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
-            105u8, 110u8, 32u8, 112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8,
-            46u8, 10u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 4u8, 1u8, 18u8, 3u8, 40u8,
-            6u8, 29u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 4u8, 2u8, 18u8, 3u8, 40u8,
-            30u8, 60u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 4u8, 6u8, 18u8, 3u8, 40u8,
-            71u8, 77u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 4u8, 3u8, 18u8, 3u8, 40u8,
-            78u8, 109u8, 10u8, 229u8, 1u8, 10u8, 4u8, 6u8, 0u8, 2u8, 5u8, 18u8, 3u8,
-            44u8, 2u8, 104u8, 26u8, 215u8, 1u8, 32u8, 85u8, 110u8, 97u8, 114u8, 121u8,
-            32u8, 118u8, 97u8, 114u8, 105u8, 97u8, 110u8, 116u8, 32u8, 111u8, 102u8,
-            32u8, 96u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 83u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 80u8, 114u8, 111u8, 112u8, 111u8,
-            115u8, 97u8, 108u8, 96u8, 46u8, 32u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8,
-            115u8, 32u8, 97u8, 32u8, 110u8, 101u8, 119u8, 32u8, 115u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 10u8, 32u8, 112u8, 114u8, 111u8,
-            112u8, 111u8, 115u8, 97u8, 108u8, 32u8, 40u8, 77u8, 49u8, 32u8, 105u8, 110u8,
-            32u8, 66u8, 73u8, 80u8, 51u8, 48u8, 48u8, 41u8, 32u8, 97u8, 110u8, 100u8,
-            32u8, 112u8, 101u8, 114u8, 115u8, 105u8, 115u8, 116u8, 115u8, 32u8, 105u8,
-            116u8, 32u8, 116u8, 111u8, 32u8, 116u8, 104u8, 101u8, 32u8, 108u8, 111u8,
-            99u8, 97u8, 108u8, 32u8, 100u8, 97u8, 116u8, 97u8, 98u8, 97u8, 115u8, 101u8,
-            32u8, 102u8, 111u8, 114u8, 32u8, 102u8, 117u8, 114u8, 116u8, 104u8, 101u8,
-            114u8, 10u8, 32u8, 112u8, 114u8, 111u8, 99u8, 101u8, 115u8, 115u8, 105u8,
-            110u8, 103u8, 44u8, 32u8, 114u8, 101u8, 116u8, 117u8, 114u8, 110u8, 105u8,
-            110u8, 103u8, 32u8, 105u8, 109u8, 109u8, 101u8, 100u8, 105u8, 97u8, 116u8,
-            101u8, 108u8, 121u8, 32u8, 111u8, 110u8, 99u8, 101u8, 32u8, 116u8, 104u8,
-            101u8, 32u8, 112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 32u8,
-            104u8, 97u8, 115u8, 32u8, 98u8, 101u8, 101u8, 110u8, 32u8, 99u8, 114u8,
-            101u8, 97u8, 116u8, 101u8, 100u8, 46u8, 10u8, 10u8, 12u8, 10u8, 5u8, 6u8,
-            0u8, 2u8, 5u8, 1u8, 18u8, 3u8, 44u8, 6u8, 29u8, 10u8, 12u8, 10u8, 5u8, 6u8,
-            0u8, 2u8, 5u8, 2u8, 18u8, 3u8, 44u8, 30u8, 60u8, 10u8, 12u8, 10u8, 5u8, 6u8,
-            0u8, 2u8, 5u8, 3u8, 18u8, 3u8, 44u8, 71u8, 102u8, 10u8, 11u8, 10u8, 4u8, 6u8,
-            0u8, 2u8, 6u8, 18u8, 3u8, 45u8, 2u8, 71u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 6u8, 1u8, 18u8, 3u8, 45u8, 6u8, 18u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 6u8, 2u8, 18u8, 3u8, 45u8, 19u8, 38u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 6u8, 3u8, 18u8, 3u8, 45u8, 49u8, 69u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8,
-            2u8, 7u8, 18u8, 4u8, 46u8, 2u8, 48u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 7u8, 1u8, 18u8, 3u8, 46u8, 6u8, 16u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 7u8, 2u8, 18u8, 3u8, 46u8, 17u8, 34u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 7u8, 3u8, 18u8, 3u8, 46u8, 45u8, 63u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
-            2u8, 7u8, 4u8, 18u8, 3u8, 47u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8,
-            2u8, 7u8, 4u8, 34u8, 18u8, 3u8, 47u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8,
-            0u8, 2u8, 8u8, 18u8, 4u8, 49u8, 2u8, 51u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8,
-            0u8, 2u8, 8u8, 1u8, 18u8, 3u8, 49u8, 6u8, 38u8, 10u8, 12u8, 10u8, 5u8, 6u8,
-            0u8, 2u8, 8u8, 2u8, 18u8, 3u8, 49u8, 39u8, 78u8, 10u8, 13u8, 10u8, 5u8, 6u8,
-            0u8, 2u8, 8u8, 3u8, 18u8, 4u8, 49u8, 89u8, 129u8, 1u8, 10u8, 12u8, 10u8, 5u8,
-            6u8, 0u8, 2u8, 8u8, 4u8, 18u8, 3u8, 50u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8,
-            6u8, 0u8, 2u8, 8u8, 4u8, 34u8, 18u8, 3u8, 50u8, 4u8, 47u8, 10u8, 12u8, 10u8,
-            4u8, 6u8, 0u8, 2u8, 9u8, 18u8, 4u8, 52u8, 2u8, 54u8, 3u8, 10u8, 12u8, 10u8,
-            5u8, 6u8, 0u8, 2u8, 9u8, 1u8, 18u8, 3u8, 52u8, 6u8, 22u8, 10u8, 12u8, 10u8,
-            5u8, 6u8, 0u8, 2u8, 9u8, 2u8, 18u8, 3u8, 52u8, 23u8, 46u8, 10u8, 12u8, 10u8,
-            5u8, 6u8, 0u8, 2u8, 9u8, 3u8, 18u8, 3u8, 52u8, 57u8, 81u8, 10u8, 12u8, 10u8,
-            5u8, 6u8, 0u8, 2u8, 9u8, 4u8, 18u8, 3u8, 53u8, 4u8, 47u8, 10u8, 13u8, 10u8,
-            6u8, 6u8, 0u8, 2u8, 9u8, 4u8, 34u8, 18u8, 3u8, 53u8, 4u8, 47u8, 10u8, 12u8,
-            10u8, 4u8, 6u8, 0u8, 2u8, 10u8, 18u8, 4u8, 55u8, 2u8, 57u8, 3u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 1u8, 18u8, 3u8, 55u8, 6u8, 24u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 2u8, 18u8, 3u8, 55u8, 25u8, 50u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 3u8, 18u8, 3u8, 55u8, 61u8, 87u8, 10u8, 12u8,
-            10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 4u8, 18u8, 3u8, 56u8, 4u8, 47u8, 10u8, 13u8,
-            10u8, 6u8, 6u8, 0u8, 2u8, 10u8, 4u8, 34u8, 18u8, 3u8, 56u8, 4u8, 47u8, 10u8,
-            12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 11u8, 18u8, 4u8, 58u8, 2u8, 60u8, 3u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8, 1u8, 18u8, 3u8, 58u8, 6u8, 13u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8, 2u8, 18u8, 3u8, 58u8, 14u8, 28u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8, 3u8, 18u8, 3u8, 58u8, 39u8, 54u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8, 4u8, 18u8, 3u8, 59u8, 4u8, 47u8, 10u8,
-            13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 11u8, 4u8, 34u8, 18u8, 3u8, 59u8, 4u8, 47u8,
-            10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 12u8, 18u8, 3u8, 61u8, 2u8, 80u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 12u8, 1u8, 18u8, 3u8, 61u8, 6u8, 21u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 12u8, 2u8, 18u8, 3u8, 61u8, 22u8, 44u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 12u8, 3u8, 18u8, 3u8, 61u8, 55u8, 78u8, 10u8,
-            12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 13u8, 18u8, 4u8, 62u8, 2u8, 64u8, 3u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8, 1u8, 18u8, 3u8, 62u8, 6u8, 18u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8, 2u8, 18u8, 3u8, 62u8, 19u8, 38u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8, 3u8, 18u8, 3u8, 62u8, 49u8, 69u8, 10u8,
-            12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8, 4u8, 18u8, 3u8, 63u8, 4u8, 42u8, 10u8,
-            13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 13u8, 4u8, 34u8, 18u8, 3u8, 63u8, 4u8, 42u8,
-            10u8, 52u8, 10u8, 4u8, 6u8, 0u8, 2u8, 14u8, 18u8, 3u8, 66u8, 2u8, 84u8, 26u8,
-            39u8, 32u8, 65u8, 118u8, 97u8, 105u8, 108u8, 97u8, 98u8, 108u8, 101u8, 32u8,
-            111u8, 110u8, 32u8, 114u8, 101u8, 103u8, 116u8, 101u8, 115u8, 116u8, 32u8,
-            97u8, 110u8, 100u8, 32u8, 115u8, 105u8, 103u8, 110u8, 101u8, 116u8, 32u8,
-            111u8, 110u8, 108u8, 121u8, 46u8, 10u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
-            14u8, 1u8, 18u8, 3u8, 66u8, 6u8, 20u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
-            14u8, 2u8, 18u8, 3u8, 66u8, 21u8, 42u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
-            14u8, 6u8, 18u8, 3u8, 66u8, 53u8, 59u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
-            14u8, 3u8, 18u8, 3u8, 66u8, 60u8, 82u8, 10u8, 10u8, 10u8, 2u8, 4u8, 1u8,
-            18u8, 4u8, 69u8, 0u8, 72u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 1u8, 1u8, 18u8,
-            3u8, 69u8, 8u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 6u8, 18u8,
-            3u8, 70u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 0u8, 18u8, 3u8,
-            70u8, 2u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 1u8, 18u8, 3u8,
-            70u8, 30u8, 42u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 3u8, 18u8, 3u8,
-            70u8, 45u8, 46u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 6u8, 18u8, 3u8,
-            71u8, 2u8, 28u8, 10u8, 11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 1u8, 18u8, 3u8, 71u8,
-            2u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 1u8, 18u8, 3u8, 71u8,
-            29u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 3u8, 18u8, 3u8, 71u8,
-            43u8, 44u8, 10u8, 9u8, 10u8, 2u8, 4u8, 2u8, 18u8, 3u8, 73u8, 0u8, 44u8, 10u8,
-            10u8, 10u8, 3u8, 4u8, 2u8, 1u8, 18u8, 3u8, 73u8, 8u8, 41u8, 10u8, 10u8, 10u8,
-            2u8, 4u8, 3u8, 18u8, 4u8, 75u8, 0u8, 81u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8,
-            3u8, 1u8, 18u8, 3u8, 75u8, 8u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8,
-            0u8, 6u8, 18u8, 3u8, 76u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 3u8, 2u8,
-            0u8, 18u8, 3u8, 76u8, 2u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 0u8,
-            1u8, 18u8, 3u8, 76u8, 30u8, 42u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 0u8,
-            3u8, 18u8, 3u8, 76u8, 45u8, 46u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 1u8,
-            6u8, 18u8, 3u8, 77u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 3u8, 2u8, 1u8,
-            18u8, 3u8, 77u8, 2u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 1u8, 1u8,
-            18u8, 3u8, 77u8, 30u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 1u8, 3u8,
-            18u8, 3u8, 77u8, 43u8, 44u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 2u8, 6u8,
-            18u8, 3u8, 78u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 3u8, 2u8, 2u8, 18u8,
-            3u8, 78u8, 2u8, 41u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 2u8, 1u8, 18u8,
-            3u8, 78u8, 30u8, 36u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 2u8, 3u8, 18u8,
-            3u8, 78u8, 39u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 3u8, 6u8, 18u8,
-            3u8, 79u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 3u8, 2u8, 3u8, 18u8, 3u8,
-            79u8, 2u8, 48u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 3u8, 1u8, 18u8, 3u8,
-            79u8, 30u8, 43u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 3u8, 3u8, 18u8, 3u8,
-            79u8, 46u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 4u8, 6u8, 18u8, 3u8,
-            80u8, 2u8, 27u8, 10u8, 11u8, 10u8, 4u8, 4u8, 3u8, 2u8, 4u8, 18u8, 3u8, 80u8,
-            2u8, 43u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 4u8, 1u8, 18u8, 3u8, 80u8,
-            28u8, 38u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 4u8, 3u8, 18u8, 3u8, 80u8,
-            41u8, 42u8, 10u8, 10u8, 10u8, 2u8, 4u8, 4u8, 18u8, 4u8, 82u8, 0u8, 84u8, 1u8,
-            10u8, 10u8, 10u8, 3u8, 4u8, 4u8, 1u8, 18u8, 3u8, 82u8, 8u8, 48u8, 10u8, 12u8,
-            10u8, 5u8, 4u8, 4u8, 2u8, 0u8, 6u8, 18u8, 3u8, 83u8, 2u8, 27u8, 10u8, 11u8,
-            10u8, 4u8, 4u8, 4u8, 2u8, 0u8, 18u8, 3u8, 83u8, 2u8, 37u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 4u8, 2u8, 0u8, 1u8, 18u8, 3u8, 83u8, 28u8, 32u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 4u8, 2u8, 0u8, 3u8, 18u8, 3u8, 83u8, 35u8, 36u8, 10u8, 10u8, 10u8,
-            2u8, 4u8, 5u8, 18u8, 4u8, 86u8, 0u8, 100u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8,
-            5u8, 1u8, 18u8, 3u8, 86u8, 8u8, 39u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8,
-            0u8, 6u8, 18u8, 3u8, 87u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 5u8, 2u8,
-            0u8, 18u8, 3u8, 87u8, 2u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 0u8,
-            1u8, 18u8, 3u8, 87u8, 30u8, 42u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 0u8,
-            3u8, 18u8, 3u8, 87u8, 45u8, 46u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 1u8,
-            6u8, 18u8, 3u8, 97u8, 2u8, 29u8, 10u8, 159u8, 4u8, 10u8, 4u8, 4u8, 5u8, 2u8,
-            1u8, 18u8, 3u8, 97u8, 2u8, 42u8, 26u8, 145u8, 4u8, 32u8, 65u8, 100u8, 100u8,
-            114u8, 101u8, 115u8, 115u8, 101u8, 115u8, 32u8, 97u8, 114u8, 101u8, 32u8,
-            101u8, 110u8, 99u8, 111u8, 100u8, 101u8, 100u8, 32u8, 105u8, 110u8, 32u8,
-            85u8, 84u8, 70u8, 56u8, 46u8, 10u8, 32u8, 42u8, 83u8, 105u8, 100u8, 101u8,
-            99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 100u8, 101u8, 112u8, 111u8, 115u8,
-            105u8, 116u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 101u8,
-            115u8, 42u8, 32u8, 40u8, 110u8, 111u8, 116u8, 32u8, 115u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 97u8, 100u8, 100u8, 114u8,
-            101u8, 115u8, 115u8, 101u8, 115u8, 41u8, 32u8, 97u8, 114u8, 101u8, 32u8,
-            116u8, 121u8, 112u8, 105u8, 99u8, 97u8, 108u8, 108u8, 121u8, 10u8, 32u8,
-            102u8, 111u8, 114u8, 109u8, 97u8, 116u8, 116u8, 101u8, 100u8, 32u8, 97u8,
-            115u8, 32u8, 96u8, 115u8, 60u8, 83u8, 76u8, 79u8, 84u8, 95u8, 78u8, 85u8,
-            77u8, 66u8, 69u8, 82u8, 62u8, 95u8, 60u8, 65u8, 68u8, 68u8, 82u8, 69u8, 83u8,
-            83u8, 62u8, 95u8, 60u8, 67u8, 72u8, 69u8, 67u8, 75u8, 83u8, 85u8, 77u8, 62u8,
-            96u8, 44u8, 10u8, 32u8, 119u8, 104u8, 101u8, 114u8, 101u8, 32u8, 96u8, 67u8,
-            72u8, 69u8, 67u8, 75u8, 83u8, 85u8, 77u8, 96u8, 32u8, 105u8, 115u8, 32u8,
-            97u8, 32u8, 104u8, 101u8, 120u8, 32u8, 101u8, 110u8, 99u8, 111u8, 100u8,
-            105u8, 110u8, 103u8, 32u8, 111u8, 102u8, 32u8, 116u8, 104u8, 101u8, 32u8,
-            102u8, 105u8, 114u8, 115u8, 116u8, 32u8, 54u8, 32u8, 98u8, 121u8, 116u8,
-            101u8, 115u8, 32u8, 111u8, 102u8, 32u8, 116u8, 104u8, 101u8, 32u8, 83u8,
-            72u8, 65u8, 50u8, 53u8, 54u8, 10u8, 32u8, 104u8, 97u8, 115u8, 104u8, 32u8,
-            111u8, 102u8, 32u8, 96u8, 115u8, 60u8, 83u8, 76u8, 79u8, 84u8, 95u8, 78u8,
-            85u8, 77u8, 66u8, 69u8, 82u8, 62u8, 95u8, 60u8, 65u8, 68u8, 68u8, 82u8, 69u8,
-            83u8, 83u8, 62u8, 96u8, 46u8, 10u8, 32u8, 112u8, 114u8, 111u8, 116u8, 111u8,
-            108u8, 105u8, 110u8, 116u8, 58u8, 100u8, 105u8, 115u8, 97u8, 98u8, 108u8,
-            101u8, 58u8, 110u8, 101u8, 120u8, 116u8, 32u8, 77u8, 65u8, 88u8, 95u8, 76u8,
-            73u8, 78u8, 69u8, 95u8, 76u8, 69u8, 78u8, 71u8, 84u8, 72u8, 10u8, 32u8,
-            104u8, 116u8, 116u8, 112u8, 115u8, 58u8, 47u8, 47u8, 103u8, 105u8, 116u8,
-            104u8, 117u8, 98u8, 46u8, 99u8, 111u8, 109u8, 47u8, 76u8, 97u8, 121u8, 101u8,
-            114u8, 84u8, 119u8, 111u8, 45u8, 76u8, 97u8, 98u8, 115u8, 47u8, 116u8, 101u8,
-            115u8, 116u8, 99u8, 104u8, 97u8, 105u8, 110u8, 45u8, 100u8, 101u8, 112u8,
-            114u8, 101u8, 99u8, 97u8, 116u8, 101u8, 100u8, 47u8, 98u8, 108u8, 111u8,
-            98u8, 47u8, 52u8, 98u8, 55u8, 98u8, 97u8, 101u8, 51u8, 101u8, 49u8, 50u8,
-            49u8, 56u8, 101u8, 48u8, 53u8, 56u8, 102u8, 53u8, 57u8, 97u8, 52u8, 51u8,
-            99u8, 97u8, 102u8, 54u8, 99u8, 99u8, 97u8, 99u8, 50u8, 97u8, 52u8, 101u8,
-            57u8, 97u8, 57u8, 49u8, 102u8, 54u8, 47u8, 115u8, 114u8, 99u8, 47u8, 115u8,
-            105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 99u8, 112u8,
-            112u8, 35u8, 76u8, 50u8, 49u8, 57u8, 10u8, 32u8, 84u8, 104u8, 101u8, 32u8,
-            97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 32u8, 117u8, 115u8, 101u8,
-            100u8, 32u8, 104u8, 101u8, 114u8, 101u8, 32u8, 105u8, 115u8, 32u8, 97u8,
-            32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8,
-            97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 44u8, 32u8, 116u8, 104u8,
-            101u8, 32u8, 109u8, 105u8, 100u8, 100u8, 108u8, 101u8, 32u8, 99u8, 111u8,
-            109u8, 112u8, 111u8, 110u8, 101u8, 110u8, 116u8, 32u8, 111u8, 102u8, 32u8,
-            97u8, 10u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 32u8, 100u8, 101u8, 112u8, 111u8, 115u8, 105u8, 116u8, 32u8, 97u8,
-            100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 46u8, 10u8, 10u8, 12u8, 10u8, 5u8,
-            4u8, 5u8, 2u8, 1u8, 1u8, 18u8, 3u8, 97u8, 30u8, 37u8, 10u8, 12u8, 10u8, 5u8,
-            4u8, 5u8, 2u8, 1u8, 3u8, 18u8, 3u8, 97u8, 40u8, 41u8, 10u8, 12u8, 10u8, 5u8,
-            4u8, 5u8, 2u8, 2u8, 6u8, 18u8, 3u8, 98u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8,
-            4u8, 5u8, 2u8, 2u8, 18u8, 3u8, 98u8, 2u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8,
-            5u8, 2u8, 2u8, 1u8, 18u8, 3u8, 98u8, 30u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8,
-            5u8, 2u8, 2u8, 3u8, 18u8, 3u8, 98u8, 43u8, 44u8, 10u8, 12u8, 10u8, 5u8, 4u8,
-            5u8, 2u8, 3u8, 6u8, 18u8, 3u8, 99u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8,
-            5u8, 2u8, 3u8, 18u8, 3u8, 99u8, 2u8, 43u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8,
-            2u8, 3u8, 1u8, 18u8, 3u8, 99u8, 30u8, 38u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8,
-            2u8, 3u8, 3u8, 18u8, 3u8, 99u8, 41u8, 42u8, 10u8, 10u8, 10u8, 2u8, 4u8, 6u8,
-            18u8, 4u8, 101u8, 0u8, 103u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 6u8, 1u8,
-            18u8, 3u8, 101u8, 8u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 6u8, 2u8, 0u8, 6u8,
-            18u8, 3u8, 102u8, 2u8, 27u8, 10u8, 11u8, 10u8, 4u8, 4u8, 6u8, 2u8, 0u8, 18u8,
-            3u8, 102u8, 2u8, 37u8, 10u8, 12u8, 10u8, 5u8, 4u8, 6u8, 2u8, 0u8, 1u8, 18u8,
-            3u8, 102u8, 28u8, 32u8, 10u8, 12u8, 10u8, 5u8, 4u8, 6u8, 2u8, 0u8, 3u8, 18u8,
-            3u8, 102u8, 35u8, 36u8, 10u8, 9u8, 10u8, 2u8, 4u8, 7u8, 18u8, 3u8, 105u8,
-            0u8, 34u8, 10u8, 10u8, 10u8, 3u8, 4u8, 7u8, 1u8, 18u8, 3u8, 105u8, 8u8, 31u8,
-            10u8, 10u8, 10u8, 2u8, 4u8, 8u8, 18u8, 4u8, 107u8, 0u8, 109u8, 1u8, 10u8,
-            10u8, 10u8, 3u8, 4u8, 8u8, 1u8, 18u8, 3u8, 107u8, 8u8, 32u8, 10u8, 12u8,
-            10u8, 5u8, 4u8, 8u8, 2u8, 0u8, 5u8, 18u8, 3u8, 108u8, 2u8, 8u8, 10u8, 11u8,
-            10u8, 4u8, 4u8, 8u8, 2u8, 0u8, 18u8, 3u8, 108u8, 2u8, 21u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 8u8, 2u8, 0u8, 1u8, 18u8, 3u8, 108u8, 9u8, 16u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 8u8, 2u8, 0u8, 3u8, 18u8, 3u8, 108u8, 19u8, 20u8, 10u8, 10u8, 10u8,
-            2u8, 4u8, 9u8, 18u8, 4u8, 111u8, 0u8, 114u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8,
-            9u8, 1u8, 18u8, 3u8, 111u8, 8u8, 38u8, 10u8, 12u8, 10u8, 5u8, 4u8, 9u8, 2u8,
-            0u8, 6u8, 18u8, 3u8, 112u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 9u8, 2u8,
-            0u8, 18u8, 3u8, 112u8, 2u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 9u8, 2u8, 0u8,
-            1u8, 18u8, 3u8, 112u8, 30u8, 42u8, 10u8, 12u8, 10u8, 5u8, 4u8, 9u8, 2u8, 0u8,
-            3u8, 18u8, 3u8, 112u8, 45u8, 46u8, 10u8, 12u8, 10u8, 5u8, 4u8, 9u8, 2u8, 1u8,
-            6u8, 18u8, 3u8, 113u8, 2u8, 22u8, 10u8, 11u8, 10u8, 4u8, 4u8, 9u8, 2u8, 1u8,
-            18u8, 3u8, 113u8, 2u8, 39u8, 10u8, 12u8, 10u8, 5u8, 4u8, 9u8, 2u8, 1u8, 1u8,
-            18u8, 3u8, 113u8, 23u8, 34u8, 10u8, 12u8, 10u8, 5u8, 4u8, 9u8, 2u8, 1u8, 3u8,
-            18u8, 3u8, 113u8, 37u8, 38u8, 10u8, 11u8, 10u8, 2u8, 4u8, 10u8, 18u8, 5u8,
-            116u8, 0u8, 133u8, 1u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 10u8, 1u8, 18u8,
-            3u8, 116u8, 8u8, 39u8, 10u8, 12u8, 10u8, 4u8, 4u8, 10u8, 3u8, 0u8, 18u8, 4u8,
-            117u8, 2u8, 123u8, 3u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 3u8, 0u8, 1u8,
-            18u8, 3u8, 117u8, 10u8, 19u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8,
-            2u8, 0u8, 6u8, 18u8, 3u8, 118u8, 4u8, 29u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8,
-            3u8, 0u8, 2u8, 0u8, 18u8, 3u8, 118u8, 4u8, 45u8, 10u8, 14u8, 10u8, 7u8, 4u8,
-            10u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 118u8, 30u8, 40u8, 10u8, 14u8,
-            10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 118u8, 43u8, 44u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 3u8, 119u8,
-            4u8, 31u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 18u8, 3u8,
-            119u8, 4u8, 50u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 1u8,
-            18u8, 3u8, 119u8, 32u8, 45u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8,
-            2u8, 1u8, 3u8, 18u8, 3u8, 119u8, 48u8, 49u8, 10u8, 14u8, 10u8, 7u8, 4u8,
-            10u8, 3u8, 0u8, 2u8, 2u8, 6u8, 18u8, 3u8, 120u8, 4u8, 31u8, 10u8, 13u8, 10u8,
-            6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 18u8, 3u8, 120u8, 4u8, 43u8, 10u8, 14u8,
-            10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 120u8, 32u8, 38u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 120u8,
-            41u8, 42u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 6u8, 18u8,
-            3u8, 121u8, 4u8, 12u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8,
-            18u8, 3u8, 121u8, 4u8, 26u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8,
-            3u8, 1u8, 18u8, 3u8, 121u8, 13u8, 21u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8,
-            3u8, 0u8, 2u8, 3u8, 3u8, 18u8, 3u8, 121u8, 24u8, 25u8, 10u8, 14u8, 10u8, 7u8,
-            4u8, 10u8, 3u8, 0u8, 2u8, 4u8, 6u8, 18u8, 3u8, 122u8, 4u8, 29u8, 10u8, 13u8,
-            10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 4u8, 18u8, 3u8, 122u8, 4u8, 50u8, 10u8,
-            14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 4u8, 1u8, 18u8, 3u8, 122u8, 30u8,
-            45u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 4u8, 3u8, 18u8, 3u8,
-            122u8, 48u8, 49u8, 10u8, 13u8, 10u8, 4u8, 4u8, 10u8, 3u8, 1u8, 18u8, 5u8,
-            124u8, 2u8, 128u8, 1u8, 3u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 3u8, 1u8, 1u8,
-            18u8, 3u8, 124u8, 10u8, 22u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8,
-            2u8, 0u8, 6u8, 18u8, 3u8, 125u8, 4u8, 29u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8,
-            3u8, 1u8, 2u8, 0u8, 18u8, 3u8, 125u8, 4u8, 45u8, 10u8, 14u8, 10u8, 7u8, 4u8,
-            10u8, 3u8, 1u8, 2u8, 0u8, 1u8, 18u8, 3u8, 125u8, 30u8, 40u8, 10u8, 14u8,
-            10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 0u8, 3u8, 18u8, 3u8, 125u8, 43u8, 44u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 1u8, 6u8, 18u8, 3u8, 126u8,
-            4u8, 31u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 1u8, 2u8, 1u8, 18u8, 3u8,
-            126u8, 4u8, 43u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 1u8, 1u8,
-            18u8, 3u8, 126u8, 32u8, 38u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8,
-            2u8, 1u8, 3u8, 18u8, 3u8, 126u8, 41u8, 42u8, 10u8, 14u8, 10u8, 7u8, 4u8,
-            10u8, 3u8, 1u8, 2u8, 2u8, 6u8, 18u8, 3u8, 127u8, 4u8, 29u8, 10u8, 13u8, 10u8,
-            6u8, 4u8, 10u8, 3u8, 1u8, 2u8, 2u8, 18u8, 3u8, 127u8, 4u8, 50u8, 10u8, 14u8,
-            10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 2u8, 1u8, 18u8, 3u8, 127u8, 30u8, 45u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 2u8, 3u8, 18u8, 3u8, 127u8,
-            48u8, 49u8, 10u8, 14u8, 10u8, 4u8, 4u8, 10u8, 8u8, 0u8, 18u8, 6u8, 129u8,
-            1u8, 2u8, 132u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 8u8, 0u8, 1u8,
-            18u8, 4u8, 129u8, 1u8, 8u8, 13u8, 10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 2u8, 0u8,
-            6u8, 18u8, 4u8, 130u8, 1u8, 4u8, 13u8, 10u8, 12u8, 10u8, 4u8, 4u8, 10u8, 2u8,
-            0u8, 18u8, 4u8, 130u8, 1u8, 4u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 2u8,
-            0u8, 1u8, 18u8, 4u8, 130u8, 1u8, 14u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            10u8, 2u8, 0u8, 3u8, 18u8, 4u8, 130u8, 1u8, 26u8, 27u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 10u8, 2u8, 1u8, 6u8, 18u8, 4u8, 131u8, 1u8, 4u8, 16u8, 10u8, 12u8,
-            10u8, 4u8, 4u8, 10u8, 2u8, 1u8, 18u8, 4u8, 131u8, 1u8, 4u8, 35u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 1u8, 18u8, 4u8, 131u8, 1u8, 17u8, 30u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 3u8, 18u8, 4u8, 131u8, 1u8, 33u8, 34u8,
-            10u8, 12u8, 10u8, 2u8, 4u8, 11u8, 18u8, 6u8, 135u8, 1u8, 0u8, 138u8, 1u8,
-            1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 11u8, 1u8, 18u8, 4u8, 135u8, 1u8, 8u8, 38u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 0u8, 6u8, 18u8, 4u8, 136u8, 1u8, 2u8,
-            29u8, 10u8, 12u8, 10u8, 4u8, 4u8, 11u8, 2u8, 0u8, 18u8, 4u8, 136u8, 1u8, 2u8,
-            47u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 0u8, 1u8, 18u8, 4u8, 136u8, 1u8,
-            30u8, 42u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 0u8, 3u8, 18u8, 4u8,
-            136u8, 1u8, 45u8, 46u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 1u8, 6u8,
-            18u8, 4u8, 137u8, 1u8, 2u8, 22u8, 10u8, 12u8, 10u8, 4u8, 4u8, 11u8, 2u8, 1u8,
-            18u8, 4u8, 137u8, 1u8, 2u8, 39u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 1u8,
-            1u8, 18u8, 4u8, 137u8, 1u8, 23u8, 34u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8,
-            2u8, 1u8, 3u8, 18u8, 4u8, 137u8, 1u8, 37u8, 38u8, 10u8, 10u8, 10u8, 2u8, 4u8,
-            12u8, 18u8, 4u8, 139u8, 1u8, 0u8, 42u8, 10u8, 11u8, 10u8, 3u8, 4u8, 12u8,
-            1u8, 18u8, 4u8, 139u8, 1u8, 8u8, 39u8, 10u8, 12u8, 10u8, 2u8, 4u8, 13u8,
-            18u8, 6u8, 141u8, 1u8, 0u8, 151u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8,
-            13u8, 1u8, 18u8, 4u8, 141u8, 1u8, 8u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            13u8, 2u8, 0u8, 4u8, 18u8, 4u8, 143u8, 1u8, 2u8, 10u8, 10u8, 47u8, 10u8, 4u8,
-            4u8, 13u8, 2u8, 0u8, 18u8, 4u8, 143u8, 1u8, 2u8, 37u8, 26u8, 33u8, 32u8,
-            66u8, 73u8, 80u8, 51u8, 57u8, 32u8, 109u8, 110u8, 101u8, 109u8, 111u8, 110u8,
-            105u8, 99u8, 46u8, 32u8, 49u8, 50u8, 32u8, 111u8, 114u8, 32u8, 50u8, 52u8,
-            32u8, 119u8, 111u8, 114u8, 100u8, 115u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8,
-            4u8, 13u8, 2u8, 0u8, 5u8, 18u8, 4u8, 143u8, 1u8, 11u8, 17u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 13u8, 2u8, 0u8, 1u8, 18u8, 4u8, 143u8, 1u8, 18u8, 32u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 0u8, 3u8, 18u8, 4u8, 143u8, 1u8, 35u8, 36u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 1u8, 5u8, 18u8, 4u8, 146u8, 1u8, 2u8,
-            8u8, 10u8, 55u8, 10u8, 4u8, 4u8, 13u8, 2u8, 1u8, 18u8, 4u8, 146u8, 1u8, 2u8,
-            27u8, 26u8, 41u8, 32u8, 80u8, 97u8, 116u8, 104u8, 32u8, 116u8, 111u8, 32u8,
-            97u8, 32u8, 102u8, 105u8, 108u8, 101u8, 32u8, 99u8, 111u8, 110u8, 116u8,
-            97u8, 105u8, 110u8, 105u8, 110u8, 103u8, 32u8, 116u8, 104u8, 101u8, 32u8,
-            109u8, 110u8, 101u8, 109u8, 111u8, 110u8, 105u8, 99u8, 46u8, 10u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 1u8, 1u8, 18u8, 4u8, 146u8, 1u8, 9u8, 22u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 1u8, 3u8, 18u8, 4u8, 146u8, 1u8, 25u8,
-            26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 2u8, 5u8, 18u8, 4u8, 150u8, 1u8,
-            2u8, 8u8, 10u8, 106u8, 10u8, 4u8, 4u8, 13u8, 2u8, 2u8, 18u8, 4u8, 150u8, 1u8,
-            2u8, 22u8, 26u8, 92u8, 32u8, 80u8, 97u8, 115u8, 115u8, 119u8, 111u8, 114u8,
-            100u8, 32u8, 102u8, 111u8, 114u8, 32u8, 116u8, 104u8, 101u8, 32u8, 119u8,
-            97u8, 108u8, 108u8, 101u8, 116u8, 46u8, 32u8, 85u8, 115u8, 101u8, 100u8,
-            32u8, 116u8, 111u8, 32u8, 101u8, 110u8, 99u8, 114u8, 121u8, 112u8, 116u8,
-            32u8, 116u8, 104u8, 101u8, 32u8, 109u8, 110u8, 101u8, 109u8, 111u8, 110u8,
-            105u8, 99u8, 32u8, 105u8, 110u8, 32u8, 115u8, 116u8, 111u8, 114u8, 97u8,
-            103u8, 101u8, 46u8, 10u8, 32u8, 78u8, 79u8, 84u8, 32u8, 97u8, 32u8, 66u8,
-            73u8, 80u8, 51u8, 57u8, 32u8, 112u8, 97u8, 115u8, 115u8, 112u8, 104u8, 114u8,
-            97u8, 115u8, 101u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 2u8,
-            1u8, 18u8, 4u8, 150u8, 1u8, 9u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8,
-            2u8, 3u8, 18u8, 4u8, 150u8, 1u8, 20u8, 21u8, 10u8, 10u8, 10u8, 2u8, 4u8,
-            14u8, 18u8, 4u8, 152u8, 1u8, 0u8, 31u8, 10u8, 11u8, 10u8, 3u8, 4u8, 14u8,
-            1u8, 18u8, 4u8, 152u8, 1u8, 8u8, 28u8, 10u8, 10u8, 10u8, 2u8, 4u8, 15u8,
-            18u8, 4u8, 154u8, 1u8, 0u8, 28u8, 10u8, 11u8, 10u8, 3u8, 4u8, 15u8, 1u8,
-            18u8, 4u8, 154u8, 1u8, 8u8, 25u8, 10u8, 12u8, 10u8, 2u8, 4u8, 16u8, 18u8,
-            6u8, 155u8, 1u8, 0u8, 161u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 16u8, 1u8,
-            18u8, 4u8, 155u8, 1u8, 8u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 16u8, 2u8, 0u8,
-            5u8, 18u8, 4u8, 156u8, 1u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 16u8, 2u8,
-            0u8, 18u8, 4u8, 156u8, 1u8, 2u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 16u8, 2u8,
-            0u8, 1u8, 18u8, 4u8, 156u8, 1u8, 9u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 16u8,
-            2u8, 0u8, 3u8, 18u8, 4u8, 156u8, 1u8, 26u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            16u8, 2u8, 1u8, 5u8, 18u8, 4u8, 157u8, 1u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8,
-            4u8, 16u8, 2u8, 1u8, 18u8, 4u8, 157u8, 1u8, 2u8, 26u8, 10u8, 13u8, 10u8, 5u8,
-            4u8, 16u8, 2u8, 1u8, 1u8, 18u8, 4u8, 157u8, 1u8, 9u8, 21u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 16u8, 2u8, 1u8, 3u8, 18u8, 4u8, 157u8, 1u8, 24u8, 25u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 16u8, 2u8, 2u8, 5u8, 18u8, 4u8, 160u8, 1u8, 2u8, 6u8, 10u8,
-            66u8, 10u8, 4u8, 4u8, 16u8, 2u8, 2u8, 18u8, 4u8, 160u8, 1u8, 2u8, 22u8, 26u8,
-            52u8, 32u8, 87u8, 104u8, 101u8, 116u8, 104u8, 101u8, 114u8, 32u8, 116u8,
-            104u8, 101u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 32u8, 104u8,
-            97u8, 115u8, 32u8, 99u8, 111u8, 109u8, 112u8, 108u8, 101u8, 116u8, 101u8,
-            100u8, 32u8, 105u8, 116u8, 115u8, 32u8, 105u8, 110u8, 105u8, 116u8, 105u8,
-            97u8, 108u8, 32u8, 115u8, 121u8, 110u8, 99u8, 46u8, 10u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 16u8, 2u8, 2u8, 1u8, 18u8, 4u8, 160u8, 1u8, 7u8, 17u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 16u8, 2u8, 2u8, 3u8, 18u8, 4u8, 160u8, 1u8, 20u8, 21u8, 10u8,
-            10u8, 10u8, 2u8, 4u8, 17u8, 18u8, 4u8, 163u8, 1u8, 0u8, 50u8, 10u8, 11u8,
-            10u8, 3u8, 4u8, 17u8, 1u8, 18u8, 4u8, 163u8, 1u8, 8u8, 47u8, 10u8, 12u8,
-            10u8, 2u8, 4u8, 18u8, 18u8, 6u8, 164u8, 1u8, 0u8, 170u8, 1u8, 1u8, 10u8,
-            11u8, 10u8, 3u8, 4u8, 18u8, 1u8, 18u8, 4u8, 164u8, 1u8, 8u8, 48u8, 10u8,
-            14u8, 10u8, 4u8, 4u8, 18u8, 3u8, 0u8, 18u8, 6u8, 165u8, 1u8, 2u8, 168u8, 1u8,
-            3u8, 10u8, 13u8, 10u8, 5u8, 4u8, 18u8, 3u8, 0u8, 1u8, 18u8, 4u8, 165u8, 1u8,
-            10u8, 37u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8, 3u8, 0u8, 2u8, 0u8, 6u8, 18u8,
-            4u8, 166u8, 1u8, 4u8, 31u8, 10u8, 14u8, 10u8, 6u8, 4u8, 18u8, 3u8, 0u8, 2u8,
-            0u8, 18u8, 4u8, 166u8, 1u8, 4u8, 53u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8, 3u8,
-            0u8, 2u8, 0u8, 1u8, 18u8, 4u8, 166u8, 1u8, 32u8, 48u8, 10u8, 15u8, 10u8, 7u8,
-            4u8, 18u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 4u8, 166u8, 1u8, 51u8, 52u8, 10u8,
-            15u8, 10u8, 7u8, 4u8, 18u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 4u8, 167u8, 1u8,
-            4u8, 21u8, 10u8, 14u8, 10u8, 6u8, 4u8, 18u8, 3u8, 0u8, 2u8, 1u8, 18u8, 4u8,
-            167u8, 1u8, 4u8, 29u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8, 3u8, 0u8, 2u8, 1u8,
-            1u8, 18u8, 4u8, 167u8, 1u8, 22u8, 24u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8,
-            3u8, 0u8, 2u8, 1u8, 3u8, 18u8, 4u8, 167u8, 1u8, 27u8, 28u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 18u8, 2u8, 0u8, 4u8, 18u8, 4u8, 169u8, 1u8, 2u8, 10u8, 10u8, 12u8,
-            10u8, 4u8, 4u8, 18u8, 2u8, 0u8, 18u8, 4u8, 169u8, 1u8, 2u8, 56u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 6u8, 18u8, 4u8, 169u8, 1u8, 11u8, 38u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 1u8, 18u8, 4u8, 169u8, 1u8, 39u8, 51u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 3u8, 18u8, 4u8, 169u8, 1u8, 54u8,
-            55u8, 10u8, 10u8, 10u8, 2u8, 4u8, 19u8, 18u8, 4u8, 172u8, 1u8, 0u8, 34u8,
-            10u8, 11u8, 10u8, 3u8, 4u8, 19u8, 1u8, 18u8, 4u8, 172u8, 1u8, 8u8, 31u8,
-            10u8, 12u8, 10u8, 2u8, 4u8, 20u8, 18u8, 6u8, 173u8, 1u8, 0u8, 175u8, 1u8,
-            1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 20u8, 1u8, 18u8, 4u8, 173u8, 1u8, 8u8, 32u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 4u8, 18u8, 4u8, 174u8, 1u8, 2u8,
-            10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 20u8, 2u8, 0u8, 18u8, 4u8, 174u8, 1u8, 2u8,
-            46u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 6u8, 18u8, 4u8, 174u8, 1u8,
-            11u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 1u8, 18u8, 4u8,
-            174u8, 1u8, 29u8, 41u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 3u8,
-            18u8, 4u8, 174u8, 1u8, 44u8, 45u8, 10u8, 12u8, 10u8, 2u8, 4u8, 21u8, 18u8,
-            6u8, 177u8, 1u8, 0u8, 212u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 21u8, 1u8,
-            18u8, 4u8, 177u8, 1u8, 8u8, 30u8, 10u8, 14u8, 10u8, 4u8, 4u8, 21u8, 3u8, 0u8,
-            18u8, 6u8, 178u8, 1u8, 2u8, 186u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            21u8, 3u8, 0u8, 1u8, 18u8, 4u8, 178u8, 1u8, 10u8, 17u8, 10u8, 16u8, 10u8,
-            6u8, 4u8, 21u8, 3u8, 0u8, 8u8, 0u8, 18u8, 6u8, 179u8, 1u8, 4u8, 185u8, 1u8,
+            105u8, 115u8, 116u8, 115u8, 32u8, 105u8, 116u8, 32u8, 116u8, 111u8, 32u8,
+            116u8, 104u8, 101u8, 32u8, 108u8, 111u8, 99u8, 97u8, 108u8, 32u8, 100u8,
+            97u8, 116u8, 97u8, 98u8, 97u8, 115u8, 101u8, 32u8, 102u8, 111u8, 114u8, 32u8,
+            102u8, 117u8, 114u8, 116u8, 104u8, 101u8, 114u8, 10u8, 32u8, 112u8, 114u8,
+            111u8, 99u8, 101u8, 115u8, 115u8, 105u8, 110u8, 103u8, 44u8, 32u8, 114u8,
+            101u8, 116u8, 117u8, 114u8, 110u8, 105u8, 110u8, 103u8, 32u8, 105u8, 109u8,
+            109u8, 101u8, 100u8, 105u8, 97u8, 116u8, 101u8, 108u8, 121u8, 32u8, 111u8,
+            110u8, 99u8, 101u8, 32u8, 116u8, 104u8, 101u8, 32u8, 112u8, 114u8, 111u8,
+            112u8, 111u8, 115u8, 97u8, 108u8, 32u8, 104u8, 97u8, 115u8, 32u8, 98u8,
+            101u8, 101u8, 110u8, 32u8, 99u8, 114u8, 101u8, 97u8, 116u8, 101u8, 100u8,
+            46u8, 10u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 5u8, 1u8, 18u8, 3u8, 44u8,
+            6u8, 29u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 5u8, 2u8, 18u8, 3u8, 44u8,
+            30u8, 60u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 5u8, 3u8, 18u8, 3u8, 44u8,
+            71u8, 102u8, 10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 6u8, 18u8, 3u8, 45u8, 2u8,
+            71u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 6u8, 1u8, 18u8, 3u8, 45u8, 6u8,
+            18u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 6u8, 2u8, 18u8, 3u8, 45u8, 19u8,
+            38u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 6u8, 3u8, 18u8, 3u8, 45u8, 49u8,
+            69u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 7u8, 18u8, 4u8, 46u8, 2u8, 48u8,
+            3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 7u8, 1u8, 18u8, 3u8, 46u8, 6u8,
+            16u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 7u8, 2u8, 18u8, 3u8, 46u8, 17u8,
+            34u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 7u8, 3u8, 18u8, 3u8, 46u8, 45u8,
+            63u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 7u8, 4u8, 18u8, 3u8, 47u8, 4u8,
+            47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 7u8, 4u8, 34u8, 18u8, 3u8, 47u8,
+            4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 8u8, 18u8, 4u8, 49u8, 2u8,
+            51u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 8u8, 1u8, 18u8, 3u8, 49u8,
+            6u8, 38u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 8u8, 2u8, 18u8, 3u8, 49u8,
+            39u8, 78u8, 10u8, 13u8, 10u8, 5u8, 6u8, 0u8, 2u8, 8u8, 3u8, 18u8, 4u8, 49u8,
+            89u8, 129u8, 1u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 8u8, 4u8, 18u8, 3u8,
+            50u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 8u8, 4u8, 34u8, 18u8,
+            3u8, 50u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 9u8, 18u8, 4u8,
+            52u8, 2u8, 54u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 9u8, 1u8, 18u8,
+            3u8, 52u8, 6u8, 22u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 9u8, 2u8, 18u8,
+            3u8, 52u8, 23u8, 46u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 9u8, 3u8, 18u8,
+            3u8, 52u8, 57u8, 81u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 9u8, 4u8, 18u8,
+            3u8, 53u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 9u8, 4u8, 34u8,
+            18u8, 3u8, 53u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 10u8, 18u8,
+            4u8, 55u8, 2u8, 57u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 1u8,
+            18u8, 3u8, 55u8, 6u8, 24u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 2u8,
+            18u8, 3u8, 55u8, 25u8, 50u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 3u8,
+            18u8, 3u8, 55u8, 61u8, 87u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 10u8, 4u8,
+            18u8, 3u8, 56u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 10u8, 4u8,
+            34u8, 18u8, 3u8, 56u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 11u8,
+            18u8, 4u8, 58u8, 2u8, 60u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8,
+            1u8, 18u8, 3u8, 58u8, 6u8, 13u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8,
+            2u8, 18u8, 3u8, 58u8, 14u8, 28u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8,
+            3u8, 18u8, 3u8, 58u8, 39u8, 54u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 11u8,
+            4u8, 18u8, 3u8, 59u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 11u8,
+            4u8, 34u8, 18u8, 3u8, 59u8, 4u8, 47u8, 10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8,
+            12u8, 18u8, 3u8, 61u8, 2u8, 80u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 12u8,
+            1u8, 18u8, 3u8, 61u8, 6u8, 21u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 12u8,
+            2u8, 18u8, 3u8, 61u8, 22u8, 44u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 12u8,
+            3u8, 18u8, 3u8, 61u8, 55u8, 78u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 13u8,
+            18u8, 4u8, 62u8, 2u8, 64u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8,
+            1u8, 18u8, 3u8, 62u8, 6u8, 18u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8,
+            2u8, 18u8, 3u8, 62u8, 19u8, 38u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8,
+            3u8, 18u8, 3u8, 62u8, 49u8, 69u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 13u8,
+            4u8, 18u8, 3u8, 63u8, 4u8, 42u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 13u8,
+            4u8, 34u8, 18u8, 3u8, 63u8, 4u8, 42u8, 10u8, 52u8, 10u8, 4u8, 6u8, 0u8, 2u8,
+            14u8, 18u8, 3u8, 66u8, 2u8, 84u8, 26u8, 39u8, 32u8, 65u8, 118u8, 97u8, 105u8,
+            108u8, 97u8, 98u8, 108u8, 101u8, 32u8, 111u8, 110u8, 32u8, 114u8, 101u8,
+            103u8, 116u8, 101u8, 115u8, 116u8, 32u8, 97u8, 110u8, 100u8, 32u8, 115u8,
+            105u8, 103u8, 110u8, 101u8, 116u8, 32u8, 111u8, 110u8, 108u8, 121u8, 46u8,
+            10u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 14u8, 1u8, 18u8, 3u8, 66u8, 6u8,
+            20u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 14u8, 2u8, 18u8, 3u8, 66u8, 21u8,
+            42u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 14u8, 6u8, 18u8, 3u8, 66u8, 53u8,
+            59u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 14u8, 3u8, 18u8, 3u8, 66u8, 60u8,
+            82u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 15u8, 18u8, 4u8, 68u8, 2u8, 70u8,
+            3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 15u8, 1u8, 18u8, 3u8, 68u8, 6u8,
+            25u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 15u8, 2u8, 18u8, 3u8, 68u8, 26u8,
+            52u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 15u8, 3u8, 18u8, 3u8, 68u8, 63u8,
+            90u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 15u8, 4u8, 18u8, 3u8, 69u8, 4u8,
+            47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 15u8, 4u8, 34u8, 18u8, 3u8, 69u8,
+            4u8, 47u8, 10u8, 11u8, 10u8, 4u8, 6u8, 0u8, 2u8, 16u8, 18u8, 3u8, 71u8, 2u8,
+            101u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 16u8, 1u8, 18u8, 3u8, 71u8, 6u8,
+            28u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 16u8, 2u8, 18u8, 3u8, 71u8, 29u8,
+            58u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 16u8, 3u8, 18u8, 3u8, 71u8, 69u8,
+            99u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 17u8, 18u8, 4u8, 72u8, 2u8, 74u8,
+            3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 17u8, 1u8, 18u8, 3u8, 72u8, 6u8,
+            28u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 17u8, 2u8, 18u8, 3u8, 72u8, 29u8,
+            58u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 17u8, 3u8, 18u8, 3u8, 72u8, 69u8,
+            99u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 17u8, 4u8, 18u8, 3u8, 73u8, 4u8,
+            47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 17u8, 4u8, 34u8, 18u8, 3u8, 73u8,
+            4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 18u8, 18u8, 4u8, 75u8, 2u8,
+            77u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 18u8, 1u8, 18u8, 3u8, 75u8,
+            6u8, 29u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 18u8, 2u8, 18u8, 3u8, 75u8,
+            30u8, 60u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 18u8, 3u8, 18u8, 3u8, 75u8,
+            71u8, 102u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 18u8, 4u8, 18u8, 3u8,
+            76u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 18u8, 4u8, 34u8, 18u8,
+            3u8, 76u8, 4u8, 47u8, 10u8, 102u8, 10u8, 4u8, 6u8, 0u8, 2u8, 19u8, 18u8, 3u8,
+            80u8, 2u8, 107u8, 26u8, 89u8, 32u8, 65u8, 108u8, 115u8, 111u8, 32u8, 114u8,
+            101u8, 115u8, 99u8, 97u8, 110u8, 115u8, 32u8, 102u8, 114u8, 111u8, 109u8,
+            32u8, 116u8, 104u8, 101u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8,
+            32u8, 98u8, 105u8, 114u8, 116u8, 104u8, 100u8, 97u8, 121u8, 44u8, 32u8,
+            115u8, 111u8, 32u8, 116u8, 104u8, 97u8, 116u8, 32u8, 112u8, 97u8, 115u8,
+            116u8, 32u8, 112u8, 97u8, 121u8, 109u8, 101u8, 110u8, 116u8, 115u8, 32u8,
+            116u8, 111u8, 32u8, 116u8, 104u8, 101u8, 10u8, 32u8, 110u8, 101u8, 119u8,
+            32u8, 108u8, 97u8, 98u8, 101u8, 108u8, 32u8, 115u8, 117u8, 114u8, 102u8,
+            97u8, 99u8, 101u8, 46u8, 10u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 19u8,
+            1u8, 18u8, 3u8, 80u8, 6u8, 30u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 19u8,
+            2u8, 18u8, 3u8, 80u8, 31u8, 62u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 19u8,
+            3u8, 18u8, 3u8, 80u8, 73u8, 105u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8,
+            20u8, 18u8, 4u8, 81u8, 2u8, 83u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
+            20u8, 1u8, 18u8, 3u8, 81u8, 6u8, 29u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
+            20u8, 2u8, 18u8, 3u8, 81u8, 30u8, 60u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8,
+            20u8, 3u8, 18u8, 3u8, 81u8, 71u8, 102u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 20u8, 4u8, 18u8, 3u8, 82u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8,
+            2u8, 20u8, 4u8, 34u8, 18u8, 3u8, 82u8, 4u8, 47u8, 10u8, 11u8, 10u8, 4u8, 6u8,
+            0u8, 2u8, 21u8, 18u8, 3u8, 84u8, 2u8, 92u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 21u8, 1u8, 18u8, 3u8, 84u8, 6u8, 25u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 21u8, 2u8, 18u8, 3u8, 84u8, 26u8, 52u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 21u8, 3u8, 18u8, 3u8, 84u8, 63u8, 90u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8,
+            2u8, 22u8, 18u8, 4u8, 85u8, 2u8, 87u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 22u8, 1u8, 18u8, 3u8, 85u8, 6u8, 31u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 22u8, 2u8, 18u8, 3u8, 85u8, 32u8, 64u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8,
+            2u8, 22u8, 3u8, 18u8, 3u8, 85u8, 75u8, 108u8, 10u8, 12u8, 10u8, 5u8, 6u8,
+            0u8, 2u8, 22u8, 4u8, 18u8, 3u8, 86u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8,
+            0u8, 2u8, 22u8, 4u8, 34u8, 18u8, 3u8, 86u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8,
+            6u8, 0u8, 2u8, 23u8, 18u8, 4u8, 88u8, 2u8, 90u8, 3u8, 10u8, 12u8, 10u8, 5u8,
+            6u8, 0u8, 2u8, 23u8, 1u8, 18u8, 3u8, 88u8, 6u8, 27u8, 10u8, 12u8, 10u8, 5u8,
+            6u8, 0u8, 2u8, 23u8, 2u8, 18u8, 3u8, 88u8, 28u8, 56u8, 10u8, 12u8, 10u8, 5u8,
+            6u8, 0u8, 2u8, 23u8, 3u8, 18u8, 3u8, 88u8, 67u8, 96u8, 10u8, 12u8, 10u8, 5u8,
+            6u8, 0u8, 2u8, 23u8, 4u8, 18u8, 3u8, 89u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8,
+            6u8, 0u8, 2u8, 23u8, 4u8, 34u8, 18u8, 3u8, 89u8, 4u8, 47u8, 10u8, 80u8, 10u8,
+            4u8, 6u8, 0u8, 2u8, 24u8, 18u8, 4u8, 92u8, 2u8, 94u8, 3u8, 26u8, 66u8, 32u8,
+            82u8, 101u8, 116u8, 117u8, 114u8, 110u8, 115u8, 32u8, 105u8, 109u8, 109u8,
+            101u8, 100u8, 105u8, 97u8, 116u8, 101u8, 108u8, 121u8, 59u8, 32u8, 111u8,
+            98u8, 115u8, 101u8, 114u8, 118u8, 101u8, 32u8, 112u8, 114u8, 111u8, 103u8,
+            114u8, 101u8, 115u8, 115u8, 32u8, 118u8, 105u8, 97u8, 32u8, 71u8, 101u8,
+            116u8, 82u8, 101u8, 117u8, 115u8, 97u8, 98u8, 108u8, 101u8, 83u8, 99u8, 97u8,
+            110u8, 83u8, 116u8, 97u8, 116u8, 117u8, 115u8, 46u8, 10u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 24u8, 1u8, 18u8, 3u8, 92u8, 6u8, 28u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 24u8, 2u8, 18u8, 3u8, 92u8, 29u8, 58u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 24u8, 3u8, 18u8, 3u8, 92u8, 69u8, 99u8, 10u8, 12u8, 10u8,
+            5u8, 6u8, 0u8, 2u8, 24u8, 4u8, 18u8, 3u8, 93u8, 4u8, 42u8, 10u8, 13u8, 10u8,
+            6u8, 6u8, 0u8, 2u8, 24u8, 4u8, 34u8, 18u8, 3u8, 93u8, 4u8, 42u8, 10u8, 10u8,
+            10u8, 2u8, 4u8, 1u8, 18u8, 4u8, 97u8, 0u8, 100u8, 1u8, 10u8, 10u8, 10u8, 3u8,
+            4u8, 1u8, 1u8, 18u8, 3u8, 97u8, 8u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8,
+            2u8, 0u8, 6u8, 18u8, 3u8, 98u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 1u8,
+            2u8, 0u8, 18u8, 3u8, 98u8, 2u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8,
+            0u8, 1u8, 18u8, 3u8, 98u8, 30u8, 42u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8,
+            0u8, 3u8, 18u8, 3u8, 98u8, 45u8, 46u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8,
+            1u8, 6u8, 18u8, 3u8, 99u8, 2u8, 28u8, 10u8, 11u8, 10u8, 4u8, 4u8, 1u8, 2u8,
+            1u8, 18u8, 3u8, 99u8, 2u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8,
+            1u8, 18u8, 3u8, 99u8, 29u8, 40u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8,
+            3u8, 18u8, 3u8, 99u8, 43u8, 44u8, 10u8, 9u8, 10u8, 2u8, 4u8, 2u8, 18u8, 3u8,
+            101u8, 0u8, 44u8, 10u8, 10u8, 10u8, 3u8, 4u8, 2u8, 1u8, 18u8, 3u8, 101u8,
+            8u8, 41u8, 10u8, 10u8, 10u8, 2u8, 4u8, 3u8, 18u8, 4u8, 103u8, 0u8, 109u8,
+            1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 3u8, 1u8, 18u8, 3u8, 103u8, 8u8, 47u8, 10u8,
+            12u8, 10u8, 5u8, 4u8, 3u8, 2u8, 0u8, 6u8, 18u8, 3u8, 104u8, 2u8, 29u8, 10u8,
+            11u8, 10u8, 4u8, 4u8, 3u8, 2u8, 0u8, 18u8, 3u8, 104u8, 2u8, 47u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 3u8, 2u8, 0u8, 1u8, 18u8, 3u8, 104u8, 30u8, 42u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 3u8, 2u8, 0u8, 3u8, 18u8, 3u8, 104u8, 45u8, 46u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 3u8, 2u8, 1u8, 6u8, 18u8, 3u8, 105u8, 2u8, 29u8, 10u8, 11u8,
+            10u8, 4u8, 4u8, 3u8, 2u8, 1u8, 18u8, 3u8, 105u8, 2u8, 45u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 3u8, 2u8, 1u8, 1u8, 18u8, 3u8, 105u8, 30u8, 40u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 3u8, 2u8, 1u8, 3u8, 18u8, 3u8, 105u8, 43u8, 44u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 3u8, 2u8, 2u8, 6u8, 18u8, 3u8, 106u8, 2u8, 29u8, 10u8, 11u8, 10u8,
+            4u8, 4u8, 3u8, 2u8, 2u8, 18u8, 3u8, 106u8, 2u8, 41u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 3u8, 2u8, 2u8, 1u8, 18u8, 3u8, 106u8, 30u8, 36u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 3u8, 2u8, 2u8, 3u8, 18u8, 3u8, 106u8, 39u8, 40u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 3u8, 2u8, 3u8, 6u8, 18u8, 3u8, 107u8, 2u8, 29u8, 10u8, 11u8, 10u8, 4u8,
+            4u8, 3u8, 2u8, 3u8, 18u8, 3u8, 107u8, 2u8, 48u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            3u8, 2u8, 3u8, 1u8, 18u8, 3u8, 107u8, 30u8, 43u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            3u8, 2u8, 3u8, 3u8, 18u8, 3u8, 107u8, 46u8, 47u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            3u8, 2u8, 4u8, 6u8, 18u8, 3u8, 108u8, 2u8, 27u8, 10u8, 11u8, 10u8, 4u8, 4u8,
+            3u8, 2u8, 4u8, 18u8, 3u8, 108u8, 2u8, 43u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8,
+            2u8, 4u8, 1u8, 18u8, 3u8, 108u8, 28u8, 38u8, 10u8, 12u8, 10u8, 5u8, 4u8, 3u8,
+            2u8, 4u8, 3u8, 18u8, 3u8, 108u8, 41u8, 42u8, 10u8, 10u8, 10u8, 2u8, 4u8, 4u8,
+            18u8, 4u8, 110u8, 0u8, 112u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 4u8, 1u8,
+            18u8, 3u8, 110u8, 8u8, 48u8, 10u8, 12u8, 10u8, 5u8, 4u8, 4u8, 2u8, 0u8, 6u8,
+            18u8, 3u8, 111u8, 2u8, 27u8, 10u8, 11u8, 10u8, 4u8, 4u8, 4u8, 2u8, 0u8, 18u8,
+            3u8, 111u8, 2u8, 37u8, 10u8, 12u8, 10u8, 5u8, 4u8, 4u8, 2u8, 0u8, 1u8, 18u8,
+            3u8, 111u8, 28u8, 32u8, 10u8, 12u8, 10u8, 5u8, 4u8, 4u8, 2u8, 0u8, 3u8, 18u8,
+            3u8, 111u8, 35u8, 36u8, 10u8, 11u8, 10u8, 2u8, 4u8, 5u8, 18u8, 5u8, 114u8,
+            0u8, 128u8, 1u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 5u8, 1u8, 18u8, 3u8, 114u8,
+            8u8, 39u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 0u8, 6u8, 18u8, 3u8, 115u8,
+            2u8, 29u8, 10u8, 11u8, 10u8, 4u8, 4u8, 5u8, 2u8, 0u8, 18u8, 3u8, 115u8, 2u8,
+            47u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 0u8, 1u8, 18u8, 3u8, 115u8, 30u8,
+            42u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 0u8, 3u8, 18u8, 3u8, 115u8, 45u8,
+            46u8, 10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 1u8, 6u8, 18u8, 3u8, 125u8, 2u8,
+            29u8, 10u8, 159u8, 4u8, 10u8, 4u8, 4u8, 5u8, 2u8, 1u8, 18u8, 3u8, 125u8, 2u8,
+            42u8, 26u8, 145u8, 4u8, 32u8, 65u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8,
+            101u8, 115u8, 32u8, 97u8, 114u8, 101u8, 32u8, 101u8, 110u8, 99u8, 111u8,
+            100u8, 101u8, 100u8, 32u8, 105u8, 110u8, 32u8, 85u8, 84u8, 70u8, 56u8, 46u8,
+            10u8, 32u8, 42u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            32u8, 100u8, 101u8, 112u8, 111u8, 115u8, 105u8, 116u8, 32u8, 97u8, 100u8,
+            100u8, 114u8, 101u8, 115u8, 115u8, 101u8, 115u8, 42u8, 32u8, 40u8, 110u8,
+            111u8, 116u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 101u8, 115u8,
+            41u8, 32u8, 97u8, 114u8, 101u8, 32u8, 116u8, 121u8, 112u8, 105u8, 99u8, 97u8,
+            108u8, 108u8, 121u8, 10u8, 32u8, 102u8, 111u8, 114u8, 109u8, 97u8, 116u8,
+            116u8, 101u8, 100u8, 32u8, 97u8, 115u8, 32u8, 96u8, 115u8, 60u8, 83u8, 76u8,
+            79u8, 84u8, 95u8, 78u8, 85u8, 77u8, 66u8, 69u8, 82u8, 62u8, 95u8, 60u8, 65u8,
+            68u8, 68u8, 82u8, 69u8, 83u8, 83u8, 62u8, 95u8, 60u8, 67u8, 72u8, 69u8, 67u8,
+            75u8, 83u8, 85u8, 77u8, 62u8, 96u8, 44u8, 10u8, 32u8, 119u8, 104u8, 101u8,
+            114u8, 101u8, 32u8, 96u8, 67u8, 72u8, 69u8, 67u8, 75u8, 83u8, 85u8, 77u8,
+            96u8, 32u8, 105u8, 115u8, 32u8, 97u8, 32u8, 104u8, 101u8, 120u8, 32u8, 101u8,
+            110u8, 99u8, 111u8, 100u8, 105u8, 110u8, 103u8, 32u8, 111u8, 102u8, 32u8,
+            116u8, 104u8, 101u8, 32u8, 102u8, 105u8, 114u8, 115u8, 116u8, 32u8, 54u8,
+            32u8, 98u8, 121u8, 116u8, 101u8, 115u8, 32u8, 111u8, 102u8, 32u8, 116u8,
+            104u8, 101u8, 32u8, 83u8, 72u8, 65u8, 50u8, 53u8, 54u8, 10u8, 32u8, 104u8,
+            97u8, 115u8, 104u8, 32u8, 111u8, 102u8, 32u8, 96u8, 115u8, 60u8, 83u8, 76u8,
+            79u8, 84u8, 95u8, 78u8, 85u8, 77u8, 66u8, 69u8, 82u8, 62u8, 95u8, 60u8, 65u8,
+            68u8, 68u8, 82u8, 69u8, 83u8, 83u8, 62u8, 96u8, 46u8, 10u8, 32u8, 112u8,
+            114u8, 111u8, 116u8, 111u8, 108u8, 105u8, 110u8, 116u8, 58u8, 100u8, 105u8,
+            115u8, 97u8, 98u8, 108u8, 101u8, 58u8, 110u8, 101u8, 120u8, 116u8, 32u8,
+            77u8, 65u8, 88u8, 95u8, 76u8, 73u8, 78u8, 69u8, 95u8, 76u8, 69u8, 78u8, 71u8,
+            84u8, 72u8, 10u8, 32u8, 104u8, 116u8, 116u8, 112u8, 115u8, 58u8, 47u8, 47u8,
+            103u8, 105u8, 116u8, 104u8, 117u8, 98u8, 46u8, 99u8, 111u8, 109u8, 47u8,
+            76u8, 97u8, 121u8, 101u8, 114u8, 84u8, 119u8, 111u8, 45u8, 76u8, 97u8, 98u8,
+            115u8, 47u8, 116u8, 101u8, 115u8, 116u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            45u8, 100u8, 101u8, 112u8, 114u8, 101u8, 99u8, 97u8, 116u8, 101u8, 100u8,
+            47u8, 98u8, 108u8, 111u8, 98u8, 47u8, 52u8, 98u8, 55u8, 98u8, 97u8, 101u8,
+            51u8, 101u8, 49u8, 50u8, 49u8, 56u8, 101u8, 48u8, 53u8, 56u8, 102u8, 53u8,
+            57u8, 97u8, 52u8, 51u8, 99u8, 97u8, 102u8, 54u8, 99u8, 99u8, 97u8, 99u8,
+            50u8, 97u8, 52u8, 101u8, 57u8, 97u8, 57u8, 49u8, 102u8, 54u8, 47u8, 115u8,
+            114u8, 99u8, 47u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 46u8, 99u8, 112u8, 112u8, 35u8, 76u8, 50u8, 49u8, 57u8, 10u8, 32u8,
+            84u8, 104u8, 101u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8,
+            32u8, 117u8, 115u8, 101u8, 100u8, 32u8, 104u8, 101u8, 114u8, 101u8, 32u8,
+            105u8, 115u8, 32u8, 97u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8,
+            97u8, 105u8, 110u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8,
+            44u8, 32u8, 116u8, 104u8, 101u8, 32u8, 109u8, 105u8, 100u8, 100u8, 108u8,
+            101u8, 32u8, 99u8, 111u8, 109u8, 112u8, 111u8, 110u8, 101u8, 110u8, 116u8,
+            32u8, 111u8, 102u8, 32u8, 97u8, 10u8, 32u8, 115u8, 105u8, 100u8, 101u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 32u8, 100u8, 101u8, 112u8, 111u8, 115u8, 105u8,
+            116u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 46u8, 10u8,
+            10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 1u8, 1u8, 18u8, 3u8, 125u8, 30u8, 37u8,
+            10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 1u8, 3u8, 18u8, 3u8, 125u8, 40u8, 41u8,
+            10u8, 12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 2u8, 6u8, 18u8, 3u8, 126u8, 2u8, 29u8,
+            10u8, 11u8, 10u8, 4u8, 4u8, 5u8, 2u8, 2u8, 18u8, 3u8, 126u8, 2u8, 45u8, 10u8,
+            12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 2u8, 1u8, 18u8, 3u8, 126u8, 30u8, 40u8, 10u8,
+            12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 2u8, 3u8, 18u8, 3u8, 126u8, 43u8, 44u8, 10u8,
+            12u8, 10u8, 5u8, 4u8, 5u8, 2u8, 3u8, 6u8, 18u8, 3u8, 127u8, 2u8, 29u8, 10u8,
+            11u8, 10u8, 4u8, 4u8, 5u8, 2u8, 3u8, 18u8, 3u8, 127u8, 2u8, 43u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 5u8, 2u8, 3u8, 1u8, 18u8, 3u8, 127u8, 30u8, 38u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 5u8, 2u8, 3u8, 3u8, 18u8, 3u8, 127u8, 41u8, 42u8, 10u8, 12u8,
+            10u8, 2u8, 4u8, 6u8, 18u8, 6u8, 129u8, 1u8, 0u8, 131u8, 1u8, 1u8, 10u8, 11u8,
+            10u8, 3u8, 4u8, 6u8, 1u8, 18u8, 4u8, 129u8, 1u8, 8u8, 40u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 6u8, 2u8, 0u8, 6u8, 18u8, 4u8, 130u8, 1u8, 2u8, 27u8, 10u8, 12u8,
+            10u8, 4u8, 4u8, 6u8, 2u8, 0u8, 18u8, 4u8, 130u8, 1u8, 2u8, 37u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 6u8, 2u8, 0u8, 1u8, 18u8, 4u8, 130u8, 1u8, 28u8, 32u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 6u8, 2u8, 0u8, 3u8, 18u8, 4u8, 130u8, 1u8, 35u8, 36u8,
+            10u8, 10u8, 10u8, 2u8, 4u8, 7u8, 18u8, 4u8, 133u8, 1u8, 0u8, 34u8, 10u8,
+            11u8, 10u8, 3u8, 4u8, 7u8, 1u8, 18u8, 4u8, 133u8, 1u8, 8u8, 31u8, 10u8, 12u8,
+            10u8, 2u8, 4u8, 8u8, 18u8, 6u8, 135u8, 1u8, 0u8, 137u8, 1u8, 1u8, 10u8, 11u8,
+            10u8, 3u8, 4u8, 8u8, 1u8, 18u8, 4u8, 135u8, 1u8, 8u8, 32u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 8u8, 2u8, 0u8, 5u8, 18u8, 4u8, 136u8, 1u8, 2u8, 8u8, 10u8, 12u8,
+            10u8, 4u8, 4u8, 8u8, 2u8, 0u8, 18u8, 4u8, 136u8, 1u8, 2u8, 21u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 8u8, 2u8, 0u8, 1u8, 18u8, 4u8, 136u8, 1u8, 9u8, 16u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 8u8, 2u8, 0u8, 3u8, 18u8, 4u8, 136u8, 1u8, 19u8, 20u8,
+            10u8, 12u8, 10u8, 2u8, 4u8, 9u8, 18u8, 6u8, 139u8, 1u8, 0u8, 142u8, 1u8, 1u8,
+            10u8, 11u8, 10u8, 3u8, 4u8, 9u8, 1u8, 18u8, 4u8, 139u8, 1u8, 8u8, 38u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 9u8, 2u8, 0u8, 6u8, 18u8, 4u8, 140u8, 1u8, 2u8, 29u8,
+            10u8, 12u8, 10u8, 4u8, 4u8, 9u8, 2u8, 0u8, 18u8, 4u8, 140u8, 1u8, 2u8, 47u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 9u8, 2u8, 0u8, 1u8, 18u8, 4u8, 140u8, 1u8, 30u8,
+            42u8, 10u8, 13u8, 10u8, 5u8, 4u8, 9u8, 2u8, 0u8, 3u8, 18u8, 4u8, 140u8, 1u8,
+            45u8, 46u8, 10u8, 13u8, 10u8, 5u8, 4u8, 9u8, 2u8, 1u8, 6u8, 18u8, 4u8, 141u8,
+            1u8, 2u8, 22u8, 10u8, 12u8, 10u8, 4u8, 4u8, 9u8, 2u8, 1u8, 18u8, 4u8, 141u8,
+            1u8, 2u8, 39u8, 10u8, 13u8, 10u8, 5u8, 4u8, 9u8, 2u8, 1u8, 1u8, 18u8, 4u8,
+            141u8, 1u8, 23u8, 34u8, 10u8, 13u8, 10u8, 5u8, 4u8, 9u8, 2u8, 1u8, 3u8, 18u8,
+            4u8, 141u8, 1u8, 37u8, 38u8, 10u8, 12u8, 10u8, 2u8, 4u8, 10u8, 18u8, 6u8,
+            144u8, 1u8, 0u8, 161u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 10u8, 1u8,
+            18u8, 4u8, 144u8, 1u8, 8u8, 39u8, 10u8, 14u8, 10u8, 4u8, 4u8, 10u8, 3u8, 0u8,
+            18u8, 6u8, 145u8, 1u8, 2u8, 151u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            10u8, 3u8, 0u8, 1u8, 18u8, 4u8, 145u8, 1u8, 10u8, 19u8, 10u8, 15u8, 10u8,
+            7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 6u8, 18u8, 4u8, 146u8, 1u8, 4u8, 29u8,
+            10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 18u8, 4u8, 146u8, 1u8,
+            4u8, 45u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8,
+            4u8, 146u8, 1u8, 30u8, 40u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8,
+            0u8, 3u8, 18u8, 4u8, 146u8, 1u8, 43u8, 44u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 4u8, 147u8, 1u8, 4u8, 31u8, 10u8, 14u8,
+            10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 18u8, 4u8, 147u8, 1u8, 4u8, 50u8,
+            10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8, 4u8, 147u8,
+            1u8, 32u8, 45u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 3u8,
+            18u8, 4u8, 147u8, 1u8, 48u8, 49u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8,
+            0u8, 2u8, 2u8, 6u8, 18u8, 4u8, 148u8, 1u8, 4u8, 31u8, 10u8, 14u8, 10u8, 6u8,
+            4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 18u8, 4u8, 148u8, 1u8, 4u8, 43u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 1u8, 18u8, 4u8, 148u8, 1u8, 32u8,
+            38u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 3u8, 18u8, 4u8,
+            148u8, 1u8, 41u8, 42u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8,
+            6u8, 18u8, 4u8, 149u8, 1u8, 4u8, 12u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8,
+            0u8, 2u8, 3u8, 18u8, 4u8, 149u8, 1u8, 4u8, 26u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 0u8, 2u8, 3u8, 1u8, 18u8, 4u8, 149u8, 1u8, 13u8, 21u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 3u8, 18u8, 4u8, 149u8, 1u8, 24u8,
+            25u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 4u8, 6u8, 18u8, 4u8,
+            150u8, 1u8, 4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 4u8,
+            18u8, 4u8, 150u8, 1u8, 4u8, 50u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8,
+            2u8, 4u8, 1u8, 18u8, 4u8, 150u8, 1u8, 30u8, 45u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 0u8, 2u8, 4u8, 3u8, 18u8, 4u8, 150u8, 1u8, 48u8, 49u8, 10u8, 14u8,
+            10u8, 4u8, 4u8, 10u8, 3u8, 1u8, 18u8, 6u8, 152u8, 1u8, 2u8, 156u8, 1u8, 3u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 3u8, 1u8, 1u8, 18u8, 4u8, 152u8, 1u8, 10u8,
+            22u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 0u8, 6u8, 18u8, 4u8,
+            153u8, 1u8, 4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 1u8, 2u8, 0u8,
+            18u8, 4u8, 153u8, 1u8, 4u8, 45u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8,
+            2u8, 0u8, 1u8, 18u8, 4u8, 153u8, 1u8, 30u8, 40u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 1u8, 2u8, 0u8, 3u8, 18u8, 4u8, 153u8, 1u8, 43u8, 44u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 1u8, 6u8, 18u8, 4u8, 154u8, 1u8, 4u8,
+            31u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 1u8, 2u8, 1u8, 18u8, 4u8, 154u8,
+            1u8, 4u8, 43u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 1u8, 1u8,
+            18u8, 4u8, 154u8, 1u8, 32u8, 38u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8,
+            1u8, 2u8, 1u8, 3u8, 18u8, 4u8, 154u8, 1u8, 41u8, 42u8, 10u8, 15u8, 10u8, 7u8,
+            4u8, 10u8, 3u8, 1u8, 2u8, 2u8, 6u8, 18u8, 4u8, 155u8, 1u8, 4u8, 29u8, 10u8,
+            14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 1u8, 2u8, 2u8, 18u8, 4u8, 155u8, 1u8, 4u8,
+            50u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 2u8, 1u8, 18u8, 4u8,
+            155u8, 1u8, 30u8, 45u8, 10u8, 15u8, 10u8, 7u8, 4u8, 10u8, 3u8, 1u8, 2u8, 2u8,
+            3u8, 18u8, 4u8, 155u8, 1u8, 48u8, 49u8, 10u8, 14u8, 10u8, 4u8, 4u8, 10u8,
+            8u8, 0u8, 18u8, 6u8, 157u8, 1u8, 2u8, 160u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 10u8, 8u8, 0u8, 1u8, 18u8, 4u8, 157u8, 1u8, 8u8, 13u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 10u8, 2u8, 0u8, 6u8, 18u8, 4u8, 158u8, 1u8, 4u8, 13u8, 10u8, 12u8,
+            10u8, 4u8, 4u8, 10u8, 2u8, 0u8, 18u8, 4u8, 158u8, 1u8, 4u8, 28u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 10u8, 2u8, 0u8, 1u8, 18u8, 4u8, 158u8, 1u8, 14u8, 23u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 10u8, 2u8, 0u8, 3u8, 18u8, 4u8, 158u8, 1u8, 26u8, 27u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 6u8, 18u8, 4u8, 159u8, 1u8, 4u8,
+            16u8, 10u8, 12u8, 10u8, 4u8, 4u8, 10u8, 2u8, 1u8, 18u8, 4u8, 159u8, 1u8, 4u8,
+            35u8, 10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 1u8, 18u8, 4u8, 159u8, 1u8,
+            17u8, 30u8, 10u8, 13u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 3u8, 18u8, 4u8,
+            159u8, 1u8, 33u8, 34u8, 10u8, 12u8, 10u8, 2u8, 4u8, 11u8, 18u8, 6u8, 163u8,
+            1u8, 0u8, 166u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 11u8, 1u8, 18u8, 4u8,
+            163u8, 1u8, 8u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 0u8, 6u8, 18u8,
+            4u8, 164u8, 1u8, 2u8, 29u8, 10u8, 12u8, 10u8, 4u8, 4u8, 11u8, 2u8, 0u8, 18u8,
+            4u8, 164u8, 1u8, 2u8, 47u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8, 0u8, 1u8,
+            18u8, 4u8, 164u8, 1u8, 30u8, 42u8, 10u8, 13u8, 10u8, 5u8, 4u8, 11u8, 2u8,
+            0u8, 3u8, 18u8, 4u8, 164u8, 1u8, 45u8, 46u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            11u8, 2u8, 1u8, 6u8, 18u8, 4u8, 165u8, 1u8, 2u8, 22u8, 10u8, 12u8, 10u8, 4u8,
+            4u8, 11u8, 2u8, 1u8, 18u8, 4u8, 165u8, 1u8, 2u8, 39u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 11u8, 2u8, 1u8, 1u8, 18u8, 4u8, 165u8, 1u8, 23u8, 34u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 11u8, 2u8, 1u8, 3u8, 18u8, 4u8, 165u8, 1u8, 37u8, 38u8, 10u8,
+            10u8, 10u8, 2u8, 4u8, 12u8, 18u8, 4u8, 167u8, 1u8, 0u8, 42u8, 10u8, 11u8,
+            10u8, 3u8, 4u8, 12u8, 1u8, 18u8, 4u8, 167u8, 1u8, 8u8, 39u8, 10u8, 12u8,
+            10u8, 2u8, 4u8, 13u8, 18u8, 6u8, 169u8, 1u8, 0u8, 179u8, 1u8, 1u8, 10u8,
+            11u8, 10u8, 3u8, 4u8, 13u8, 1u8, 18u8, 4u8, 169u8, 1u8, 8u8, 27u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 0u8, 4u8, 18u8, 4u8, 171u8, 1u8, 2u8, 10u8,
+            10u8, 47u8, 10u8, 4u8, 4u8, 13u8, 2u8, 0u8, 18u8, 4u8, 171u8, 1u8, 2u8, 37u8,
+            26u8, 33u8, 32u8, 66u8, 73u8, 80u8, 51u8, 57u8, 32u8, 109u8, 110u8, 101u8,
+            109u8, 111u8, 110u8, 105u8, 99u8, 46u8, 32u8, 49u8, 50u8, 32u8, 111u8, 114u8,
+            32u8, 50u8, 52u8, 32u8, 119u8, 111u8, 114u8, 100u8, 115u8, 46u8, 10u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 0u8, 5u8, 18u8, 4u8, 171u8, 1u8, 11u8, 17u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 0u8, 1u8, 18u8, 4u8, 171u8, 1u8, 18u8,
+            32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 0u8, 3u8, 18u8, 4u8, 171u8, 1u8,
+            35u8, 36u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 1u8, 5u8, 18u8, 4u8,
+            174u8, 1u8, 2u8, 8u8, 10u8, 55u8, 10u8, 4u8, 4u8, 13u8, 2u8, 1u8, 18u8, 4u8,
+            174u8, 1u8, 2u8, 27u8, 26u8, 41u8, 32u8, 80u8, 97u8, 116u8, 104u8, 32u8,
+            116u8, 111u8, 32u8, 97u8, 32u8, 102u8, 105u8, 108u8, 101u8, 32u8, 99u8,
+            111u8, 110u8, 116u8, 97u8, 105u8, 110u8, 105u8, 110u8, 103u8, 32u8, 116u8,
+            104u8, 101u8, 32u8, 109u8, 110u8, 101u8, 109u8, 111u8, 110u8, 105u8, 99u8,
+            46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 1u8, 1u8, 18u8, 4u8,
+            174u8, 1u8, 9u8, 22u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 1u8, 3u8, 18u8,
+            4u8, 174u8, 1u8, 25u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 13u8, 2u8, 2u8, 5u8,
+            18u8, 4u8, 178u8, 1u8, 2u8, 8u8, 10u8, 106u8, 10u8, 4u8, 4u8, 13u8, 2u8, 2u8,
+            18u8, 4u8, 178u8, 1u8, 2u8, 22u8, 26u8, 92u8, 32u8, 80u8, 97u8, 115u8, 115u8,
+            119u8, 111u8, 114u8, 100u8, 32u8, 102u8, 111u8, 114u8, 32u8, 116u8, 104u8,
+            101u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 46u8, 32u8, 85u8,
+            115u8, 101u8, 100u8, 32u8, 116u8, 111u8, 32u8, 101u8, 110u8, 99u8, 114u8,
+            121u8, 112u8, 116u8, 32u8, 116u8, 104u8, 101u8, 32u8, 109u8, 110u8, 101u8,
+            109u8, 111u8, 110u8, 105u8, 99u8, 32u8, 105u8, 110u8, 32u8, 115u8, 116u8,
+            111u8, 114u8, 97u8, 103u8, 101u8, 46u8, 10u8, 32u8, 78u8, 79u8, 84u8, 32u8,
+            97u8, 32u8, 66u8, 73u8, 80u8, 51u8, 57u8, 32u8, 112u8, 97u8, 115u8, 115u8,
+            112u8, 104u8, 114u8, 97u8, 115u8, 101u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 13u8, 2u8, 2u8, 1u8, 18u8, 4u8, 178u8, 1u8, 9u8, 17u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 13u8, 2u8, 2u8, 3u8, 18u8, 4u8, 178u8, 1u8, 20u8, 21u8, 10u8, 10u8,
+            10u8, 2u8, 4u8, 14u8, 18u8, 4u8, 180u8, 1u8, 0u8, 31u8, 10u8, 11u8, 10u8,
+            3u8, 4u8, 14u8, 1u8, 18u8, 4u8, 180u8, 1u8, 8u8, 28u8, 10u8, 10u8, 10u8, 2u8,
+            4u8, 15u8, 18u8, 4u8, 182u8, 1u8, 0u8, 28u8, 10u8, 11u8, 10u8, 3u8, 4u8,
+            15u8, 1u8, 18u8, 4u8, 182u8, 1u8, 8u8, 25u8, 10u8, 12u8, 10u8, 2u8, 4u8,
+            16u8, 18u8, 6u8, 183u8, 1u8, 0u8, 189u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8,
+            4u8, 16u8, 1u8, 18u8, 4u8, 183u8, 1u8, 8u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            16u8, 2u8, 0u8, 5u8, 18u8, 4u8, 184u8, 1u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8,
+            4u8, 16u8, 2u8, 0u8, 18u8, 4u8, 184u8, 1u8, 2u8, 28u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 16u8, 2u8, 0u8, 1u8, 18u8, 4u8, 184u8, 1u8, 9u8, 23u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 16u8, 2u8, 0u8, 3u8, 18u8, 4u8, 184u8, 1u8, 26u8, 27u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 16u8, 2u8, 1u8, 5u8, 18u8, 4u8, 185u8, 1u8, 2u8, 8u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 16u8, 2u8, 1u8, 18u8, 4u8, 185u8, 1u8, 2u8, 26u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 16u8, 2u8, 1u8, 1u8, 18u8, 4u8, 185u8, 1u8, 9u8, 21u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 16u8, 2u8, 1u8, 3u8, 18u8, 4u8, 185u8, 1u8, 24u8,
+            25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 16u8, 2u8, 2u8, 5u8, 18u8, 4u8, 188u8, 1u8,
+            2u8, 6u8, 10u8, 66u8, 10u8, 4u8, 4u8, 16u8, 2u8, 2u8, 18u8, 4u8, 188u8, 1u8,
+            2u8, 22u8, 26u8, 52u8, 32u8, 87u8, 104u8, 101u8, 116u8, 104u8, 101u8, 114u8,
+            32u8, 116u8, 104u8, 101u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8, 116u8,
+            32u8, 104u8, 97u8, 115u8, 32u8, 99u8, 111u8, 109u8, 112u8, 108u8, 101u8,
+            116u8, 101u8, 100u8, 32u8, 105u8, 116u8, 115u8, 32u8, 105u8, 110u8, 105u8,
+            116u8, 105u8, 97u8, 108u8, 32u8, 115u8, 121u8, 110u8, 99u8, 46u8, 10u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 16u8, 2u8, 2u8, 1u8, 18u8, 4u8, 188u8, 1u8, 7u8, 17u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 16u8, 2u8, 2u8, 3u8, 18u8, 4u8, 188u8, 1u8, 20u8,
+            21u8, 10u8, 10u8, 10u8, 2u8, 4u8, 17u8, 18u8, 4u8, 191u8, 1u8, 0u8, 50u8,
+            10u8, 11u8, 10u8, 3u8, 4u8, 17u8, 1u8, 18u8, 4u8, 191u8, 1u8, 8u8, 47u8,
+            10u8, 12u8, 10u8, 2u8, 4u8, 18u8, 18u8, 6u8, 192u8, 1u8, 0u8, 198u8, 1u8,
+            1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 18u8, 1u8, 18u8, 4u8, 192u8, 1u8, 8u8, 48u8,
+            10u8, 14u8, 10u8, 4u8, 4u8, 18u8, 3u8, 0u8, 18u8, 6u8, 193u8, 1u8, 2u8,
+            196u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8, 18u8, 3u8, 0u8, 1u8, 18u8, 4u8,
+            193u8, 1u8, 10u8, 37u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8, 3u8, 0u8, 2u8, 0u8,
+            6u8, 18u8, 4u8, 194u8, 1u8, 4u8, 31u8, 10u8, 14u8, 10u8, 6u8, 4u8, 18u8, 3u8,
+            0u8, 2u8, 0u8, 18u8, 4u8, 194u8, 1u8, 4u8, 53u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            18u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 4u8, 194u8, 1u8, 32u8, 48u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 18u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 4u8, 194u8, 1u8, 51u8,
+            52u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 4u8,
+            195u8, 1u8, 4u8, 21u8, 10u8, 14u8, 10u8, 6u8, 4u8, 18u8, 3u8, 0u8, 2u8, 1u8,
+            18u8, 4u8, 195u8, 1u8, 4u8, 29u8, 10u8, 15u8, 10u8, 7u8, 4u8, 18u8, 3u8, 0u8,
+            2u8, 1u8, 1u8, 18u8, 4u8, 195u8, 1u8, 22u8, 24u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            18u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8, 4u8, 195u8, 1u8, 27u8, 28u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 4u8, 18u8, 4u8, 197u8, 1u8, 2u8, 10u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 18u8, 2u8, 0u8, 18u8, 4u8, 197u8, 1u8, 2u8, 56u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 6u8, 18u8, 4u8, 197u8, 1u8, 11u8, 38u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 1u8, 18u8, 4u8, 197u8, 1u8, 39u8,
+            51u8, 10u8, 13u8, 10u8, 5u8, 4u8, 18u8, 2u8, 0u8, 3u8, 18u8, 4u8, 197u8, 1u8,
+            54u8, 55u8, 10u8, 10u8, 10u8, 2u8, 4u8, 19u8, 18u8, 4u8, 200u8, 1u8, 0u8,
+            34u8, 10u8, 11u8, 10u8, 3u8, 4u8, 19u8, 1u8, 18u8, 4u8, 200u8, 1u8, 8u8,
+            31u8, 10u8, 12u8, 10u8, 2u8, 4u8, 20u8, 18u8, 6u8, 201u8, 1u8, 0u8, 203u8,
+            1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 20u8, 1u8, 18u8, 4u8, 201u8, 1u8, 8u8,
+            32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 4u8, 18u8, 4u8, 202u8, 1u8,
+            2u8, 10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 20u8, 2u8, 0u8, 18u8, 4u8, 202u8, 1u8,
+            2u8, 46u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 6u8, 18u8, 4u8, 202u8,
+            1u8, 11u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 1u8, 18u8, 4u8,
+            202u8, 1u8, 29u8, 41u8, 10u8, 13u8, 10u8, 5u8, 4u8, 20u8, 2u8, 0u8, 3u8,
+            18u8, 4u8, 202u8, 1u8, 44u8, 45u8, 10u8, 12u8, 10u8, 2u8, 4u8, 21u8, 18u8,
+            6u8, 205u8, 1u8, 0u8, 240u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 21u8, 1u8,
+            18u8, 4u8, 205u8, 1u8, 8u8, 30u8, 10u8, 14u8, 10u8, 4u8, 4u8, 21u8, 3u8, 0u8,
+            18u8, 6u8, 206u8, 1u8, 2u8, 214u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            21u8, 3u8, 0u8, 1u8, 18u8, 4u8, 206u8, 1u8, 10u8, 17u8, 10u8, 16u8, 10u8,
+            6u8, 4u8, 21u8, 3u8, 0u8, 8u8, 0u8, 18u8, 6u8, 207u8, 1u8, 4u8, 213u8, 1u8,
             5u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 8u8, 0u8, 1u8, 18u8, 4u8,
-            179u8, 1u8, 10u8, 13u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 0u8,
-            5u8, 18u8, 4u8, 181u8, 1u8, 6u8, 12u8, 10u8, 50u8, 10u8, 6u8, 4u8, 21u8, 3u8,
-            0u8, 2u8, 0u8, 18u8, 4u8, 181u8, 1u8, 6u8, 31u8, 26u8, 34u8, 32u8, 70u8,
+            207u8, 1u8, 10u8, 13u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 0u8,
+            5u8, 18u8, 4u8, 209u8, 1u8, 6u8, 12u8, 10u8, 50u8, 10u8, 6u8, 4u8, 21u8, 3u8,
+            0u8, 2u8, 0u8, 18u8, 4u8, 209u8, 1u8, 6u8, 31u8, 26u8, 34u8, 32u8, 70u8,
             101u8, 101u8, 32u8, 114u8, 97u8, 116u8, 101u8, 44u8, 32u8, 109u8, 101u8,
             97u8, 115u8, 117u8, 114u8, 101u8, 100u8, 32u8, 105u8, 110u8, 32u8, 115u8,
             97u8, 116u8, 47u8, 118u8, 98u8, 121u8, 116u8, 101u8, 46u8, 10u8, 10u8, 15u8,
-            10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 4u8, 181u8, 1u8, 13u8,
+            10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 4u8, 209u8, 1u8, 13u8,
             26u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 4u8,
-            181u8, 1u8, 29u8, 30u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 1u8,
-            5u8, 18u8, 4u8, 184u8, 1u8, 6u8, 12u8, 10u8, 47u8, 10u8, 6u8, 4u8, 21u8, 3u8,
-            0u8, 2u8, 1u8, 18u8, 4u8, 184u8, 1u8, 6u8, 22u8, 26u8, 31u8, 32u8, 70u8,
+            209u8, 1u8, 29u8, 30u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 1u8,
+            5u8, 18u8, 4u8, 212u8, 1u8, 6u8, 12u8, 10u8, 47u8, 10u8, 6u8, 4u8, 21u8, 3u8,
+            0u8, 2u8, 1u8, 18u8, 4u8, 212u8, 1u8, 6u8, 22u8, 26u8, 31u8, 32u8, 70u8,
             101u8, 101u8, 32u8, 97u8, 109u8, 111u8, 117u8, 110u8, 116u8, 44u8, 32u8,
             109u8, 101u8, 97u8, 115u8, 117u8, 114u8, 101u8, 100u8, 32u8, 105u8, 110u8,
             32u8, 115u8, 97u8, 116u8, 115u8, 46u8, 10u8, 10u8, 15u8, 10u8, 7u8, 4u8,
-            21u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8, 4u8, 184u8, 1u8, 13u8, 17u8, 10u8, 15u8,
-            10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8, 4u8, 184u8, 1u8, 20u8,
-            21u8, 10u8, 98u8, 10u8, 4u8, 4u8, 21u8, 3u8, 1u8, 18u8, 6u8, 190u8, 1u8, 2u8,
-            193u8, 1u8, 3u8, 26u8, 82u8, 32u8, 65u8, 32u8, 112u8, 114u8, 101u8, 118u8,
+            21u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8, 4u8, 212u8, 1u8, 13u8, 17u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 21u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8, 4u8, 212u8, 1u8, 20u8,
+            21u8, 10u8, 98u8, 10u8, 4u8, 4u8, 21u8, 3u8, 1u8, 18u8, 6u8, 218u8, 1u8, 2u8,
+            221u8, 1u8, 3u8, 26u8, 82u8, 32u8, 65u8, 32u8, 112u8, 114u8, 101u8, 118u8,
             105u8, 111u8, 117u8, 115u8, 32u8, 117u8, 110u8, 115u8, 112u8, 101u8, 110u8,
             116u8, 32u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8,
             111u8, 110u8, 32u8, 111u8, 117u8, 116u8, 112u8, 117u8, 116u8, 32u8, 116u8,
@@ -64798,38 +78953,38 @@ pub mod __buffa {
             32u8, 105u8, 110u8, 99u8, 108u8, 117u8, 100u8, 101u8, 100u8, 32u8, 105u8,
             110u8, 32u8, 116u8, 104u8, 101u8, 10u8, 32u8, 116u8, 114u8, 97u8, 110u8,
             115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 46u8, 10u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 21u8, 3u8, 1u8, 1u8, 18u8, 4u8, 190u8, 1u8, 10u8, 22u8, 10u8, 15u8,
-            10u8, 7u8, 4u8, 21u8, 3u8, 1u8, 2u8, 0u8, 6u8, 18u8, 4u8, 191u8, 1u8, 4u8,
-            29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 21u8, 3u8, 1u8, 2u8, 0u8, 18u8, 4u8, 191u8,
+            5u8, 4u8, 21u8, 3u8, 1u8, 1u8, 18u8, 4u8, 218u8, 1u8, 10u8, 22u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 21u8, 3u8, 1u8, 2u8, 0u8, 6u8, 18u8, 4u8, 219u8, 1u8, 4u8,
+            29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 21u8, 3u8, 1u8, 2u8, 0u8, 18u8, 4u8, 219u8,
             1u8, 4u8, 39u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 1u8, 2u8, 0u8, 1u8,
-            18u8, 4u8, 191u8, 1u8, 30u8, 34u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8,
-            1u8, 2u8, 0u8, 3u8, 18u8, 4u8, 191u8, 1u8, 37u8, 38u8, 10u8, 15u8, 10u8, 7u8,
-            4u8, 21u8, 3u8, 1u8, 2u8, 1u8, 5u8, 18u8, 4u8, 192u8, 1u8, 4u8, 10u8, 10u8,
-            14u8, 10u8, 6u8, 4u8, 21u8, 3u8, 1u8, 2u8, 1u8, 18u8, 4u8, 192u8, 1u8, 4u8,
+            18u8, 4u8, 219u8, 1u8, 30u8, 34u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8,
+            1u8, 2u8, 0u8, 3u8, 18u8, 4u8, 219u8, 1u8, 37u8, 38u8, 10u8, 15u8, 10u8, 7u8,
+            4u8, 21u8, 3u8, 1u8, 2u8, 1u8, 5u8, 18u8, 4u8, 220u8, 1u8, 4u8, 10u8, 10u8,
+            14u8, 10u8, 6u8, 4u8, 21u8, 3u8, 1u8, 2u8, 1u8, 18u8, 4u8, 220u8, 1u8, 4u8,
             20u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 1u8, 2u8, 1u8, 1u8, 18u8, 4u8,
-            192u8, 1u8, 11u8, 15u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 1u8, 2u8, 1u8,
-            3u8, 18u8, 4u8, 192u8, 1u8, 18u8, 19u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8,
-            2u8, 0u8, 6u8, 18u8, 4u8, 196u8, 1u8, 2u8, 21u8, 10u8, 41u8, 10u8, 4u8, 4u8,
-            21u8, 2u8, 0u8, 18u8, 4u8, 196u8, 1u8, 2u8, 39u8, 26u8, 27u8, 32u8, 65u8,
+            220u8, 1u8, 11u8, 15u8, 10u8, 15u8, 10u8, 7u8, 4u8, 21u8, 3u8, 1u8, 2u8, 1u8,
+            3u8, 18u8, 4u8, 220u8, 1u8, 18u8, 19u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8,
+            2u8, 0u8, 6u8, 18u8, 4u8, 224u8, 1u8, 2u8, 21u8, 10u8, 41u8, 10u8, 4u8, 4u8,
+            21u8, 2u8, 0u8, 18u8, 4u8, 224u8, 1u8, 2u8, 39u8, 26u8, 27u8, 32u8, 65u8,
             100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 32u8, 45u8, 62u8, 32u8, 115u8,
             97u8, 116u8, 111u8, 115u8, 104u8, 105u8, 32u8, 97u8, 109u8, 111u8, 117u8,
             110u8, 116u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 0u8, 1u8, 18u8,
-            4u8, 196u8, 1u8, 22u8, 34u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 0u8, 3u8,
-            18u8, 4u8, 196u8, 1u8, 37u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8,
-            1u8, 4u8, 18u8, 4u8, 199u8, 1u8, 2u8, 10u8, 10u8, 85u8, 10u8, 4u8, 4u8, 21u8,
-            2u8, 1u8, 18u8, 4u8, 199u8, 1u8, 2u8, 32u8, 26u8, 71u8, 32u8, 73u8, 102u8,
+            4u8, 224u8, 1u8, 22u8, 34u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 0u8, 3u8,
+            18u8, 4u8, 224u8, 1u8, 37u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8,
+            1u8, 4u8, 18u8, 4u8, 227u8, 1u8, 2u8, 10u8, 10u8, 85u8, 10u8, 4u8, 4u8, 21u8,
+            2u8, 1u8, 18u8, 4u8, 227u8, 1u8, 2u8, 32u8, 26u8, 71u8, 32u8, 73u8, 102u8,
             32u8, 110u8, 111u8, 116u8, 32u8, 115u8, 101u8, 116u8, 44u8, 32u8, 97u8, 32u8,
             114u8, 101u8, 97u8, 115u8, 111u8, 110u8, 97u8, 98u8, 108u8, 101u8, 32u8,
             114u8, 97u8, 116u8, 101u8, 32u8, 105u8, 115u8, 32u8, 117u8, 115u8, 101u8,
             100u8, 32u8, 98u8, 121u8, 32u8, 97u8, 115u8, 107u8, 105u8, 110u8, 103u8,
             32u8, 67u8, 111u8, 114u8, 101u8, 32u8, 102u8, 111u8, 114u8, 32u8, 97u8,
             110u8, 32u8, 101u8, 115u8, 116u8, 105u8, 109u8, 97u8, 116u8, 101u8, 46u8,
-            10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 1u8, 6u8, 18u8, 4u8, 199u8, 1u8,
+            10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 1u8, 6u8, 18u8, 4u8, 227u8, 1u8,
             11u8, 18u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 1u8, 1u8, 18u8, 4u8,
-            199u8, 1u8, 19u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 1u8, 3u8,
-            18u8, 4u8, 199u8, 1u8, 30u8, 31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8,
-            2u8, 4u8, 18u8, 4u8, 203u8, 1u8, 2u8, 10u8, 10u8, 96u8, 10u8, 4u8, 4u8, 21u8,
-            2u8, 2u8, 18u8, 4u8, 203u8, 1u8, 2u8, 52u8, 26u8, 82u8, 32u8, 105u8, 102u8,
+            227u8, 1u8, 19u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 1u8, 3u8,
+            18u8, 4u8, 227u8, 1u8, 30u8, 31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8,
+            2u8, 4u8, 18u8, 4u8, 231u8, 1u8, 2u8, 10u8, 10u8, 96u8, 10u8, 4u8, 4u8, 21u8,
+            2u8, 2u8, 18u8, 4u8, 231u8, 1u8, 2u8, 52u8, 26u8, 82u8, 32u8, 105u8, 102u8,
             32u8, 115u8, 101u8, 116u8, 44u8, 32u8, 116u8, 104u8, 101u8, 32u8, 116u8,
             114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 32u8,
             119u8, 105u8, 108u8, 108u8, 32u8, 97u8, 100u8, 100u8, 32u8, 97u8, 32u8,
@@ -64837,12 +78992,12 @@ pub mod __buffa {
             82u8, 69u8, 84u8, 85u8, 82u8, 78u8, 32u8, 111u8, 117u8, 116u8, 112u8, 117u8,
             116u8, 32u8, 119u8, 105u8, 116u8, 104u8, 32u8, 116u8, 104u8, 105u8, 115u8,
             10u8, 32u8, 109u8, 101u8, 115u8, 115u8, 97u8, 103u8, 101u8, 46u8, 10u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 2u8, 6u8, 18u8, 4u8, 203u8, 1u8, 11u8, 29u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 2u8, 1u8, 18u8, 4u8, 203u8, 1u8, 30u8,
-            47u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 2u8, 3u8, 18u8, 4u8, 203u8, 1u8,
+            13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 2u8, 6u8, 18u8, 4u8, 231u8, 1u8, 11u8, 29u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 2u8, 1u8, 18u8, 4u8, 231u8, 1u8, 30u8,
+            47u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 2u8, 3u8, 18u8, 4u8, 231u8, 1u8,
             50u8, 51u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 3u8, 4u8, 18u8, 4u8,
-            207u8, 1u8, 2u8, 10u8, 10u8, 113u8, 10u8, 4u8, 4u8, 21u8, 2u8, 3u8, 18u8,
-            4u8, 207u8, 1u8, 2u8, 43u8, 26u8, 99u8, 32u8, 85u8, 84u8, 88u8, 79u8, 115u8,
+            235u8, 1u8, 2u8, 10u8, 10u8, 113u8, 10u8, 4u8, 4u8, 21u8, 2u8, 3u8, 18u8,
+            4u8, 235u8, 1u8, 2u8, 43u8, 26u8, 99u8, 32u8, 85u8, 84u8, 88u8, 79u8, 115u8,
             32u8, 116u8, 104u8, 97u8, 116u8, 32u8, 109u8, 117u8, 115u8, 116u8, 32u8,
             98u8, 101u8, 32u8, 105u8, 110u8, 99u8, 108u8, 117u8, 100u8, 101u8, 100u8,
             32u8, 105u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8, 116u8, 114u8, 97u8,
@@ -64852,11 +79007,11 @@ pub mod __buffa {
             105u8, 102u8, 121u8, 105u8, 110u8, 103u8, 32u8, 97u8, 32u8, 100u8, 114u8,
             97u8, 105u8, 110u8, 105u8, 110u8, 103u8, 32u8, 97u8, 100u8, 100u8, 114u8,
             101u8, 115u8, 115u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 3u8,
-            6u8, 18u8, 4u8, 207u8, 1u8, 11u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8,
-            2u8, 3u8, 1u8, 18u8, 4u8, 207u8, 1u8, 24u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            21u8, 2u8, 3u8, 3u8, 18u8, 4u8, 207u8, 1u8, 41u8, 42u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 21u8, 2u8, 4u8, 4u8, 18u8, 4u8, 211u8, 1u8, 2u8, 10u8, 10u8, 136u8,
-            1u8, 10u8, 4u8, 4u8, 21u8, 2u8, 4u8, 18u8, 4u8, 211u8, 1u8, 2u8, 38u8, 26u8,
+            6u8, 18u8, 4u8, 235u8, 1u8, 11u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8,
+            2u8, 3u8, 1u8, 18u8, 4u8, 235u8, 1u8, 24u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            21u8, 2u8, 3u8, 3u8, 18u8, 4u8, 235u8, 1u8, 41u8, 42u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 21u8, 2u8, 4u8, 4u8, 18u8, 4u8, 239u8, 1u8, 2u8, 10u8, 10u8, 136u8,
+            1u8, 10u8, 4u8, 4u8, 21u8, 2u8, 4u8, 18u8, 4u8, 239u8, 1u8, 2u8, 38u8, 26u8,
             122u8, 32u8, 73u8, 102u8, 32u8, 115u8, 101u8, 116u8, 44u8, 32u8, 116u8,
             104u8, 101u8, 32u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8,
             105u8, 111u8, 110u8, 32u8, 119u8, 105u8, 108u8, 108u8, 32u8, 115u8, 101u8,
@@ -64868,35 +79023,35 @@ pub mod __buffa {
             32u8, 119u8, 105u8, 116u8, 104u8, 32u8, 115u8, 112u8, 101u8, 99u8, 105u8,
             102u8, 121u8, 105u8, 110u8, 103u8, 32u8, 114u8, 101u8, 113u8, 117u8, 105u8,
             114u8, 101u8, 100u8, 32u8, 85u8, 84u8, 88u8, 79u8, 115u8, 46u8, 10u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 4u8, 5u8, 18u8, 4u8, 211u8, 1u8, 11u8, 17u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 4u8, 1u8, 18u8, 4u8, 211u8, 1u8, 18u8,
-            33u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 4u8, 3u8, 18u8, 4u8, 211u8, 1u8,
-            36u8, 37u8, 10u8, 12u8, 10u8, 2u8, 4u8, 22u8, 18u8, 6u8, 213u8, 1u8, 0u8,
-            215u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 22u8, 1u8, 18u8, 4u8, 213u8,
+            13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 4u8, 5u8, 18u8, 4u8, 239u8, 1u8, 11u8, 17u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 4u8, 1u8, 18u8, 4u8, 239u8, 1u8, 18u8,
+            33u8, 10u8, 13u8, 10u8, 5u8, 4u8, 21u8, 2u8, 4u8, 3u8, 18u8, 4u8, 239u8, 1u8,
+            36u8, 37u8, 10u8, 12u8, 10u8, 2u8, 4u8, 22u8, 18u8, 6u8, 241u8, 1u8, 0u8,
+            243u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 22u8, 1u8, 18u8, 4u8, 241u8,
             1u8, 8u8, 31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 22u8, 2u8, 0u8, 6u8, 18u8, 4u8,
-            214u8, 1u8, 2u8, 27u8, 10u8, 12u8, 10u8, 4u8, 4u8, 22u8, 2u8, 0u8, 18u8, 4u8,
-            214u8, 1u8, 2u8, 37u8, 10u8, 13u8, 10u8, 5u8, 4u8, 22u8, 2u8, 0u8, 1u8, 18u8,
-            4u8, 214u8, 1u8, 28u8, 32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 22u8, 2u8, 0u8, 3u8,
-            18u8, 4u8, 214u8, 1u8, 35u8, 36u8, 10u8, 12u8, 10u8, 2u8, 4u8, 23u8, 18u8,
-            6u8, 217u8, 1u8, 0u8, 219u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 23u8, 1u8,
-            18u8, 4u8, 217u8, 1u8, 8u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8, 23u8, 2u8, 0u8,
-            5u8, 18u8, 4u8, 218u8, 1u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 23u8, 2u8,
-            0u8, 18u8, 4u8, 218u8, 1u8, 2u8, 22u8, 10u8, 13u8, 10u8, 5u8, 4u8, 23u8, 2u8,
-            0u8, 1u8, 18u8, 4u8, 218u8, 1u8, 9u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 23u8,
-            2u8, 0u8, 3u8, 18u8, 4u8, 218u8, 1u8, 20u8, 21u8, 10u8, 10u8, 10u8, 2u8, 4u8,
-            24u8, 18u8, 4u8, 220u8, 1u8, 0u8, 31u8, 10u8, 11u8, 10u8, 3u8, 4u8, 24u8,
-            1u8, 18u8, 4u8, 220u8, 1u8, 8u8, 28u8, 10u8, 12u8, 10u8, 2u8, 4u8, 25u8,
-            18u8, 6u8, 222u8, 1u8, 0u8, 229u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8,
-            25u8, 1u8, 18u8, 4u8, 222u8, 1u8, 8u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            25u8, 2u8, 0u8, 6u8, 18u8, 4u8, 224u8, 1u8, 2u8, 29u8, 10u8, 45u8, 10u8, 4u8,
-            4u8, 25u8, 2u8, 0u8, 18u8, 4u8, 224u8, 1u8, 2u8, 41u8, 26u8, 31u8, 32u8,
+            242u8, 1u8, 2u8, 27u8, 10u8, 12u8, 10u8, 4u8, 4u8, 22u8, 2u8, 0u8, 18u8, 4u8,
+            242u8, 1u8, 2u8, 37u8, 10u8, 13u8, 10u8, 5u8, 4u8, 22u8, 2u8, 0u8, 1u8, 18u8,
+            4u8, 242u8, 1u8, 28u8, 32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 22u8, 2u8, 0u8, 3u8,
+            18u8, 4u8, 242u8, 1u8, 35u8, 36u8, 10u8, 12u8, 10u8, 2u8, 4u8, 23u8, 18u8,
+            6u8, 245u8, 1u8, 0u8, 247u8, 1u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 23u8, 1u8,
+            18u8, 4u8, 245u8, 1u8, 8u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8, 23u8, 2u8, 0u8,
+            5u8, 18u8, 4u8, 246u8, 1u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 23u8, 2u8,
+            0u8, 18u8, 4u8, 246u8, 1u8, 2u8, 22u8, 10u8, 13u8, 10u8, 5u8, 4u8, 23u8, 2u8,
+            0u8, 1u8, 18u8, 4u8, 246u8, 1u8, 9u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 23u8,
+            2u8, 0u8, 3u8, 18u8, 4u8, 246u8, 1u8, 20u8, 21u8, 10u8, 10u8, 10u8, 2u8, 4u8,
+            24u8, 18u8, 4u8, 248u8, 1u8, 0u8, 31u8, 10u8, 11u8, 10u8, 3u8, 4u8, 24u8,
+            1u8, 18u8, 4u8, 248u8, 1u8, 8u8, 28u8, 10u8, 12u8, 10u8, 2u8, 4u8, 25u8,
+            18u8, 6u8, 250u8, 1u8, 0u8, 129u8, 2u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8,
+            25u8, 1u8, 18u8, 4u8, 250u8, 1u8, 8u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            25u8, 2u8, 0u8, 6u8, 18u8, 4u8, 252u8, 1u8, 2u8, 29u8, 10u8, 45u8, 10u8, 4u8,
+            4u8, 25u8, 2u8, 0u8, 18u8, 4u8, 252u8, 1u8, 2u8, 41u8, 26u8, 31u8, 32u8,
             78u8, 117u8, 109u8, 98u8, 101u8, 114u8, 32u8, 111u8, 102u8, 32u8, 98u8,
             108u8, 111u8, 99u8, 107u8, 115u8, 32u8, 116u8, 111u8, 32u8, 103u8, 101u8,
             110u8, 101u8, 114u8, 97u8, 116u8, 101u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8,
-            4u8, 25u8, 2u8, 0u8, 1u8, 18u8, 4u8, 224u8, 1u8, 30u8, 36u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 25u8, 2u8, 0u8, 3u8, 18u8, 4u8, 224u8, 1u8, 39u8, 40u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 25u8, 2u8, 1u8, 5u8, 18u8, 4u8, 228u8, 1u8, 2u8, 6u8,
-            10u8, 99u8, 10u8, 4u8, 4u8, 25u8, 2u8, 1u8, 18u8, 4u8, 228u8, 1u8, 2u8, 29u8,
+            4u8, 25u8, 2u8, 0u8, 1u8, 18u8, 4u8, 252u8, 1u8, 30u8, 36u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 25u8, 2u8, 0u8, 3u8, 18u8, 4u8, 252u8, 1u8, 39u8, 40u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 25u8, 2u8, 1u8, 5u8, 18u8, 4u8, 128u8, 2u8, 2u8, 6u8,
+            10u8, 99u8, 10u8, 4u8, 4u8, 25u8, 2u8, 1u8, 18u8, 4u8, 128u8, 2u8, 2u8, 29u8,
             26u8, 85u8, 32u8, 65u8, 67u8, 75u8, 32u8, 97u8, 108u8, 108u8, 32u8, 115u8,
             105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 112u8, 114u8,
             111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 115u8, 44u8, 32u8, 105u8, 114u8,
@@ -64905,95 +79060,95 @@ pub mod __buffa {
             97u8, 114u8, 101u8, 32u8, 97u8, 108u8, 114u8, 101u8, 97u8, 100u8, 121u8,
             10u8, 32u8, 105u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8, 119u8, 97u8,
             108u8, 108u8, 101u8, 116u8, 32u8, 68u8, 66u8, 46u8, 10u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 25u8, 2u8, 1u8, 1u8, 18u8, 4u8, 228u8, 1u8, 7u8, 24u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 25u8, 2u8, 1u8, 3u8, 18u8, 4u8, 228u8, 1u8, 27u8, 28u8, 10u8,
-            12u8, 10u8, 2u8, 4u8, 26u8, 18u8, 6u8, 230u8, 1u8, 0u8, 232u8, 1u8, 1u8,
-            10u8, 11u8, 10u8, 3u8, 4u8, 26u8, 1u8, 18u8, 4u8, 230u8, 1u8, 8u8, 30u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 26u8, 2u8, 0u8, 6u8, 18u8, 4u8, 231u8, 1u8, 2u8,
-            27u8, 10u8, 12u8, 10u8, 4u8, 4u8, 26u8, 2u8, 0u8, 18u8, 4u8, 231u8, 1u8, 2u8,
-            43u8, 10u8, 13u8, 10u8, 5u8, 4u8, 26u8, 2u8, 0u8, 1u8, 18u8, 4u8, 231u8, 1u8,
+            5u8, 4u8, 25u8, 2u8, 1u8, 1u8, 18u8, 4u8, 128u8, 2u8, 7u8, 24u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 25u8, 2u8, 1u8, 3u8, 18u8, 4u8, 128u8, 2u8, 27u8, 28u8, 10u8,
+            12u8, 10u8, 2u8, 4u8, 26u8, 18u8, 6u8, 130u8, 2u8, 0u8, 132u8, 2u8, 1u8,
+            10u8, 11u8, 10u8, 3u8, 4u8, 26u8, 1u8, 18u8, 4u8, 130u8, 2u8, 8u8, 30u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 26u8, 2u8, 0u8, 6u8, 18u8, 4u8, 131u8, 2u8, 2u8,
+            27u8, 10u8, 12u8, 10u8, 4u8, 4u8, 26u8, 2u8, 0u8, 18u8, 4u8, 131u8, 2u8, 2u8,
+            43u8, 10u8, 13u8, 10u8, 5u8, 4u8, 26u8, 2u8, 0u8, 1u8, 18u8, 4u8, 131u8, 2u8,
             28u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8, 26u8, 2u8, 0u8, 3u8, 18u8, 4u8,
-            231u8, 1u8, 41u8, 42u8, 10u8, 10u8, 10u8, 2u8, 4u8, 27u8, 18u8, 4u8, 234u8,
-            1u8, 0u8, 25u8, 10u8, 11u8, 10u8, 3u8, 4u8, 27u8, 1u8, 18u8, 4u8, 234u8, 1u8,
-            8u8, 22u8, 10u8, 12u8, 10u8, 2u8, 4u8, 28u8, 18u8, 6u8, 236u8, 1u8, 0u8,
-            130u8, 2u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 28u8, 1u8, 18u8, 4u8, 236u8,
-            1u8, 8u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 0u8, 5u8, 18u8, 4u8,
-            238u8, 1u8, 2u8, 8u8, 10u8, 44u8, 10u8, 4u8, 4u8, 28u8, 2u8, 0u8, 18u8, 4u8,
-            238u8, 1u8, 2u8, 21u8, 26u8, 30u8, 32u8, 84u8, 104u8, 101u8, 32u8, 110u8,
+            131u8, 2u8, 41u8, 42u8, 10u8, 10u8, 10u8, 2u8, 4u8, 27u8, 18u8, 4u8, 134u8,
+            2u8, 0u8, 25u8, 10u8, 11u8, 10u8, 3u8, 4u8, 27u8, 1u8, 18u8, 4u8, 134u8, 2u8,
+            8u8, 22u8, 10u8, 12u8, 10u8, 2u8, 4u8, 28u8, 18u8, 6u8, 136u8, 2u8, 0u8,
+            158u8, 2u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 28u8, 1u8, 18u8, 4u8, 136u8,
+            2u8, 8u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 0u8, 5u8, 18u8, 4u8,
+            138u8, 2u8, 2u8, 8u8, 10u8, 44u8, 10u8, 4u8, 4u8, 28u8, 2u8, 0u8, 18u8, 4u8,
+            138u8, 2u8, 2u8, 21u8, 26u8, 30u8, 32u8, 84u8, 104u8, 101u8, 32u8, 110u8,
             101u8, 116u8, 119u8, 111u8, 114u8, 107u8, 32u8, 116u8, 104u8, 101u8, 32u8,
             119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 32u8, 105u8, 115u8, 32u8, 111u8,
             110u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 0u8, 1u8, 18u8, 4u8,
-            238u8, 1u8, 9u8, 16u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 0u8, 3u8, 18u8,
-            4u8, 238u8, 1u8, 19u8, 20u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 1u8, 5u8,
-            18u8, 4u8, 241u8, 1u8, 2u8, 8u8, 10u8, 58u8, 10u8, 4u8, 4u8, 28u8, 2u8, 1u8,
-            18u8, 4u8, 241u8, 1u8, 2u8, 31u8, 26u8, 44u8, 32u8, 84u8, 111u8, 116u8, 97u8,
+            138u8, 2u8, 9u8, 16u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 0u8, 3u8, 18u8,
+            4u8, 138u8, 2u8, 19u8, 20u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 1u8, 5u8,
+            18u8, 4u8, 141u8, 2u8, 2u8, 8u8, 10u8, 58u8, 10u8, 4u8, 4u8, 28u8, 2u8, 1u8,
+            18u8, 4u8, 141u8, 2u8, 2u8, 31u8, 26u8, 44u8, 32u8, 84u8, 111u8, 116u8, 97u8,
             108u8, 32u8, 110u8, 117u8, 109u8, 98u8, 101u8, 114u8, 32u8, 111u8, 102u8,
             32u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8,
             110u8, 115u8, 32u8, 105u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8, 119u8,
             97u8, 108u8, 108u8, 101u8, 116u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8,
-            2u8, 1u8, 1u8, 18u8, 4u8, 241u8, 1u8, 9u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            28u8, 2u8, 1u8, 3u8, 18u8, 4u8, 241u8, 1u8, 29u8, 30u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 28u8, 2u8, 2u8, 5u8, 18u8, 4u8, 244u8, 1u8, 2u8, 8u8, 10u8, 46u8,
-            10u8, 4u8, 4u8, 28u8, 2u8, 2u8, 18u8, 4u8, 244u8, 1u8, 2u8, 34u8, 26u8, 32u8,
+            2u8, 1u8, 1u8, 18u8, 4u8, 141u8, 2u8, 9u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            28u8, 2u8, 1u8, 3u8, 18u8, 4u8, 141u8, 2u8, 29u8, 30u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 28u8, 2u8, 2u8, 5u8, 18u8, 4u8, 144u8, 2u8, 2u8, 8u8, 10u8, 46u8,
+            10u8, 4u8, 4u8, 28u8, 2u8, 2u8, 18u8, 4u8, 144u8, 2u8, 2u8, 34u8, 26u8, 32u8,
             32u8, 78u8, 117u8, 109u8, 98u8, 101u8, 114u8, 32u8, 111u8, 102u8, 32u8, 85u8,
             84u8, 88u8, 79u8, 115u8, 32u8, 105u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8,
             119u8, 97u8, 108u8, 108u8, 101u8, 116u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8,
-            4u8, 28u8, 2u8, 2u8, 1u8, 18u8, 4u8, 244u8, 1u8, 9u8, 29u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 28u8, 2u8, 2u8, 3u8, 18u8, 4u8, 244u8, 1u8, 32u8, 33u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 28u8, 2u8, 3u8, 6u8, 18u8, 4u8, 246u8, 1u8, 2u8, 21u8, 10u8,
-            12u8, 10u8, 4u8, 4u8, 28u8, 2u8, 3u8, 18u8, 4u8, 246u8, 1u8, 2u8, 38u8, 10u8,
-            13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 3u8, 1u8, 18u8, 4u8, 246u8, 1u8, 22u8, 33u8,
-            10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 3u8, 3u8, 18u8, 4u8, 246u8, 1u8, 36u8,
-            37u8, 10u8, 14u8, 10u8, 4u8, 4u8, 28u8, 3u8, 1u8, 18u8, 6u8, 248u8, 1u8, 2u8,
-            254u8, 1u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 3u8, 1u8, 1u8, 18u8, 4u8,
-            248u8, 1u8, 10u8, 13u8, 10u8, 15u8, 10u8, 7u8, 4u8, 28u8, 3u8, 1u8, 2u8, 0u8,
-            5u8, 18u8, 4u8, 250u8, 1u8, 4u8, 10u8, 10u8, 54u8, 10u8, 6u8, 4u8, 28u8, 3u8,
-            1u8, 2u8, 0u8, 18u8, 4u8, 250u8, 1u8, 4u8, 22u8, 26u8, 38u8, 32u8, 84u8,
+            4u8, 28u8, 2u8, 2u8, 1u8, 18u8, 4u8, 144u8, 2u8, 9u8, 29u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 28u8, 2u8, 2u8, 3u8, 18u8, 4u8, 144u8, 2u8, 32u8, 33u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 28u8, 2u8, 3u8, 6u8, 18u8, 4u8, 146u8, 2u8, 2u8, 21u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 28u8, 2u8, 3u8, 18u8, 4u8, 146u8, 2u8, 2u8, 38u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 3u8, 1u8, 18u8, 4u8, 146u8, 2u8, 22u8, 33u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 2u8, 3u8, 3u8, 18u8, 4u8, 146u8, 2u8, 36u8,
+            37u8, 10u8, 14u8, 10u8, 4u8, 4u8, 28u8, 3u8, 1u8, 18u8, 6u8, 148u8, 2u8, 2u8,
+            154u8, 2u8, 3u8, 10u8, 13u8, 10u8, 5u8, 4u8, 28u8, 3u8, 1u8, 1u8, 18u8, 4u8,
+            148u8, 2u8, 10u8, 13u8, 10u8, 15u8, 10u8, 7u8, 4u8, 28u8, 3u8, 1u8, 2u8, 0u8,
+            5u8, 18u8, 4u8, 150u8, 2u8, 4u8, 10u8, 10u8, 54u8, 10u8, 6u8, 4u8, 28u8, 3u8,
+            1u8, 2u8, 0u8, 18u8, 4u8, 150u8, 2u8, 4u8, 22u8, 26u8, 38u8, 32u8, 84u8,
             104u8, 101u8, 32u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 32u8, 111u8,
             102u8, 32u8, 116u8, 104u8, 101u8, 32u8, 116u8, 105u8, 112u8, 32u8, 111u8,
             102u8, 32u8, 116u8, 104u8, 101u8, 32u8, 119u8, 97u8, 108u8, 108u8, 101u8,
             116u8, 46u8, 10u8, 10u8, 15u8, 10u8, 7u8, 4u8, 28u8, 3u8, 1u8, 2u8, 0u8, 1u8,
-            18u8, 4u8, 250u8, 1u8, 11u8, 17u8, 10u8, 15u8, 10u8, 7u8, 4u8, 28u8, 3u8,
-            1u8, 2u8, 0u8, 3u8, 18u8, 4u8, 250u8, 1u8, 20u8, 21u8, 10u8, 15u8, 10u8, 7u8,
-            4u8, 28u8, 3u8, 1u8, 2u8, 1u8, 6u8, 18u8, 4u8, 253u8, 1u8, 4u8, 29u8, 10u8,
-            52u8, 10u8, 6u8, 4u8, 28u8, 3u8, 1u8, 2u8, 1u8, 18u8, 4u8, 253u8, 1u8, 4u8,
+            18u8, 4u8, 150u8, 2u8, 11u8, 17u8, 10u8, 15u8, 10u8, 7u8, 4u8, 28u8, 3u8,
+            1u8, 2u8, 0u8, 3u8, 18u8, 4u8, 150u8, 2u8, 20u8, 21u8, 10u8, 15u8, 10u8, 7u8,
+            4u8, 28u8, 3u8, 1u8, 2u8, 1u8, 6u8, 18u8, 4u8, 153u8, 2u8, 4u8, 29u8, 10u8,
+            52u8, 10u8, 6u8, 4u8, 28u8, 3u8, 1u8, 2u8, 1u8, 18u8, 4u8, 153u8, 2u8, 4u8,
             39u8, 26u8, 36u8, 32u8, 84u8, 104u8, 101u8, 32u8, 104u8, 97u8, 115u8, 104u8,
             32u8, 111u8, 102u8, 32u8, 116u8, 104u8, 101u8, 32u8, 116u8, 105u8, 112u8,
             32u8, 111u8, 102u8, 32u8, 116u8, 104u8, 101u8, 32u8, 119u8, 97u8, 108u8,
             108u8, 101u8, 116u8, 46u8, 10u8, 10u8, 15u8, 10u8, 7u8, 4u8, 28u8, 3u8, 1u8,
-            2u8, 1u8, 1u8, 18u8, 4u8, 253u8, 1u8, 30u8, 34u8, 10u8, 15u8, 10u8, 7u8, 4u8,
-            28u8, 3u8, 1u8, 2u8, 1u8, 3u8, 18u8, 4u8, 253u8, 1u8, 37u8, 38u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 28u8, 2u8, 4u8, 6u8, 18u8, 4u8, 129u8, 2u8, 2u8, 5u8, 10u8,
-            54u8, 10u8, 4u8, 4u8, 28u8, 2u8, 4u8, 18u8, 4u8, 129u8, 2u8, 2u8, 14u8, 26u8,
+            2u8, 1u8, 1u8, 18u8, 4u8, 153u8, 2u8, 30u8, 34u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            28u8, 3u8, 1u8, 2u8, 1u8, 3u8, 18u8, 4u8, 153u8, 2u8, 37u8, 38u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 28u8, 2u8, 4u8, 6u8, 18u8, 4u8, 157u8, 2u8, 2u8, 5u8, 10u8,
+            54u8, 10u8, 4u8, 4u8, 28u8, 2u8, 4u8, 18u8, 4u8, 157u8, 2u8, 2u8, 14u8, 26u8,
             40u8, 32u8, 84u8, 104u8, 101u8, 32u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8,
             116u8, 105u8, 112u8, 32u8, 116u8, 104u8, 101u8, 32u8, 119u8, 97u8, 108u8,
             108u8, 101u8, 116u8, 32u8, 105u8, 115u8, 32u8, 115u8, 121u8, 110u8, 99u8,
             101u8, 100u8, 32u8, 116u8, 111u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            28u8, 2u8, 4u8, 1u8, 18u8, 4u8, 129u8, 2u8, 6u8, 9u8, 10u8, 13u8, 10u8, 5u8,
-            4u8, 28u8, 2u8, 4u8, 3u8, 18u8, 4u8, 129u8, 2u8, 12u8, 13u8, 10u8, 10u8,
-            10u8, 2u8, 4u8, 29u8, 18u8, 4u8, 132u8, 2u8, 0u8, 36u8, 10u8, 11u8, 10u8,
-            3u8, 4u8, 29u8, 1u8, 18u8, 4u8, 132u8, 2u8, 8u8, 33u8, 10u8, 12u8, 10u8, 2u8,
-            4u8, 30u8, 18u8, 6u8, 134u8, 2u8, 0u8, 156u8, 2u8, 1u8, 10u8, 11u8, 10u8,
-            3u8, 4u8, 30u8, 1u8, 18u8, 4u8, 134u8, 2u8, 8u8, 34u8, 10u8, 14u8, 10u8, 4u8,
-            4u8, 30u8, 3u8, 0u8, 18u8, 6u8, 135u8, 2u8, 2u8, 153u8, 2u8, 3u8, 10u8, 13u8,
-            10u8, 5u8, 4u8, 30u8, 3u8, 0u8, 1u8, 18u8, 4u8, 135u8, 2u8, 10u8, 16u8, 10u8,
-            15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 0u8, 6u8, 18u8, 4u8, 136u8, 2u8,
+            28u8, 2u8, 4u8, 1u8, 18u8, 4u8, 157u8, 2u8, 6u8, 9u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 28u8, 2u8, 4u8, 3u8, 18u8, 4u8, 157u8, 2u8, 12u8, 13u8, 10u8, 10u8,
+            10u8, 2u8, 4u8, 29u8, 18u8, 4u8, 160u8, 2u8, 0u8, 36u8, 10u8, 11u8, 10u8,
+            3u8, 4u8, 29u8, 1u8, 18u8, 4u8, 160u8, 2u8, 8u8, 33u8, 10u8, 12u8, 10u8, 2u8,
+            4u8, 30u8, 18u8, 6u8, 162u8, 2u8, 0u8, 184u8, 2u8, 1u8, 10u8, 11u8, 10u8,
+            3u8, 4u8, 30u8, 1u8, 18u8, 4u8, 162u8, 2u8, 8u8, 34u8, 10u8, 14u8, 10u8, 4u8,
+            4u8, 30u8, 3u8, 0u8, 18u8, 6u8, 163u8, 2u8, 2u8, 181u8, 2u8, 3u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 30u8, 3u8, 0u8, 1u8, 18u8, 4u8, 163u8, 2u8, 10u8, 16u8, 10u8,
+            15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 0u8, 6u8, 18u8, 4u8, 164u8, 2u8,
             4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 0u8, 18u8, 4u8,
-            136u8, 2u8, 4u8, 39u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 0u8,
-            1u8, 18u8, 4u8, 136u8, 2u8, 30u8, 34u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8,
-            3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 4u8, 136u8, 2u8, 37u8, 38u8, 10u8, 15u8, 10u8,
-            7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 1u8, 5u8, 18u8, 4u8, 137u8, 2u8, 4u8, 10u8,
-            10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 1u8, 18u8, 4u8, 137u8, 2u8,
+            164u8, 2u8, 4u8, 39u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 0u8,
+            1u8, 18u8, 4u8, 164u8, 2u8, 30u8, 34u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8,
+            3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 4u8, 164u8, 2u8, 37u8, 38u8, 10u8, 15u8, 10u8,
+            7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 1u8, 5u8, 18u8, 4u8, 165u8, 2u8, 4u8, 10u8,
+            10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 1u8, 18u8, 4u8, 165u8, 2u8,
             4u8, 20u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8,
-            4u8, 137u8, 2u8, 11u8, 15u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8,
-            1u8, 3u8, 18u8, 4u8, 137u8, 2u8, 18u8, 19u8, 10u8, 15u8, 10u8, 7u8, 4u8,
-            30u8, 3u8, 0u8, 2u8, 2u8, 5u8, 18u8, 4u8, 138u8, 2u8, 4u8, 10u8, 10u8, 14u8,
-            10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 2u8, 18u8, 4u8, 138u8, 2u8, 4u8, 26u8,
-            10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 2u8, 1u8, 18u8, 4u8, 138u8,
+            4u8, 165u8, 2u8, 11u8, 15u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8,
+            1u8, 3u8, 18u8, 4u8, 165u8, 2u8, 18u8, 19u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            30u8, 3u8, 0u8, 2u8, 2u8, 5u8, 18u8, 4u8, 166u8, 2u8, 4u8, 10u8, 10u8, 14u8,
+            10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 2u8, 18u8, 4u8, 166u8, 2u8, 4u8, 26u8,
+            10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 2u8, 1u8, 18u8, 4u8, 166u8,
             2u8, 11u8, 21u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 2u8, 3u8,
-            18u8, 4u8, 138u8, 2u8, 24u8, 25u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8,
-            0u8, 2u8, 3u8, 5u8, 18u8, 4u8, 142u8, 2u8, 4u8, 8u8, 10u8, 118u8, 10u8, 6u8,
-            4u8, 30u8, 3u8, 0u8, 2u8, 3u8, 18u8, 4u8, 142u8, 2u8, 4u8, 25u8, 26u8, 102u8,
+            18u8, 4u8, 166u8, 2u8, 24u8, 25u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8,
+            0u8, 2u8, 3u8, 5u8, 18u8, 4u8, 170u8, 2u8, 4u8, 8u8, 10u8, 118u8, 10u8, 6u8,
+            4u8, 30u8, 3u8, 0u8, 2u8, 3u8, 18u8, 4u8, 170u8, 2u8, 4u8, 25u8, 26u8, 102u8,
             32u8, 65u8, 110u8, 32u8, 105u8, 110u8, 116u8, 101u8, 114u8, 110u8, 97u8,
             108u8, 32u8, 111u8, 117u8, 116u8, 112u8, 117u8, 116u8, 32u8, 105u8, 115u8,
             32u8, 111u8, 110u8, 101u8, 32u8, 116u8, 104u8, 97u8, 116u8, 32u8, 119u8,
@@ -65004,34 +79159,34 @@ pub mod __buffa {
             116u8, 112u8, 117u8, 116u8, 32u8, 102u8, 111u8, 114u8, 32u8, 97u8, 32u8,
             116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8,
             46u8, 10u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 3u8, 1u8, 18u8,
-            4u8, 142u8, 2u8, 9u8, 20u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8,
-            3u8, 3u8, 18u8, 4u8, 142u8, 2u8, 23u8, 24u8, 10u8, 15u8, 10u8, 7u8, 4u8,
-            30u8, 3u8, 0u8, 2u8, 4u8, 5u8, 18u8, 4u8, 144u8, 2u8, 4u8, 8u8, 10u8, 14u8,
-            10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 4u8, 18u8, 4u8, 144u8, 2u8, 4u8, 26u8,
-            10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 4u8, 1u8, 18u8, 4u8, 144u8,
+            4u8, 170u8, 2u8, 9u8, 20u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8,
+            3u8, 3u8, 18u8, 4u8, 170u8, 2u8, 23u8, 24u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            30u8, 3u8, 0u8, 2u8, 4u8, 5u8, 18u8, 4u8, 172u8, 2u8, 4u8, 8u8, 10u8, 14u8,
+            10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 4u8, 18u8, 4u8, 172u8, 2u8, 4u8, 26u8,
+            10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 4u8, 1u8, 18u8, 4u8, 172u8,
             2u8, 9u8, 21u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 4u8, 3u8,
-            18u8, 4u8, 144u8, 2u8, 24u8, 25u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8,
-            0u8, 2u8, 5u8, 5u8, 18u8, 4u8, 145u8, 2u8, 4u8, 10u8, 10u8, 14u8, 10u8, 6u8,
-            4u8, 30u8, 3u8, 0u8, 2u8, 5u8, 18u8, 4u8, 145u8, 2u8, 4u8, 34u8, 10u8, 15u8,
-            10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 5u8, 1u8, 18u8, 4u8, 145u8, 2u8, 11u8,
+            18u8, 4u8, 172u8, 2u8, 24u8, 25u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8,
+            0u8, 2u8, 5u8, 5u8, 18u8, 4u8, 173u8, 2u8, 4u8, 10u8, 10u8, 14u8, 10u8, 6u8,
+            4u8, 30u8, 3u8, 0u8, 2u8, 5u8, 18u8, 4u8, 173u8, 2u8, 4u8, 34u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 5u8, 1u8, 18u8, 4u8, 173u8, 2u8, 11u8,
             29u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 5u8, 3u8, 18u8, 4u8,
-            145u8, 2u8, 32u8, 33u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 6u8,
-            6u8, 18u8, 4u8, 146u8, 2u8, 4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8,
-            0u8, 2u8, 6u8, 18u8, 4u8, 146u8, 2u8, 4u8, 52u8, 10u8, 15u8, 10u8, 7u8, 4u8,
-            30u8, 3u8, 0u8, 2u8, 6u8, 1u8, 18u8, 4u8, 146u8, 2u8, 30u8, 47u8, 10u8, 15u8,
-            10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 6u8, 3u8, 18u8, 4u8, 146u8, 2u8, 50u8,
+            173u8, 2u8, 32u8, 33u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 6u8,
+            6u8, 18u8, 4u8, 174u8, 2u8, 4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8,
+            0u8, 2u8, 6u8, 18u8, 4u8, 174u8, 2u8, 4u8, 52u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            30u8, 3u8, 0u8, 2u8, 6u8, 1u8, 18u8, 4u8, 174u8, 2u8, 30u8, 47u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 6u8, 3u8, 18u8, 4u8, 174u8, 2u8, 50u8,
             51u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 7u8, 6u8, 18u8, 4u8,
-            147u8, 2u8, 4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 7u8,
-            18u8, 4u8, 147u8, 2u8, 4u8, 57u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8,
-            2u8, 7u8, 1u8, 18u8, 4u8, 147u8, 2u8, 30u8, 52u8, 10u8, 15u8, 10u8, 7u8, 4u8,
-            30u8, 3u8, 0u8, 2u8, 7u8, 3u8, 18u8, 4u8, 147u8, 2u8, 55u8, 56u8, 10u8, 15u8,
-            10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 8u8, 6u8, 18u8, 4u8, 148u8, 2u8, 4u8,
-            29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 8u8, 18u8, 4u8, 148u8,
+            175u8, 2u8, 4u8, 29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 7u8,
+            18u8, 4u8, 175u8, 2u8, 4u8, 57u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8,
+            2u8, 7u8, 1u8, 18u8, 4u8, 175u8, 2u8, 30u8, 52u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            30u8, 3u8, 0u8, 2u8, 7u8, 3u8, 18u8, 4u8, 175u8, 2u8, 55u8, 56u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 8u8, 6u8, 18u8, 4u8, 176u8, 2u8, 4u8,
+            29u8, 10u8, 14u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 8u8, 18u8, 4u8, 176u8,
             2u8, 4u8, 56u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 8u8, 1u8,
-            18u8, 4u8, 148u8, 2u8, 30u8, 51u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8,
-            0u8, 2u8, 8u8, 3u8, 18u8, 4u8, 148u8, 2u8, 54u8, 55u8, 10u8, 15u8, 10u8, 7u8,
-            4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 6u8, 18u8, 4u8, 152u8, 2u8, 4u8, 31u8, 10u8,
-            113u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 18u8, 4u8, 152u8, 2u8, 4u8,
+            18u8, 4u8, 176u8, 2u8, 30u8, 51u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8,
+            0u8, 2u8, 8u8, 3u8, 18u8, 4u8, 176u8, 2u8, 54u8, 55u8, 10u8, 15u8, 10u8, 7u8,
+            4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 6u8, 18u8, 4u8, 180u8, 2u8, 4u8, 31u8, 10u8,
+            113u8, 10u8, 6u8, 4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 18u8, 4u8, 180u8, 2u8, 4u8,
             45u8, 26u8, 97u8, 32u8, 84u8, 104u8, 101u8, 32u8, 97u8, 100u8, 100u8, 114u8,
             101u8, 115u8, 115u8, 32u8, 99u8, 111u8, 114u8, 114u8, 101u8, 115u8, 112u8,
             111u8, 110u8, 100u8, 105u8, 110u8, 103u8, 32u8, 116u8, 111u8, 32u8, 116u8,
@@ -65041,324 +79196,670 @@ pub mod __buffa {
             10u8, 32u8, 116u8, 111u8, 32u8, 114u8, 101u8, 112u8, 114u8, 101u8, 115u8,
             101u8, 110u8, 116u8, 32u8, 105u8, 116u8, 32u8, 97u8, 115u8, 32u8, 97u8,
             110u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 46u8, 10u8,
-            10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 1u8, 18u8, 4u8, 152u8,
+            10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 1u8, 18u8, 4u8, 180u8,
             2u8, 32u8, 39u8, 10u8, 15u8, 10u8, 7u8, 4u8, 30u8, 3u8, 0u8, 2u8, 9u8, 3u8,
-            18u8, 4u8, 152u8, 2u8, 42u8, 44u8, 10u8, 13u8, 10u8, 5u8, 4u8, 30u8, 2u8,
-            0u8, 4u8, 18u8, 4u8, 155u8, 2u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 30u8,
-            2u8, 0u8, 18u8, 4u8, 155u8, 2u8, 2u8, 30u8, 10u8, 13u8, 10u8, 5u8, 4u8, 30u8,
-            2u8, 0u8, 6u8, 18u8, 4u8, 155u8, 2u8, 11u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8,
-            30u8, 2u8, 0u8, 1u8, 18u8, 4u8, 155u8, 2u8, 18u8, 25u8, 10u8, 13u8, 10u8,
-            5u8, 4u8, 30u8, 2u8, 0u8, 3u8, 18u8, 4u8, 155u8, 2u8, 28u8, 29u8, 98u8, 6u8,
-            112u8, 114u8, 111u8, 116u8, 111u8, 51u8, 10u8, 172u8, 30u8, 10u8, 33u8, 99u8,
-            117u8, 115u8, 102u8, 47u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
-            105u8, 110u8, 47u8, 118u8, 49u8, 47u8, 115u8, 105u8, 100u8, 101u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 112u8, 114u8, 111u8, 116u8, 111u8, 18u8,
-            17u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 34u8, 45u8, 10u8, 10u8, 83u8,
-            101u8, 113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 18u8, 31u8,
-            10u8, 11u8, 115u8, 101u8, 113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 95u8,
-            105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 4u8, 82u8, 10u8, 115u8, 101u8,
-            113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 34u8, 161u8, 1u8, 10u8,
-            15u8, 66u8, 108u8, 111u8, 99u8, 107u8, 72u8, 101u8, 97u8, 100u8, 101u8,
-            114u8, 73u8, 110u8, 102u8, 111u8, 18u8, 29u8, 10u8, 10u8, 98u8, 108u8, 111u8,
-            99u8, 107u8, 95u8, 104u8, 97u8, 115u8, 104u8, 24u8, 1u8, 32u8, 1u8, 40u8,
-            12u8, 82u8, 9u8, 98u8, 108u8, 111u8, 99u8, 107u8, 72u8, 97u8, 115u8, 104u8,
-            18u8, 38u8, 10u8, 15u8, 112u8, 114u8, 101u8, 118u8, 95u8, 98u8, 108u8, 111u8,
-            99u8, 107u8, 95u8, 104u8, 97u8, 115u8, 104u8, 24u8, 2u8, 32u8, 1u8, 40u8,
-            12u8, 82u8, 13u8, 112u8, 114u8, 101u8, 118u8, 66u8, 108u8, 111u8, 99u8,
-            107u8, 72u8, 97u8, 115u8, 104u8, 18u8, 47u8, 10u8, 20u8, 112u8, 114u8, 101u8,
-            118u8, 95u8, 109u8, 97u8, 105u8, 110u8, 95u8, 98u8, 108u8, 111u8, 99u8,
-            107u8, 95u8, 104u8, 97u8, 115u8, 104u8, 24u8, 3u8, 32u8, 1u8, 40u8, 12u8,
-            82u8, 17u8, 112u8, 114u8, 101u8, 118u8, 77u8, 97u8, 105u8, 110u8, 66u8,
-            108u8, 111u8, 99u8, 107u8, 72u8, 97u8, 115u8, 104u8, 18u8, 22u8, 10u8, 6u8,
-            104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 24u8, 4u8, 32u8, 1u8, 40u8, 13u8,
-            82u8, 6u8, 104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 34u8, 11u8, 10u8, 9u8,
-            66u8, 108u8, 111u8, 99u8, 107u8, 73u8, 110u8, 102u8, 111u8, 34u8, 22u8, 10u8,
-            20u8, 71u8, 101u8, 116u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8,
-            84u8, 120u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 34u8,
-            87u8, 10u8, 21u8, 71u8, 101u8, 116u8, 77u8, 101u8, 109u8, 112u8, 111u8,
-            111u8, 108u8, 84u8, 120u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
-            115u8, 101u8, 18u8, 62u8, 10u8, 11u8, 115u8, 101u8, 113u8, 117u8, 101u8,
-            110u8, 99u8, 101u8, 95u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8,
-            50u8, 29u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8,
-            113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 82u8, 10u8, 115u8,
-            101u8, 113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 34u8, 17u8,
-            10u8, 15u8, 71u8, 101u8, 116u8, 85u8, 116u8, 120u8, 111u8, 115u8, 82u8,
-            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 34u8, 18u8, 10u8, 16u8, 71u8,
-            101u8, 116u8, 85u8, 116u8, 120u8, 111u8, 115u8, 82u8, 101u8, 115u8, 112u8,
-            111u8, 110u8, 115u8, 101u8, 34u8, 60u8, 10u8, 24u8, 83u8, 117u8, 98u8, 109u8,
-            105u8, 116u8, 84u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8,
-            111u8, 110u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8, 32u8,
-            10u8, 11u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8,
-            111u8, 110u8, 24u8, 1u8, 32u8, 1u8, 40u8, 12u8, 82u8, 11u8, 116u8, 114u8,
-            97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 34u8, 27u8, 10u8,
-            25u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8, 114u8, 97u8, 110u8,
-            115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 115u8, 112u8,
-            111u8, 110u8, 115u8, 101u8, 34u8, 24u8, 10u8, 22u8, 83u8, 117u8, 98u8, 115u8,
-            99u8, 114u8, 105u8, 98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8,
-            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 34u8, 252u8, 6u8, 10u8, 23u8,
-            83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8, 101u8, 69u8, 118u8,
-            101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
-            101u8, 18u8, 62u8, 10u8, 11u8, 115u8, 101u8, 113u8, 117u8, 101u8, 110u8,
-            99u8, 101u8, 95u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8,
-            29u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8,
-            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 113u8,
-            117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 82u8, 10u8, 115u8, 101u8,
-            113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 18u8, 70u8, 10u8, 5u8,
-            101u8, 118u8, 101u8, 110u8, 116u8, 24u8, 2u8, 32u8, 1u8, 40u8, 11u8, 50u8,
-            48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8,
-            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8,
-            115u8, 99u8, 114u8, 105u8, 98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8,
-            115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 46u8, 69u8,
-            118u8, 101u8, 110u8, 116u8, 82u8, 5u8, 101u8, 118u8, 101u8, 110u8, 116u8,
-            26u8, 216u8, 5u8, 10u8, 5u8, 69u8, 118u8, 101u8, 110u8, 116u8, 18u8, 100u8,
-            10u8, 13u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 95u8, 98u8, 108u8,
-            111u8, 99u8, 107u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 61u8, 46u8, 99u8,
+            18u8, 4u8, 180u8, 2u8, 42u8, 44u8, 10u8, 13u8, 10u8, 5u8, 4u8, 30u8, 2u8,
+            0u8, 4u8, 18u8, 4u8, 183u8, 2u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 30u8,
+            2u8, 0u8, 18u8, 4u8, 183u8, 2u8, 2u8, 30u8, 10u8, 13u8, 10u8, 5u8, 4u8, 30u8,
+            2u8, 0u8, 6u8, 18u8, 4u8, 183u8, 2u8, 11u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            30u8, 2u8, 0u8, 1u8, 18u8, 4u8, 183u8, 2u8, 18u8, 25u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 30u8, 2u8, 0u8, 3u8, 18u8, 4u8, 183u8, 2u8, 28u8, 29u8, 10u8, 12u8,
+            10u8, 2u8, 5u8, 0u8, 18u8, 6u8, 186u8, 2u8, 0u8, 190u8, 2u8, 1u8, 10u8, 11u8,
+            10u8, 3u8, 5u8, 0u8, 1u8, 18u8, 4u8, 186u8, 2u8, 5u8, 17u8, 10u8, 13u8, 10u8,
+            5u8, 5u8, 0u8, 2u8, 0u8, 1u8, 18u8, 4u8, 187u8, 2u8, 2u8, 27u8, 10u8, 12u8,
+            10u8, 4u8, 5u8, 0u8, 2u8, 0u8, 18u8, 4u8, 187u8, 2u8, 2u8, 32u8, 10u8, 13u8,
+            10u8, 5u8, 5u8, 0u8, 2u8, 0u8, 2u8, 18u8, 4u8, 187u8, 2u8, 30u8, 31u8, 10u8,
+            13u8, 10u8, 5u8, 5u8, 0u8, 2u8, 1u8, 1u8, 18u8, 4u8, 188u8, 2u8, 2u8, 18u8,
+            10u8, 12u8, 10u8, 4u8, 5u8, 0u8, 2u8, 1u8, 18u8, 4u8, 188u8, 2u8, 2u8, 23u8,
+            10u8, 13u8, 10u8, 5u8, 5u8, 0u8, 2u8, 1u8, 2u8, 18u8, 4u8, 188u8, 2u8, 21u8,
+            22u8, 10u8, 13u8, 10u8, 5u8, 5u8, 0u8, 2u8, 2u8, 1u8, 18u8, 4u8, 189u8, 2u8,
+            2u8, 18u8, 10u8, 12u8, 10u8, 4u8, 5u8, 0u8, 2u8, 2u8, 18u8, 4u8, 189u8, 2u8,
+            2u8, 23u8, 10u8, 13u8, 10u8, 5u8, 5u8, 0u8, 2u8, 2u8, 2u8, 18u8, 4u8, 189u8,
+            2u8, 21u8, 22u8, 10u8, 12u8, 10u8, 2u8, 4u8, 31u8, 18u8, 6u8, 192u8, 2u8,
+            0u8, 200u8, 2u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 31u8, 1u8, 18u8, 4u8,
+            192u8, 2u8, 8u8, 25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 0u8, 5u8, 18u8,
+            4u8, 193u8, 2u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 31u8, 2u8, 0u8, 18u8,
+            4u8, 193u8, 2u8, 2u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 0u8, 1u8,
+            18u8, 4u8, 193u8, 2u8, 9u8, 21u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 0u8,
+            3u8, 18u8, 4u8, 193u8, 2u8, 24u8, 25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8,
+            2u8, 1u8, 6u8, 18u8, 4u8, 194u8, 2u8, 2u8, 14u8, 10u8, 12u8, 10u8, 4u8, 4u8,
+            31u8, 2u8, 1u8, 18u8, 4u8, 194u8, 2u8, 2u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            31u8, 2u8, 1u8, 1u8, 18u8, 4u8, 194u8, 2u8, 15u8, 22u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 31u8, 2u8, 1u8, 3u8, 18u8, 4u8, 194u8, 2u8, 25u8, 26u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 31u8, 2u8, 2u8, 5u8, 18u8, 4u8, 195u8, 2u8, 2u8, 8u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 31u8, 2u8, 2u8, 18u8, 4u8, 195u8, 2u8, 2u8, 32u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 2u8, 1u8, 18u8, 4u8, 195u8, 2u8, 9u8, 27u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 2u8, 3u8, 18u8, 4u8, 195u8, 2u8, 30u8,
+            31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 3u8, 5u8, 18u8, 4u8, 196u8, 2u8,
+            2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 31u8, 2u8, 3u8, 18u8, 4u8, 196u8, 2u8,
+            2u8, 33u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 3u8, 1u8, 18u8, 4u8, 196u8,
+            2u8, 9u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 3u8, 3u8, 18u8, 4u8,
+            196u8, 2u8, 31u8, 32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 31u8, 2u8, 4u8, 6u8,
+            18u8, 4u8, 199u8, 2u8, 2u8, 27u8, 10u8, 59u8, 10u8, 4u8, 4u8, 31u8, 2u8, 4u8,
+            18u8, 4u8, 199u8, 2u8, 2u8, 43u8, 26u8, 45u8, 32u8, 87u8, 104u8, 101u8,
+            110u8, 32u8, 119u8, 101u8, 32u8, 102u8, 105u8, 114u8, 115u8, 116u8, 32u8,
+            111u8, 98u8, 115u8, 101u8, 114u8, 118u8, 101u8, 100u8, 32u8, 116u8, 104u8,
+            101u8, 32u8, 110u8, 111u8, 116u8, 105u8, 102u8, 105u8, 99u8, 97u8, 116u8,
+            105u8, 111u8, 110u8, 32u8, 116u8, 120u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 31u8, 2u8, 4u8, 1u8, 18u8, 4u8, 199u8, 2u8, 28u8, 38u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 31u8, 2u8, 4u8, 3u8, 18u8, 4u8, 199u8, 2u8, 41u8, 42u8, 10u8,
+            12u8, 10u8, 2u8, 4u8, 32u8, 18u8, 6u8, 202u8, 2u8, 0u8, 208u8, 2u8, 1u8,
+            10u8, 11u8, 10u8, 3u8, 4u8, 32u8, 1u8, 18u8, 4u8, 202u8, 2u8, 8u8, 26u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 0u8, 5u8, 18u8, 4u8, 204u8, 2u8, 2u8,
+            8u8, 10u8, 56u8, 10u8, 4u8, 4u8, 32u8, 2u8, 0u8, 18u8, 4u8, 204u8, 2u8, 2u8,
+            15u8, 26u8, 42u8, 32u8, 76u8, 97u8, 98u8, 101u8, 108u8, 32u8, 105u8, 110u8,
+            100u8, 101u8, 120u8, 46u8, 32u8, 109u8, 61u8, 48u8, 32u8, 105u8, 115u8, 32u8,
+            114u8, 101u8, 115u8, 101u8, 114u8, 118u8, 101u8, 100u8, 32u8, 102u8, 111u8,
+            114u8, 32u8, 99u8, 104u8, 97u8, 110u8, 103u8, 101u8, 46u8, 10u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 32u8, 2u8, 0u8, 1u8, 18u8, 4u8, 204u8, 2u8, 9u8, 10u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 0u8, 3u8, 18u8, 4u8, 204u8, 2u8, 13u8, 14u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 1u8, 5u8, 18u8, 4u8, 206u8, 2u8, 2u8,
+            8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 32u8, 2u8, 1u8, 18u8, 4u8, 206u8, 2u8, 2u8,
+            18u8, 10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 1u8, 1u8, 18u8, 4u8, 206u8, 2u8,
+            9u8, 13u8, 10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 1u8, 3u8, 18u8, 4u8, 206u8,
+            2u8, 16u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 2u8, 5u8, 18u8, 4u8,
+            207u8, 2u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 32u8, 2u8, 2u8, 18u8, 4u8,
+            207u8, 2u8, 2u8, 21u8, 10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 2u8, 1u8, 18u8,
+            4u8, 207u8, 2u8, 9u8, 16u8, 10u8, 13u8, 10u8, 5u8, 4u8, 32u8, 2u8, 2u8, 3u8,
+            18u8, 4u8, 207u8, 2u8, 19u8, 20u8, 10u8, 12u8, 10u8, 2u8, 4u8, 33u8, 18u8,
+            6u8, 210u8, 2u8, 0u8, 229u8, 2u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 33u8, 1u8,
+            18u8, 4u8, 210u8, 2u8, 8u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 0u8,
+            6u8, 18u8, 4u8, 211u8, 2u8, 2u8, 27u8, 10u8, 12u8, 10u8, 4u8, 4u8, 33u8, 2u8,
+            0u8, 18u8, 4u8, 211u8, 2u8, 2u8, 37u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8,
+            0u8, 1u8, 18u8, 4u8, 211u8, 2u8, 28u8, 32u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            33u8, 2u8, 0u8, 3u8, 18u8, 4u8, 211u8, 2u8, 35u8, 36u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 33u8, 2u8, 1u8, 5u8, 18u8, 4u8, 212u8, 2u8, 2u8, 8u8, 10u8, 12u8,
+            10u8, 4u8, 4u8, 33u8, 2u8, 1u8, 18u8, 4u8, 212u8, 2u8, 2u8, 18u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 33u8, 2u8, 1u8, 1u8, 18u8, 4u8, 212u8, 2u8, 9u8, 13u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 1u8, 3u8, 18u8, 4u8, 212u8, 2u8, 16u8, 17u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 2u8, 5u8, 18u8, 4u8, 215u8, 2u8, 2u8,
+            7u8, 10u8, 55u8, 10u8, 4u8, 4u8, 33u8, 2u8, 2u8, 18u8, 4u8, 215u8, 2u8, 2u8,
+            26u8, 26u8, 41u8, 32u8, 88u8, 45u8, 111u8, 110u8, 108u8, 121u8, 32u8, 116u8,
+            97u8, 112u8, 114u8, 111u8, 111u8, 116u8, 32u8, 111u8, 117u8, 116u8, 112u8,
+            117u8, 116u8, 32u8, 112u8, 117u8, 98u8, 107u8, 101u8, 121u8, 44u8, 32u8,
+            51u8, 50u8, 32u8, 98u8, 121u8, 116u8, 101u8, 115u8, 46u8, 10u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 33u8, 2u8, 2u8, 1u8, 18u8, 4u8, 215u8, 2u8, 8u8, 21u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 2u8, 3u8, 18u8, 4u8, 215u8, 2u8, 24u8, 25u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 3u8, 5u8, 18u8, 4u8, 217u8, 2u8, 2u8,
+            8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 33u8, 2u8, 3u8, 18u8, 4u8, 217u8, 2u8, 2u8,
+            25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 3u8, 1u8, 18u8, 4u8, 217u8, 2u8,
+            9u8, 20u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 3u8, 3u8, 18u8, 4u8, 217u8,
+            2u8, 23u8, 24u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 4u8, 5u8, 18u8, 4u8,
+            218u8, 2u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 33u8, 2u8, 4u8, 18u8, 4u8,
+            218u8, 2u8, 2u8, 21u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 4u8, 1u8, 18u8,
+            4u8, 218u8, 2u8, 9u8, 16u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 4u8, 3u8,
+            18u8, 4u8, 218u8, 2u8, 19u8, 20u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8,
+            5u8, 4u8, 18u8, 4u8, 222u8, 2u8, 2u8, 10u8, 10u8, 120u8, 10u8, 4u8, 4u8,
+            33u8, 2u8, 5u8, 18u8, 4u8, 222u8, 2u8, 2u8, 30u8, 26u8, 106u8, 32u8, 83u8,
+            101u8, 116u8, 32u8, 119u8, 104u8, 101u8, 110u8, 32u8, 116u8, 104u8, 101u8,
+            32u8, 111u8, 117u8, 116u8, 112u8, 117u8, 116u8, 32u8, 119u8, 97u8, 115u8,
+            32u8, 112u8, 97u8, 105u8, 100u8, 32u8, 116u8, 111u8, 32u8, 97u8, 32u8, 108u8,
+            97u8, 98u8, 101u8, 108u8, 101u8, 100u8, 32u8, 97u8, 100u8, 100u8, 114u8,
+            101u8, 115u8, 115u8, 46u8, 32u8, 65u8, 98u8, 115u8, 101u8, 110u8, 116u8,
+            32u8, 61u8, 10u8, 32u8, 98u8, 97u8, 115u8, 101u8, 32u8, 97u8, 100u8, 100u8,
+            114u8, 101u8, 115u8, 115u8, 59u8, 32u8, 48u8, 32u8, 61u8, 32u8, 99u8, 104u8,
+            97u8, 110u8, 103u8, 101u8, 59u8, 32u8, 62u8, 61u8, 49u8, 32u8, 61u8, 32u8,
+            117u8, 115u8, 101u8, 114u8, 32u8, 108u8, 97u8, 98u8, 101u8, 108u8, 46u8,
+            10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 5u8, 5u8, 18u8, 4u8, 222u8, 2u8,
+            11u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 5u8, 1u8, 18u8, 4u8,
+            222u8, 2u8, 18u8, 25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 5u8, 3u8,
+            18u8, 4u8, 222u8, 2u8, 28u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8,
+            6u8, 4u8, 18u8, 4u8, 223u8, 2u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 33u8,
+            2u8, 6u8, 18u8, 4u8, 223u8, 2u8, 2u8, 33u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8,
+            2u8, 6u8, 5u8, 18u8, 4u8, 223u8, 2u8, 11u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            33u8, 2u8, 6u8, 1u8, 18u8, 4u8, 223u8, 2u8, 18u8, 28u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 33u8, 2u8, 6u8, 3u8, 18u8, 4u8, 223u8, 2u8, 31u8, 32u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 33u8, 2u8, 7u8, 5u8, 18u8, 4u8, 225u8, 2u8, 2u8, 8u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 33u8, 2u8, 7u8, 18u8, 4u8, 225u8, 2u8, 2u8, 20u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 7u8, 1u8, 18u8, 4u8, 225u8, 2u8, 9u8, 15u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 7u8, 3u8, 18u8, 4u8, 225u8, 2u8, 18u8,
+            19u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 8u8, 4u8, 18u8, 4u8, 228u8, 2u8,
+            2u8, 10u8, 10u8, 71u8, 10u8, 4u8, 4u8, 33u8, 2u8, 8u8, 18u8, 4u8, 228u8, 2u8,
+            2u8, 55u8, 26u8, 57u8, 32u8, 83u8, 101u8, 116u8, 32u8, 105u8, 102u8, 32u8,
+            119u8, 101u8, 32u8, 104u8, 97u8, 118u8, 101u8, 32u8, 111u8, 98u8, 115u8,
+            101u8, 114u8, 118u8, 101u8, 100u8, 32u8, 97u8, 110u8, 32u8, 111u8, 110u8,
+            45u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 115u8, 112u8, 101u8, 110u8,
+            100u8, 32u8, 111u8, 102u8, 32u8, 116u8, 104u8, 105u8, 115u8, 32u8, 85u8,
+            84u8, 88u8, 79u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8, 2u8, 8u8,
+            6u8, 18u8, 4u8, 228u8, 2u8, 11u8, 36u8, 10u8, 13u8, 10u8, 5u8, 4u8, 33u8,
+            2u8, 8u8, 1u8, 18u8, 4u8, 228u8, 2u8, 37u8, 50u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            33u8, 2u8, 8u8, 3u8, 18u8, 4u8, 228u8, 2u8, 53u8, 54u8, 10u8, 12u8, 10u8,
+            2u8, 4u8, 34u8, 18u8, 6u8, 231u8, 2u8, 0u8, 233u8, 2u8, 1u8, 10u8, 11u8,
+            10u8, 3u8, 4u8, 34u8, 1u8, 18u8, 4u8, 231u8, 2u8, 8u8, 34u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 34u8, 2u8, 0u8, 6u8, 18u8, 4u8, 232u8, 2u8, 2u8, 14u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 34u8, 2u8, 0u8, 18u8, 4u8, 232u8, 2u8, 2u8, 27u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 34u8, 2u8, 0u8, 1u8, 18u8, 4u8, 232u8, 2u8, 15u8, 22u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 34u8, 2u8, 0u8, 3u8, 18u8, 4u8, 232u8, 2u8, 25u8,
+            26u8, 10u8, 12u8, 10u8, 2u8, 4u8, 35u8, 18u8, 6u8, 234u8, 2u8, 0u8, 241u8,
+            2u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 35u8, 1u8, 18u8, 4u8, 234u8, 2u8, 8u8,
+            35u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 0u8, 5u8, 18u8, 4u8, 235u8, 2u8,
+            2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 35u8, 2u8, 0u8, 18u8, 4u8, 235u8, 2u8,
+            2u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 0u8, 1u8, 18u8, 4u8, 235u8,
+            2u8, 9u8, 21u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 0u8, 3u8, 18u8, 4u8,
+            235u8, 2u8, 24u8, 25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 1u8, 5u8,
+            18u8, 4u8, 238u8, 2u8, 2u8, 8u8, 10u8, 65u8, 10u8, 4u8, 4u8, 35u8, 2u8, 1u8,
+            18u8, 4u8, 238u8, 2u8, 2u8, 34u8, 26u8, 51u8, 32u8, 80u8, 50u8, 80u8, 75u8,
+            72u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 32u8, 116u8,
+            104u8, 97u8, 116u8, 32u8, 110u8, 111u8, 116u8, 105u8, 102u8, 105u8, 99u8,
+            97u8, 116u8, 105u8, 111u8, 110u8, 32u8, 116u8, 120u8, 115u8, 32u8, 116u8,
+            111u8, 32u8, 117u8, 115u8, 32u8, 112u8, 97u8, 121u8, 32u8, 116u8, 111u8,
+            46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 1u8, 1u8, 18u8, 4u8,
+            238u8, 2u8, 9u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 1u8, 3u8, 18u8,
+            4u8, 238u8, 2u8, 32u8, 33u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 2u8, 6u8,
+            18u8, 4u8, 240u8, 2u8, 2u8, 14u8, 10u8, 12u8, 10u8, 4u8, 4u8, 35u8, 2u8, 2u8,
+            18u8, 4u8, 240u8, 2u8, 2u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8, 2u8, 2u8,
+            1u8, 18u8, 4u8, 240u8, 2u8, 15u8, 22u8, 10u8, 13u8, 10u8, 5u8, 4u8, 35u8,
+            2u8, 2u8, 3u8, 18u8, 4u8, 240u8, 2u8, 25u8, 26u8, 10u8, 12u8, 10u8, 2u8, 4u8,
+            36u8, 18u8, 6u8, 243u8, 2u8, 0u8, 247u8, 2u8, 1u8, 10u8, 11u8, 10u8, 3u8,
+            4u8, 36u8, 1u8, 18u8, 4u8, 243u8, 2u8, 8u8, 37u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            36u8, 2u8, 0u8, 5u8, 18u8, 4u8, 244u8, 2u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8,
+            4u8, 36u8, 2u8, 0u8, 18u8, 4u8, 244u8, 2u8, 2u8, 26u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 36u8, 2u8, 0u8, 1u8, 18u8, 4u8, 244u8, 2u8, 9u8, 21u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 36u8, 2u8, 0u8, 3u8, 18u8, 4u8, 244u8, 2u8, 24u8, 25u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 36u8, 2u8, 1u8, 5u8, 18u8, 4u8, 245u8, 2u8, 2u8, 8u8, 10u8,
+            12u8, 10u8, 4u8, 4u8, 36u8, 2u8, 1u8, 18u8, 4u8, 245u8, 2u8, 2u8, 25u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 36u8, 2u8, 1u8, 1u8, 18u8, 4u8, 245u8, 2u8, 9u8, 20u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 36u8, 2u8, 1u8, 3u8, 18u8, 4u8, 245u8, 2u8, 23u8,
+            24u8, 10u8, 13u8, 10u8, 5u8, 4u8, 36u8, 2u8, 2u8, 5u8, 18u8, 4u8, 246u8, 2u8,
+            2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 36u8, 2u8, 2u8, 18u8, 4u8, 246u8, 2u8,
+            2u8, 31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 36u8, 2u8, 2u8, 1u8, 18u8, 4u8, 246u8,
+            2u8, 9u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 36u8, 2u8, 2u8, 3u8, 18u8, 4u8,
+            246u8, 2u8, 29u8, 30u8, 10u8, 12u8, 10u8, 2u8, 4u8, 37u8, 18u8, 6u8, 248u8,
+            2u8, 0u8, 128u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 37u8, 1u8, 18u8, 4u8,
+            248u8, 2u8, 8u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 0u8, 4u8, 18u8,
+            4u8, 251u8, 2u8, 2u8, 10u8, 10u8, 148u8, 1u8, 10u8, 4u8, 4u8, 37u8, 2u8, 0u8,
+            18u8, 4u8, 251u8, 2u8, 2u8, 59u8, 26u8, 133u8, 1u8, 32u8, 83u8, 101u8, 116u8,
+            32u8, 111u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8, 102u8, 105u8, 114u8,
+            115u8, 116u8, 32u8, 115u8, 101u8, 110u8, 100u8, 32u8, 116u8, 111u8, 32u8,
+            97u8, 32u8, 103u8, 105u8, 118u8, 101u8, 110u8, 32u8, 114u8, 101u8, 99u8,
+            105u8, 112u8, 105u8, 101u8, 110u8, 116u8, 59u8, 32u8, 117u8, 110u8, 115u8,
+            101u8, 116u8, 32u8, 111u8, 110u8, 32u8, 115u8, 117u8, 98u8, 115u8, 101u8,
+            113u8, 117u8, 101u8, 110u8, 116u8, 32u8, 115u8, 101u8, 110u8, 100u8, 115u8,
+            10u8, 32u8, 40u8, 112u8, 101u8, 114u8, 32u8, 66u8, 73u8, 80u8, 52u8, 55u8,
+            44u8, 32u8, 110u8, 111u8, 116u8, 105u8, 102u8, 105u8, 99u8, 97u8, 116u8,
+            105u8, 111u8, 110u8, 32u8, 104u8, 97u8, 112u8, 112u8, 101u8, 110u8, 115u8,
+            32u8, 111u8, 110u8, 108u8, 121u8, 32u8, 111u8, 110u8, 32u8, 102u8, 105u8,
+            114u8, 115u8, 116u8, 32u8, 105u8, 110u8, 116u8, 101u8, 114u8, 97u8, 99u8,
+            116u8, 105u8, 111u8, 110u8, 41u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            37u8, 2u8, 0u8, 6u8, 18u8, 4u8, 251u8, 2u8, 11u8, 36u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 37u8, 2u8, 0u8, 1u8, 18u8, 4u8, 251u8, 2u8, 37u8, 54u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 37u8, 2u8, 0u8, 3u8, 18u8, 4u8, 251u8, 2u8, 57u8, 58u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 1u8, 6u8, 18u8, 4u8, 253u8, 2u8, 2u8, 27u8,
+            10u8, 12u8, 10u8, 4u8, 4u8, 37u8, 2u8, 1u8, 18u8, 4u8, 253u8, 2u8, 2u8, 45u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 1u8, 1u8, 18u8, 4u8, 253u8, 2u8, 28u8,
+            40u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 1u8, 3u8, 18u8, 4u8, 253u8, 2u8,
+            43u8, 44u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 2u8, 5u8, 18u8, 4u8,
+            254u8, 2u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 37u8, 2u8, 2u8, 18u8, 4u8,
+            254u8, 2u8, 2u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 2u8, 1u8, 18u8,
+            4u8, 254u8, 2u8, 9u8, 21u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8, 2u8, 3u8,
+            18u8, 4u8, 254u8, 2u8, 24u8, 25u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8, 2u8,
+            3u8, 6u8, 18u8, 4u8, 255u8, 2u8, 2u8, 14u8, 10u8, 12u8, 10u8, 4u8, 4u8, 37u8,
+            2u8, 3u8, 18u8, 4u8, 255u8, 2u8, 2u8, 27u8, 10u8, 13u8, 10u8, 5u8, 4u8, 37u8,
+            2u8, 3u8, 1u8, 18u8, 4u8, 255u8, 2u8, 15u8, 22u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            37u8, 2u8, 3u8, 3u8, 18u8, 4u8, 255u8, 2u8, 25u8, 26u8, 10u8, 10u8, 10u8,
+            2u8, 4u8, 38u8, 18u8, 4u8, 130u8, 3u8, 0u8, 40u8, 10u8, 11u8, 10u8, 3u8, 4u8,
+            38u8, 1u8, 18u8, 4u8, 130u8, 3u8, 8u8, 37u8, 10u8, 12u8, 10u8, 2u8, 4u8,
+            39u8, 18u8, 6u8, 131u8, 3u8, 0u8, 133u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8,
+            4u8, 39u8, 1u8, 18u8, 4u8, 131u8, 3u8, 8u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            39u8, 2u8, 0u8, 4u8, 18u8, 4u8, 132u8, 3u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8,
+            4u8, 39u8, 2u8, 0u8, 18u8, 4u8, 132u8, 3u8, 2u8, 40u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 39u8, 2u8, 0u8, 6u8, 18u8, 4u8, 132u8, 3u8, 11u8, 28u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 39u8, 2u8, 0u8, 1u8, 18u8, 4u8, 132u8, 3u8, 29u8, 35u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 39u8, 2u8, 0u8, 3u8, 18u8, 4u8, 132u8, 3u8, 38u8, 39u8,
+            10u8, 12u8, 10u8, 2u8, 4u8, 40u8, 18u8, 6u8, 135u8, 3u8, 0u8, 138u8, 3u8,
+            1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 40u8, 1u8, 18u8, 4u8, 135u8, 3u8, 8u8, 38u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 40u8, 2u8, 0u8, 4u8, 18u8, 4u8, 137u8, 3u8, 2u8,
+            10u8, 10u8, 79u8, 10u8, 4u8, 4u8, 40u8, 2u8, 0u8, 18u8, 4u8, 137u8, 3u8, 2u8,
+            28u8, 26u8, 65u8, 32u8, 73u8, 102u8, 32u8, 115u8, 101u8, 116u8, 44u8, 32u8,
+            114u8, 101u8, 116u8, 117u8, 114u8, 110u8, 32u8, 116u8, 104u8, 101u8, 32u8,
+            108u8, 97u8, 98u8, 101u8, 108u8, 101u8, 100u8, 32u8, 97u8, 100u8, 100u8,
+            114u8, 101u8, 115u8, 115u8, 32u8, 105u8, 110u8, 115u8, 116u8, 101u8, 97u8,
+            100u8, 32u8, 111u8, 102u8, 32u8, 116u8, 104u8, 101u8, 32u8, 98u8, 97u8,
+            115u8, 101u8, 32u8, 97u8, 100u8, 100u8, 114u8, 101u8, 115u8, 115u8, 46u8,
+            10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 40u8, 2u8, 0u8, 5u8, 18u8, 4u8, 137u8, 3u8,
+            11u8, 17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 40u8, 2u8, 0u8, 1u8, 18u8, 4u8,
+            137u8, 3u8, 18u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 40u8, 2u8, 0u8, 3u8,
+            18u8, 4u8, 137u8, 3u8, 26u8, 27u8, 10u8, 12u8, 10u8, 2u8, 4u8, 41u8, 18u8,
+            6u8, 139u8, 3u8, 0u8, 141u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 41u8, 1u8,
+            18u8, 4u8, 139u8, 3u8, 8u8, 39u8, 10u8, 13u8, 10u8, 5u8, 4u8, 41u8, 2u8, 0u8,
+            5u8, 18u8, 4u8, 140u8, 3u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 41u8, 2u8,
+            0u8, 18u8, 4u8, 140u8, 3u8, 2u8, 21u8, 10u8, 13u8, 10u8, 5u8, 4u8, 41u8, 2u8,
+            0u8, 1u8, 18u8, 4u8, 140u8, 3u8, 9u8, 16u8, 10u8, 13u8, 10u8, 5u8, 4u8, 41u8,
+            2u8, 0u8, 3u8, 18u8, 4u8, 140u8, 3u8, 19u8, 20u8, 10u8, 12u8, 10u8, 2u8, 4u8,
+            42u8, 18u8, 6u8, 143u8, 3u8, 0u8, 145u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8,
+            4u8, 42u8, 1u8, 18u8, 4u8, 143u8, 3u8, 8u8, 39u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            42u8, 2u8, 0u8, 5u8, 18u8, 4u8, 144u8, 3u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8,
+            4u8, 42u8, 2u8, 0u8, 18u8, 4u8, 144u8, 3u8, 2u8, 18u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 42u8, 2u8, 0u8, 1u8, 18u8, 4u8, 144u8, 3u8, 9u8, 13u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 42u8, 2u8, 0u8, 3u8, 18u8, 4u8, 144u8, 3u8, 16u8, 17u8, 10u8, 12u8,
+            10u8, 2u8, 4u8, 43u8, 18u8, 6u8, 146u8, 3u8, 0u8, 149u8, 3u8, 1u8, 10u8,
+            11u8, 10u8, 3u8, 4u8, 43u8, 1u8, 18u8, 4u8, 146u8, 3u8, 8u8, 40u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 43u8, 2u8, 0u8, 5u8, 18u8, 4u8, 147u8, 3u8, 2u8, 8u8,
+            10u8, 12u8, 10u8, 4u8, 4u8, 43u8, 2u8, 0u8, 18u8, 4u8, 147u8, 3u8, 2u8, 21u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 43u8, 2u8, 0u8, 1u8, 18u8, 4u8, 147u8, 3u8, 9u8,
+            16u8, 10u8, 13u8, 10u8, 5u8, 4u8, 43u8, 2u8, 0u8, 3u8, 18u8, 4u8, 147u8, 3u8,
+            19u8, 20u8, 10u8, 13u8, 10u8, 5u8, 4u8, 43u8, 2u8, 1u8, 5u8, 18u8, 4u8,
+            148u8, 3u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 43u8, 2u8, 1u8, 18u8, 4u8,
+            148u8, 3u8, 2u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8, 43u8, 2u8, 1u8, 1u8, 18u8,
+            4u8, 148u8, 3u8, 9u8, 24u8, 10u8, 13u8, 10u8, 5u8, 4u8, 43u8, 2u8, 1u8, 3u8,
+            18u8, 4u8, 148u8, 3u8, 27u8, 28u8, 10u8, 10u8, 10u8, 2u8, 4u8, 44u8, 18u8,
+            4u8, 151u8, 3u8, 0u8, 41u8, 10u8, 11u8, 10u8, 3u8, 4u8, 44u8, 1u8, 18u8, 4u8,
+            151u8, 3u8, 8u8, 38u8, 10u8, 12u8, 10u8, 2u8, 4u8, 45u8, 18u8, 6u8, 152u8,
+            3u8, 0u8, 154u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 45u8, 1u8, 18u8, 4u8,
+            152u8, 3u8, 8u8, 39u8, 10u8, 13u8, 10u8, 5u8, 4u8, 45u8, 2u8, 0u8, 4u8, 18u8,
+            4u8, 153u8, 3u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 45u8, 2u8, 0u8, 18u8,
+            4u8, 153u8, 3u8, 2u8, 41u8, 10u8, 13u8, 10u8, 5u8, 4u8, 45u8, 2u8, 0u8, 6u8,
+            18u8, 4u8, 153u8, 3u8, 11u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8, 45u8, 2u8,
+            0u8, 1u8, 18u8, 4u8, 153u8, 3u8, 30u8, 36u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            45u8, 2u8, 0u8, 3u8, 18u8, 4u8, 153u8, 3u8, 39u8, 40u8, 10u8, 12u8, 10u8,
+            2u8, 4u8, 46u8, 18u8, 6u8, 156u8, 3u8, 0u8, 163u8, 3u8, 1u8, 10u8, 11u8,
+            10u8, 3u8, 4u8, 46u8, 1u8, 18u8, 4u8, 156u8, 3u8, 8u8, 34u8, 10u8, 14u8,
+            10u8, 4u8, 4u8, 46u8, 3u8, 0u8, 18u8, 6u8, 157u8, 3u8, 2u8, 160u8, 3u8, 3u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 46u8, 3u8, 0u8, 1u8, 18u8, 4u8, 157u8, 3u8, 10u8,
+            19u8, 10u8, 15u8, 10u8, 7u8, 4u8, 46u8, 3u8, 0u8, 2u8, 0u8, 5u8, 18u8, 4u8,
+            158u8, 3u8, 4u8, 10u8, 10u8, 14u8, 10u8, 6u8, 4u8, 46u8, 3u8, 0u8, 2u8, 0u8,
+            18u8, 4u8, 158u8, 3u8, 4u8, 26u8, 10u8, 15u8, 10u8, 7u8, 4u8, 46u8, 3u8, 0u8,
+            2u8, 0u8, 1u8, 18u8, 4u8, 158u8, 3u8, 11u8, 21u8, 10u8, 15u8, 10u8, 7u8, 4u8,
+            46u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 4u8, 158u8, 3u8, 24u8, 25u8, 10u8, 15u8,
+            10u8, 7u8, 4u8, 46u8, 3u8, 0u8, 2u8, 1u8, 5u8, 18u8, 4u8, 159u8, 3u8, 4u8,
+            10u8, 10u8, 14u8, 10u8, 6u8, 4u8, 46u8, 3u8, 0u8, 2u8, 1u8, 18u8, 4u8, 159u8,
+            3u8, 4u8, 27u8, 10u8, 15u8, 10u8, 7u8, 4u8, 46u8, 3u8, 0u8, 2u8, 1u8, 1u8,
+            18u8, 4u8, 159u8, 3u8, 11u8, 22u8, 10u8, 15u8, 10u8, 7u8, 4u8, 46u8, 3u8,
+            0u8, 2u8, 1u8, 3u8, 18u8, 4u8, 159u8, 3u8, 25u8, 26u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 46u8, 2u8, 0u8, 4u8, 18u8, 4u8, 161u8, 3u8, 2u8, 10u8, 10u8, 12u8, 10u8,
+            4u8, 4u8, 46u8, 2u8, 0u8, 18u8, 4u8, 161u8, 3u8, 2u8, 36u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 46u8, 2u8, 0u8, 6u8, 18u8, 4u8, 161u8, 3u8, 11u8, 20u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 46u8, 2u8, 0u8, 1u8, 18u8, 4u8, 161u8, 3u8, 21u8, 31u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 46u8, 2u8, 0u8, 3u8, 18u8, 4u8, 161u8, 3u8, 34u8, 35u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 46u8, 2u8, 1u8, 5u8, 18u8, 4u8, 162u8, 3u8, 2u8,
+            8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 46u8, 2u8, 1u8, 18u8, 4u8, 162u8, 3u8, 2u8,
+            31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 46u8, 2u8, 1u8, 1u8, 18u8, 4u8, 162u8, 3u8,
+            9u8, 26u8, 10u8, 13u8, 10u8, 5u8, 4u8, 46u8, 2u8, 1u8, 3u8, 18u8, 4u8, 162u8,
+            3u8, 29u8, 30u8, 10u8, 12u8, 10u8, 2u8, 4u8, 47u8, 18u8, 6u8, 164u8, 3u8,
+            0u8, 166u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 47u8, 1u8, 18u8, 4u8,
+            164u8, 3u8, 8u8, 35u8, 10u8, 13u8, 10u8, 5u8, 4u8, 47u8, 2u8, 0u8, 6u8, 18u8,
+            4u8, 165u8, 3u8, 2u8, 27u8, 10u8, 12u8, 10u8, 4u8, 4u8, 47u8, 2u8, 0u8, 18u8,
+            4u8, 165u8, 3u8, 2u8, 37u8, 10u8, 13u8, 10u8, 5u8, 4u8, 47u8, 2u8, 0u8, 1u8,
+            18u8, 4u8, 165u8, 3u8, 28u8, 32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 47u8, 2u8,
+            0u8, 3u8, 18u8, 4u8, 165u8, 3u8, 35u8, 36u8, 10u8, 12u8, 10u8, 2u8, 4u8,
+            48u8, 18u8, 6u8, 168u8, 3u8, 0u8, 173u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8,
+            4u8, 48u8, 1u8, 18u8, 4u8, 168u8, 3u8, 8u8, 40u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            48u8, 2u8, 0u8, 4u8, 18u8, 4u8, 169u8, 3u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8,
+            4u8, 48u8, 2u8, 0u8, 18u8, 4u8, 169u8, 3u8, 2u8, 40u8, 10u8, 13u8, 10u8, 5u8,
+            4u8, 48u8, 2u8, 0u8, 5u8, 18u8, 4u8, 169u8, 3u8, 11u8, 17u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 48u8, 2u8, 0u8, 1u8, 18u8, 4u8, 169u8, 3u8, 18u8, 35u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 48u8, 2u8, 0u8, 3u8, 18u8, 4u8, 169u8, 3u8, 38u8, 39u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 48u8, 2u8, 1u8, 4u8, 18u8, 4u8, 172u8, 3u8, 2u8,
+            10u8, 10u8, 67u8, 10u8, 4u8, 4u8, 48u8, 2u8, 1u8, 18u8, 4u8, 172u8, 3u8, 2u8,
+            28u8, 26u8, 53u8, 32u8, 73u8, 102u8, 32u8, 110u8, 111u8, 116u8, 32u8, 115u8,
+            101u8, 116u8, 44u8, 32u8, 116u8, 104u8, 101u8, 32u8, 115u8, 101u8, 114u8,
+            118u8, 101u8, 114u8, 32u8, 109u8, 97u8, 121u8, 32u8, 97u8, 112u8, 112u8,
+            108u8, 121u8, 32u8, 97u8, 32u8, 100u8, 101u8, 102u8, 97u8, 117u8, 108u8,
+            116u8, 32u8, 99u8, 101u8, 105u8, 108u8, 105u8, 110u8, 103u8, 46u8, 10u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 48u8, 2u8, 1u8, 5u8, 18u8, 4u8, 172u8, 3u8, 11u8,
+            17u8, 10u8, 13u8, 10u8, 5u8, 4u8, 48u8, 2u8, 1u8, 1u8, 18u8, 4u8, 172u8, 3u8,
+            18u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 48u8, 2u8, 1u8, 3u8, 18u8, 4u8,
+            172u8, 3u8, 26u8, 27u8, 10u8, 12u8, 10u8, 2u8, 4u8, 49u8, 18u8, 6u8, 174u8,
+            3u8, 0u8, 177u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 49u8, 1u8, 18u8, 4u8,
+            174u8, 3u8, 8u8, 41u8, 10u8, 13u8, 10u8, 5u8, 4u8, 49u8, 2u8, 0u8, 4u8, 18u8,
+            4u8, 175u8, 3u8, 2u8, 10u8, 10u8, 12u8, 10u8, 4u8, 4u8, 49u8, 2u8, 0u8, 18u8,
+            4u8, 175u8, 3u8, 2u8, 42u8, 10u8, 13u8, 10u8, 5u8, 4u8, 49u8, 2u8, 0u8, 6u8,
+            18u8, 4u8, 175u8, 3u8, 11u8, 31u8, 10u8, 13u8, 10u8, 5u8, 4u8, 49u8, 2u8,
+            0u8, 1u8, 18u8, 4u8, 175u8, 3u8, 32u8, 37u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            49u8, 2u8, 0u8, 3u8, 18u8, 4u8, 175u8, 3u8, 40u8, 41u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 49u8, 2u8, 1u8, 5u8, 18u8, 4u8, 176u8, 3u8, 2u8, 8u8, 10u8, 12u8,
+            10u8, 4u8, 4u8, 49u8, 2u8, 1u8, 18u8, 4u8, 176u8, 3u8, 2u8, 29u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 49u8, 2u8, 1u8, 1u8, 18u8, 4u8, 176u8, 3u8, 9u8, 24u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 49u8, 2u8, 1u8, 3u8, 18u8, 4u8, 176u8, 3u8, 27u8, 28u8,
+            10u8, 10u8, 10u8, 2u8, 4u8, 50u8, 18u8, 4u8, 179u8, 3u8, 0u8, 39u8, 10u8,
+            11u8, 10u8, 3u8, 4u8, 50u8, 1u8, 18u8, 4u8, 179u8, 3u8, 8u8, 36u8, 10u8,
+            12u8, 10u8, 2u8, 4u8, 51u8, 18u8, 6u8, 180u8, 3u8, 0u8, 185u8, 3u8, 1u8,
+            10u8, 11u8, 10u8, 3u8, 4u8, 51u8, 1u8, 18u8, 4u8, 180u8, 3u8, 8u8, 37u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 0u8, 5u8, 18u8, 4u8, 181u8, 3u8, 2u8,
+            8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 51u8, 2u8, 0u8, 18u8, 4u8, 181u8, 3u8, 2u8,
+            24u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 0u8, 1u8, 18u8, 4u8, 181u8, 3u8,
+            9u8, 19u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 0u8, 3u8, 18u8, 4u8, 181u8,
+            3u8, 22u8, 23u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 1u8, 5u8, 18u8, 4u8,
+            182u8, 3u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 51u8, 2u8, 1u8, 18u8, 4u8,
+            182u8, 3u8, 2u8, 33u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 1u8, 1u8, 18u8,
+            4u8, 182u8, 3u8, 9u8, 28u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 1u8, 3u8,
+            18u8, 4u8, 182u8, 3u8, 31u8, 32u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8, 2u8,
+            2u8, 5u8, 18u8, 4u8, 183u8, 3u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 51u8,
+            2u8, 2u8, 18u8, 4u8, 183u8, 3u8, 2u8, 29u8, 10u8, 13u8, 10u8, 5u8, 4u8, 51u8,
+            2u8, 2u8, 1u8, 18u8, 4u8, 183u8, 3u8, 9u8, 24u8, 10u8, 13u8, 10u8, 5u8, 4u8,
+            51u8, 2u8, 2u8, 3u8, 18u8, 4u8, 183u8, 3u8, 27u8, 28u8, 10u8, 13u8, 10u8,
+            5u8, 4u8, 51u8, 2u8, 3u8, 5u8, 18u8, 4u8, 184u8, 3u8, 2u8, 6u8, 10u8, 12u8,
+            10u8, 4u8, 4u8, 51u8, 2u8, 3u8, 18u8, 4u8, 184u8, 3u8, 2u8, 23u8, 10u8, 13u8,
+            10u8, 5u8, 4u8, 51u8, 2u8, 3u8, 1u8, 18u8, 4u8, 184u8, 3u8, 7u8, 18u8, 10u8,
+            13u8, 10u8, 5u8, 4u8, 51u8, 2u8, 3u8, 3u8, 18u8, 4u8, 184u8, 3u8, 21u8, 22u8,
+            10u8, 12u8, 10u8, 2u8, 4u8, 52u8, 18u8, 6u8, 187u8, 3u8, 0u8, 190u8, 3u8,
+            1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 52u8, 1u8, 18u8, 4u8, 187u8, 3u8, 8u8, 37u8,
+            10u8, 13u8, 10u8, 5u8, 4u8, 52u8, 2u8, 0u8, 5u8, 18u8, 4u8, 189u8, 3u8, 2u8,
+            8u8, 10u8, 82u8, 10u8, 4u8, 4u8, 52u8, 2u8, 0u8, 18u8, 4u8, 189u8, 3u8, 2u8,
+            25u8, 26u8, 68u8, 32u8, 65u8, 108u8, 108u8, 32u8, 109u8, 97u8, 116u8, 99u8,
+            104u8, 101u8, 115u8, 32u8, 97u8, 116u8, 32u8, 111u8, 114u8, 32u8, 97u8, 98u8,
+            111u8, 118u8, 101u8, 32u8, 116u8, 104u8, 105u8, 115u8, 32u8, 104u8, 101u8,
+            105u8, 103u8, 104u8, 116u8, 32u8, 97u8, 114u8, 101u8, 32u8, 100u8, 114u8,
+            111u8, 112u8, 112u8, 101u8, 100u8, 32u8, 98u8, 101u8, 102u8, 111u8, 114u8,
+            101u8, 32u8, 114u8, 101u8, 115u8, 99u8, 97u8, 110u8, 110u8, 105u8, 110u8,
+            103u8, 46u8, 10u8, 10u8, 13u8, 10u8, 5u8, 4u8, 52u8, 2u8, 0u8, 1u8, 18u8,
+            4u8, 189u8, 3u8, 9u8, 20u8, 10u8, 13u8, 10u8, 5u8, 4u8, 52u8, 2u8, 0u8, 3u8,
+            18u8, 4u8, 189u8, 3u8, 23u8, 24u8, 10u8, 12u8, 10u8, 2u8, 4u8, 53u8, 18u8,
+            6u8, 191u8, 3u8, 0u8, 193u8, 3u8, 1u8, 10u8, 11u8, 10u8, 3u8, 4u8, 53u8, 1u8,
+            18u8, 4u8, 191u8, 3u8, 8u8, 38u8, 10u8, 13u8, 10u8, 5u8, 4u8, 53u8, 2u8, 0u8,
+            5u8, 18u8, 4u8, 192u8, 3u8, 2u8, 8u8, 10u8, 12u8, 10u8, 4u8, 4u8, 53u8, 2u8,
+            0u8, 18u8, 4u8, 192u8, 3u8, 2u8, 35u8, 10u8, 13u8, 10u8, 5u8, 4u8, 53u8, 2u8,
+            0u8, 1u8, 18u8, 4u8, 192u8, 3u8, 9u8, 30u8, 10u8, 13u8, 10u8, 5u8, 4u8, 53u8,
+            2u8, 0u8, 3u8, 18u8, 4u8, 192u8, 3u8, 33u8, 34u8, 98u8, 6u8, 112u8, 114u8,
+            111u8, 116u8, 111u8, 51u8, 10u8, 172u8, 30u8, 10u8, 33u8, 99u8, 117u8, 115u8,
+            102u8, 47u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            47u8, 118u8, 49u8, 47u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 112u8, 114u8, 111u8, 116u8, 111u8, 18u8, 17u8, 99u8,
             117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
-            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8,
-            105u8, 98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8,
-            115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 46u8, 69u8, 118u8, 101u8, 110u8,
-            116u8, 46u8, 67u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 66u8, 108u8,
-            111u8, 99u8, 107u8, 72u8, 0u8, 82u8, 12u8, 99u8, 111u8, 110u8, 110u8, 101u8,
-            99u8, 116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 18u8, 109u8, 10u8, 16u8, 100u8,
-            105u8, 115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 95u8, 98u8,
-            108u8, 111u8, 99u8, 107u8, 24u8, 2u8, 32u8, 1u8, 40u8, 11u8, 50u8, 64u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 34u8, 45u8, 10u8, 10u8, 83u8, 101u8, 113u8,
+            117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 18u8, 31u8, 10u8, 11u8, 115u8,
+            101u8, 113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 95u8, 105u8, 100u8, 24u8,
+            1u8, 32u8, 1u8, 40u8, 4u8, 82u8, 10u8, 115u8, 101u8, 113u8, 117u8, 101u8,
+            110u8, 99u8, 101u8, 73u8, 100u8, 34u8, 161u8, 1u8, 10u8, 15u8, 66u8, 108u8,
+            111u8, 99u8, 107u8, 72u8, 101u8, 97u8, 100u8, 101u8, 114u8, 73u8, 110u8,
+            102u8, 111u8, 18u8, 29u8, 10u8, 10u8, 98u8, 108u8, 111u8, 99u8, 107u8, 95u8,
+            104u8, 97u8, 115u8, 104u8, 24u8, 1u8, 32u8, 1u8, 40u8, 12u8, 82u8, 9u8, 98u8,
+            108u8, 111u8, 99u8, 107u8, 72u8, 97u8, 115u8, 104u8, 18u8, 38u8, 10u8, 15u8,
+            112u8, 114u8, 101u8, 118u8, 95u8, 98u8, 108u8, 111u8, 99u8, 107u8, 95u8,
+            104u8, 97u8, 115u8, 104u8, 24u8, 2u8, 32u8, 1u8, 40u8, 12u8, 82u8, 13u8,
+            112u8, 114u8, 101u8, 118u8, 66u8, 108u8, 111u8, 99u8, 107u8, 72u8, 97u8,
+            115u8, 104u8, 18u8, 47u8, 10u8, 20u8, 112u8, 114u8, 101u8, 118u8, 95u8,
+            109u8, 97u8, 105u8, 110u8, 95u8, 98u8, 108u8, 111u8, 99u8, 107u8, 95u8,
+            104u8, 97u8, 115u8, 104u8, 24u8, 3u8, 32u8, 1u8, 40u8, 12u8, 82u8, 17u8,
+            112u8, 114u8, 101u8, 118u8, 77u8, 97u8, 105u8, 110u8, 66u8, 108u8, 111u8,
+            99u8, 107u8, 72u8, 97u8, 115u8, 104u8, 18u8, 22u8, 10u8, 6u8, 104u8, 101u8,
+            105u8, 103u8, 104u8, 116u8, 24u8, 4u8, 32u8, 1u8, 40u8, 13u8, 82u8, 6u8,
+            104u8, 101u8, 105u8, 103u8, 104u8, 116u8, 34u8, 11u8, 10u8, 9u8, 66u8, 108u8,
+            111u8, 99u8, 107u8, 73u8, 110u8, 102u8, 111u8, 34u8, 22u8, 10u8, 20u8, 71u8,
+            101u8, 116u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8,
+            115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 34u8, 87u8, 10u8,
+            21u8, 71u8, 101u8, 116u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8,
+            84u8, 120u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8,
+            18u8, 62u8, 10u8, 11u8, 115u8, 101u8, 113u8, 117u8, 101u8, 110u8, 99u8,
+            101u8, 95u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 29u8,
             46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 113u8,
+            117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 82u8, 10u8, 115u8, 101u8,
+            113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 73u8, 100u8, 34u8, 17u8, 10u8, 15u8,
+            71u8, 101u8, 116u8, 85u8, 116u8, 120u8, 111u8, 115u8, 82u8, 101u8, 113u8,
+            117u8, 101u8, 115u8, 116u8, 34u8, 18u8, 10u8, 16u8, 71u8, 101u8, 116u8, 85u8,
+            116u8, 120u8, 111u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
+            101u8, 34u8, 60u8, 10u8, 24u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8,
+            114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8,
+            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8, 32u8, 10u8, 11u8, 116u8,
+            114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 24u8, 1u8,
+            32u8, 1u8, 40u8, 12u8, 82u8, 11u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8,
+            99u8, 116u8, 105u8, 111u8, 110u8, 34u8, 27u8, 10u8, 25u8, 83u8, 117u8, 98u8,
+            109u8, 105u8, 116u8, 84u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8,
+            105u8, 111u8, 110u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8,
+            34u8, 24u8, 10u8, 22u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8,
+            101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 34u8, 252u8, 6u8, 10u8, 23u8, 83u8, 117u8, 98u8, 115u8,
             99u8, 114u8, 105u8, 98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8,
-            82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 46u8, 69u8, 118u8,
-            101u8, 110u8, 116u8, 46u8, 68u8, 105u8, 115u8, 99u8, 111u8, 110u8, 110u8,
-            101u8, 99u8, 116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 72u8, 0u8, 82u8, 15u8,
-            100u8, 105u8, 115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 66u8,
-            108u8, 111u8, 99u8, 107u8, 18u8, 107u8, 10u8, 16u8, 109u8, 101u8, 109u8,
-            112u8, 111u8, 111u8, 108u8, 95u8, 116u8, 120u8, 95u8, 97u8, 100u8, 100u8,
-            101u8, 100u8, 24u8, 3u8, 32u8, 1u8, 40u8, 11u8, 50u8, 63u8, 46u8, 99u8,
+            82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 62u8, 10u8,
+            11u8, 115u8, 101u8, 113u8, 117u8, 101u8, 110u8, 99u8, 101u8, 95u8, 105u8,
+            100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 29u8, 46u8, 99u8, 117u8,
+            115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 113u8, 117u8, 101u8, 110u8,
+            99u8, 101u8, 73u8, 100u8, 82u8, 10u8, 115u8, 101u8, 113u8, 117u8, 101u8,
+            110u8, 99u8, 101u8, 73u8, 100u8, 18u8, 70u8, 10u8, 5u8, 101u8, 118u8, 101u8,
+            110u8, 116u8, 24u8, 2u8, 32u8, 1u8, 40u8, 11u8, 50u8, 48u8, 46u8, 99u8,
             117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
             105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8,
             105u8, 98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8,
             115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 46u8, 69u8, 118u8, 101u8, 110u8,
-            116u8, 46u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8,
-            65u8, 100u8, 100u8, 101u8, 100u8, 72u8, 0u8, 82u8, 14u8, 109u8, 101u8, 109u8,
-            112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 65u8, 100u8, 100u8, 101u8, 100u8,
-            18u8, 113u8, 10u8, 18u8, 109u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8,
-            95u8, 116u8, 120u8, 95u8, 114u8, 101u8, 109u8, 111u8, 118u8, 101u8, 100u8,
-            24u8, 4u8, 32u8, 1u8, 40u8, 11u8, 50u8, 65u8, 46u8, 99u8, 117u8, 115u8,
+            116u8, 82u8, 5u8, 101u8, 118u8, 101u8, 110u8, 116u8, 26u8, 216u8, 5u8, 10u8,
+            5u8, 69u8, 118u8, 101u8, 110u8, 116u8, 18u8, 100u8, 10u8, 13u8, 99u8, 111u8,
+            110u8, 110u8, 101u8, 99u8, 116u8, 95u8, 98u8, 108u8, 111u8, 99u8, 107u8,
+            24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 61u8, 46u8, 99u8, 117u8, 115u8,
             102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
             46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8,
             101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 115u8, 112u8,
             111u8, 110u8, 115u8, 101u8, 46u8, 69u8, 118u8, 101u8, 110u8, 116u8, 46u8,
-            77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 82u8, 101u8,
-            109u8, 111u8, 118u8, 101u8, 100u8, 72u8, 0u8, 82u8, 16u8, 109u8, 101u8,
-            109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 82u8, 101u8, 109u8, 111u8,
-            118u8, 101u8, 100u8, 26u8, 144u8, 1u8, 10u8, 12u8, 67u8, 111u8, 110u8, 110u8,
-            101u8, 99u8, 116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 18u8, 67u8, 10u8, 11u8,
-            104u8, 101u8, 97u8, 100u8, 101u8, 114u8, 95u8, 105u8, 110u8, 102u8, 111u8,
-            24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 34u8, 46u8, 99u8, 117u8, 115u8,
-            102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
-            46u8, 118u8, 49u8, 46u8, 66u8, 108u8, 111u8, 99u8, 107u8, 72u8, 101u8, 97u8,
-            100u8, 101u8, 114u8, 73u8, 110u8, 102u8, 111u8, 82u8, 10u8, 104u8, 101u8,
-            97u8, 100u8, 101u8, 114u8, 73u8, 110u8, 102u8, 111u8, 18u8, 59u8, 10u8, 10u8,
-            98u8, 108u8, 111u8, 99u8, 107u8, 95u8, 105u8, 110u8, 102u8, 111u8, 24u8, 2u8,
-            32u8, 1u8, 40u8, 11u8, 50u8, 28u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8,
-            115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8,
-            49u8, 46u8, 66u8, 108u8, 111u8, 99u8, 107u8, 73u8, 110u8, 102u8, 111u8, 82u8,
-            9u8, 98u8, 108u8, 111u8, 99u8, 107u8, 73u8, 110u8, 102u8, 111u8, 26u8, 48u8,
-            10u8, 15u8, 68u8, 105u8, 115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8,
-            116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 18u8, 29u8, 10u8, 10u8, 98u8, 108u8,
-            111u8, 99u8, 107u8, 95u8, 104u8, 97u8, 115u8, 104u8, 24u8, 1u8, 32u8, 1u8,
-            40u8, 12u8, 82u8, 9u8, 98u8, 108u8, 111u8, 99u8, 107u8, 72u8, 97u8, 115u8,
-            104u8, 26u8, 36u8, 10u8, 14u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8,
-            108u8, 84u8, 120u8, 65u8, 100u8, 100u8, 101u8, 100u8, 18u8, 18u8, 10u8, 4u8,
-            116u8, 120u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 12u8, 82u8, 4u8,
-            116u8, 120u8, 105u8, 100u8, 26u8, 38u8, 10u8, 16u8, 77u8, 101u8, 109u8,
-            112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 82u8, 101u8, 109u8, 111u8, 118u8,
-            101u8, 100u8, 18u8, 18u8, 10u8, 4u8, 116u8, 120u8, 105u8, 100u8, 24u8, 1u8,
-            32u8, 1u8, 40u8, 12u8, 82u8, 4u8, 116u8, 120u8, 105u8, 100u8, 66u8, 7u8,
-            10u8, 5u8, 101u8, 118u8, 101u8, 110u8, 116u8, 50u8, 187u8, 3u8, 10u8, 16u8,
-            83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 83u8, 101u8,
-            114u8, 118u8, 105u8, 99u8, 101u8, 18u8, 103u8, 10u8, 13u8, 71u8, 101u8,
-            116u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 115u8,
-            18u8, 39u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8,
-            116u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 115u8,
-            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 40u8, 46u8, 99u8,
+            67u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 66u8, 108u8, 111u8, 99u8,
+            107u8, 72u8, 0u8, 82u8, 12u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8,
+            66u8, 108u8, 111u8, 99u8, 107u8, 18u8, 109u8, 10u8, 16u8, 100u8, 105u8,
+            115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 95u8, 98u8, 108u8,
+            111u8, 99u8, 107u8, 24u8, 2u8, 32u8, 1u8, 40u8, 11u8, 50u8, 64u8, 46u8, 99u8,
             117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
-            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 77u8, 101u8,
-            109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 115u8, 82u8, 101u8, 115u8,
-            112u8, 111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 88u8,
-            10u8, 8u8, 71u8, 101u8, 116u8, 85u8, 116u8, 120u8, 111u8, 115u8, 18u8, 34u8,
-            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 85u8,
-            116u8, 120u8, 111u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8,
-            26u8, 35u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8,
-            116u8, 85u8, 116u8, 120u8, 111u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8,
-            110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 115u8, 10u8, 17u8,
-            83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8, 114u8, 97u8, 110u8, 115u8,
-            97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 18u8, 43u8, 46u8, 99u8, 117u8, 115u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8,
+            105u8, 98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8,
+            115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 46u8, 69u8, 118u8, 101u8, 110u8,
+            116u8, 46u8, 68u8, 105u8, 115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8,
+            116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 72u8, 0u8, 82u8, 15u8, 100u8, 105u8,
+            115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8, 66u8, 108u8, 111u8,
+            99u8, 107u8, 18u8, 107u8, 10u8, 16u8, 109u8, 101u8, 109u8, 112u8, 111u8,
+            111u8, 108u8, 95u8, 116u8, 120u8, 95u8, 97u8, 100u8, 100u8, 101u8, 100u8,
+            24u8, 3u8, 32u8, 1u8, 40u8, 11u8, 50u8, 63u8, 46u8, 99u8, 117u8, 115u8,
             102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
-            46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8, 114u8,
-            97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8,
-            113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 44u8, 46u8, 99u8, 117u8, 115u8,
-            102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
-            46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8, 114u8,
-            97u8, 110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8,
-            115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 2u8, 18u8,
-            111u8, 10u8, 15u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8, 101u8,
-            69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 18u8, 41u8, 46u8, 99u8, 117u8,
-            115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8,
-            98u8, 101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 113u8,
-            117u8, 101u8, 115u8, 116u8, 26u8, 42u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8,
+            101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 115u8, 112u8,
+            111u8, 110u8, 115u8, 101u8, 46u8, 69u8, 118u8, 101u8, 110u8, 116u8, 46u8,
+            77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 65u8, 100u8,
+            100u8, 101u8, 100u8, 72u8, 0u8, 82u8, 14u8, 109u8, 101u8, 109u8, 112u8,
+            111u8, 111u8, 108u8, 84u8, 120u8, 65u8, 100u8, 100u8, 101u8, 100u8, 18u8,
+            113u8, 10u8, 18u8, 109u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 95u8,
+            116u8, 120u8, 95u8, 114u8, 101u8, 109u8, 111u8, 118u8, 101u8, 100u8, 24u8,
+            4u8, 32u8, 1u8, 40u8, 11u8, 50u8, 65u8, 46u8, 99u8, 117u8, 115u8, 102u8,
             46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
             118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8, 101u8,
             69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8,
-            110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 48u8, 1u8, 74u8, 193u8,
-            15u8, 10u8, 6u8, 18u8, 4u8, 2u8, 0u8, 71u8, 1u8, 10u8, 39u8, 10u8, 1u8, 12u8,
-            18u8, 3u8, 2u8, 0u8, 18u8, 50u8, 29u8, 32u8, 67u8, 85u8, 83u8, 70u8, 32u8,
-            115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 110u8,
-            111u8, 100u8, 101u8, 32u8, 115u8, 101u8, 114u8, 118u8, 105u8, 99u8, 101u8,
-            32u8, 10u8, 8u8, 10u8, 1u8, 2u8, 18u8, 3u8, 3u8, 0u8, 26u8, 10u8, 10u8, 10u8,
-            2u8, 4u8, 0u8, 18u8, 4u8, 5u8, 0u8, 7u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8,
-            0u8, 1u8, 18u8, 3u8, 5u8, 8u8, 18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8,
-            0u8, 5u8, 18u8, 3u8, 6u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8,
-            0u8, 18u8, 3u8, 6u8, 2u8, 25u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 0u8,
-            1u8, 18u8, 3u8, 6u8, 9u8, 20u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 0u8,
-            3u8, 18u8, 3u8, 6u8, 23u8, 24u8, 10u8, 10u8, 10u8, 2u8, 4u8, 1u8, 18u8, 4u8,
-            9u8, 0u8, 14u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 1u8, 1u8, 18u8, 3u8, 9u8,
-            8u8, 23u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 5u8, 18u8, 3u8, 10u8,
-            2u8, 7u8, 10u8, 11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 0u8, 18u8, 3u8, 10u8, 2u8,
-            23u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 1u8, 18u8, 3u8, 10u8, 8u8,
-            18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 3u8, 18u8, 3u8, 10u8, 21u8,
-            22u8, 10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 5u8, 18u8, 3u8, 11u8, 2u8,
-            7u8, 10u8, 11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 1u8, 18u8, 3u8, 11u8, 2u8, 28u8,
-            10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 1u8, 18u8, 3u8, 11u8, 8u8, 23u8,
-            10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 3u8, 18u8, 3u8, 11u8, 26u8, 27u8,
-            10u8, 12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 2u8, 5u8, 18u8, 3u8, 12u8, 2u8, 7u8,
-            10u8, 11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 2u8, 18u8, 3u8, 12u8, 2u8, 33u8, 10u8,
-            12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 2u8, 1u8, 18u8, 3u8, 12u8, 8u8, 28u8, 10u8,
-            12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 2u8, 3u8, 18u8, 3u8, 12u8, 31u8, 32u8, 10u8,
-            12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 3u8, 5u8, 18u8, 3u8, 13u8, 2u8, 8u8, 10u8,
-            11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 3u8, 18u8, 3u8, 13u8, 2u8, 20u8, 10u8, 12u8,
-            10u8, 5u8, 4u8, 1u8, 2u8, 3u8, 1u8, 18u8, 3u8, 13u8, 9u8, 15u8, 10u8, 12u8,
-            10u8, 5u8, 4u8, 1u8, 2u8, 3u8, 3u8, 18u8, 3u8, 13u8, 18u8, 19u8, 10u8, 9u8,
-            10u8, 2u8, 4u8, 2u8, 18u8, 3u8, 16u8, 0u8, 20u8, 10u8, 10u8, 10u8, 3u8, 4u8,
-            2u8, 1u8, 18u8, 3u8, 16u8, 8u8, 17u8, 10u8, 10u8, 10u8, 2u8, 6u8, 0u8, 18u8,
-            4u8, 18u8, 0u8, 31u8, 1u8, 10u8, 10u8, 10u8, 3u8, 6u8, 0u8, 1u8, 18u8, 3u8,
-            18u8, 8u8, 24u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 0u8, 18u8, 4u8, 19u8,
-            2u8, 21u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8,
-            19u8, 6u8, 19u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 2u8, 18u8, 3u8,
-            19u8, 20u8, 40u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8,
-            19u8, 51u8, 72u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 4u8, 18u8, 3u8,
-            20u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 0u8, 4u8, 34u8, 18u8,
-            3u8, 20u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 1u8, 18u8, 4u8,
-            22u8, 2u8, 24u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 1u8, 18u8,
-            3u8, 22u8, 6u8, 14u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 2u8, 18u8,
-            3u8, 22u8, 15u8, 30u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 3u8, 18u8,
-            3u8, 22u8, 41u8, 57u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 4u8, 18u8,
-            3u8, 23u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 1u8, 4u8, 34u8,
-            18u8, 3u8, 23u8, 4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 2u8, 18u8,
-            4u8, 25u8, 2u8, 27u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 1u8,
-            18u8, 3u8, 25u8, 6u8, 23u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 2u8,
-            18u8, 3u8, 25u8, 24u8, 48u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 3u8,
-            18u8, 3u8, 25u8, 59u8, 84u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 4u8,
-            18u8, 3u8, 26u8, 4u8, 42u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 2u8, 4u8,
-            34u8, 18u8, 3u8, 26u8, 4u8, 42u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 3u8,
-            18u8, 4u8, 28u8, 2u8, 30u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8,
-            1u8, 18u8, 3u8, 28u8, 6u8, 21u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8,
-            2u8, 18u8, 3u8, 28u8, 22u8, 44u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8,
-            6u8, 18u8, 3u8, 28u8, 55u8, 61u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8,
-            3u8, 18u8, 3u8, 28u8, 62u8, 85u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8,
-            4u8, 18u8, 3u8, 29u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 3u8,
-            4u8, 34u8, 18u8, 3u8, 29u8, 4u8, 47u8, 10u8, 9u8, 10u8, 2u8, 4u8, 3u8, 18u8,
-            3u8, 33u8, 0u8, 31u8, 10u8, 10u8, 10u8, 3u8, 4u8, 3u8, 1u8, 18u8, 3u8, 33u8,
-            8u8, 28u8, 10u8, 10u8, 10u8, 2u8, 4u8, 4u8, 18u8, 4u8, 34u8, 0u8, 36u8, 1u8,
-            10u8, 10u8, 10u8, 3u8, 4u8, 4u8, 1u8, 18u8, 3u8, 34u8, 8u8, 29u8, 10u8, 12u8,
-            10u8, 5u8, 4u8, 4u8, 2u8, 0u8, 6u8, 18u8, 3u8, 35u8, 2u8, 12u8, 10u8, 11u8,
-            10u8, 4u8, 4u8, 4u8, 2u8, 0u8, 18u8, 3u8, 35u8, 2u8, 29u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 4u8, 2u8, 0u8, 1u8, 18u8, 3u8, 35u8, 13u8, 24u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 4u8, 2u8, 0u8, 3u8, 18u8, 3u8, 35u8, 27u8, 28u8, 10u8, 9u8, 10u8,
-            2u8, 4u8, 5u8, 18u8, 3u8, 38u8, 0u8, 26u8, 10u8, 10u8, 10u8, 3u8, 4u8, 5u8,
-            1u8, 18u8, 3u8, 38u8, 8u8, 23u8, 10u8, 9u8, 10u8, 2u8, 4u8, 6u8, 18u8, 3u8,
-            39u8, 0u8, 27u8, 10u8, 10u8, 10u8, 3u8, 4u8, 6u8, 1u8, 18u8, 3u8, 39u8, 8u8,
-            24u8, 10u8, 10u8, 10u8, 2u8, 4u8, 7u8, 18u8, 4u8, 41u8, 0u8, 43u8, 1u8, 10u8,
-            10u8, 10u8, 3u8, 4u8, 7u8, 1u8, 18u8, 3u8, 41u8, 8u8, 32u8, 10u8, 12u8, 10u8,
-            5u8, 4u8, 7u8, 2u8, 0u8, 5u8, 18u8, 3u8, 42u8, 2u8, 7u8, 10u8, 11u8, 10u8,
-            4u8, 4u8, 7u8, 2u8, 0u8, 18u8, 3u8, 42u8, 2u8, 24u8, 10u8, 12u8, 10u8, 5u8,
-            4u8, 7u8, 2u8, 0u8, 1u8, 18u8, 3u8, 42u8, 8u8, 19u8, 10u8, 12u8, 10u8, 5u8,
-            4u8, 7u8, 2u8, 0u8, 3u8, 18u8, 3u8, 42u8, 22u8, 23u8, 10u8, 9u8, 10u8, 2u8,
-            4u8, 8u8, 18u8, 3u8, 44u8, 0u8, 36u8, 10u8, 10u8, 10u8, 3u8, 4u8, 8u8, 1u8,
-            18u8, 3u8, 44u8, 8u8, 33u8, 10u8, 9u8, 10u8, 2u8, 4u8, 9u8, 18u8, 3u8, 46u8,
-            0u8, 33u8, 10u8, 10u8, 10u8, 3u8, 4u8, 9u8, 1u8, 18u8, 3u8, 46u8, 8u8, 30u8,
-            10u8, 10u8, 10u8, 2u8, 4u8, 10u8, 18u8, 4u8, 47u8, 0u8, 71u8, 1u8, 10u8,
-            10u8, 10u8, 3u8, 4u8, 10u8, 1u8, 18u8, 3u8, 47u8, 8u8, 31u8, 10u8, 12u8,
-            10u8, 4u8, 4u8, 10u8, 3u8, 0u8, 18u8, 4u8, 48u8, 2u8, 68u8, 3u8, 10u8, 12u8,
-            10u8, 5u8, 4u8, 10u8, 3u8, 0u8, 1u8, 18u8, 3u8, 48u8, 10u8, 15u8, 10u8, 14u8,
-            10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 18u8, 4u8, 49u8, 4u8, 52u8, 5u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 1u8, 18u8, 3u8, 49u8,
-            12u8, 24u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 0u8,
-            6u8, 18u8, 3u8, 50u8, 6u8, 21u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8, 0u8,
-            3u8, 0u8, 2u8, 0u8, 18u8, 3u8, 50u8, 6u8, 38u8, 10u8, 16u8, 10u8, 9u8, 4u8,
-            10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 50u8, 22u8, 33u8, 10u8,
-            16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8,
-            50u8, 36u8, 37u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8,
-            1u8, 6u8, 18u8, 3u8, 51u8, 6u8, 15u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8,
-            0u8, 3u8, 0u8, 2u8, 1u8, 18u8, 3u8, 51u8, 6u8, 31u8, 10u8, 16u8, 10u8, 9u8,
-            4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 51u8, 16u8, 26u8,
-            10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8,
-            3u8, 51u8, 29u8, 30u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8,
-            18u8, 4u8, 53u8, 4u8, 55u8, 5u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8,
-            3u8, 1u8, 1u8, 18u8, 3u8, 53u8, 12u8, 27u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8,
-            3u8, 0u8, 3u8, 1u8, 2u8, 0u8, 5u8, 18u8, 3u8, 54u8, 6u8, 11u8, 10u8, 15u8,
-            10u8, 8u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 2u8, 0u8, 18u8, 3u8, 54u8, 6u8,
-            27u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 2u8, 0u8, 1u8,
-            18u8, 3u8, 54u8, 12u8, 22u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8,
-            1u8, 2u8, 0u8, 3u8, 18u8, 3u8, 54u8, 25u8, 26u8, 10u8, 14u8, 10u8, 6u8, 4u8,
-            10u8, 3u8, 0u8, 3u8, 2u8, 18u8, 4u8, 56u8, 4u8, 58u8, 5u8, 10u8, 14u8, 10u8,
-            7u8, 4u8, 10u8, 3u8, 0u8, 3u8, 2u8, 1u8, 18u8, 3u8, 56u8, 12u8, 26u8, 10u8,
-            16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 2u8, 2u8, 0u8, 5u8, 18u8, 3u8,
-            57u8, 6u8, 11u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8, 0u8, 3u8, 2u8, 2u8,
-            0u8, 18u8, 3u8, 57u8, 6u8, 21u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8,
-            3u8, 2u8, 2u8, 0u8, 1u8, 18u8, 3u8, 57u8, 12u8, 16u8, 10u8, 16u8, 10u8, 9u8,
-            4u8, 10u8, 3u8, 0u8, 3u8, 2u8, 2u8, 0u8, 3u8, 18u8, 3u8, 57u8, 19u8, 20u8,
-            10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 18u8, 4u8, 59u8, 4u8,
-            61u8, 5u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 1u8, 18u8,
-            3u8, 59u8, 12u8, 28u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8,
-            2u8, 0u8, 5u8, 18u8, 3u8, 60u8, 6u8, 11u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8,
-            3u8, 0u8, 3u8, 3u8, 2u8, 0u8, 18u8, 3u8, 60u8, 6u8, 21u8, 10u8, 16u8, 10u8,
-            9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 2u8, 0u8, 1u8, 18u8, 3u8, 60u8, 12u8,
-            16u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 2u8, 0u8, 3u8,
-            18u8, 3u8, 60u8, 19u8, 20u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 8u8,
-            0u8, 18u8, 4u8, 62u8, 4u8, 67u8, 5u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8,
-            0u8, 8u8, 0u8, 1u8, 18u8, 3u8, 62u8, 10u8, 15u8, 10u8, 14u8, 10u8, 7u8, 4u8,
-            10u8, 3u8, 0u8, 2u8, 0u8, 6u8, 18u8, 3u8, 63u8, 6u8, 18u8, 10u8, 13u8, 10u8,
-            6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 18u8, 3u8, 63u8, 6u8, 37u8, 10u8, 14u8,
-            10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 63u8, 19u8, 32u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 63u8,
-            35u8, 36u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8,
-            3u8, 64u8, 6u8, 21u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8,
-            18u8, 3u8, 64u8, 6u8, 43u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8,
-            1u8, 1u8, 18u8, 3u8, 64u8, 22u8, 38u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8,
-            0u8, 2u8, 1u8, 3u8, 18u8, 3u8, 64u8, 41u8, 42u8, 10u8, 14u8, 10u8, 7u8, 4u8,
-            10u8, 3u8, 0u8, 2u8, 2u8, 6u8, 18u8, 3u8, 65u8, 6u8, 20u8, 10u8, 13u8, 10u8,
-            6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 18u8, 3u8, 65u8, 6u8, 42u8, 10u8, 14u8,
-            10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 65u8, 21u8, 37u8,
-            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 65u8,
-            40u8, 41u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 6u8, 18u8,
-            3u8, 66u8, 6u8, 22u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8,
-            18u8, 3u8, 66u8, 6u8, 46u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8,
-            3u8, 1u8, 18u8, 3u8, 66u8, 23u8, 41u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8,
-            0u8, 2u8, 3u8, 3u8, 18u8, 3u8, 66u8, 44u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8,
-            10u8, 2u8, 0u8, 6u8, 18u8, 3u8, 69u8, 2u8, 12u8, 10u8, 11u8, 10u8, 4u8, 4u8,
-            10u8, 2u8, 0u8, 18u8, 3u8, 69u8, 2u8, 29u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8,
-            2u8, 0u8, 1u8, 18u8, 3u8, 69u8, 13u8, 24u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8,
-            2u8, 0u8, 3u8, 18u8, 3u8, 69u8, 27u8, 28u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8,
-            2u8, 1u8, 6u8, 18u8, 3u8, 70u8, 2u8, 7u8, 10u8, 11u8, 10u8, 4u8, 4u8, 10u8,
-            2u8, 1u8, 18u8, 3u8, 70u8, 2u8, 18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8,
-            1u8, 1u8, 18u8, 3u8, 70u8, 8u8, 13u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8,
-            1u8, 3u8, 18u8, 3u8, 70u8, 16u8, 17u8, 98u8, 6u8, 112u8, 114u8, 111u8, 116u8,
-            111u8, 51u8,
+            110u8, 115u8, 101u8, 46u8, 69u8, 118u8, 101u8, 110u8, 116u8, 46u8, 77u8,
+            101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 82u8, 101u8, 109u8,
+            111u8, 118u8, 101u8, 100u8, 72u8, 0u8, 82u8, 16u8, 109u8, 101u8, 109u8,
+            112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 82u8, 101u8, 109u8, 111u8, 118u8,
+            101u8, 100u8, 26u8, 144u8, 1u8, 10u8, 12u8, 67u8, 111u8, 110u8, 110u8, 101u8,
+            99u8, 116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 18u8, 67u8, 10u8, 11u8, 104u8,
+            101u8, 97u8, 100u8, 101u8, 114u8, 95u8, 105u8, 110u8, 102u8, 111u8, 24u8,
+            1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 34u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
+            118u8, 49u8, 46u8, 66u8, 108u8, 111u8, 99u8, 107u8, 72u8, 101u8, 97u8, 100u8,
+            101u8, 114u8, 73u8, 110u8, 102u8, 111u8, 82u8, 10u8, 104u8, 101u8, 97u8,
+            100u8, 101u8, 114u8, 73u8, 110u8, 102u8, 111u8, 18u8, 59u8, 10u8, 10u8, 98u8,
+            108u8, 111u8, 99u8, 107u8, 95u8, 105u8, 110u8, 102u8, 111u8, 24u8, 2u8, 32u8,
+            1u8, 40u8, 11u8, 50u8, 28u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8,
+            105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8,
+            46u8, 66u8, 108u8, 111u8, 99u8, 107u8, 73u8, 110u8, 102u8, 111u8, 82u8, 9u8,
+            98u8, 108u8, 111u8, 99u8, 107u8, 73u8, 110u8, 102u8, 111u8, 26u8, 48u8, 10u8,
+            15u8, 68u8, 105u8, 115u8, 99u8, 111u8, 110u8, 110u8, 101u8, 99u8, 116u8,
+            66u8, 108u8, 111u8, 99u8, 107u8, 18u8, 29u8, 10u8, 10u8, 98u8, 108u8, 111u8,
+            99u8, 107u8, 95u8, 104u8, 97u8, 115u8, 104u8, 24u8, 1u8, 32u8, 1u8, 40u8,
+            12u8, 82u8, 9u8, 98u8, 108u8, 111u8, 99u8, 107u8, 72u8, 97u8, 115u8, 104u8,
+            26u8, 36u8, 10u8, 14u8, 77u8, 101u8, 109u8, 112u8, 111u8, 111u8, 108u8, 84u8,
+            120u8, 65u8, 100u8, 100u8, 101u8, 100u8, 18u8, 18u8, 10u8, 4u8, 116u8, 120u8,
+            105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 12u8, 82u8, 4u8, 116u8, 120u8,
+            105u8, 100u8, 26u8, 38u8, 10u8, 16u8, 77u8, 101u8, 109u8, 112u8, 111u8,
+            111u8, 108u8, 84u8, 120u8, 82u8, 101u8, 109u8, 111u8, 118u8, 101u8, 100u8,
+            18u8, 18u8, 10u8, 4u8, 116u8, 120u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8,
+            40u8, 12u8, 82u8, 4u8, 116u8, 120u8, 105u8, 100u8, 66u8, 7u8, 10u8, 5u8,
+            101u8, 118u8, 101u8, 110u8, 116u8, 50u8, 187u8, 3u8, 10u8, 16u8, 83u8, 105u8,
+            100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 83u8, 101u8, 114u8, 118u8,
+            105u8, 99u8, 101u8, 18u8, 103u8, 10u8, 13u8, 71u8, 101u8, 116u8, 77u8, 101u8,
+            109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 115u8, 18u8, 39u8, 46u8,
+            99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8,
+            97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 77u8, 101u8,
+            109u8, 112u8, 111u8, 111u8, 108u8, 84u8, 120u8, 115u8, 82u8, 101u8, 113u8,
+            117u8, 101u8, 115u8, 116u8, 26u8, 40u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
+            118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 77u8, 101u8, 109u8, 112u8, 111u8,
+            111u8, 108u8, 84u8, 120u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
+            115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 88u8, 10u8, 8u8, 71u8, 101u8,
+            116u8, 85u8, 116u8, 120u8, 111u8, 115u8, 18u8, 34u8, 46u8, 99u8, 117u8,
+            115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 85u8, 116u8, 120u8,
+            111u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 35u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 85u8,
+            116u8, 120u8, 111u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
+            101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 115u8, 10u8, 17u8, 83u8, 117u8,
+            98u8, 109u8, 105u8, 116u8, 84u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8,
+            116u8, 105u8, 111u8, 110u8, 18u8, 43u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
+            118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8, 114u8, 97u8,
+            110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 113u8,
+            117u8, 101u8, 115u8, 116u8, 26u8, 44u8, 46u8, 99u8, 117u8, 115u8, 102u8,
+            46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
+            118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 84u8, 114u8, 97u8,
+            110u8, 115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 82u8, 101u8, 115u8,
+            112u8, 111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 2u8, 18u8, 111u8,
+            10u8, 15u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8, 101u8, 69u8,
+            118u8, 101u8, 110u8, 116u8, 115u8, 18u8, 41u8, 46u8, 99u8, 117u8, 115u8,
+            102u8, 46u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8,
+            101u8, 69u8, 118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 113u8, 117u8,
+            101u8, 115u8, 116u8, 26u8, 42u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8,
+            115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8,
+            49u8, 46u8, 83u8, 117u8, 98u8, 115u8, 99u8, 114u8, 105u8, 98u8, 101u8, 69u8,
+            118u8, 101u8, 110u8, 116u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
+            115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 48u8, 1u8, 74u8, 193u8, 15u8, 10u8,
+            6u8, 18u8, 4u8, 2u8, 0u8, 71u8, 1u8, 10u8, 39u8, 10u8, 1u8, 12u8, 18u8, 3u8,
+            2u8, 0u8, 18u8, 50u8, 29u8, 32u8, 67u8, 85u8, 83u8, 70u8, 32u8, 115u8, 105u8,
+            100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 32u8, 110u8, 111u8, 100u8,
+            101u8, 32u8, 115u8, 101u8, 114u8, 118u8, 105u8, 99u8, 101u8, 32u8, 10u8, 8u8,
+            10u8, 1u8, 2u8, 18u8, 3u8, 3u8, 0u8, 26u8, 10u8, 10u8, 10u8, 2u8, 4u8, 0u8,
+            18u8, 4u8, 5u8, 0u8, 7u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 0u8, 1u8, 18u8,
+            3u8, 5u8, 8u8, 18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 0u8, 5u8, 18u8,
+            3u8, 6u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8, 4u8, 0u8, 2u8, 0u8, 18u8, 3u8,
+            6u8, 2u8, 25u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8,
+            6u8, 9u8, 20u8, 10u8, 12u8, 10u8, 5u8, 4u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8,
+            6u8, 23u8, 24u8, 10u8, 10u8, 10u8, 2u8, 4u8, 1u8, 18u8, 4u8, 9u8, 0u8, 14u8,
+            1u8, 10u8, 10u8, 10u8, 3u8, 4u8, 1u8, 1u8, 18u8, 3u8, 9u8, 8u8, 23u8, 10u8,
+            12u8, 10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 5u8, 18u8, 3u8, 10u8, 2u8, 7u8, 10u8,
+            11u8, 10u8, 4u8, 4u8, 1u8, 2u8, 0u8, 18u8, 3u8, 10u8, 2u8, 23u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 1u8, 18u8, 3u8, 10u8, 8u8, 18u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 1u8, 2u8, 0u8, 3u8, 18u8, 3u8, 10u8, 21u8, 22u8, 10u8, 12u8,
+            10u8, 5u8, 4u8, 1u8, 2u8, 1u8, 5u8, 18u8, 3u8, 11u8, 2u8, 7u8, 10u8, 11u8,
+            10u8, 4u8, 4u8, 1u8, 2u8, 1u8, 18u8, 3u8, 11u8, 2u8, 28u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 1u8, 2u8, 1u8, 1u8, 18u8, 3u8, 11u8, 8u8, 23u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 1u8, 2u8, 1u8, 3u8, 18u8, 3u8, 11u8, 26u8, 27u8, 10u8, 12u8, 10u8,
+            5u8, 4u8, 1u8, 2u8, 2u8, 5u8, 18u8, 3u8, 12u8, 2u8, 7u8, 10u8, 11u8, 10u8,
+            4u8, 4u8, 1u8, 2u8, 2u8, 18u8, 3u8, 12u8, 2u8, 33u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 1u8, 2u8, 2u8, 1u8, 18u8, 3u8, 12u8, 8u8, 28u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 1u8, 2u8, 2u8, 3u8, 18u8, 3u8, 12u8, 31u8, 32u8, 10u8, 12u8, 10u8, 5u8,
+            4u8, 1u8, 2u8, 3u8, 5u8, 18u8, 3u8, 13u8, 2u8, 8u8, 10u8, 11u8, 10u8, 4u8,
+            4u8, 1u8, 2u8, 3u8, 18u8, 3u8, 13u8, 2u8, 20u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            1u8, 2u8, 3u8, 1u8, 18u8, 3u8, 13u8, 9u8, 15u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            1u8, 2u8, 3u8, 3u8, 18u8, 3u8, 13u8, 18u8, 19u8, 10u8, 9u8, 10u8, 2u8, 4u8,
+            2u8, 18u8, 3u8, 16u8, 0u8, 20u8, 10u8, 10u8, 10u8, 3u8, 4u8, 2u8, 1u8, 18u8,
+            3u8, 16u8, 8u8, 17u8, 10u8, 10u8, 10u8, 2u8, 6u8, 0u8, 18u8, 4u8, 18u8, 0u8,
+            31u8, 1u8, 10u8, 10u8, 10u8, 3u8, 6u8, 0u8, 1u8, 18u8, 3u8, 18u8, 8u8, 24u8,
+            10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 0u8, 18u8, 4u8, 19u8, 2u8, 21u8, 3u8,
+            10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 19u8, 6u8, 19u8,
+            10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 2u8, 18u8, 3u8, 19u8, 20u8, 40u8,
+            10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 19u8, 51u8, 72u8,
+            10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 0u8, 4u8, 18u8, 3u8, 20u8, 4u8, 47u8,
+            10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 0u8, 4u8, 34u8, 18u8, 3u8, 20u8, 4u8,
+            47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 1u8, 18u8, 4u8, 22u8, 2u8, 24u8,
+            3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 22u8, 6u8,
+            14u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 2u8, 18u8, 3u8, 22u8, 15u8,
+            30u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 3u8, 18u8, 3u8, 22u8, 41u8,
+            57u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 1u8, 4u8, 18u8, 3u8, 23u8, 4u8,
+            47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 1u8, 4u8, 34u8, 18u8, 3u8, 23u8,
+            4u8, 47u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 2u8, 18u8, 4u8, 25u8, 2u8,
+            27u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 25u8,
+            6u8, 23u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 2u8, 18u8, 3u8, 25u8,
+            24u8, 48u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 25u8,
+            59u8, 84u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 2u8, 4u8, 18u8, 3u8, 26u8,
+            4u8, 42u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 2u8, 4u8, 34u8, 18u8, 3u8,
+            26u8, 4u8, 42u8, 10u8, 12u8, 10u8, 4u8, 6u8, 0u8, 2u8, 3u8, 18u8, 4u8, 28u8,
+            2u8, 30u8, 3u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 1u8, 18u8, 3u8,
+            28u8, 6u8, 21u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 2u8, 18u8, 3u8,
+            28u8, 22u8, 44u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 6u8, 18u8, 3u8,
+            28u8, 55u8, 61u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 3u8, 18u8, 3u8,
+            28u8, 62u8, 85u8, 10u8, 12u8, 10u8, 5u8, 6u8, 0u8, 2u8, 3u8, 4u8, 18u8, 3u8,
+            29u8, 4u8, 47u8, 10u8, 13u8, 10u8, 6u8, 6u8, 0u8, 2u8, 3u8, 4u8, 34u8, 18u8,
+            3u8, 29u8, 4u8, 47u8, 10u8, 9u8, 10u8, 2u8, 4u8, 3u8, 18u8, 3u8, 33u8, 0u8,
+            31u8, 10u8, 10u8, 10u8, 3u8, 4u8, 3u8, 1u8, 18u8, 3u8, 33u8, 8u8, 28u8, 10u8,
+            10u8, 10u8, 2u8, 4u8, 4u8, 18u8, 4u8, 34u8, 0u8, 36u8, 1u8, 10u8, 10u8, 10u8,
+            3u8, 4u8, 4u8, 1u8, 18u8, 3u8, 34u8, 8u8, 29u8, 10u8, 12u8, 10u8, 5u8, 4u8,
+            4u8, 2u8, 0u8, 6u8, 18u8, 3u8, 35u8, 2u8, 12u8, 10u8, 11u8, 10u8, 4u8, 4u8,
+            4u8, 2u8, 0u8, 18u8, 3u8, 35u8, 2u8, 29u8, 10u8, 12u8, 10u8, 5u8, 4u8, 4u8,
+            2u8, 0u8, 1u8, 18u8, 3u8, 35u8, 13u8, 24u8, 10u8, 12u8, 10u8, 5u8, 4u8, 4u8,
+            2u8, 0u8, 3u8, 18u8, 3u8, 35u8, 27u8, 28u8, 10u8, 9u8, 10u8, 2u8, 4u8, 5u8,
+            18u8, 3u8, 38u8, 0u8, 26u8, 10u8, 10u8, 10u8, 3u8, 4u8, 5u8, 1u8, 18u8, 3u8,
+            38u8, 8u8, 23u8, 10u8, 9u8, 10u8, 2u8, 4u8, 6u8, 18u8, 3u8, 39u8, 0u8, 27u8,
+            10u8, 10u8, 10u8, 3u8, 4u8, 6u8, 1u8, 18u8, 3u8, 39u8, 8u8, 24u8, 10u8, 10u8,
+            10u8, 2u8, 4u8, 7u8, 18u8, 4u8, 41u8, 0u8, 43u8, 1u8, 10u8, 10u8, 10u8, 3u8,
+            4u8, 7u8, 1u8, 18u8, 3u8, 41u8, 8u8, 32u8, 10u8, 12u8, 10u8, 5u8, 4u8, 7u8,
+            2u8, 0u8, 5u8, 18u8, 3u8, 42u8, 2u8, 7u8, 10u8, 11u8, 10u8, 4u8, 4u8, 7u8,
+            2u8, 0u8, 18u8, 3u8, 42u8, 2u8, 24u8, 10u8, 12u8, 10u8, 5u8, 4u8, 7u8, 2u8,
+            0u8, 1u8, 18u8, 3u8, 42u8, 8u8, 19u8, 10u8, 12u8, 10u8, 5u8, 4u8, 7u8, 2u8,
+            0u8, 3u8, 18u8, 3u8, 42u8, 22u8, 23u8, 10u8, 9u8, 10u8, 2u8, 4u8, 8u8, 18u8,
+            3u8, 44u8, 0u8, 36u8, 10u8, 10u8, 10u8, 3u8, 4u8, 8u8, 1u8, 18u8, 3u8, 44u8,
+            8u8, 33u8, 10u8, 9u8, 10u8, 2u8, 4u8, 9u8, 18u8, 3u8, 46u8, 0u8, 33u8, 10u8,
+            10u8, 10u8, 3u8, 4u8, 9u8, 1u8, 18u8, 3u8, 46u8, 8u8, 30u8, 10u8, 10u8, 10u8,
+            2u8, 4u8, 10u8, 18u8, 4u8, 47u8, 0u8, 71u8, 1u8, 10u8, 10u8, 10u8, 3u8, 4u8,
+            10u8, 1u8, 18u8, 3u8, 47u8, 8u8, 31u8, 10u8, 12u8, 10u8, 4u8, 4u8, 10u8, 3u8,
+            0u8, 18u8, 4u8, 48u8, 2u8, 68u8, 3u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 3u8,
+            0u8, 1u8, 18u8, 3u8, 48u8, 10u8, 15u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8,
+            0u8, 3u8, 0u8, 18u8, 4u8, 49u8, 4u8, 52u8, 5u8, 10u8, 14u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 0u8, 3u8, 0u8, 1u8, 18u8, 3u8, 49u8, 12u8, 24u8, 10u8, 16u8, 10u8,
+            9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 0u8, 6u8, 18u8, 3u8, 50u8, 6u8,
+            21u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 0u8, 18u8,
+            3u8, 50u8, 6u8, 38u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8,
+            2u8, 0u8, 1u8, 18u8, 3u8, 50u8, 22u8, 33u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8,
+            3u8, 0u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 50u8, 36u8, 37u8, 10u8, 16u8,
+            10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 3u8, 51u8,
+            6u8, 15u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 1u8,
+            18u8, 3u8, 51u8, 6u8, 31u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8,
+            0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 51u8, 16u8, 26u8, 10u8, 16u8, 10u8, 9u8, 4u8,
+            10u8, 3u8, 0u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8, 3u8, 51u8, 29u8, 30u8, 10u8,
+            14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 18u8, 4u8, 53u8, 4u8, 55u8,
+            5u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 1u8, 18u8, 3u8,
+            53u8, 12u8, 27u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 2u8,
+            0u8, 5u8, 18u8, 3u8, 54u8, 6u8, 11u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8,
+            0u8, 3u8, 1u8, 2u8, 0u8, 18u8, 3u8, 54u8, 6u8, 27u8, 10u8, 16u8, 10u8, 9u8,
+            4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 2u8, 0u8, 1u8, 18u8, 3u8, 54u8, 12u8, 22u8,
+            10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 1u8, 2u8, 0u8, 3u8, 18u8,
+            3u8, 54u8, 25u8, 26u8, 10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 3u8, 2u8,
+            18u8, 4u8, 56u8, 4u8, 58u8, 5u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8,
+            3u8, 2u8, 1u8, 18u8, 3u8, 56u8, 12u8, 26u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8,
+            3u8, 0u8, 3u8, 2u8, 2u8, 0u8, 5u8, 18u8, 3u8, 57u8, 6u8, 11u8, 10u8, 15u8,
+            10u8, 8u8, 4u8, 10u8, 3u8, 0u8, 3u8, 2u8, 2u8, 0u8, 18u8, 3u8, 57u8, 6u8,
+            21u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 2u8, 2u8, 0u8, 1u8,
+            18u8, 3u8, 57u8, 12u8, 16u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8,
+            2u8, 2u8, 0u8, 3u8, 18u8, 3u8, 57u8, 19u8, 20u8, 10u8, 14u8, 10u8, 6u8, 4u8,
+            10u8, 3u8, 0u8, 3u8, 3u8, 18u8, 4u8, 59u8, 4u8, 61u8, 5u8, 10u8, 14u8, 10u8,
+            7u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 1u8, 18u8, 3u8, 59u8, 12u8, 28u8, 10u8,
+            16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 2u8, 0u8, 5u8, 18u8, 3u8,
+            60u8, 6u8, 11u8, 10u8, 15u8, 10u8, 8u8, 4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 2u8,
+            0u8, 18u8, 3u8, 60u8, 6u8, 21u8, 10u8, 16u8, 10u8, 9u8, 4u8, 10u8, 3u8, 0u8,
+            3u8, 3u8, 2u8, 0u8, 1u8, 18u8, 3u8, 60u8, 12u8, 16u8, 10u8, 16u8, 10u8, 9u8,
+            4u8, 10u8, 3u8, 0u8, 3u8, 3u8, 2u8, 0u8, 3u8, 18u8, 3u8, 60u8, 19u8, 20u8,
+            10u8, 14u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 8u8, 0u8, 18u8, 4u8, 62u8, 4u8,
+            67u8, 5u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 8u8, 0u8, 1u8, 18u8,
+            3u8, 62u8, 10u8, 15u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 0u8,
+            6u8, 18u8, 3u8, 63u8, 6u8, 18u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8,
+            2u8, 0u8, 18u8, 3u8, 63u8, 6u8, 37u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8,
+            0u8, 2u8, 0u8, 1u8, 18u8, 3u8, 63u8, 19u8, 32u8, 10u8, 14u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 0u8, 2u8, 0u8, 3u8, 18u8, 3u8, 63u8, 35u8, 36u8, 10u8, 14u8, 10u8,
+            7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 6u8, 18u8, 3u8, 64u8, 6u8, 21u8, 10u8,
+            13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 18u8, 3u8, 64u8, 6u8, 43u8,
+            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 1u8, 18u8, 3u8, 64u8,
+            22u8, 38u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 1u8, 3u8, 18u8,
+            3u8, 64u8, 41u8, 42u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 2u8,
+            6u8, 18u8, 3u8, 65u8, 6u8, 20u8, 10u8, 13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8,
+            2u8, 2u8, 18u8, 3u8, 65u8, 6u8, 42u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8,
+            0u8, 2u8, 2u8, 1u8, 18u8, 3u8, 65u8, 21u8, 37u8, 10u8, 14u8, 10u8, 7u8, 4u8,
+            10u8, 3u8, 0u8, 2u8, 2u8, 3u8, 18u8, 3u8, 65u8, 40u8, 41u8, 10u8, 14u8, 10u8,
+            7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 6u8, 18u8, 3u8, 66u8, 6u8, 22u8, 10u8,
+            13u8, 10u8, 6u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 18u8, 3u8, 66u8, 6u8, 46u8,
+            10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 1u8, 18u8, 3u8, 66u8,
+            23u8, 41u8, 10u8, 14u8, 10u8, 7u8, 4u8, 10u8, 3u8, 0u8, 2u8, 3u8, 3u8, 18u8,
+            3u8, 66u8, 44u8, 45u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8, 0u8, 6u8, 18u8,
+            3u8, 69u8, 2u8, 12u8, 10u8, 11u8, 10u8, 4u8, 4u8, 10u8, 2u8, 0u8, 18u8, 3u8,
+            69u8, 2u8, 29u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8, 0u8, 1u8, 18u8, 3u8,
+            69u8, 13u8, 24u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8, 0u8, 3u8, 18u8, 3u8,
+            69u8, 27u8, 28u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 6u8, 18u8, 3u8,
+            70u8, 2u8, 7u8, 10u8, 11u8, 10u8, 4u8, 4u8, 10u8, 2u8, 1u8, 18u8, 3u8, 70u8,
+            2u8, 18u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 1u8, 18u8, 3u8, 70u8,
+            8u8, 13u8, 10u8, 12u8, 10u8, 5u8, 4u8, 10u8, 2u8, 1u8, 3u8, 18u8, 3u8, 70u8,
+            16u8, 17u8, 98u8, 6u8, 112u8, 114u8, 111u8, 116u8, 111u8, 51u8,
         ];
         /// The lazily-built descriptor pool for this package's
         /// `Reflectable` impls. Built from
@@ -65640,5 +80141,97 @@ pub use self::__buffa::view::ListUnspentOutputsRequestOwnedView;
 pub use self::__buffa::view::ListUnspentOutputsResponseView;
 #[doc(inline)]
 pub use self::__buffa::view::ListUnspentOutputsResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::Bip47InboundPayerView;
+#[doc(inline)]
+pub use self::__buffa::view::Bip47InboundPayerOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::SilentPaymentLabelView;
+#[doc(inline)]
+pub use self::__buffa::view::SilentPaymentLabelOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::SilentPaymentReceiveView;
+#[doc(inline)]
+pub use self::__buffa::view::SilentPaymentReceiveOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetBip47PaymentCodeRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::GetBip47PaymentCodeRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetBip47PaymentCodeResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::GetBip47PaymentCodeResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToBip47PaymentCodeRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToBip47PaymentCodeRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToBip47PaymentCodeResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToBip47PaymentCodeResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ListBip47InboundPayersRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::ListBip47InboundPayersRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ListBip47InboundPayersResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::ListBip47InboundPayersResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetSilentPaymentAddressRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::GetSilentPaymentAddressRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetSilentPaymentAddressResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::GetSilentPaymentAddressResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::CreateSilentPaymentLabelRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::CreateSilentPaymentLabelRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::CreateSilentPaymentLabelResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::CreateSilentPaymentLabelResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentLabelsRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentLabelsRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentLabelsResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentLabelsResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToSilentPaymentRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToSilentPaymentRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToSilentPaymentResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::SendToSilentPaymentResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentReceivesRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentReceivesRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentReceivesResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::ListSilentPaymentReceivesResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetReusableScanStatusRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::GetReusableScanStatusRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetReusableScanStatusResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::GetReusableScanStatusResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::RescanReusablePaymentsRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::RescanReusablePaymentsRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::RescanReusablePaymentsResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::RescanReusablePaymentsResponseOwnedView;
 #[doc(inline)]
 pub use self::__buffa::register_types;
