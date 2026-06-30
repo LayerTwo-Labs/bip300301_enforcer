@@ -6,20 +6,22 @@ use bip300301_enforcer_lib::{
         self,
         common::{ConsensusHex, Hex},
         mainchain::{
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateSidechainProposalRequest, GetInfoRequest,
+            BroadcastWithdrawalBundleRequest, CreateDepositTransactionRequest,
+            CreateDepositTransactionResponse, CreateNewAddressRequest,
+            CreateSidechainProposalRequest, GetChainTipRequest, GetInfoRequest,
             GetSidechainProposalsRequest, GetSidechainsRequest,
             ListSidechainDepositTransactionsRequest, block_info, withdrawal_bundle_event,
         },
     },
 };
 use bitcoin::Amount;
+use either::Either;
 use futures::{FutureExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
-    mine::{mine, mine_check_block_events, mine_signet_check},
+    mine::{mine, mine_check_block_events, mine_generateblocks_check, mine_signet_check},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
     },
@@ -535,6 +537,92 @@ where
     Ok(())
 }
 
+/// Regression for the withdrawal-bundle treasury underflow DoS.
+///
+/// A sidechain operator can submit a withdrawal bundle whose payout plus fee
+/// exceeds the sidechain treasury: `BroadcastWithdrawalBundle` validates the
+/// bundle structure but does not bound it against the treasury (which is unknown
+/// at submission time). Once the enforcer's own miner upvotes the bundle past the
+/// withdrawal-bundle inclusion threshold, every block-template build runs the
+/// treasury subtraction `treasury - fee - payout`. Before the fix this was an
+/// unchecked `Amount` subtraction that panicked, aborting block production; the
+/// fix routes it through `Wallet::new_treasury_value`, which returns an
+/// `AmountUnderflowError` instead.
+///
+/// This drives the full path — broadcast an over-value bundle, then mine until
+/// the enforcer's auto-upvote pushes it past the threshold — and asserts that
+/// block production surfaces a clean amount-underflow error and the enforcer
+/// stays responsive, rather than crashing.
+async fn withdrawal_bundle_treasury_underflow_is_graceful<S>(
+    post_setup: &mut PostSetup,
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
+    use crate::test_blinded_m6_roundtrip::{make_blinded_m6, serialize_zero_input_legacy};
+
+    // A payout that dwarfs any treasury this round-trip could have accrued, so
+    // `treasury - fee - payout` is guaranteed to underflow once the bundle is
+    // selected for inclusion.
+    let over_value_bundle = make_blinded_m6(1_000, Amount::from_sat(100_000_000_000));
+    tracing::info!("Broadcasting an over-value withdrawal bundle (payout exceeds treasury)");
+    post_setup
+        .wallet_service_client
+        .broadcast_withdrawal_bundle(BroadcastWithdrawalBundleRequest {
+            sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
+            transaction: buffa::MessageField::some(buffa_types::google::protobuf::BytesValue {
+                value: serialize_zero_input_legacy(&over_value_bundle),
+                ..Default::default()
+            }),
+        })
+        .await?;
+
+    // The enforcer auto-proposes the stored bundle and, with `ack_all_proposals`,
+    // upvotes it each block. Once `vote_count` crosses the inclusion threshold the
+    // next `generate_blocks` builds a block whose suffix txs run the treasury
+    // subtraction, which must fail with an amount-underflow rather than panicking.
+    // After the crossing no block is produced, so the failure is sticky; cap the
+    // loop generously above the regtest threshold.
+    const MAX_BLOCKS: u32 = 16;
+    let mut underflow_status = None;
+    for _ in 0..MAX_BLOCKS {
+        match mine_generateblocks_check(post_setup, 1, Some(true), |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .await
+        {
+            Ok(()) => continue,
+            Err(Either::Left(status)) => {
+                underflow_status = Some(status);
+                break;
+            }
+            Err(Either::Right(never)) => match never {},
+        }
+    }
+    let status = underflow_status.ok_or_else(|| {
+        anyhow::anyhow!(
+            "expected `generate_blocks` to fail once the over-value bundle crossed the \
+             withdrawal-bundle inclusion threshold, but mined {MAX_BLOCKS} blocks without error"
+        )
+    })?;
+    anyhow::ensure!(
+        status.to_string().to_lowercase().contains("underflow"),
+        "expected an amount-underflow error from block production, got: {status}"
+    );
+
+    // The fix returns the error gracefully, so the enforcer must still be serving.
+    // Before the fix the treasury subtraction panicked instead.
+    let _tip = post_setup
+        .validator_service_client
+        .get_chain_tip(GetChainTipRequest::default())
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!("enforcer unresponsive after over-value bundle (possible crash): {err}")
+        })?;
+    tracing::info!("Enforcer rejected the over-value withdrawal bundle gracefully");
+    Ok(())
+}
+
 pub async fn deposit_withdraw_roundtrip_task<S>(
     post_setup: &mut PostSetup,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
@@ -597,6 +685,13 @@ where
     )
     .await?;
     tracing::info!("Withdrawal succeeded");
+    // Only the GenerateBlocks mining mode runs the enforcer's own miner, which
+    // auto-upvotes bundle proposals; the GBT/signet modes build templates
+    // externally and so cannot drive a bundle past the inclusion threshold here.
+    if let MiningMode::GenerateBlocks = post_setup.mode.mining_mode() {
+        let () = withdrawal_bundle_treasury_underflow_is_graceful::<S>(post_setup).await?;
+        tracing::info!("Over-value withdrawal bundle handled gracefully");
+    }
     Ok(sidechain)
 }
 

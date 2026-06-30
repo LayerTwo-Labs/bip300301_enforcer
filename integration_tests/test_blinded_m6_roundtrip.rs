@@ -18,7 +18,7 @@ use crate::{
     setup::{DummySidechain, PostSetup, Sidechain as _},
 };
 
-fn make_blinded_m6(fee_sats: u64, payout: Amount) -> Transaction {
+pub(crate) fn make_blinded_m6(fee_sats: u64, payout: Amount) -> Transaction {
     let fee_txout = TxOut {
         value: Amount::ZERO,
         script_pubkey: Builder::new()
@@ -45,7 +45,7 @@ fn make_blinded_m6(fee_sats: u64, payout: Amount) -> Transaction {
     }
 }
 
-fn serialize_zero_input_legacy(tx: &Transaction) -> Vec<u8> {
+pub(crate) fn serialize_zero_input_legacy(tx: &Transaction) -> Vec<u8> {
     assert!(
         tx.input.is_empty(),
         "legacy zero-input serializer requires no inputs"
