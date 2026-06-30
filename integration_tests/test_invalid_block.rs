@@ -1,13 +1,13 @@
-use std::time::Duration;
+use std::{str::FromStr as _, time::Duration};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept},
-    types::{BmmCommitment, SidechainDescription},
+    types::{BmmCommitment, SidechainDescription, op_drivechain_script},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
-    TxMerkleNode, TxOut, Witness,
+    TxMerkleNode, TxOut, Txid, Witness,
     block::Header,
     consensus::encode::{deserialize_hex, serialize_hex},
     hashes::{Hash as _, sha256d},
@@ -127,6 +127,18 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
         }
     }
 
+    // An M5 deposit is a regular (non-coinbase) transaction, so unlike the
+    // coinbase-message cases above it can't be expressed as an extra coinbase
+    // output. It's mined as a raw tx via `generateblock` instead.
+    const M5_CASE: &str = "m5_missing_address";
+    match run_m5_missing_address_case(&mut post_setup).await {
+        Ok(()) => tracing::info!(case = M5_CASE, "case passed"),
+        Err(err) => {
+            tracing::error!(case = M5_CASE, "case failed: {err:#}");
+            failures.push(format!("{M5_CASE}: {err:#}"));
+        }
+    }
+
     if !failures.is_empty() {
         anyhow::bail!(
             "invalid_block cases failed:\n  - {}",
@@ -152,6 +164,128 @@ async fn run_case(post_setup: &mut PostSetup, case: &BadBlockCase) -> anyhow::Re
         Duration::from_secs(10),
     )
     .await
+}
+
+/// Blocks mined to give bitcoind's wallet a mature, spendable coinbase UTXO to
+/// fund the M5 deposit transaction (coinbase outputs need 100 confirmations).
+const M5_FUNDING_BLOCKS: u32 = 101;
+
+const M5_TX_FEE: Amount = Amount::from_sat(1_000);
+
+#[derive(Deserialize)]
+struct Utxo {
+    txid: String,
+    vout: u32,
+    amount: f64,
+}
+
+#[derive(Deserialize)]
+struct SignResult {
+    hex: String,
+    complete: bool,
+}
+
+#[derive(Deserialize)]
+struct GenerateBlockResult {
+    hash: String,
+}
+
+async fn run_m5_missing_address_case(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let bad_block_hash = submit_m5_missing_address_block(post_setup).await?;
+    tracing::info!(%bad_block_hash, "submitted bad M5 deposit block");
+
+    // Without the fix the enforcer accepts this deposit with an empty address;
+    // with the fix it rejects the block because the address OP_RETURN output
+    // required by BIP 300 M5 is missing.
+    assert_enforcer_verdict(
+        post_setup,
+        bad_block_hash,
+        Expect::Rejected {
+            log_contains: "has no address OP_RETURN output",
+        },
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+/// Build, sign, and mine (via `generateblock`) an M5 deposit for the active
+/// DummySidechain slot whose transaction creates the treasury UTXO but omits
+/// the address OP_RETURN output that must immediately follow it.
+async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Result<BlockHash> {
+    let mining_address = post_setup.mining_address.to_string();
+
+    // Ensure bitcoind's wallet has a mature UTXO to spend into the deposit.
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [M5_FUNDING_BLOCKS.to_string(), mining_address.clone()],
+        )
+        .run_utf8()
+        .await?;
+
+    let utxos: Vec<Utxo> = {
+        let json = post_setup
+            .bitcoin_cli
+            .command::<String, _, String, _, _>([], "listunspent", [])
+            .run_utf8()
+            .await?;
+        serde_json::from_str(&json)?
+    };
+    let (utxo, input_value) = utxos
+        .into_iter()
+        .find_map(|u| {
+            let amount = Amount::from_btc(u.amount).ok()?;
+            (amount > M5_TX_FEE).then_some((u, amount))
+        })
+        .ok_or_else(|| anyhow::anyhow!("no spendable UTXO in bitcoind wallet"))?;
+
+    // The deposit's sole output is a positive-value OP_DRIVECHAIN output for the
+    // active slot: it raises the treasury value (so it's an M5, not an M6), but
+    // there is nothing at vout+1 to carry the deposit address.
+    let unsigned_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Txid::from_str(&utxo.txid)?,
+                vout: utxo.vout,
+            },
+            ..TxIn::default()
+        }],
+        output: vec![TxOut {
+            script_pubkey: op_drivechain_script(DummySidechain::SIDECHAIN_NUMBER),
+            value: input_value - M5_TX_FEE,
+        }],
+    };
+
+    let signed_hex = {
+        let json = post_setup
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "signrawtransactionwithwallet",
+                [serialize_hex(&unsigned_tx)],
+            )
+            .run_utf8()
+            .await?;
+        let signed: SignResult = serde_json::from_str(&json)?;
+        anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
+        signed.hex
+    };
+
+    // `generateblock` mines a block containing the raw tx, bypassing mempool
+    // standardness (which rejects OP_DRIVECHAIN as non-standard) while still
+    // enforcing consensus rules.
+    let txs_arg = serde_json::to_string(&[signed_hex])?;
+    let json = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "generateblock", [mining_address, txs_arg])
+        .run_utf8()
+        .await?;
+    let result: GenerateBlockResult = serde_json::from_str(&json)?;
+    Ok(BlockHash::from_str(&result.hash)?)
 }
 
 async fn submit_invalid_block(
