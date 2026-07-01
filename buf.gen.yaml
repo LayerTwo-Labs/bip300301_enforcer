@@ -6,11 +6,11 @@ version: v2
 
 inputs:
   - git_repo: https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
-    ref: cdc2f279cc2edeeda0acaeca7ff937427aa500f1
+    ref: ae311734e3146e2c99934e713be353d1a6aea7df
     subdir: proto
 
 plugins:
-  - remote: buf.build/anthropics/buffa:v0.7.0
+  - remote: buf.build/anthropics/buffa:v0.7.1
     out: lib/proto/generated/buffa
     # NB: `reflect_mode=bridge` needs the plugin to see the full file closure
     # in one invocation, or the embedded descriptor pools will not cover the
