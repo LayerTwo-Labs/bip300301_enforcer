@@ -31,7 +31,7 @@ buffa = { version = "0.7", features = ["json"] }
 # `reflect` is needed by the `reflect_mode=bridge` generated code, which embeds
 # descriptors and exposes `descriptor_pool()` for gRPC server reflection.
 buffa-descriptor = { version = "0.7", features = ["reflect"] }
-buffa-types = { version = "0.7", features = ["json"] }
+buffa-types = { version = "0.8", features = ["json"] }
 byteorder = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
