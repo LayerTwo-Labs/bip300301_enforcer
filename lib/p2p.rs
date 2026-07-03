@@ -43,9 +43,18 @@ pub async fn broadcast_nonstandard_tx(
 
 // https://github.com/kallewoof/bips/blob/master/bip-0325.mediawiki#message-start
 pub fn compute_signet_magic(signet_challenge: &bitcoin::Script) -> Magic {
-    use bitcoin::hashes::{Hash as _, HashEngine as _, sha256d};
+    use bitcoin::{
+        consensus::{Encodable as _, encode::VarInt},
+        hashes::{Hash as _, HashEngine as _, sha256d},
+    };
     let mut hasher = sha256d::Hash::engine();
-    hasher.input(&[signet_challenge.len() as u8]);
+    // Core derives the signet magic from `sha256d(CompactSize(len) || challenge)`
+    // (streaming the challenge vector writes a CompactSize length prefix), so
+    // encode the length with Bitcoin's CompactSize rather than a raw single byte,
+    // which would diverge (and wrap mod 256) for challenges >= 253 bytes.
+    VarInt(signet_challenge.len() as u64)
+        .consensus_encode(&mut hasher)
+        .expect("hash engine writes are infallible");
     hasher.input(signet_challenge.as_bytes());
     let hash = sha256d::Hash::from_engine(hasher);
     Magic::from_bytes(hash[..=3].try_into().unwrap())
@@ -73,5 +82,16 @@ mod tests {
             bitcoin::ScriptBuf::from_hex("a91484fa7c2460891fe5212cb08432e21a4207909aa987").unwrap();
         let magic = compute_signet_magic(signet_challenge.as_script());
         assert_eq!(magic, Magic::from_bytes([0xe4, 0x09, 0xe9, 0x68]));
+    }
+
+    // For challenges >= 253 bytes the length prefix must be a CompactSize, not a
+    // single byte, otherwise the derived magic diverges from Bitcoin Core. This
+    // 253-byte challenge encodes its length as CompactSize `fd fd 00`; Core logs
+    // the derived message-start magic as `ae285478` for it.
+    #[test]
+    fn test_long_challenge_magic_matches_core() {
+        let signet_challenge = bitcoin::ScriptBuf::from_bytes(vec![0x51; 253]);
+        let magic = compute_signet_magic(signet_challenge.as_script());
+        assert_eq!(magic, Magic::from_bytes([0xae, 0x28, 0x54, 0x78]));
     }
 }
