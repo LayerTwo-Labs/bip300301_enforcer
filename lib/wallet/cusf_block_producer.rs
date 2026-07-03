@@ -242,6 +242,19 @@ impl CusfEnforcer for Wallet {
             .disconnect_block(block_hash)
             .await?;
 
+        // Restore the `bmm_requests` rows that were consumed (deleted) when this
+        // block was generated, so the operator can re-emit the BMM accepts
+        // against the new mainchain tip. Wallet SQLite state is best-effort on
+        // disconnect (see below), so a restore failure is logged rather than
+        // aborting the disconnect.
+        if let Err(err) = self.restore_bmm_requests(&block_hash).await {
+            tracing::error!(
+                %block_hash,
+                "failed to restore BMM requests on block disconnect: {:#}",
+                ErrorChain::new(&err),
+            );
+        }
+
         // We're NOT disconnecting blocks for the BDK wallet. This concept doesn't exist
         // in BDK. Instead, we're supposed to just connect whatever comes in, and the current tip
         // will be automatically set to the best seen tip. I.e. if a block is invalidated,
@@ -249,10 +262,12 @@ impl CusfEnforcer for Wallet {
         // by another.
         // https://github.com/bitcoindevkit/bdk_wallet/issues/116
 
-        // We're not applying any disconnect logic to our SQLite DB, either. The content
-        // of this DB is wiped (with brutish `DELETE` statement) upon generating a new block.
-        // This means that sidechain proposals etc. must be re-created if we disconnected a
-        // block which caused a sidechain proposal to go out of existence.
+        // Aside from `bmm_requests` (restored above), we're not applying any
+        // disconnect logic to the rest of our SQLite DB. Those tables are wiped
+        // (with brutish `DELETE` statement) upon generating a new block. This
+        // means that sidechain proposals etc. must be re-created if we
+        // disconnected a block which caused a sidechain proposal to go out of
+        // existence.
         Ok(res)
     }
 
