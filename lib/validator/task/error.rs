@@ -383,6 +383,11 @@ pub(in crate::validator) enum ConnectBlock {
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
     #[fatal(false)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },
+    #[error(
+        "Block contains multiple M1 (propose sidechain) messages; at most one is permitted per block"
+    )]
+    #[fatal(false)]
+    MultipleM1Proposals,
     #[error("Block has no transactions (missing coinbase)")]
     #[fatal(false)]
     NoCoinbase,

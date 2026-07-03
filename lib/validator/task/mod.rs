@@ -1090,6 +1090,14 @@ impl BlockHandler<'_> {
             }
             coinbase_messages.push(message, vout)?;
         }
+        // BIP 300: a block is invalid if "there is already an M1 in this
+        // block". Identical proposals are already rejected as a duplicate M1 by
+        // `CoinbaseMessages::push` above; reject here when the block carries more
+        // than one *distinct* M1 (`Propose Sidechain`), which is forbidden
+        // regardless of sidechain number or description.
+        if m1_sidechain_proposals.len() > 1 {
+            return Err(error::ConnectBlock::MultipleM1Proposals);
+        }
         let mut accepted_bmm_requests = BmmCommitments::new();
         let mut events = Vec::<BlockEvent>::new();
         let mut coinbase_msg_diffs = diff::DiffBuilder::new(rwtxn, dbs, height);
@@ -2639,6 +2647,60 @@ mod tests {
                      not reject the block: {e:#}"
                 )
             })?;
+        Ok(())
+    }
+
+    /// BIP 300 M1: a block is invalid if "there is already an M1 in this
+    /// block". Two *distinct* M1 proposals (different descriptions) hash to
+    /// different `SidechainProposalId`s, so per-proposal dedup alone would
+    /// accept both. `connect_block` must reject a block carrying more than one
+    /// M1, regardless of slot or description.
+    #[test]
+    fn connect_block_rejects_multiple_distinct_m1s() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let m1_a: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: SidechainNumber(7),
+            description: SidechainDescription(b"cc-alpha".to_vec()),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let m1_b: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: SidechainNumber(7),
+            description: SidechainDescription(b"cc-beta".to_vec()),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m1_a,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m1_b,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let err = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .expect_err("a block carrying two distinct M1 proposals must be rejected");
+        assert!(
+            matches!(err, error::ConnectBlock::MultipleM1Proposals),
+            "expected rejection due to multiple M1 proposals, got: {err:?}"
+        );
         Ok(())
     }
 
