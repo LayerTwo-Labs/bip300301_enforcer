@@ -846,6 +846,27 @@ mod tests {
         assert!(parser.next_block().is_err());
     }
 
+    /// A block whose declared size exceeds the consensus maximum must be
+    /// rejected before allocating, not exhaust memory via an unbounded
+    /// `vec![0; size - 80]`. A corrupt or crafted blk*.dat triggers this.
+    #[test]
+    fn next_block_rejects_oversized_block_without_allocating() {
+        use std::io::Write as _;
+        let mut bytes = REGTEST_MAGIC.to_vec();
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // size ~4 GiB, above the max
+        bytes.extend_from_slice(&[0u8; 80]); // a well-formed 80 byte header
+        let path = std::env::temp_dir().join("bip300_oversized_blk00000.dat");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let mut parser = BlockFileParser::new(None, path, Network::Regtest).unwrap();
+        assert!(matches!(
+            parser.next_block(),
+            Err(ParseBlockFileError::BlockSizeTooLarge { size }) if size == u32::MAX
+        ));
+    }
+
     #[test]
     fn test_parse_real_file_with_xor_key() {
         let path =
