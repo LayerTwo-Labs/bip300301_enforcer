@@ -356,6 +356,9 @@ pub(in crate::validator) enum ConnectBlock {
         tip: bitcoin::BlockHash,
         tip_height: u32,
     },
+    #[error("BMM commitment for sidechain slot {} which is inactive", .sidechain_number.0)]
+    #[fatal(false)]
+    BmmAcceptInactiveSidechain { sidechain_number: SidechainNumber },
     #[error(transparent)]
     #[fatal(false)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
