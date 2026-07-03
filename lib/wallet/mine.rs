@@ -809,7 +809,7 @@ impl Wallet {
         );
 
         let block_hash = self.mine(&coinbase_outputs, transactions).await?;
-        self.delete_bmm_requests(&mainchain_tip)
+        self.delete_bmm_requests(&mainchain_tip, &block_hash)
             .await
             .map_err(error::GenerateBlock::DeleteBmmRequests)?;
         Ok(block_hash)
