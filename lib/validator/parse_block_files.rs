@@ -31,6 +31,11 @@ const TESTNET_MAGIC: [u8; 4] = [0x0B, 0x11, 0x09, 0x07];
 const SIGNET_MAGIC: [u8; 4] = [0x0A, 0x03, 0xCF, 0x40];
 const REGTEST_MAGIC: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
 
+/// Consensus maximum serialized block size (Bitcoin Core's
+/// `MAX_BLOCK_SERIALIZED_SIZE`). A block file entry declaring a larger size is
+/// malformed.
+const MAX_BLOCK_SERIALIZED_SIZE: usize = 4_000_000;
+
 #[derive(Debug, Diagnostic, Error)]
 #[error("error parsing block number {index} in file {file_path}")]
 pub struct ParseAllBlocksError {
@@ -243,6 +248,13 @@ impl BlockFileParser {
 
         let size = u32::consensus_decode(&mut self.reader)
             .map_err(ParseBlockFileError::UintDecode)? as usize;
+
+        // Reject an oversized entry before allocating. Without this bound the
+        // `size` prefix drives an unbounded `vec![0; size - 80]` (up to ~4 GiB),
+        // exhausting memory on a corrupt or crafted block file.
+        if size > MAX_BLOCK_SERIALIZED_SIZE {
+            return Err(ParseBlockFileError::BlockSizeTooLarge { size: size as u32 });
+        }
 
         // Read the block header
         let header = Header::consensus_decode(&mut self.reader)
