@@ -938,6 +938,19 @@ impl BlockHandler<'_> {
                 sidechain_number,
                 sidechain_block_hash,
             }) => {
+                // A BMM commitment only makes sense for an active sidechain slot.
+                // Mirror the M3 (propose bundle) guard and reject a block that
+                // BMMs a slot with no active sidechain.
+                if !self
+                    .dbs
+                    .active_sidechains
+                    .sidechain()
+                    .contains_key(rotxn, &sidechain_number)?
+                {
+                    return Err(error::ConnectBlock::BmmAcceptInactiveSidechain {
+                        sidechain_number,
+                    });
+                }
                 if accepted_bmm_requests.contains_key(&sidechain_number) {
                     return Err(error::ConnectBlock::MultipleBmmBlocks { sidechain_number });
                 }
@@ -2492,6 +2505,54 @@ mod tests {
         test_handler(&dbs)
             .connect_block(&mut rwtxn, &block)
             .into_diagnostic()?;
+        Ok(())
+    }
+
+    /// A BMM commitment (M7 in the coinbase, paired with a matching M8) only
+    /// makes sense for an active sidechain slot. Mirroring the M3 (propose
+    /// bundle) guard, `connect_block` must reject a block that BMMs an inactive
+    /// slot instead of silently recording the commitment.
+    #[test]
+    fn connect_block_rejects_m7_m8_for_inactive_sidechain_slot() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+        let inactive_slot = SidechainNumber(99);
+
+        let m7_script: ScriptBuf = M7BmmAccept {
+            sidechain_number: inactive_slot,
+            sidechain_block_hash: BmmCommitment([0x42; 32]),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let m8_tx = build_m8_tx(inactive_slot, [0x42; 32], prev_hash);
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![TxOut {
+                    script_pubkey: m7_script,
+                    value: Amount::ZERO,
+                }],
+                extra_txs: vec![m8_tx],
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let err = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .expect_err("a block BMMing an inactive sidechain slot must be rejected");
+        assert!(
+            matches!(
+                err,
+                error::ConnectBlock::BmmAcceptInactiveSidechain {
+                    sidechain_number
+                } if sidechain_number == inactive_slot
+            ),
+            "expected rejection due to inactive-slot BMM, got: {err:?}"
+        );
         Ok(())
     }
 
