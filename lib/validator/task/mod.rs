@@ -211,6 +211,20 @@ impl BlockHandler<'_> {
             );
             return Ok(None);
         };
+        // BIP 300: an M2 ack only counts once the proposal exists in an
+        // ancestor block. Within `connect_block` the M1 propose is applied to
+        // the shared txn before any later M2 in the same coinbase, so a
+        // proposal ack'd in the same block it was proposed has
+        // `proposal_height == height`. Ignore it, otherwise a miner could seed
+        // a fresh proposal with a vote in the very block it was proposed.
+        if height == sidechain.status.proposal_height {
+            tracing::debug!(
+                %sidechain_number,
+                %description_hash,
+                "ignoring M2 ack: proposal was made in this same block"
+            );
+            return Ok(None);
+        }
         sidechain.status.vote_count += 1;
         tracing::debug!(
         %sidechain_number,
@@ -2531,6 +2545,75 @@ mod tests {
         assert!(
             res.is_ok(),
             "M2 ack below proposal height must not underflow"
+        );
+        Ok(())
+    }
+
+    /// BIP 300: an M2 ack for a proposal made in the *same* block must be
+    /// ignored. `connect_block` applies the M1 propose to the shared txn before
+    /// the later M2 in the same coinbase, so the proposal is stored with
+    /// `proposal_height == height`; the ack must not increment its vote count.
+    /// Otherwise a miner could seed a fresh proposal with a vote the moment it
+    /// is proposed. (Acks in *later* blocks are exercised by
+    /// `handle_m2_activation_thresholds`.)
+    #[test]
+    fn connect_block_ignores_m2_ack_for_proposal_in_same_block() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let proposal = SidechainProposal {
+            sidechain_number: SidechainNumber(4),
+            description: SidechainDescription(b"same-block-ack".to_vec()),
+        };
+        let proposal_id = proposal.compute_id();
+
+        let m1_script: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: proposal.sidechain_number,
+            description: proposal.description.clone(),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        // M2 ack for the very proposal above, at a later vout in the same
+        // coinbase (so the M1 diff is applied before the M2 is handled).
+        let m2_script: ScriptBuf = M2AckSidechain {
+            sidechain_number: proposal.sidechain_number,
+            description_hash: proposal_id.description_hash,
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m1_script,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m2_script,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+
+        let sidechain = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .into_diagnostic()?;
+        assert_eq!(
+            sidechain.status.vote_count, 0,
+            "an M2 ack in the same block as its M1 proposal must not be counted"
         );
         Ok(())
     }
