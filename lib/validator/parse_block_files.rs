@@ -607,7 +607,10 @@ impl CDiskBlockIndex {
     pub fn adjusted_data_pos(&self) -> Option<u64> {
         // Magic bytes + size? Found by trial and error
         const ADJUST_BY: u64 = 8;
-        self.data_pos.map(|pos| pos - ADJUST_BY)
+        // `checked_sub` so a corrupt index entry with `data_pos < ADJUST_BY`
+        // yields `None` (handled as a missing data position) instead of
+        // underflowing.
+        self.data_pos.and_then(|pos| pos.checked_sub(ADJUST_BY))
     }
 
     /// Deserialize from byte slice
