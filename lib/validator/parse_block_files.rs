@@ -870,6 +870,36 @@ mod tests {
         ));
     }
 
+    /// A corrupt `blocks/index` entry with a `data_pos` below the 8-byte file
+    /// offset adjustment must yield `None` (a missing data position), not
+    /// underflow. Reachable via `fetch_block_index` on the fast-sync path.
+    #[test]
+    fn adjusted_data_pos_does_not_underflow() {
+        let with_data_pos = |data_pos| CDiskBlockIndex {
+            version: 0,
+            height: 0,
+            status: BlockStatus::new(0),
+            tx_count: 0,
+            file_number: None,
+            data_pos,
+            undo_pos: None,
+            block_version: 0,
+            prev_block_hash: BlockHash::from_byte_array([0; 32]),
+            merkle_root: BlockHash::from_byte_array([0; 32]),
+            timestamp: 0,
+            difficulty_target: CompactTarget::from_consensus(0),
+            nonce: 0,
+        };
+        // Below the adjustment: None, not an underflow.
+        assert_eq!(with_data_pos(Some(0)).adjusted_data_pos(), None);
+        assert_eq!(with_data_pos(Some(7)).adjusted_data_pos(), None);
+        // At or above the adjustment: the adjusted position.
+        assert_eq!(with_data_pos(Some(8)).adjusted_data_pos(), Some(0));
+        assert_eq!(with_data_pos(Some(80)).adjusted_data_pos(), Some(72));
+        // No data position stays None.
+        assert_eq!(with_data_pos(None).adjusted_data_pos(), None);
+    }
+
     #[test]
     fn test_parse_real_file_with_xor_key() {
         let path =
