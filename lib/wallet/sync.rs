@@ -87,14 +87,23 @@ impl WalletInner {
         let mut database = self.bdk_db.lock().await;
         tracing::trace!("applying block to BDK wallet");
 
-        match wallet_write.with_mut(|wallet| wallet.apply_block(block, block_height)) {
-            Ok(()) => (),
+        // `apply_block` mutates the in-memory `LocalChain` immediately, so it must
+        // never advance the wallet without the matching `persist_async` also being
+        // issued against the applied state. Bind the `persist_async` future inside
+        // the same `with_mut` as `apply_block` so the in-memory apply and its
+        // persistence are a single, indivisible step under the held wallet and
+        // `bdk_db` locks -- there is no point at which the wallet can be advanced in
+        // memory but left without a pending persist of that advance. This mirrors
+        // how `full_scan` and `accept_tx` couple `apply_*` with `persist_async`.
+        let persist = match wallet_write.with_mut(|wallet| {
+            wallet
+                .apply_block(block, block_height)
+                .map(|()| wallet.persist_async(&mut database))
+        }) {
+            Ok(persist) => persist,
             Err(err) => return Ok(Err(err)),
-        }
-        let persisted_changed = wallet_write
-            .with_mut(|wallet| wallet.persist_async(&mut database))
-            .await
-            .map_err(error::HandleConnectBlock::from)?;
+        };
+        let persisted_changed = persist.await.map_err(error::HandleConnectBlock::from)?;
 
         tracing::trace!(
             "applied block {} in persisted changes to BDK wallet",
