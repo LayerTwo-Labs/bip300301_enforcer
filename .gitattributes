@@ -1,0 +1,2 @@
+# Collapse checked-in generated code in PR diffs and exclude it from language stats
+lib/proto/generated/** linguist-generated=true
