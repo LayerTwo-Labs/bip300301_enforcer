@@ -10,7 +10,7 @@ inputs:
     subdir: proto
 
 plugins:
-  - remote: buf.build/anthropics/buffa:v0.7.0
+  - remote: buf.build/anthropics/buffa:v0.8.0
     out: lib/proto/generated/buffa
     # NB: `reflect_mode=bridge` needs the plugin to see the full file closure
     # in one invocation, or the embedded descriptor pools will not cover the
