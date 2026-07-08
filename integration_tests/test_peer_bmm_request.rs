@@ -108,6 +108,7 @@ impl PreSetup {
                 bitcoind_args: Vec::new(),
                 bitcoind_kind: BitcoindKind::Unpatched,
                 enforcer_args,
+                ..SetupOpts::default()
             };
             self.sender
                 .setup(Mode::GetBlockTemplate, setup_opts, res_tx.clone())
@@ -125,6 +126,7 @@ impl PreSetup {
                 bitcoind_args,
                 bitcoind_kind: BitcoindKind::Patched,
                 enforcer_args: Vec::new(),
+                ..SetupOpts::default()
             };
             self.miner
                 .setup(Mode::GetBlockTemplate, setup_opts, res_tx)

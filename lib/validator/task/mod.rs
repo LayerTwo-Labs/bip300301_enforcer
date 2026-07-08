@@ -1,73 +1,100 @@
-use std::{
-    borrow::Cow,
-    cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
-    path::PathBuf,
-    time::Instant,
-};
+use std::{collections::HashMap, path::PathBuf, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
-use bitcoin::{
-    Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
-    hashes::{Hash as _, sha256d},
-};
-use error_fatality::Split as _;
-use fallible_iterator::{FallibleIterator, IteratorExt};
+use bitcoin::{Block, BlockHash, Network, Transaction, Work, hashes::Hash as _};
+use fallible_iterator::FallibleIterator;
 use futures::FutureExt as _;
 use jsonrpsee::core::{
     client::BatchResponse,
     params::{ArrayParams, BatchRequestBuilder},
 };
-use sneed::{RoTxn, RwTxn, db};
+use sneed::RwTxn;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    messages::{
-        CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
-        M4AckBundles, M7BmmAccept, compute_m6id, parse_m8_tx, parse_op_drivechain,
-    },
     proto::mainchain::HeaderSyncProgress,
-    types::{
-        BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id,
-        PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposal, SidechainProposalId,
-        SidechainProposalStatus, Thresholds, WithdrawalBundleEvent, WithdrawalBundleEventKind,
-    },
+    types::{BlockInfo, BmmCommitments, Event, HeaderInfo},
     validator::{
         dbs::{
-            Dbs, PendingM6ids,
+            Dbs,
             diff::{self, Diff},
         },
         main_rest_client::MainRestClient,
     },
 };
 
+#[cfg(feature = "drivechain")]
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{BTreeMap, HashSet},
+};
+
+#[cfg(feature = "drivechain")]
+use bitcoin::{Amount, OutPoint, hashes::sha256d};
+#[cfg(feature = "drivechain")]
+use error_fatality::Split as _;
+#[cfg(feature = "drivechain")]
+use fallible_iterator::IteratorExt;
+#[cfg(feature = "drivechain")]
+use sneed::{RoTxn, db};
+
+#[cfg(feature = "drivechain")]
+use crate::{
+    messages::{
+        CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
+        M4AckBundles, M7BmmAccept, compute_m6id, parse_m8_tx, parse_op_drivechain,
+    },
+    types::{
+        BlockEvent, Ctip, Deposit, M6id, PendingM6idInfo, Sidechain, SidechainNumber,
+        SidechainProposal, SidechainProposalId, SidechainProposalStatus, Thresholds,
+        WithdrawalBundleEvent, WithdrawalBundleEventKind,
+    },
+    validator::dbs::PendingM6ids,
+};
+
 mod block_files;
 pub mod error;
 
-/// Bundles the consensus inputs that every BIP 300/301 handler needs: a
-/// reference to the validator's databases, the Bitcoin network we're running
-/// against, and the matching voting/aging [`Thresholds`].
+/// Bundles the consensus inputs that every handler needs.
 #[derive(Clone, Copy)]
 pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) dbs: &'a Dbs,
     pub(super) network: Network,
+    #[cfg(feature = "drivechain")]
     pub(super) thresholds: Thresholds,
+    #[cfg(feature = "bip360")]
+    pub(super) bip360_activation_height: u32,
+    #[cfg(feature = "bip360")]
+    pub(super) pqc_verify_budget_ms: u64,
 }
 
 impl<'a> BlockHandler<'a> {
-    pub(in crate::validator) fn new(dbs: &'a Dbs, network: Network) -> Self {
+    pub(in crate::validator) fn new(
+        dbs: &'a Dbs,
+        network: Network,
+        #[cfg(feature = "bip360")] bip360_activation_height: u32,
+        #[cfg(feature = "bip360")] pqc_verify_budget_ms: u64,
+    ) -> Self {
         Self {
             dbs,
             network,
+            #[cfg(feature = "drivechain")]
             thresholds: Thresholds::for_network(network),
+            #[cfg(feature = "bip360")]
+            bip360_activation_height,
+            #[cfg(feature = "bip360")]
+            pqc_verify_budget_ms,
         }
     }
 }
 
+#[cfg(feature = "drivechain")]
 /// Vote margin for the M4 `LeadingBy50` encoding: a bundle must be
 /// leading its rivals by at least this many votes to be upvoted.
 const LEADING_BY_50_MARGIN: u16 = 50;
 
+#[cfg(feature = "drivechain")]
 #[derive(Debug)]
 enum DepositsOrSuccessfulWithdrawal {
     M5Deposits {
@@ -82,18 +109,21 @@ enum DepositsOrSuccessfulWithdrawal {
     },
 }
 
+#[cfg(feature = "drivechain")]
 #[derive(Debug)]
 enum CoinbaseMessageEvent {
     NewSidechainProposal { sidechain: Sidechain },
     WithdrawalBundle(WithdrawalBundleEvent),
 }
 
+#[cfg(feature = "drivechain")]
 #[derive(Debug)]
 enum TransactionEvent {
     Deposits(HashMap<SidechainNumber, Deposit>),
     WithdrawalBundle(WithdrawalBundleEvent),
 }
 
+#[cfg(feature = "drivechain")]
 fn downvoted_others_for_upvote(pending: &PendingM6ids, upvote_target: M6id) -> Vec<M6id> {
     pending
         .iter()
@@ -101,6 +131,7 @@ fn downvoted_others_for_upvote(pending: &PendingM6ids, upvote_target: M6id) -> V
         .collect()
 }
 
+#[cfg(feature = "drivechain")]
 fn positive_votes_proposals_for_alarm(pending: &PendingM6ids) -> HashSet<M6id> {
     pending
         .iter()
@@ -116,6 +147,7 @@ fn positive_votes_proposals_for_alarm(pending: &PendingM6ids) -> HashSet<M6id> {
 /// `HandleM8` error if invalid, and `false` if the tx is not an M8 at all.
 ///
 /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request>
+#[cfg(feature = "drivechain")]
 fn handle_m8(
     transaction: &Transaction,
     accepted_bmm_requests: Option<&BmmCommitments>,
@@ -137,6 +169,7 @@ fn handle_m8(
     }
 }
 
+#[cfg(feature = "drivechain")]
 impl BlockHandler<'_> {
     /// BIP 300 M1 (Propose New Sidechain). Returns `Some` if the proposal is
     /// novel; re-proposals of an existing `(slot, description_hash)` are ignored
@@ -980,11 +1013,71 @@ impl BlockHandler<'_> {
         };
         Ok(res)
     }
+}
 
+impl BlockHandler<'_> {
     /// Check if a tx is valid against the current tip.
     /// Although a rwtxn is required, it is only used to create a child rwtxn,
     /// which will always be aborted.
+    #[cfg(not(feature = "bip360"))]
     pub(in crate::validator) fn validate_tx(
+        &self,
+        parent_rwtxn: &mut RwTxn,
+        transaction: &Transaction,
+    ) -> Result<bool, error::ValidateTransaction> {
+        #[cfg(feature = "drivechain")]
+        {
+            self.validate_tx_drivechain(parent_rwtxn, transaction)
+        }
+        #[cfg(not(feature = "drivechain"))]
+        {
+            let _ = (parent_rwtxn, transaction);
+            return Ok(true);
+        }
+    }
+
+    #[cfg(feature = "bip360")]
+    pub(in crate::validator) fn validate_tx<TxRef>(
+        &self,
+        parent_rwtxn: &mut RwTxn,
+        transaction: &Transaction,
+        parent_txs: &HashMap<bitcoin::Txid, TxRef>,
+    ) -> Result<bool, error::ValidateTransaction>
+    where
+        TxRef: std::borrow::Borrow<Transaction>,
+    {
+        let dbs = self.dbs;
+        let child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
+        let tip_hash = dbs
+            .current_chain_tip
+            .try_get(&child_rwtxn, &())?
+            .ok_or(error::ValidateTransactionInner::NoChainTip)?;
+        let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
+        #[cfg(feature = "drivechain")]
+        let drivechain_ok = {
+            let mut child_rwtxn = child_rwtxn;
+            self.validate_tx_drivechain_on_child(&mut child_rwtxn, transaction, tip_height)?
+        };
+        #[cfg(not(feature = "drivechain"))]
+        let drivechain_ok = true;
+        use crate::validator::quantum::{self, activation::Bip360Activation};
+        let bip360_ok = match quantum::validate_mempool_transaction(
+            transaction,
+            tip_height,
+            Bip360Activation(self.bip360_activation_height),
+            parent_txs,
+        ) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::debug!(?err, "BIP 360 mempool validation failed");
+                false
+            }
+        };
+        Ok(drivechain_ok && bip360_ok)
+    }
+
+    #[cfg(all(feature = "drivechain", not(feature = "bip360")))]
+    fn validate_tx_drivechain(
         &self,
         parent_rwtxn: &mut RwTxn,
         transaction: &Transaction,
@@ -996,10 +1089,25 @@ impl BlockHandler<'_> {
             .try_get(&child_rwtxn, &())?
             .ok_or(error::ValidateTransactionInner::NoChainTip)?;
         let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
-        match self.handle_transaction(&child_rwtxn, None, &tip_hash, transaction) {
+        self.validate_tx_drivechain_on_child(&mut child_rwtxn, transaction, tip_height)
+    }
+
+    #[cfg(feature = "drivechain")]
+    fn validate_tx_drivechain_on_child(
+        &self,
+        child_rwtxn: &mut RwTxn,
+        transaction: &Transaction,
+        tip_height: u32,
+    ) -> Result<bool, error::ValidateTransaction> {
+        let dbs = self.dbs;
+        let tip_hash = dbs
+            .current_chain_tip
+            .get(child_rwtxn, &())
+            .map_err(|err| error::ValidateTransactionInner::Db(Box::new(err.into())))?;
+        match self.handle_transaction(child_rwtxn, None, &tip_hash, transaction) {
             Ok(None) => Ok(true),
             Ok(Some((_, diff))) => {
-                let () = diff.apply(&mut child_rwtxn, &dbs.active_sidechains, tip_height)?;
+                let () = diff.apply(child_rwtxn, &dbs.active_sidechains, tip_height)?;
                 Ok(true)
             }
             Err(err) => match err.split() {
@@ -1009,9 +1117,84 @@ impl BlockHandler<'_> {
         }
     }
 
+    #[cfg(not(feature = "drivechain"))]
+    #[expect(clippy::result_large_err)]
+    fn connect_block_pass_through(
+        &self,
+        rwtxn: &mut RwTxn,
+        block: &Block,
+        height: u32,
+        coinbase: &Transaction,
+        block_hash: BlockHash,
+        prev_mainchain_block_hash: BlockHash,
+    ) -> Result<Event, error::ConnectBlock> {
+        let dbs = self.dbs;
+        use crate::validator::dbs::diff::{FailedM6ids, FailedProposals};
+        #[cfg(feature = "bip360")]
+        let p2mr_utxo_diff = {
+            use crate::validator::quantum::{self, activation::Bip360Activation};
+            let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
+            let p2mr_utxo_diff = quantum::validate_and_diff_block_transactions(
+                block,
+                height,
+                Bip360Activation(self.bip360_activation_height),
+                &chain_utxos,
+                self.pqc_verify_budget_ms,
+            )
+            .map_err(|source| error::ConnectBlock::Bip360 { block_hash, source })?;
+            p2mr_utxo_diff.apply(rwtxn, dbs, height)?;
+            p2mr_utxo_diff
+        };
+        let block_info = BlockInfo {
+            bmm_commitments: BmmCommitments::new(),
+            coinbase_txid: coinbase.compute_txid(),
+            events: vec![],
+        };
+        let block_diff = diff::Block {
+            coinbase: diff::Coinbase {
+                msgs: vec![],
+                failed_proposals: FailedProposals(HashMap::new()),
+                failed_m6ids: FailedM6ids(HashMap::new()),
+            },
+            txs: vec![],
+            #[cfg(feature = "bip360")]
+            p2mr_utxo: p2mr_utxo_diff,
+        };
+        let () = dbs
+            .block_hashes
+            .put_block_info(rwtxn, &block_hash, &block_info, &block_diff)
+            .map_err(error::ConnectBlock::PutBlockInfo)?;
+        let current_tip_cumulative_work: Option<Work> = 'work: {
+            let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
+                break 'work None;
+            };
+            Some(
+                dbs.block_hashes
+                    .cumulative_work()
+                    .get(rwtxn, &current_tip)?,
+            )
+        };
+        let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
+        if Some(cumulative_work) > current_tip_cumulative_work {
+            dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
+            tracing::trace!("updated current chain tip: {}", height);
+        }
+        Ok(Event::ConnectBlock {
+            header_info: HeaderInfo {
+                block_hash,
+                prev_block_hash: prev_mainchain_block_hash,
+                height,
+                work: block.header.work(),
+                timestamp: block.header.time,
+            },
+            block_info,
+        })
+    }
+
     /// Block header should be stored before calling this.
     #[tracing::instrument(skip_all)]
     #[expect(clippy::result_large_err)]
+    #[cfg_attr(not(feature = "drivechain"), expect(clippy::needless_return))]
     pub(in crate::validator) fn connect_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -1056,198 +1239,235 @@ impl BlockHandler<'_> {
         let Some(coinbase) = block.txdata.first() else {
             return Err(error::ConnectBlock::NoCoinbase);
         };
-        let mut coinbase_messages = CoinbaseMessages::default();
-        // map of sidechain proposals to first vout
-        let mut m1_sidechain_proposals = HashMap::new();
-        for (vout, output) in coinbase.output.iter().enumerate() {
-            let message = match CoinbaseMessage::parse(&output.script_pubkey) {
-                Ok((rest, message)) => {
-                    if !rest.is_empty() {
-                        tracing::warn!("Extra data in coinbase script: {:?}", hex::encode(rest));
-                    }
-                    message
-                }
-                Err(err) => {
-                    // Happens all the time. Would be nice to differentiate between "this isn't a BIP300 message"
-                    // and "we failed real bad".
-                    tracing::trace!(
-                        script = hex::encode(output.script_pubkey.to_bytes()),
-                        "Failed to parse coinbase script: {:?}",
-                        err
-                    );
-                    continue;
-                }
-            };
-            if let CoinbaseMessage::M1ProposeSidechain(M1ProposeSidechain {
-                sidechain_number,
-                description,
-            }) = &message
-            {
-                let description_hash = description.sha256d_hash();
-                m1_sidechain_proposals
-                    .entry((*sidechain_number, description_hash))
-                    .or_insert(vout as u32);
-            }
-            coinbase_messages.push(message, vout)?;
-        }
-        let mut accepted_bmm_requests = BmmCommitments::new();
-        let mut events = Vec::<BlockEvent>::new();
-        let mut coinbase_msg_diffs = diff::DiffBuilder::new(rwtxn, dbs, height);
-        let m4_exists = coinbase_messages.m4_exists();
-        for (message, _vout) in coinbase_messages {
-            let (event, diff) = coinbase_msg_diffs.rotxn(|rotxn, _dbs| {
-                self.handle_coinbase_message(
-                    rotxn,
-                    height,
-                    parent,
-                    &mut accepted_bmm_requests,
-                    message,
-                )
-            })?;
-            match event {
-                Some(CoinbaseMessageEvent::NewSidechainProposal { sidechain }) => {
-                    let proposal = sidechain.proposal;
-                    let description_hash = proposal.description.sha256d_hash();
-                    let index =
-                        m1_sidechain_proposals[&(proposal.sidechain_number, description_hash)];
-                    events.push(BlockEvent::SidechainProposal {
-                        vout: index,
-                        proposal,
-                    })
-                }
-                Some(CoinbaseMessageEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
-                    events.push(withdrawal_bundle_event.into());
-                }
-                None => (),
-            };
-            if let Some(diff) = diff {
-                let () = coinbase_msg_diffs.apply(diff)?;
-            }
-        }
-        if !m4_exists {
-            let diff = coinbase_msg_diffs.rotxn(|rotxn, dbs| {
-                let active_sidechains_count = dbs.active_sidechains.sidechain().len(rotxn)?;
-                let upvotes =
-                    vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
-                let m4 = M4AckBundles::OneByte { upvotes };
-                let diff = self.handle_m4_ack_bundles(rotxn, parent, &m4)?;
-                Ok::<_, error::ConnectBlock>(diff)
-            })?;
-            if !diff.0.is_empty() {
-                let () = coinbase_msg_diffs.apply(diff::CoinbaseMsg::AckBundles(diff))?;
-            }
-        }
-        // Coinbase msg diffs are already applied
-        let coinbase_msg_diffs = coinbase_msg_diffs.diffs();
-        let failed_sidechain_proposals_diff =
-            self.handle_failed_sidechain_proposals(rwtxn, height)?;
-        let () =
-            failed_sidechain_proposals_diff.apply(rwtxn, &dbs.proposal_id_to_sidechain, height)?;
-        let failed_m6ids_diff = self.handle_failed_m6ids(rwtxn, height)?;
-        let () = failed_m6ids_diff.apply(rwtxn, &dbs.active_sidechains, height)?;
-        events.extend(
-            failed_m6ids_diff
-                .0
-                .iter()
-                .flat_map(|(sidechain_id, failed_m6ids)| {
-                    failed_m6ids.values().map(|(m6id, _)| {
-                        WithdrawalBundleEvent {
-                            m6id: *m6id,
-                            sidechain_id: *sidechain_id,
-                            kind: WithdrawalBundleEventKind::Failed,
-                        }
-                        .into()
-                    })
-                }),
-        );
-        let coinbase_diff = diff::Coinbase {
-            msgs: coinbase_msg_diffs,
-            failed_proposals: failed_sidechain_proposals_diff,
-            failed_m6ids: failed_m6ids_diff,
-        };
-        tracing::trace!("Handled coinbase tx, handling other txs...");
         let block_hash = block.header.block_hash();
         let prev_mainchain_block_hash = block.header.prev_blockhash;
-        let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
-        'connect_txs: for transaction in &block.txdata[1..] {
-            let Some((tx_event, diff)) = tx_diffs
-                .rotxn(|rotxn, _dbs| {
-                    self.handle_transaction(
-                        rotxn,
-                        Some(&accepted_bmm_requests),
-                        &prev_mainchain_block_hash,
-                        transaction,
-                    )
-                })
-                .map_err(|source| error::ConnectBlock::Transaction {
-                    txid: transaction.compute_txid(),
-                    block_hash,
-                    source,
-                })?
-            else {
-                continue 'connect_txs;
-            };
-            let () = tx_diffs.apply(diff)?;
-            match tx_event {
-                TransactionEvent::Deposits(deposits) => {
-                    events.push(BlockEvent::Deposits(deposits));
-                }
-                TransactionEvent::WithdrawalBundle(withdrawal_bundle_event) => {
-                    events.push(withdrawal_bundle_event.into());
-                }
-            }
-        }
-        // Tx diffs are already applied
-        let tx_diffs = tx_diffs.diffs();
-        tracing::trace!("Handled block txs");
-        let block_info = BlockInfo {
-            bmm_commitments: accepted_bmm_requests.into_iter().collect(),
-            coinbase_txid: coinbase.compute_txid(),
-            events,
-        };
-        let block_diff = diff::Block {
-            coinbase: coinbase_diff,
-            txs: tx_diffs,
-        };
-        tracing::trace!("Storing block info");
-        let () = dbs
-            .block_hashes
-            .put_block_info(rwtxn, &block_hash, &block_info, &block_diff)
-            .map_err(error::ConnectBlock::PutBlockInfo)?;
-        tracing::trace!("Stored block info");
-        let current_tip_cumulative_work: Option<Work> = 'work: {
-            let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
-                break 'work None;
-            };
-            Some(
-                dbs.block_hashes
-                    .cumulative_work()
-                    .get(rwtxn, &current_tip)?,
-            )
-        };
-        let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
-        if Some(cumulative_work) > current_tip_cumulative_work {
-            dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
-            tracing::trace!("updated current chain tip: {}", height);
-        }
-        let event = {
-            let header_info = HeaderInfo {
-                block_hash,
-                prev_block_hash: prev_mainchain_block_hash,
+
+        #[cfg(not(feature = "drivechain"))]
+        {
+            return self.connect_block_pass_through(
+                rwtxn,
+                block,
                 height,
-                work: block.header.work(),
-                timestamp: block.header.time,
-            };
-            Event::ConnectBlock {
-                header_info,
-                block_info,
+                coinbase,
+                block_hash,
+                prev_mainchain_block_hash,
+            );
+        }
+
+        #[cfg(feature = "drivechain")]
+        {
+            let mut coinbase_messages = CoinbaseMessages::default();
+            // map of sidechain proposals to first vout
+            let mut m1_sidechain_proposals = HashMap::new();
+            for (vout, output) in coinbase.output.iter().enumerate() {
+                let message = match CoinbaseMessage::parse(&output.script_pubkey) {
+                    Ok((rest, message)) => {
+                        if !rest.is_empty() {
+                            tracing::warn!(
+                                "Extra data in coinbase script: {:?}",
+                                hex::encode(rest)
+                            );
+                        }
+                        message
+                    }
+                    Err(err) => {
+                        // Happens all the time. Would be nice to differentiate between "this isn't a BIP300 message"
+                        // and "we failed real bad".
+                        tracing::trace!(
+                            script = hex::encode(output.script_pubkey.to_bytes()),
+                            "Failed to parse coinbase script: {:?}",
+                            err
+                        );
+                        continue;
+                    }
+                };
+                if let CoinbaseMessage::M1ProposeSidechain(M1ProposeSidechain {
+                    sidechain_number,
+                    description,
+                }) = &message
+                {
+                    let description_hash = description.sha256d_hash();
+                    m1_sidechain_proposals
+                        .entry((*sidechain_number, description_hash))
+                        .or_insert(vout as u32);
+                }
+                coinbase_messages.push(message, vout)?;
             }
-        };
-        Ok(event)
+            let mut accepted_bmm_requests = BmmCommitments::new();
+            let mut events = Vec::<BlockEvent>::new();
+            let mut coinbase_msg_diffs = diff::DiffBuilder::new(rwtxn, dbs, height);
+            let m4_exists = coinbase_messages.m4_exists();
+            for (message, _vout) in coinbase_messages {
+                let (event, diff) = coinbase_msg_diffs.rotxn(|rotxn, _dbs| {
+                    self.handle_coinbase_message(
+                        rotxn,
+                        height,
+                        parent,
+                        &mut accepted_bmm_requests,
+                        message,
+                    )
+                })?;
+                match event {
+                    Some(CoinbaseMessageEvent::NewSidechainProposal { sidechain }) => {
+                        let proposal = sidechain.proposal;
+                        let description_hash = proposal.description.sha256d_hash();
+                        let index =
+                            m1_sidechain_proposals[&(proposal.sidechain_number, description_hash)];
+                        events.push(BlockEvent::SidechainProposal {
+                            vout: index,
+                            proposal,
+                        })
+                    }
+                    Some(CoinbaseMessageEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
+                        events.push(withdrawal_bundle_event.into());
+                    }
+                    None => (),
+                };
+                if let Some(diff) = diff {
+                    let () = coinbase_msg_diffs.apply(diff)?;
+                }
+            }
+            if !m4_exists {
+                let diff = coinbase_msg_diffs.rotxn(|rotxn, dbs| {
+                    let active_sidechains_count = dbs.active_sidechains.sidechain().len(rotxn)?;
+                    let upvotes =
+                        vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
+                    let m4 = M4AckBundles::OneByte { upvotes };
+                    let diff = self.handle_m4_ack_bundles(rotxn, parent, &m4)?;
+                    Ok::<_, error::ConnectBlock>(diff)
+                })?;
+                if !diff.0.is_empty() {
+                    let () = coinbase_msg_diffs.apply(diff::CoinbaseMsg::AckBundles(diff))?;
+                }
+            }
+            // Coinbase msg diffs are already applied
+            let coinbase_msg_diffs = coinbase_msg_diffs.diffs();
+            let failed_sidechain_proposals_diff =
+                self.handle_failed_sidechain_proposals(rwtxn, height)?;
+            let () = failed_sidechain_proposals_diff.apply(
+                rwtxn,
+                &dbs.proposal_id_to_sidechain,
+                height,
+            )?;
+            let failed_m6ids_diff = self.handle_failed_m6ids(rwtxn, height)?;
+            let () = failed_m6ids_diff.apply(rwtxn, &dbs.active_sidechains, height)?;
+            events.extend(
+                failed_m6ids_diff
+                    .0
+                    .iter()
+                    .flat_map(|(sidechain_id, failed_m6ids)| {
+                        failed_m6ids.values().map(|(m6id, _)| {
+                            WithdrawalBundleEvent {
+                                m6id: *m6id,
+                                sidechain_id: *sidechain_id,
+                                kind: WithdrawalBundleEventKind::Failed,
+                            }
+                            .into()
+                        })
+                    }),
+            );
+            let coinbase_diff = diff::Coinbase {
+                msgs: coinbase_msg_diffs,
+                failed_proposals: failed_sidechain_proposals_diff,
+                failed_m6ids: failed_m6ids_diff,
+            };
+            tracing::trace!("Handled coinbase tx, handling other txs...");
+            let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
+            'connect_txs: for transaction in &block.txdata[1..] {
+                let Some((tx_event, diff)) = tx_diffs
+                    .rotxn(|rotxn, _dbs| {
+                        self.handle_transaction(
+                            rotxn,
+                            Some(&accepted_bmm_requests),
+                            &prev_mainchain_block_hash,
+                            transaction,
+                        )
+                    })
+                    .map_err(|source| error::ConnectBlock::Transaction {
+                        txid: transaction.compute_txid(),
+                        block_hash,
+                        source,
+                    })?
+                else {
+                    continue 'connect_txs;
+                };
+                let () = tx_diffs.apply(diff)?;
+                match tx_event {
+                    TransactionEvent::Deposits(deposits) => {
+                        events.push(BlockEvent::Deposits(deposits));
+                    }
+                    TransactionEvent::WithdrawalBundle(withdrawal_bundle_event) => {
+                        events.push(withdrawal_bundle_event.into());
+                    }
+                }
+            }
+            // Tx diffs are already applied
+            let tx_diffs = tx_diffs.diffs();
+            tracing::trace!("Handled block txs");
+            #[cfg(feature = "bip360")]
+            let p2mr_utxo_diff = {
+                use crate::validator::quantum::{self, activation::Bip360Activation};
+                let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
+                let p2mr_utxo_diff = quantum::validate_and_diff_block_transactions(
+                    block,
+                    height,
+                    Bip360Activation(self.bip360_activation_height),
+                    &chain_utxos,
+                    self.pqc_verify_budget_ms,
+                )
+                .map_err(|source| error::ConnectBlock::Bip360 { block_hash, source })?;
+                p2mr_utxo_diff.apply(rwtxn, dbs, height)?;
+                p2mr_utxo_diff
+            };
+            let block_info = BlockInfo {
+                bmm_commitments: accepted_bmm_requests.into_iter().collect(),
+                coinbase_txid: coinbase.compute_txid(),
+                events,
+            };
+            let block_diff = diff::Block {
+                coinbase: coinbase_diff,
+                txs: tx_diffs,
+                #[cfg(feature = "bip360")]
+                p2mr_utxo: p2mr_utxo_diff,
+            };
+            tracing::trace!("Storing block info");
+            let () = dbs
+                .block_hashes
+                .put_block_info(rwtxn, &block_hash, &block_info, &block_diff)
+                .map_err(error::ConnectBlock::PutBlockInfo)?;
+            tracing::trace!("Stored block info");
+            let current_tip_cumulative_work: Option<Work> = 'work: {
+                let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
+                    break 'work None;
+                };
+                Some(
+                    dbs.block_hashes
+                        .cumulative_work()
+                        .get(rwtxn, &current_tip)?,
+                )
+            };
+            let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
+            if Some(cumulative_work) > current_tip_cumulative_work {
+                dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
+                tracing::trace!("updated current chain tip: {}", height);
+            }
+            let event = {
+                let header_info = HeaderInfo {
+                    block_hash,
+                    prev_block_hash: prev_mainchain_block_hash,
+                    height,
+                    work: block.header.work(),
+                    timestamp: block.header.time,
+                };
+                Event::ConnectBlock {
+                    header_info,
+                    block_info,
+                }
+            };
+            Ok(event)
+        } // drivechain
     }
 
-    // TODO: Add unit tests ensuring that `connect_block` and `disconnect_block` are inverse
-    // operations.
     pub(in crate::validator) fn disconnect_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -1816,7 +2036,7 @@ impl BlockHandler<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "drivechain"))]
 mod tests {
     use std::borrow::Cow;
 
@@ -1839,7 +2059,14 @@ mod tests {
 
     /// `BlockHandler` bound to a test `Dbs`. Regtest gets [`Thresholds::SHORT`].
     fn test_handler(dbs: &Dbs) -> BlockHandler<'_> {
-        BlockHandler::new(dbs, bitcoin::Network::Regtest)
+        BlockHandler::new(
+            dbs,
+            bitcoin::Network::Regtest,
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::quantum::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+        )
     }
 
     fn build_m8_tx(
@@ -3108,6 +3335,8 @@ mod tests {
                 failed_m6ids: diff::FailedM6ids(HashMap::new()),
             },
             txs: Vec::new(),
+            #[cfg(feature = "bip360")]
+            p2mr_utxo: Default::default(),
         };
         let block_info = BlockInfo {
             bmm_commitments: LinkedHashMap::new(),
@@ -3419,6 +3648,121 @@ mod tests {
             diff.0.get(&sc),
             Some(diff::AckBundleAction::Upvote { m6id, .. }) if *m6id == leader
         ));
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "bip360"))]
+mod bip360_connect_disconnect_tests {
+    use bitcoin::{
+        Amount, Block, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid,
+        hashes::Hash as _,
+    };
+    use miette::{IntoDiagnostic, Result};
+
+    use super::BlockHandler;
+    use crate::validator::{
+        quantum::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend},
+        test_utils::create_test_dbs,
+    };
+    use bitcoin::sighash::TapSighashType;
+
+    fn test_handler(dbs: &crate::validator::dbs::Dbs) -> BlockHandler<'_> {
+        BlockHandler::new(
+            dbs,
+            bitcoin::Network::Regtest,
+            0,
+            crate::validator::quantum::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+        )
+    }
+
+    fn coinbase_tx() -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout: 0xFFFF_FFFF,
+                },
+                ..TxIn::default()
+            }],
+            output: vec![TxOut {
+                script_pubkey: ScriptBuf::new(),
+                value: Amount::from_sat(50_0000_0000),
+            }],
+        }
+    }
+
+    fn block_with_txs(prev_hash: BlockHash, extra_txs: Vec<Transaction>) -> Block {
+        let mut txdata = vec![coinbase_tx()];
+        txdata.extend(extra_txs);
+        Block {
+            header: bitcoin::block::Header {
+                version: bitcoin::block::Version::TWO,
+                prev_blockhash: prev_hash,
+                merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+                time: 0,
+                // Regtest genesis difficulty — keeps per-block work small so
+                // cumulative work across a short chain does not overflow U256.
+                bits: bitcoin::CompactTarget::from_consensus(0x207f_ffff),
+                nonce: 0,
+            },
+            txdata,
+        }
+    }
+
+    #[test]
+    fn connect_disconnect_p2mr_utxo_roundtrip_through_handler() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let handler = test_handler(&dbs);
+        let (event_tx, _) = async_broadcast::broadcast(16);
+
+        let signed = sign_p2mr_script_path_spend(
+            SignAlgorithm::Schnorr,
+            &[0x88; 32],
+            TapSighashType::All,
+            50_000,
+            40_000,
+        )
+        .map_err(|e| miette::miette!(e))?;
+
+        let genesis_hash = BlockHash::all_zeros();
+        let funding_block = block_with_txs(genesis_hash, vec![signed.funding_tx]);
+        let funding_hash = funding_block.header.block_hash();
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(funding_block.header, 0)])
+            .into_diagnostic()?;
+        handler
+            .connect_block(&mut rwtxn, &funding_block)
+            .into_diagnostic()?;
+
+        let chain_utxos = dbs.p2mr_utxos.load_map(&rwtxn).into_diagnostic()?;
+        assert_eq!(chain_utxos.len(), 1);
+
+        let spend_block = block_with_txs(funding_hash, vec![signed.signed_spend_tx]);
+        let spend_hash = spend_block.header.block_hash();
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(spend_block.header, 1)])
+            .into_diagnostic()?;
+        handler
+            .connect_block(&mut rwtxn, &spend_block)
+            .into_diagnostic()?;
+        assert!(
+            dbs.p2mr_utxos
+                .load_map(&rwtxn)
+                .into_diagnostic()?
+                .is_empty()
+        );
+
+        handler
+            .disconnect_block(&mut rwtxn, &event_tx, spend_hash)
+            .into_diagnostic()?;
+        let restored = dbs.p2mr_utxos.load_map(&rwtxn).into_diagnostic()?;
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored, chain_utxos);
         Ok(())
     }
 }

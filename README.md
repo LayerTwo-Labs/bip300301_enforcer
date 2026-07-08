@@ -1,3 +1,28 @@
+# Feature matrix
+
+| Build | Command |
+|-------|---------|
+| Drivechain (default) | `cargo build` |
+| BIP 360 CUSF only | `cargo build --no-default-features --features bip360` |
+| Both rule sets | `cargo build --features "drivechain,bip360"` |
+
+See [docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md) for BIP 360 activation height,
+signature duck typing, and module layout.
+
+Contributors and agents: read [AGENTS.md](./AGENTS.md) for fork context, TDD
+expectations, **workspace boundary** (stay within the opened workspace root;
+external paths need permission and read-only access), integration-test
+prerequisites, git signing
+policy, and **HITL guardrails** (human-only upstream PR, live integration,
+Kellnr publish).
+
+Day-to-day commands live in [Justfile](./Justfile) — run `just` from this
+directory (or from the workspace root). Quick start: `just verify`, `just setup-core`,
+`just demo-a`, `just demo-b`.
+
+Requirements traceability: [`cusf/CRITERIA_AUDIT.md`](../CRITERIA_AUDIT.md);
+canonical status: [`cusf/STATUS.md`](../STATUS.md).
+
 # Requirements
 
 1. Bitcoin Core, with ZMQ support. For information on running this on the global
@@ -204,5 +229,5 @@ $ cargo flamegraph --  --data-dir ./datadir \
           --enable-mempool --exit-after-sync 100000
 
 # macOS only
-$ ./scripts/trace_enforcer_macos.sh
+$ just trace-macos
 ```

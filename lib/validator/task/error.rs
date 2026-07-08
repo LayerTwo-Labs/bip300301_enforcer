@@ -397,6 +397,14 @@ pub(in crate::validator) enum ConnectBlock {
         #[source]
         source: HandleTransaction,
     },
+    #[cfg(feature = "bip360")]
+    #[error("BIP 360 validation failed for block `{block_hash}`")]
+    #[fatal(false)]
+    Bip360 {
+        block_hash: bitcoin::BlockHash,
+        #[source]
+        source: crate::validator::quantum::QuantumValidationError,
+    },
 }
 
 impl From<db::Error> for ConnectBlock {

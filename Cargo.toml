@@ -87,6 +87,15 @@ transitive = "1.2.0"
 url = "2.5.8"
 uuid = "1.23.3"
 
+[workspace.dependencies.bitcoin-p2mr-pqc]
+package = "bitcoin-p2mr-pqc"
+version = "0.32.6-p2mr-pqc.1"
+registry = "kellnr-denver-space"
+
+[workspace.dependencies.bitcoinpqc]
+git = "https://github.com/cryptoquick/libbitcoinpqc-bindings.git"
+rev = "5ef70672649fe21937318652e7ee7ad78f8e9405" # PR #1 wasm-tests + libbitcoinpqc @ b309f44 (PR #29)
+
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
 rev = "db1fdfd5ecddfc7855cd872546b47429cb29a0bf"

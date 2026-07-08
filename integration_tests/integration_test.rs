@@ -838,5 +838,164 @@ pub fn tests(
         crate::test_blinded_m6_roundtrip::test_blinded_m6_zero_input_roundtrip,
     ));
 
+    #[cfg(feature = "bip360")]
+    fn bip360_trial_components(
+        bin_paths: BinPaths,
+        file_registry: TestFileRegistry,
+        failure_collector: TestFailureCollector,
+    ) -> TestSetupComponents {
+        TestSetupComponents {
+            bin_paths,
+            network: Network::Regtest,
+            // `new_trial` does not call `setup`; each BIP360 trial invokes
+            // `pre_setup.setup(Mode::NoMempool, bip360_setup_opts(), …)` itself.
+            mode: Mode::NoMempool,
+            file_registry,
+            failure_collector,
+        }
+    }
+
+    #[cfg(feature = "bip360")]
+    macro_rules! bip360_trial {
+        ($name:expr, $test_fn:expr) => {
+            async_trials.push(new_trial(
+                $name.to_string(),
+                bip360_trial_components(
+                    bin_paths.clone(),
+                    file_registry.clone(),
+                    failure_collector.clone(),
+                ),
+                $test_fn,
+            ));
+        };
+    }
+    #[cfg(feature = "bip360")]
+    {
+        bip360_trial!(
+            "bip360_invalid_block",
+            crate::test_bip360_invalid_block::test_bip360_invalid_block
+        );
+        bip360_trial!(
+            "bip360_valid_schnorr_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_schnorr_spend
+        );
+        bip360_trial!(
+            "bip360_valid_mldsa_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_mldsa_spend
+        );
+        bip360_trial!(
+            "bip360_valid_slh_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_slh_spend
+        );
+        bip360_trial!(
+            "bip360_valid_cross_block_schnorr_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_cross_block_schnorr_spend
+        );
+        bip360_trial!(
+            "bip360_valid_cross_block_mldsa_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_cross_block_mldsa_spend
+        );
+        bip360_trial!(
+            "bip360_valid_cross_block_slh_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_cross_block_slh_spend
+        );
+        bip360_trial!(
+            "bip360_invalid_signature",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_signature
+        );
+        bip360_trial!(
+            "bip360_invalid_pubkey_size",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_pubkey_size
+        );
+        bip360_trial!(
+            "bip360_invalid_merkle_path",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_merkle_path
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_signature_schnorr",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_signature_schnorr
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_signature_mldsa",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_signature_mldsa
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_signature_slh",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_signature_slh
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_merkle_path_schnorr",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_merkle_path_schnorr
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_merkle_path_mldsa",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_merkle_path_mldsa
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_merkle_path_slh",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_merkle_path_slh
+        );
+        bip360_trial!(
+            "bip360_invalid_cross_block_pubkey_size_mldsa",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_pubkey_size_mldsa
+        );
+        bip360_trial!(
+            "bip360_valid_hybrid_ec_slh_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_hybrid_ec_slh_spend
+        );
+        bip360_trial!(
+            "bip360_valid_hybrid_ec_slh_cross_block_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_hybrid_ec_slh_cross_block_spend
+        );
+        bip360_trial!(
+            "bip360_invalid_hybrid_ec_slh_tamper_ec_sig",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_tamper_ec_sig
+        );
+        bip360_trial!(
+            "bip360_invalid_hybrid_ec_slh_tamper_slh_sig",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_tamper_slh_sig
+        );
+        bip360_trial!(
+            "bip360_invalid_hybrid_ec_slh_swap_sigs",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_swap_sigs
+        );
+        bip360_trial!(
+            "bip360_valid_multi_leaf_schnorr_spend",
+            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_schnorr_spend
+        );
+        bip360_trial!(
+            "bip360_valid_multi_leaf_mldsa_spend",
+            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_mldsa_spend
+        );
+        bip360_trial!(
+            "bip360_valid_multi_leaf_slh_spend",
+            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_slh_spend
+        );
+        bip360_trial!(
+            "bip360_valid_multi_leaf_cross_block_mldsa_spend",
+            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_cross_block_mldsa_spend
+        );
+        bip360_trial!(
+            "bip360_valid_multi_leaf_cross_block_schnorr_spend",
+            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_cross_block_schnorr_spend
+        );
+        bip360_trial!(
+            "bip360_valid_multi_leaf_cross_block_slh_spend",
+            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_cross_block_slh_spend
+        );
+        bip360_trial!(
+            "bip360_invalid_multi_leaf_wrong_control_block",
+            crate::test_bip360_multi_leaf::test_bip360_invalid_multi_leaf_wrong_control_block
+        );
+        bip360_trial!(
+            "bip360_invalid_multi_leaf_cross_block_wrong_control_block",
+            crate::test_bip360_multi_leaf::test_bip360_invalid_multi_leaf_cross_block_wrong_control_block
+        );
+        bip360_trial!(
+            "bip360_invalid_multi_leaf_tampered_signature_mldsa",
+            crate::test_bip360_multi_leaf::test_bip360_invalid_multi_leaf_tampered_signature_mldsa
+        );
+    }
+
     async_trials
 }

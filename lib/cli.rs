@@ -457,6 +457,16 @@ pub struct Config {
         conflicts_with = "bitcoin_core_expected_version"
     )]
     pub bitcoin_core_skip_version_check: bool,
+
+    /// Block height at which BIP 360 P2MR/PQC rules activate (regtest default: 0).
+    #[cfg(feature = "bip360")]
+    #[arg(long = "activation-height", default_value_t = 0)]
+    pub activation_height: u32,
+
+    /// Per-block wall-time budget (ms) for PQC signature verification during block connect.
+    #[cfg(feature = "bip360")]
+    #[arg(long = "pqc-verify-budget-ms", default_value_t = 500)]
+    pub pqc_verify_budget_ms: u64,
 }
 
 impl Config {

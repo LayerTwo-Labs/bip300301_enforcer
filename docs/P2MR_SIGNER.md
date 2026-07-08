@@ -1,0 +1,139 @@
+# P2MR external signer CLI
+
+Minimal command-line signer for P2MR **script-path** spends using the CUSF **overload
+model** (`PUSH <pk> OP_CHECKSIG` — not ref-impl `OP_SUBSTR`).
+
+Source: `lib/examples/p2mr_signer.rs` (uses shared helpers in `lib/validator/quantum/signer_dev.rs`)
+
+## Security warning
+
+**Demo / regtest only.** `--entropy-hex` is passed on the command line and is visible in
+`ps`, shell history, and `/proc`. There is no stdin or file input. **Never use mainnet
+secrets** with this tool; use isolated regtest keys only.
+
+## Build
+
+```bash
+cd bip300301_enforcer
+cargo build --example p2mr_signer --no-default-features --features bip360
+```
+
+Requires Kellnr registry (`.cargo/config.toml`) for `bitcoin-p2mr-pqc`.
+
+## Usage
+
+```bash
+cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+  --algorithm <schnorr|mldsa|slh> \
+  --entropy-hex <hex> \
+  [--sighash <type>] \
+  [--prevout-value <sats>] \
+  [--output-value <sats>]
+```
+
+### Flags
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--algorithm` | yes | `schnorr` (secp256k1 BIP 340), `mldsa` (ML-DSA-44), `slh` (SLH-DSA-SHA2-128s) |
+| `--entropy-hex` | yes | Deterministic keygen seed (hex). Schnorr: **exactly** 32 B (64 hex chars) — `bitcoinpqc` uses this as the secret key scalar (extra bytes are rejected). PQC: ≥128 B (256 hex chars). |
+| `--sighash` | no | `all` (default), `none`, `single`, `all,anyonecanpay`, `none,anyonecanpay`, `single,anyonecanpay` |
+| `--prevout-value` | no | Funding output value in sats (default `50000`) |
+| `--output-value` | no | Spend output value in sats (default `40000`; must be ≤ `--prevout-value`) |
+
+### Examples
+
+**Schnorr (32-byte secret as entropy):**
+
+```bash
+cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+  --algorithm schnorr \
+  --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111
+```
+
+**ML-DSA-44:**
+
+```bash
+cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+  --algorithm mldsa \
+  --entropy-hex "$(printf '11%.0s' {1..128})"
+```
+
+**SLH-DSA-SHA2-128s with `SIGHASH_NONE`:**
+
+```bash
+cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+  --algorithm slh \
+  --entropy-hex "$(printf '42%.0s' {1..128})" \
+  --sighash none
+```
+
+## Output (JSON)
+
+Stdout is a single JSON object:
+
+| Field | Meaning |
+|-------|---------|
+| `algorithm` | `schnorr`, `mldsa`, or `slh` |
+| `sighash` | Canonical sighash name (`all`, `none`, `single`, …) matching CLI `--sighash` |
+| `public_key_hex` | Leaf pubkey bytes |
+| `leaf_script_hex` | `PUSH <pk> OP_CHECKSIG` leaf |
+| `merkle_root_hex` | Single-leaf merkle root |
+| `script_pubkey_hex` | P2MR `5220<root>` output |
+| `control_block_hex` | Single-leaf P2MR control block (`0xc1` + 32 zero padding) |
+| `sighash_hex` | 32-byte tapscript sighash that was signed |
+| `signature_hex` | Witness signature element (with trailing sighash byte when not `ALL`) |
+| `witness_stack_hex` | Bottom → top: `[signature, leaf_script, control_block]` |
+| `funding_tx_hex` | Synthetic demo tx creating the P2MR UTXO (output-only; no inputs) |
+| `unsigned_spend_tx_hex` | Spend tx before witness is attached |
+| `signed_spend_tx_hex` | Spend tx with complete witness |
+
+The `funding_tx_hex` is a **synthetic UTXO creator** for `submitblock` harnesses — not a
+standard wallet funding transaction (it has zero inputs).
+
+## Regtest demo workflow
+
+1. Run the signer and capture JSON.
+2. Mine `funding_tx_hex` into a block (or use `submitblock` in a test harness).
+3. Submit `signed_spend_tx_hex` in a follow-up block.
+4. With the BIP 360 enforcer active (`--activation-height 0`), valid spends are retained;
+   invalid witness / sig / merkle paths trigger `invalidateblock`.
+
+See also [`REGTEST_DEMO.md`](./REGTEST_DEMO.md) (Scenario A valid spend) and
+[`CUSF-BIP360.md`](./CUSF-BIP360.md).
+
+### Scenario A — valid P2MR spend (signer JSON)
+
+```bash
+# 1. Generate signed spend JSON
+SIGNER_JSON=$(cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+  --algorithm schnorr \
+  --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111)
+
+FUNDING_HEX=$(echo "$SIGNER_JSON" | jq -r .funding_tx_hex)
+SIGNED_HEX=$(echo "$SIGNER_JSON" | jq -r .signed_spend_tx_hex)
+
+# 2. Build block: coinbase + funding_tx + signed_spend_tx (submitblock / harness)
+# 3. Confirm enforcer retains block (no "BIP 360 validation failed" in logs)
+```
+
+Automated enforcer acceptance is covered by `quantum::spend` roundtrip tests
+(`p2mr_signer_roundtrip_*`).
+
+## Leaf format
+
+| Algorithm | Leaf script | Pubkey size |
+|-----------|-------------|-------------|
+| Schnorr | `PUSH32 <pk> OP_CHECKSIG` | 32 B |
+| SLH-DSA-SHA2-128s | `PUSH32 <pk> OP_CHECKSIG` | 32 B |
+| ML-DSA-44 | `PUSHDATA2(1312) <pk> OP_CHECKSIG` | 1312 B |
+
+Hybrid EC+PQ leaves (multiple `OP_CHECKSIG` sites) are not generated by this tool; build
+those scripts manually and sign each sighash site separately.
+
+## References
+
+- Enforcer overload rules: [`BIP360_OVERLOAD_ADDENDUM.md`](./BIP360_OVERLOAD_ADDENDUM.md)
+- Shared signing logic: `lib/validator/quantum/signer_dev.rs`
+- Roundtrip tests: `lib/validator/quantum/spend.rs` (`p2mr_signer_roundtrip_*`)
+- Crypto: [`bitcoinpqc`](https://github.com/cryptoquick/libbitcoinpqc-bindings) via workspace git pin ([PR #1](https://github.com/cryptoquick/libbitcoinpqc-bindings/pull/1))

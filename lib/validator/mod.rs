@@ -28,6 +28,8 @@ pub mod cusf_enforcer;
 mod dbs;
 pub mod main_rest_client;
 pub mod parse_block_files;
+#[cfg(feature = "bip360")]
+pub mod quantum;
 mod sync_state_summary;
 mod task;
 #[cfg(test)]
@@ -417,6 +419,10 @@ pub struct Validator {
     mainchain_rest_client: MainRestClient,
     mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
+    #[cfg(feature = "bip360")]
+    bip360_activation_height: u32,
+    #[cfg(feature = "bip360")]
+    pqc_verify_budget_ms: u64,
 }
 
 impl Validator {
@@ -426,6 +432,8 @@ impl Validator {
         mainchain_blocks_dir: Option<PathBuf>,
         data_dir: &Path,
         network: bitcoin::Network,
+        #[cfg(feature = "bip360")] bip360_activation_height: u32,
+        #[cfg(feature = "bip360")] pqc_verify_budget_ms: u64,
     ) -> Result<Self, InitError> {
         // Note: this needs to be reasonably big. If set too small,
         // we're going to run into strange issues with the broadcast
@@ -449,7 +457,21 @@ impl Validator {
             mainchain_rest_client,
             mainchain_blocks_dir,
             network,
+            #[cfg(feature = "bip360")]
+            bip360_activation_height,
+            #[cfg(feature = "bip360")]
+            pqc_verify_budget_ms,
         })
+    }
+
+    #[cfg(feature = "bip360")]
+    pub fn bip360_activation_height(&self) -> u32 {
+        self.bip360_activation_height
+    }
+
+    #[cfg(feature = "bip360")]
+    pub fn pqc_verify_budget_ms(&self) -> u64 {
+        self.pqc_verify_budget_ms
     }
 
     pub fn network(&self) -> bitcoin::Network {

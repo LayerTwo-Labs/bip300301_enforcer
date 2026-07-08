@@ -88,6 +88,46 @@ jobs:
         # prettier-ignore
         run: cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
 
+  check-bip360:
+    name: Check BIP 360 feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          rustup install
+          rustup component add clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu-bip360
+
+      - name: Cargo check (bip360 only)
+        run: cargo check --no-default-features --features bip360 --all-targets
+
+      - name: Test quantum module
+        run: cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::
+
+      - name: P2MR signer smoke test
+        run: |
+          cargo build --example p2mr_signer --no-default-features --features bip360
+          cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 p2mr_signer_roundtrip -- --nocapture
+          cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+            --algorithm schnorr \
+            --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111 \
+            | grep -q signed_spend_tx_hex
+
+      - name: Clippy (bip360)
+        run: cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
+
+      - name: Clippy (integration_tests bip360)
+        run: cargo clippy -p bip300301_enforcer_integration_tests --features bip360 -- -D warnings
+
+      - name: Check integration_tests example (bip360)
+        run: cargo check --example integration_tests --features bip360
+
   check-clippy:
     name: Check, Lint
     runs-on: ubuntu-latest
@@ -299,13 +339,17 @@ jobs:
           wget -q "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz"
           tar -xzf "grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" -C ~/grpcurl-bin grpcurl
 
+      - name: Install just
+        if: matrix.flavor == 'patched'
+        uses: extractions/setup-just@v3
+
       - name: Verify gRPC reflection (grpcurl + buf curl)
         if: matrix.flavor == 'patched'
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
           export BITCOIND='../bitcoin-bins/bitcoind'
           export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
-          ./scripts/verify_reflection.sh
+          just verify-reflection
 
       - name: Run integration tests
         # Stock Bitcoin Core rejects drivechain deposit transactions with

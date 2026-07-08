@@ -1108,6 +1108,10 @@ async fn main() -> Result<()> {
         cli.node_blocks_dir_opts.dir.clone(),
         &validator_data_dir,
         info.chain,
+        #[cfg(feature = "bip360")]
+        cli.activation_height,
+        #[cfg(feature = "bip360")]
+        cli.pqc_verify_budget_ms,
     )
     .into_diagnostic()?;
 

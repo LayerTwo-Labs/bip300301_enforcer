@@ -433,7 +433,6 @@ fn bitcoind_path(
     }
 }
 
-#[derive(Default)]
 pub struct SetupOpts<
     BitcoindArg = String,
     EnforcerArg = String,
@@ -448,6 +447,26 @@ pub struct SetupOpts<
     pub bitcoind_args: BitcoindArgs,
     pub bitcoind_kind: BitcoindKind,
     pub enforcer_args: EnforcerArgs,
+    /// When false, skip electrs and run the enforcer as validator-only (BIP 360 trials).
+    pub enable_enforcer_wallet: bool,
+}
+
+impl<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs> Default
+    for SetupOpts<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>
+where
+    BitcoindArg: AsRef<OsStr>,
+    EnforcerArg: AsRef<OsStr>,
+    BitcoindArgs: IntoIterator<Item = BitcoindArg> + Default,
+    EnforcerArgs: IntoIterator<Item = EnforcerArg> + Default,
+{
+    fn default() -> Self {
+        Self {
+            bitcoind_args: BitcoindArgs::default(),
+            bitcoind_kind: BitcoindKind::default(),
+            enforcer_args: EnforcerArgs::default(),
+            enable_enforcer_wallet: true,
+        }
+    }
 }
 
 type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
@@ -573,8 +592,10 @@ impl PostSetup {
         } else {
             None
         };
-        // Mine 1 block
-        tracing::debug!(%mining_address, "Mining 1 block");
+        // BIP 360 trials fund P2MR outputs from a mature coinbase (COINBASE_MATURITY
+        // is 100); validator-only harnesses mine 101 blocks up front.
+        let initial_blocks = if opts.enable_enforcer_wallet { 1 } else { 101 };
+        tracing::debug!(%mining_address, initial_blocks, "Mining initial blocks");
         if let Some(signet_miner) = signet_miner.as_ref() {
             let mine_output = signet_miner
                 .command("generate", vec!["--address", &mining_address.to_string()])
@@ -589,44 +610,52 @@ impl PostSetup {
             anyhow::ensure!(blocks == 1);
             tracing::debug!("Mined 1 block: `{mine_output}`");
         } else {
+            let n_blocks = initial_blocks.to_string();
+            let mining_addr = mining_address.to_string();
             let _output = bitcoin_cli
-                .command::<String, _, _, _, _>(
-                    [],
-                    "generatetoaddress",
-                    ["1", &mining_address.to_string()],
-                )
+                .command::<String, _, _, _, _>([], "generatetoaddress", [&n_blocks, &mining_addr])
                 .run_utf8()
                 .await?;
         }
-        // Start electrs
-        tracing::debug!("Starting electrs");
-        let electrs = Electrs {
-            path: bin_paths.electrs()?.clone(),
-            db_dir: dirs.electrs_dir.clone(),
-            auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
-            daemon_dir: bitcoind.data_dir.join("path"),
-            daemon_rpc_port: bitcoind.rpc_port,
-            electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
-            electrum_http_port: reserved_ports.electrs_electrum_http.port(),
-            monitoring_port: reserved_ports.electrs_monitoring.port(),
-            network: bitcoind.network,
-            signet_magic: signet_setup.as_ref().map(|setup| setup.signet_magic),
-        };
-        let electrs_task = electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
-            let res_tx = res_tx.clone();
-            move |err| {
-                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-            }
-        });
-        // wait for electrs to start
-        sleep(std::time::Duration::from_secs(1)).await;
+        let (wallet_electrum_rpc_port, wallet_electrum_http_port, electrs_task) =
+            if opts.enable_enforcer_wallet {
+                tracing::debug!("Starting electrs");
+                let electrs = Electrs {
+                    path: bin_paths.electrs()?.clone(),
+                    db_dir: dirs.electrs_dir.clone(),
+                    auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
+                    daemon_dir: bitcoind.data_dir.join("path"),
+                    daemon_rpc_port: bitcoind.rpc_port,
+                    electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
+                    electrum_http_port: reserved_ports.electrs_electrum_http.port(),
+                    monitoring_port: reserved_ports.electrs_monitoring.port(),
+                    network: bitcoind.network,
+                    signet_magic: signet_setup.as_ref().map(|setup| setup.signet_magic),
+                };
+                let electrs_task =
+                    electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
+                        let res_tx = res_tx.clone();
+                        move |err| {
+                            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+                        }
+                    });
+                sleep(std::time::Duration::from_secs(1)).await;
+                (
+                    electrs.electrum_rpc_port,
+                    electrs.electrum_http_port,
+                    electrs_task,
+                )
+            } else {
+                tracing::debug!("Skipping electrs (validator-only enforcer)");
+                (0, 0, tokio::spawn(async {}).into())
+            };
         // Start BIP300301 Enforcer
         tracing::debug!("Starting bip300301_enforcer");
         let enforcer = Enforcer {
             path: bin_paths.bip300301_enforcer()?.clone(),
             data_dir: dirs.enforcer_dir.clone(),
             enable_mempool: mode.enable_mempool(),
-            enable_wallet: true,
+            enable_wallet: opts.enable_enforcer_wallet,
             node_blocks_dir: None,
             node_rpc_user: bitcoind.rpc_user,
             node_rpc_pass: bitcoind.rpc_pass,
@@ -634,8 +663,8 @@ impl PostSetup {
             node_zmq_sequence_port: bitcoind.zmq_sequence_port,
             serve_grpc_port: reserved_ports.enforcer_serve_grpc.port(),
             serve_rpc_port: reserved_ports.enforcer_serve_rpc.port(),
-            wallet_electrum_rpc_port: electrs.electrum_rpc_port,
-            wallet_electrum_http_port: electrs.electrum_http_port,
+            wallet_electrum_rpc_port,
+            wallet_electrum_http_port,
         };
         let enforcer_task = enforcer.spawn_command_with_args(
             [(

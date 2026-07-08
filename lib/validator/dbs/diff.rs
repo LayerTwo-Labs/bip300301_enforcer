@@ -607,6 +607,25 @@ impl Diff for Tx {
 pub struct Block {
     pub coinbase: Coinbase,
     pub txs: Vec<Tx>,
+    /// P2MR UTXO changes applied when this block was connected.
+    #[cfg(feature = "bip360")]
+    #[serde(default)]
+    pub p2mr_utxo: crate::validator::quantum::p2mr_utxo::P2mrUtxoBlockDiff,
+}
+
+#[cfg(feature = "bip360")]
+impl Diff for crate::validator::quantum::p2mr_utxo::P2mrUtxoBlockDiff {
+    type Dbs = dbs::Dbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
+
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
+        dbs.p2mr_utxos.apply_diff(rwtxn, &self.spent, &self.created)
+    }
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+        dbs.p2mr_utxos.undo_diff(rwtxn, &self.spent, &self.created)
+    }
 }
 
 impl Diff for Block {
@@ -615,16 +634,30 @@ impl Diff for Block {
     type UndoError = UndoError;
 
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
-        let Self { coinbase, txs } = self;
+        let Self {
+            coinbase,
+            txs,
+            #[cfg(feature = "bip360")]
+            p2mr_utxo,
+        } = self;
         let () = coinbase.apply(rwtxn, dbs, height)?;
         for tx in txs {
             let () = tx.apply(rwtxn, &dbs.active_sidechains, height)?;
         }
+        #[cfg(feature = "bip360")]
+        p2mr_utxo.apply(rwtxn, dbs, height)?;
         Ok(())
     }
 
     fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
-        let Self { coinbase, txs } = self;
+        let Self {
+            coinbase,
+            txs,
+            #[cfg(feature = "bip360")]
+            p2mr_utxo,
+        } = self;
+        #[cfg(feature = "bip360")]
+        p2mr_utxo.undo(rwtxn, dbs)?;
         for tx in txs.iter().rev() {
             let () = tx.undo(rwtxn, &dbs.active_sidechains)?;
         }
