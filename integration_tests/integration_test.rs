@@ -838,5 +838,17 @@ pub fn tests(
         crate::test_blinded_m6_roundtrip::test_blinded_m6_zero_input_roundtrip,
     ));
 
+    async_trials.push(new_trial(
+        "reusable_payments_roundtrip".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_reusable_payments::test_reusable_payments,
+    ));
+
     async_trials
 }

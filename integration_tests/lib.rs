@@ -8,5 +8,6 @@ mod test_file_based_block_parser;
 mod test_inactive_drivechain_output;
 mod test_invalid_block;
 mod test_peer_bmm_request;
+mod test_reusable_payments;
 mod test_unconfirmed_transactions;
 pub mod util;

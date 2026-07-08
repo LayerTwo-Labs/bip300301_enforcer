@@ -797,6 +797,10 @@ pub struct Enforcer {
     pub serve_rpc_port: u16,
     pub wallet_electrum_rpc_port: u16,
     pub wallet_electrum_http_port: u16,
+    /// Create the wallet from this seed file instead of a random mnemonic.
+    /// `--wallet-seed-file` conflicts with `--wallet-auto-create`, so exactly
+    /// one of the two is passed.
+    pub wallet_seed_file: Option<PathBuf>,
 }
 
 impl Enforcer {
@@ -829,9 +833,13 @@ impl Enforcer {
         }
 
         if self.enable_wallet {
+            let wallet_create_arg = match &self.wallet_seed_file {
+                Some(seed_file) => format!("--wallet-seed-file={}", seed_file.display()),
+                None => "--wallet-auto-create".to_owned(),
+            };
             default_args.extend(vec![
                 "--enable-wallet".to_owned(),
-                "--wallet-auto-create".to_owned(),
+                wallet_create_arg,
                 format!("--wallet-electrum-host=127.0.0.1"),
                 format!("--wallet-electrum-port={}", self.wallet_electrum_rpc_port),
                 format!(

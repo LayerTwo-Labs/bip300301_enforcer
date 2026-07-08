@@ -518,6 +518,7 @@ dependencies = [
  "libtest-mimic",
  "parking_lot",
  "reserve-port",
+ "reusable-payments",
  "serde",
  "serde_json",
  "strum 0.28.0",
