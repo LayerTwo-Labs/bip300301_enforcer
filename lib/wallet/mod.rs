@@ -384,16 +384,24 @@ impl WalletInner {
         Ok(db_connection)
     }
 
+    /// Derive the master `Xpriv` used to build the wallet's descriptors, and
+    /// by the reusable-payments (BIP47 / silent payments) key hierarchy.
+    pub(in crate::wallet) fn mnemonic_to_xpriv(
+        mnemonic: &Mnemonic,
+        network: Network,
+    ) -> Result<bitcoin::bip32::Xpriv, error::MnemonicToXpriv> {
+        let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
+        extended_key
+            .into_xprv(network.into())
+            .ok_or(error::MnemonicToXpriv::DeriveXpriv)
+    }
+
     async fn initialize_wallet_from_mnemonic(
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
         wallet_database: &mut Persistence,
     ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
-        let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
-
-        let xpriv = extended_key
-            .into_xprv(network.into())
-            .ok_or(error::InitWalletFromMnemonic::DeriveXpriv)?;
+        let xpriv = Self::mnemonic_to_xpriv(mnemonic, network)?;
 
         // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
         let external_desc = format!("wpkh({xpriv}/84'/1'/0'/0/*)");
@@ -727,7 +735,7 @@ impl WalletInner {
         // Verify that it is encrypted!
         let encrypted = match read {
             None => {
-                return Err(WalletInitialization::NotFound.into());
+                return Err(WalletInitialization::NotFound(error::NotFound).into());
             }
             // Plaintext!
             Some(Either::Left(_)) => {
@@ -2882,7 +2890,7 @@ impl Wallet {
                         "failed to roll back BIP47 next_send_index after payment broadcast error"
                     );
                 }
-                return Err(error::ReusablePayments::Rpc(format!("payment tx: {err}")));
+                return Err(error::ReusablePayments::from(err));
             }
         };
 
@@ -2931,7 +2939,7 @@ impl Wallet {
                 },
             )
             .await
-            .map_err(|err| error::ReusablePayments::Rpc(format!("notification psbt: {err}")))?;
+            .map_err(error::ReusablePayments::from)?;
 
         let designated_idx = psbt
             .inputs
@@ -3069,7 +3077,7 @@ impl Wallet {
                     builder.finish().map_err(error::CreateSendPsbt::CreateTx)
                 })
             })
-            .map_err(|err| error::ReusablePayments::Rpc(format!("v3 notification psbt: {err}")))?
+            .map_err(error::ReusablePayments::from)?
         };
 
         self.sign_broadcast_apply_notification(psbt).await
@@ -3156,7 +3164,7 @@ impl Wallet {
                     builder.finish().map_err(error::CreateSendPsbt::CreateTx)
                 })
             })
-            .map_err(|err| error::ReusablePayments::Rpc(format!("sp psbt: {err}")))?
+            .map_err(error::ReusablePayments::from)?
         };
 
         let (eligible_inputs, all_outpoints): (
@@ -3331,8 +3339,8 @@ impl Wallet {
 
         let mut ctx = match self.inner.build_scan_context_for_deep_rescan().await {
             Ok(ctx) => ctx,
-            Err(error::ReusablePayments::WalletNotFound)
-            | Err(error::ReusablePayments::WalletEncrypted) => return Ok(()),
+            Err(error::ReusablePayments::NotFound(_))
+            | Err(error::ReusablePayments::NotUnlocked(_)) => return Ok(()),
             Err(err) => return Err(err),
         };
 

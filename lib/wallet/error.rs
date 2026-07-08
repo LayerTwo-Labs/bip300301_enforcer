@@ -83,15 +83,27 @@ impl ToStatus for DataMismatch {
     }
 }
 
+/// Wallet not found
+#[derive(Debug, Diagnostic, Error)]
+#[diagnostic(code(wallet_not_found))]
+#[error("enforcer wallet not found (can be created with CreateWallet RPC)")]
+pub struct NotFound;
+
+impl ToStatus for NotFound {
+    fn builder(&self) -> StatusBuilder<'_> {
+        StatusBuilder::new(self).code(connectrpc::ErrorCode::NotFound)
+    }
+}
+
 // Errors related to creating/unlocking wallets.
 #[derive(Debug, Diagnostic, Error)]
 pub enum WalletInitialization {
     #[error("enforcer wallet already unlocked")]
     #[diagnostic(code(wallet_already_unlocked))]
     AlreadyUnlocked,
-    #[error("enforcer wallet not found (can be created with CreateWallet RPC)")]
-    #[diagnostic(code(wallet_not_found))]
-    NotFound,
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    NotFound(#[from] NotFound),
     #[error("enforcer wallet already exists (but might not be initialized)")]
     #[diagnostic(code(wallet_already_exists))]
     AlreadyExists,
@@ -116,7 +128,7 @@ impl ToStatus for WalletInitialization {
             Self::NotSynced(_) => connectrpc::ErrorCode::FailedPrecondition,
             Self::InvalidPassword => connectrpc::ErrorCode::InvalidArgument,
             Self::DataMismatch(_) => connectrpc::ErrorCode::Internal,
-            Self::NotFound => connectrpc::ErrorCode::NotFound,
+            Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
             Self::AlreadyExists => connectrpc::ErrorCode::AlreadyExists,
             Self::AlreadyUnlocked => connectrpc::ErrorCode::AlreadyExists,
         })
@@ -399,6 +411,15 @@ pub enum InitDbConnection {
 
 type Persistence = <crate::wallet::Persistence as bdk_wallet::AsyncWalletPersister>::Error;
 
+/// Deriving a master `Xpriv` from a BIP39 mnemonic.
+#[derive(Debug, Diagnostic, Error)]
+pub enum MnemonicToXpriv {
+    #[error("failed to convert mnemonic to extended key")]
+    ExtendedKey(#[from] bdk_wallet::keys::KeyError),
+    #[error("unable to derive xpriv from extended key")]
+    DeriveXpriv,
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitWalletFromMnemonic {
     #[error("failed to create wallet")]
@@ -406,12 +427,10 @@ pub enum InitWalletFromMnemonic {
     #[diagnostic(transparent)]
     #[error("wallet data mismatch (wipe your data directory and try again)")]
     DataMismatch(#[source] DataMismatch),
-    #[error("unable to derive xpriv from extended key")]
-    DeriveXpriv,
+    #[error(transparent)]
+    Xpriv(#[from] MnemonicToXpriv),
     #[error("failed to load wallet")]
     LoadWallet(#[source] Box<bdk_wallet::LoadWithPersistError<Persistence>>),
-    #[error("mnemonic key error")]
-    MnemonicKey(#[from] bdk_wallet::keys::KeyError),
 }
 
 impl From<bdk_wallet::CreateWithPersistError<Persistence>> for InitWalletFromMnemonic {
@@ -434,10 +453,9 @@ impl ToStatus for InitWalletFromMnemonic {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DataMismatch(source) => StatusBuilder::with_code(self, source.builder()),
-            Self::CreateWallet(_)
-            | Self::DeriveXpriv
-            | Self::LoadWallet(_)
-            | Self::MnemonicKey(_) => StatusBuilder::new(self),
+            Self::CreateWallet(_) | Self::Xpriv(_) | Self::LoadWallet(_) => {
+                StatusBuilder::new(self)
+            }
         }
     }
 }
@@ -1419,19 +1437,13 @@ impl ToStatus for GetNewAddress {
 pub enum ReusablePayments {
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
-    #[error("wallet not found - create one with CreateWallet first")]
-    #[diagnostic(code(wallet_not_found))]
-    WalletNotFound,
-    #[error("wallet is encrypted - unlock it first")]
-    #[diagnostic(code(wallet_encrypted))]
-    WalletEncrypted,
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    NotFound(#[from] NotFound),
     #[error(transparent)]
     ReadDbMnemonic(#[from] ReadDbMnemonic),
-    #[error("failed to convert mnemonic to extended key")]
-    MnemonicToExtendedKey(#[source] bdk_wallet::keys::KeyError),
-    #[error("failed to derive master xpriv from extended key")]
-    #[diagnostic(code(reusable_payments_derive_master_xpriv))]
-    DeriveMasterXpriv,
+    #[error(transparent)]
+    Xpriv(#[from] MnemonicToXpriv),
     #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
     #[error(transparent)]
@@ -1444,7 +1456,13 @@ pub enum ReusablePayments {
     SilentPaymentParse(#[from] crate::wallet::reusable_payments::silent_payments::ParseError),
     #[error(transparent)]
     ScanContext(#[from] crate::wallet::reusable_payments::scan::ContextError),
-    #[error("Bitcoin Core RPC error during reusable-payments scan: {0}")]
+    /// Building or funding a transaction failed (e.g. insufficient funds).
+    /// Transparent so clients see the same message as a normal send.
+    #[error(transparent)]
+    CreateSendPsbt(Box<CreateSendPsbt>),
+    #[error(transparent)]
+    SendWalletTransaction(Box<SendWalletTransaction>),
+    #[error("Bitcoin Core RPC error during reusable-payments operation: {0}")]
     #[diagnostic(code(reusable_payments_rpc_error))]
     Rpc(String),
     #[error("failed to deserialize block during reusable-payments scan: {0}")]
@@ -1458,20 +1476,30 @@ impl ReusablePayments {
     }
 }
 
+impl From<CreateSendPsbt> for ReusablePayments {
+    fn from(err: CreateSendPsbt) -> Self {
+        Self::CreateSendPsbt(Box::new(err))
+    }
+}
+
+impl From<SendWalletTransaction> for ReusablePayments {
+    fn from(err: SendWalletTransaction) -> Self {
+        Self::SendWalletTransaction(Box::new(err))
+    }
+}
+
 impl ToStatus for ReusablePayments {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::NotUnlocked(err) => err.builder(),
+            Self::NotFound(err) => err.builder(),
             Self::ReadDbMnemonic(err) => err.builder(),
-            Self::WalletNotFound => StatusBuilder::new(self).code(connectrpc::ErrorCode::NotFound),
-            Self::WalletEncrypted => {
-                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
-            }
+            Self::CreateSendPsbt(err) => err.builder(),
+            Self::SendWalletTransaction(err) => err.builder(),
             Self::Rpc(_) | Self::ConsensusDecode(_) => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
             }
-            Self::MnemonicToExtendedKey(_)
-            | Self::DeriveMasterXpriv
+            Self::Xpriv(_)
             | Self::Bip32(_)
             | Self::Bip47Crypto(_)
             | Self::Bip47Parse(_)

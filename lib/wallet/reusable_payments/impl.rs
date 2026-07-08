@@ -3,7 +3,6 @@ use std::{
     str::FromStr,
 };
 
-use bdk_wallet::keys::{DerivableKey as _, ExtendedKey};
 use bitcoin::{
     BlockHash, OutPoint, Transaction, TxOut, Txid,
     bip32::{ChildNumber, DerivationPath, Xpriv},
@@ -34,17 +33,12 @@ impl WalletInner {
             drop(connection);
             match read {
                 Some(Either::Left(m)) => m,
-                Some(Either::Right(_)) => return Err(error::ReusablePayments::WalletEncrypted),
-                None => return Err(error::ReusablePayments::WalletNotFound),
+                Some(Either::Right(_)) => return Err(error::NotUnlocked.into()),
+                None => return Err(error::NotFound.into()),
             }
         };
-        let extended: ExtendedKey = mnemonic
-            .into_extended_key()
-            .map_err(error::ReusablePayments::MnemonicToExtendedKey)?;
         let network: bitcoin::Network = self.validator.network();
-        extended
-            .into_xprv(network.into())
-            .ok_or(error::ReusablePayments::DeriveMasterXpriv)
+        Ok(Self::mnemonic_to_xpriv(&mnemonic, network)?)
     }
 
     pub(in crate::wallet) async fn ensure_wallet_unlocked(
@@ -55,8 +49,8 @@ impl WalletInner {
         drop(connection);
         match read {
             Some(Either::Left(_)) => Ok(()),
-            Some(Either::Right(_)) => Err(error::ReusablePayments::WalletEncrypted),
-            None => Err(error::ReusablePayments::WalletNotFound),
+            Some(Either::Right(_)) => Err(error::NotUnlocked.into()),
+            None => Err(error::NotFound.into()),
         }
     }
 
@@ -396,8 +390,8 @@ impl WalletInner {
     ) -> Result<(), error::ReusablePayments> {
         let mut ctx = match self.build_scan_context().await {
             Ok(ctx) => ctx,
-            Err(error::ReusablePayments::WalletNotFound)
-            | Err(error::ReusablePayments::WalletEncrypted) => return Ok(()),
+            Err(error::ReusablePayments::NotFound(_))
+            | Err(error::ReusablePayments::NotUnlocked(_)) => return Ok(()),
             Err(err) => return Err(err),
         };
         self.scan_block_with_ctx(block, height, &mut ctx).await
