@@ -412,7 +412,19 @@ impl WalletInner {
             return Ok(());
         }
 
-        if let Some(prev_seen) = cursor.last_scanned_block_hash
+        // A block at or below the last scanned height is the new chain's
+        // replacement after a reorg (block connects are re-delivered along
+        // the new chain at the same heights). Roll scan state back to just
+        // before it and scan it as the current block — otherwise events from
+        // the orphaned block would linger as phantom receives.
+        if height <= cursor.last_scanned_height {
+            tracing::warn!(
+                height,
+                last_scanned = cursor.last_scanned_height,
+                "reusable-payments: block re-delivered at or below scan cursor, rolling back",
+            );
+            self.drop_scan_events_above(height).await?;
+        } else if let Some(prev_seen) = cursor.last_scanned_block_hash
             && height == cursor.last_scanned_height + 1
             && block.header.prev_blockhash != prev_seen
         {
@@ -482,12 +494,49 @@ impl WalletInner {
 
         let block_hash = block.block_hash();
         self.persist_scan_events(height, events).await?;
+        self.mark_reusable_spent_in_block(block).await?;
         self.save_scan_cursor(ScanCursor {
             birthday_height: cursor.birthday_height,
             last_scanned_height: height,
             last_scanned_block_hash: Some(block_hash),
         })
         .await?;
+        Ok(())
+    }
+
+    /// Mark reusable-payments outputs spent by transactions in this block.
+    /// `send_wallet_transaction` marks its own spends at broadcast time, but
+    /// scanning must also detect them: rescans re-insert receive rows without
+    /// their spent markers, and spends signed outside this wallet instance
+    /// are only ever visible in blocks.
+    async fn mark_reusable_spent_in_block(
+        &self,
+        block: &bitcoin::Block,
+    ) -> Result<(), error::ReusablePayments> {
+        let map_err = error::ReusablePayments::db;
+        let connection = self.self_db.lock().await;
+        let tx = connection.unchecked_transaction().map_err(map_err)?;
+        for block_tx in &block.txdata {
+            let spending_txid = block_tx.compute_txid().as_byte_array().to_vec();
+            for input in &block_tx.input {
+                let prev_txid = input.previous_output.txid.as_byte_array().to_vec();
+                let prev_vout = input.previous_output.vout;
+                tx.execute(
+                    "UPDATE bip47_received SET spent_in_txid = ?1 \
+                     WHERE txid = ?2 AND vout = ?3",
+                    rusqlite::params![&spending_txid, &prev_txid, prev_vout],
+                )
+                .map_err(map_err)?;
+                tx.execute(
+                    "UPDATE silent_payment_received SET spent_in_txid = ?1 \
+                     WHERE txid = ?2 AND vout = ?3",
+                    rusqlite::params![&spending_txid, &prev_txid, prev_vout],
+                )
+                .map_err(map_err)?;
+            }
+        }
+        tx.commit().map_err(map_err)?;
+        drop(connection);
         Ok(())
     }
 
