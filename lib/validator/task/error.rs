@@ -138,14 +138,6 @@ pub(in crate::validator) enum HandleM4AckBundles {
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
-    #[error(
-        "M4 RepeatPrevious upvotes bundle {m6id} for sidechain {sidechain_number} that is no longer pending"
-    )]
-    #[fatal(false)]
-    RepeatPreviousUpvotesMissingBundle {
-        sidechain_number: SidechainNumber,
-        m6id: M6id,
-    },
     #[error("M4 TwoBytes encoding with no element > 253")]
     #[fatal(false)]
     TwoBytesWithinByteRange,
