@@ -3453,8 +3453,8 @@ dependencies = [
 
 [[package]]
 name = "reusable-payments"
-version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/reusable-payments.git?tag=v0.1.0#a56235016889426b8facf8fa62ea0393fa392012"
+version = "0.2.0"
+source = "git+https://github.com/LayerTwo-Labs/reusable-payments.git?tag=v0.2.0#bc29d3d0d18c6b5d5485dea8d7a1fcb93f24f37f"
 dependencies = [
  "bitcoin",
  "thiserror 2.0.18",

@@ -97,7 +97,7 @@ rev = "817fd283a4b540304fb3169b4d59ed46c7c045ae"
 
 [workspace.dependencies.reusable-payments]
 git = "https://github.com/LayerTwo-Labs/reusable-payments.git"
-tag = "v0.1.0"
+tag = "v0.2.0"
 
 [workspace.dependencies.educe]
 version = "0.6.0"
