@@ -124,7 +124,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -135,7 +135,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -649,12 +649,12 @@ dependencies = [
 [[package]]
 name = "bitcoin-jsonrpsee"
 version = "0.1.1"
-source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=db1fdfd5ecddfc7855cd872546b47429cb29a0bf#db1fdfd5ecddfc7855cd872546b47429cb29a0bf"
+source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=4810db2112d1bc437b8c4b78520f79e5e9ce8630#4810db2112d1bc437b8c4b78520f79e5e9ce8630"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
  "educe",
- "hashlink 0.11.1",
+ "hashlink 0.12.1",
  "hex",
  "http",
  "jsonrpsee",
@@ -1134,7 +1134,7 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.3.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=e6c0ca5620c926c8b3a1df67ac83c45ce9cb4acd#e6c0ca5620c926c8b3a1df67ac83c45ce9cb4acd"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=817fd283a4b540304fb3169b4d59ed46c7c045ae#817fd283a4b540304fb3169b4d59ed46c7c045ae"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1144,14 +1144,14 @@ dependencies = [
  "educe",
  "either",
  "futures",
- "hashlink 0.11.1",
+ "hashlink 0.12.1",
  "imbl",
  "indexmap",
  "jsonrpsee",
- "lending-iterator",
+ "lender",
  "nonempty",
  "parking_lot",
- "polonius-the-crab 0.5.0",
+ "polonius-the-crab",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -1351,7 +1351,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1442,35 +1442,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "ext-trait"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d772df1c1a777963712fb68e014235e80863d6a91a85c4e06ba2d16243a310e5"
-dependencies = [
- "ext-trait-proc_macros",
-]
-
-[[package]]
-name = "ext-trait-proc_macros"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ab7934152eaf26aa5aa9f7371408ad5af4c31357073c9e84c3b9d7f11ad639a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "extension-traits"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a296e5a895621edf9fa8329c83aa1cb69a964643e36cf54d8d7a69b789089537"
-dependencies = [
- "ext-trait",
 ]
 
 [[package]]
@@ -1841,15 +1812,6 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-dependencies = [
- "foldhash 0.2.0",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
@@ -1864,16 +1826,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
 dependencies = [
  "hashbrown 0.14.5",
-]
-
-[[package]]
-name = "hashlink"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
-dependencies = [
- "hashbrown 0.16.1",
- "serde",
 ]
 
 [[package]]
@@ -1981,7 +1933,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e690f8474c6c5d8ff99656fcbc195a215acc3949481a8b0b3351c838972dc776"
 dependencies = [
- "macro_rules_attribute 0.2.2",
+ "macro_rules_attribute",
  "never-say-never",
  "paste",
 ]
@@ -2567,28 +2519,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
-name = "lending-iterator"
-version = "0.1.7"
+name = "lender"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc07588c853b50689205fb5c00498aa681d89828e0ce8cbd965ebc7a5d8ae260"
+checksum = "6e306e6c6b4be049e429a93d121609257648ea8ce31d8d57ede117b85646ecca"
 dependencies = [
- "extension-traits",
- "lending-iterator-proc_macros",
- "macro_rules_attribute 0.1.3",
- "never-say-never",
- "nougat",
- "polonius-the-crab 0.2.1",
+ "aliasable",
+ "fallible-iterator",
+ "lender-derive",
+ "maybe-dangling",
+ "stable_try_trait_v2",
 ]
 
 [[package]]
-name = "lending-iterator-proc_macros"
-version = "0.1.7"
+name = "lender-derive"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5445dd1c0deb1e97b8a16561d17fc686ca83e8411128fb036e9668a72d51b1d"
+checksum = "d074a297c82222d442171bad4f392fef93d35fb31e24a115f605a0c907ce0af9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2666,29 +2617,13 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "macro_rules_attribute"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf0c9b980bf4f3a37fd7b1c066941dd1b1d0152ce6ee6e8fe8c49b9f6810d862"
-dependencies = [
- "macro_rules_attribute-proc_macro 0.1.3",
- "paste",
-]
-
-[[package]]
-name = "macro_rules_attribute"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65049d7923698040cd0b1ddcced9b0eb14dd22c5f86ae59c3740eab64a676520"
 dependencies = [
- "macro_rules_attribute-proc_macro 0.2.2",
+ "macro_rules_attribute-proc_macro",
  "paste",
 ]
-
-[[package]]
-name = "macro_rules_attribute-proc_macro"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58093314a45e00c77d5c508f76e77c3396afbbc0d01506e7fae47b018bac2b1d"
 
 [[package]]
 name = "macro_rules_attribute-proc_macro"
@@ -2710,6 +2645,12 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "maybe-dangling"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59dbb09ed53f8e4f314e353dc6c1853ae5b4c480a668a422657804a544ea9f65"
 
 [[package]]
 name = "memchr"
@@ -2829,33 +2770,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9737e026353e5cd0736f98eddae28665118eb6f6600902a7f50db585621fecb6"
 
 [[package]]
-name = "nougat"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97b57b9ced431322f054fc673f1d3c7fa52d80efd9df74ad2fc759f044742510"
-dependencies = [
- "macro_rules_attribute 0.1.3",
- "nougat-proc_macros",
-]
-
-[[package]]
-name = "nougat-proc_macros"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c84f77a45e99a2f9b492695d99e1c23844619caa5f3e57647cffacad773ca257"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3138,12 +3058,6 @@ dependencies = [
  "rustix",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "polonius-the-crab"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a69ee997a6282f8462abf1e0d8c38c965e968799e912b3bed8c9e8a28c2f9f"
 
 [[package]]
 name = "polonius-the-crab"
@@ -3610,7 +3524,7 @@ dependencies = [
  "errno 0.3.14",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3956,7 +3870,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.2.8",
+ "errno 0.3.14",
  "libc",
 ]
 
@@ -4029,7 +3943,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4053,6 +3967,12 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stable_try_trait_v2"
+version = "1.75.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c4e48411f4db8ccca0470bfb67e3bb821af4227d455aa147917d8d109be0d13"
 
 [[package]]
 name = "static_assertions"
@@ -4142,7 +4062,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
- "quote",
  "unicode-ident",
 ]
 
@@ -4968,7 +4887,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

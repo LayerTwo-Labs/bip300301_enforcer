@@ -609,28 +609,11 @@ impl Wallet {
             .validator()
             .get_header_info(&self.validator().get_mainchain_tip()?)?;
 
-        let is_about_to_difficulty_adjust = (tip_header.height as u64 + 1).is_multiple_of(
-            self.validator()
-                .network()
-                .params()
-                .difficulty_adjustment_interval(),
-        );
-
-        // Having some issues with our own block template generation for the 50th
-        // difficulty adjustment (suspiciously round number...). Cannot get it to work!
-        // Hack to get around: mine a completely normal Bitcoin Core block, if we're about
-        // to adjust.
-        // Crux of the issue is calculating the `nBits` value for the block header.
-        let getblocktemplate_command = if is_about_to_difficulty_adjust {
-            tracing::debug!("about to difficulty adjust, NOT using our own block template");
-            None
-        } else {
-            Some(format!(
-                "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
-                self.inner.config.serve_rpc_addr.ip(),
-                self.inner.config.serve_rpc_addr.port()
-            ))
-        };
+        let getblocktemplate_command = Some(format!(
+            "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
+            self.inner.config.serve_rpc_addr.ip(),
+            self.inner.config.serve_rpc_addr.port()
+        ));
         let target_block_interval = self
             .inner
             .signet_challenge

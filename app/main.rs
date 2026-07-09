@@ -460,7 +460,6 @@ async fn is_address_port_open(addr: &str) -> Result<bool, std::io::Error> {
 /// race the receiver against the shutdown signal
 async fn sync_mempool<Enforcer, RpcClient>(
     mut enforcer: Enforcer,
-    network: bitcoin::Network,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
     cancel: CancellationToken,
@@ -496,7 +495,6 @@ where
 
     let init_sync_mempool_future = cusf_enforcer_mempool::mempool::init_sync_mempool(
         &mut enforcer,
-        network,
         rpc_client,
         zmq_addr_sequence,
         Box::pin(cancel.cancelled_owned()).fuse(),
@@ -595,7 +593,6 @@ async fn run_no_mempool_task(
 
 async fn run_validator_mempool_task(
     validator: Validator,
-    network: bitcoin::Network,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     zmq_addr_sequence: String,
     cancel: CancellationToken,
@@ -603,7 +600,6 @@ async fn run_validator_mempool_task(
     tracing::info!("mempool sync task w/validator: starting");
     let (_, err_rx) = sync_mempool(
         validator,
-        network,
         mainchain_client,
         &zmq_addr_sequence,
         cancel.clone(),
@@ -647,7 +643,6 @@ async fn run_wallet_mempool_task(
 
     let (mempool, err_rx) = sync_mempool(
         wallet,
-        network,
         mainchain_client.clone(),
         &zmq_addr_sequence,
         cancel.clone(),
@@ -1278,14 +1273,8 @@ async fn main() -> Result<()> {
             }
             (true, Either::Left(validator)) => {
                 tasks.spawn(async move {
-                    let res = run_validator_mempool_task(
-                        validator,
-                        network,
-                        mainchain_client,
-                        zmq,
-                        cancel,
-                    )
-                    .await;
+                    let res =
+                        run_validator_mempool_task(validator, mainchain_client, zmq, cancel).await;
                     ("validator mempool task", res)
                 });
             }
