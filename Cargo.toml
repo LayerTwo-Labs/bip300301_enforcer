@@ -89,11 +89,11 @@ uuid = "1.23.3"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
-rev = "db1fdfd5ecddfc7855cd872546b47429cb29a0bf"
+rev = "4810db2112d1bc437b8c4b78520f79e5e9ce8630"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "e6c0ca5620c926c8b3a1df67ac83c45ce9cb4acd"
+rev = "817fd283a4b540304fb3169b4d59ed46c7c045ae"
 
 [workspace.dependencies.educe]
 version = "0.6.0"
