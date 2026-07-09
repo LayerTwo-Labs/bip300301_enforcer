@@ -3504,4 +3504,56 @@ mod tests {
         ));
         Ok(())
     }
+
+    // Regression test: deleting the only ctip must restore the pre-deposit
+    // state, i.e. the `treasury_utxo_count` key must be removed entirely.
+    // Before the fix it was left as `Some(0)`, causing the sequence-number
+    // reader to underflow (`0u64 - 1`) and corrupt `sync_state_summary`.
+    #[test]
+    fn delete_ctip_restores_treasury_utxo_count() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        let read_count = |rwtxn: &_| {
+            dbs.active_sidechains
+                .treasury_utxo_count
+                .try_get(rwtxn, &sc)
+                .into_diagnostic()
+        };
+
+        // A fresh node that never saw a deposit has no count key.
+        let pre = read_count(&rwtxn)?;
+        assert_eq!(pre, None, "sanity: fresh slot has no count key");
+
+        // A single deposit creates the first (and only) ctip.
+        let ctip = Ctip {
+            outpoint: OutPoint {
+                txid: Txid::from_byte_array([0xA0; 32]),
+                vout: 0,
+            },
+            value: Amount::from_sat(100),
+        };
+        let seq = dbs
+            .active_sidechains
+            .put_ctip(&mut rwtxn, sc, &ctip)
+            .into_diagnostic()?;
+        let after_apply = read_count(&rwtxn)?;
+        assert_eq!(after_apply, Some(1), "first deposit -> count == 1, seq == 0");
+        assert_eq!(seq, 0);
+
+        // Disconnecting the block must restore the pre-deposit state.
+        dbs.active_sidechains
+            .delete_ctip(&mut rwtxn, sc)
+            .into_diagnostic()?;
+        let after_undo = read_count(&rwtxn)?;
+        assert_eq!(
+            after_undo, pre,
+            "delete_ctip must restore pre-deposit state"
+        );
+        Ok(())
+    }
 }

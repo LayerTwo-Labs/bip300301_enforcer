@@ -155,9 +155,16 @@ impl ActiveSidechainDbs {
             .ctip_outpoint_to_value_seq
             .delete(rwtxn, &ctip.outpoint)?;
         let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
-        let sequence_number = treasury_utxo_count - 1;
-        self.treasury_utxo_count
-            .put(rwtxn, &sidechain_number, &sequence_number)?;
+        // Defense-in-depth: a stale zero count must not underflow here.
+        let sequence_number = treasury_utxo_count
+            .checked_sub(1)
+            .expect("treasury_utxo_count must be > 0 when deleting a ctip");
+        if sequence_number == 0 {
+            let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
+        } else {
+            self.treasury_utxo_count
+                .put(rwtxn, &sidechain_number, &sequence_number)?;
+        }
         let _ = self
             .slot_sequence_to_treasury_utxo
             .delete(rwtxn, &(sidechain_number, sequence_number))?;
