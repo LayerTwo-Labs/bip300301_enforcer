@@ -2395,6 +2395,63 @@ mod tests {
     }
 
     #[test]
+    fn delete_ctip_of_last_treasury_utxo_clears_count() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        // First (and only) deposit: treasury_utxo_count becomes Some(1).
+        let outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x22; 32]),
+            vout: 0,
+        };
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint,
+                    value: Amount::from_sat(1_000),
+                },
+            )
+            .into_diagnostic()?;
+        assert_eq!(
+            dbs.active_sidechains
+                .treasury_utxo_count
+                .try_get(&rwtxn, &sc)
+                .into_diagnostic()?,
+            Some(1)
+        );
+
+        // Disconnect that only treasury UTXO.
+        dbs.active_sidechains
+            .delete_ctip(&mut rwtxn, sc)
+            .into_diagnostic()?;
+
+        // The count key must be gone, and the ctip removed, so a
+        // later `get_ctip_sequence_number` sees `None` and cannot underflow.
+        assert_eq!(
+            dbs.active_sidechains
+                .treasury_utxo_count
+                .try_get(&rwtxn, &sc)
+                .into_diagnostic()?,
+            None,
+            "treasury_utxo_count must be cleared, not left at Some(0)",
+        );
+        assert!(
+            dbs.active_sidechains
+                .ctip()
+                .try_get(&rwtxn, &sc)
+                .into_diagnostic()?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn handle_m5_m6_inactive_slot_drivechain_output_is_ignored() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let rotxn = dbs.read_txn().into_diagnostic()?;
