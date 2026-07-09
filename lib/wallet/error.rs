@@ -1462,6 +1462,9 @@ pub enum ReusablePayments {
     CreateSendPsbt(Box<CreateSendPsbt>),
     #[error(transparent)]
     SendWalletTransaction(Box<SendWalletTransaction>),
+    #[error("rescan from_height {from_height} is above the chain tip {tip_height}")]
+    #[diagnostic(code(reusable_payments_rescan_above_tip))]
+    RescanAboveTip { from_height: u32, tip_height: u32 },
     #[error("Bitcoin Core RPC error during reusable-payments operation: {0}")]
     #[diagnostic(code(reusable_payments_rpc_error))]
     Rpc(String),
@@ -1496,6 +1499,9 @@ impl ToStatus for ReusablePayments {
             Self::ReadDbMnemonic(err) => err.builder(),
             Self::CreateSendPsbt(err) => err.builder(),
             Self::SendWalletTransaction(err) => err.builder(),
+            Self::RescanAboveTip { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
+            }
             Self::Rpc(_) | Self::ConsensusDecode(_) => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
             }

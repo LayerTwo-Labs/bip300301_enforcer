@@ -1,10 +1,7 @@
+// Facade over the external `reusable-payments` crate: wallet code reaches it
+// through this module, since the submodule name shadows the crate name here.
 pub use ::reusable_payments::{bip44_coin_type, bip47, scan, silent_payments, spend};
 pub mod r#impl;
-
-pub use self::{
-    bip47::{PaymentCode, Version as Bip47Version},
-    silent_payments::{SilentPaymentAddress, is_bip352_eligible_spk},
-};
 
 #[derive(Clone, Debug)]
 pub struct Bip47SendResult {
@@ -29,7 +26,7 @@ pub struct SilentPaymentReceive {
 
 #[derive(Clone, Debug)]
 pub struct Bip47InboundPayer {
-    pub sender_payment_code: PaymentCode,
+    pub sender_payment_code: bip47::PaymentCode,
     pub next_receive_index: u32,
     pub total_received_sats: u64,
     pub first_seen_unix: i64,

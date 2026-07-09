@@ -12,12 +12,14 @@ use bitcoin::{
 use bitcoin_jsonrpsee::client::{GetRawTransactionClient, GetRawTransactionVerbose};
 use either::Either;
 
-use super::{
-    bip44_coin_type, bip47,
-    scan::{ScanContext, ScanCursor, ScanEvent, ScrubOnDrop, scan_tx},
-    silent_payments,
+use crate::wallet::{
+    WalletInner, error,
+    reusable_payments::{
+        bip44_coin_type, bip47,
+        scan::{self, ScanContext, ScanCursor, ScanEvent, ScrubOnDrop, scan_tx},
+        silent_payments,
+    },
 };
-use crate::wallet::{WalletInner, error};
 
 const PREVOUT_RPC_CONCURRENCY: usize = 16;
 const BIP47_RECEIVE_LOOKAHEAD_LIVE: u32 = 20;
@@ -27,15 +29,14 @@ impl WalletInner {
     pub(in crate::wallet) async fn master_xpriv_inner(
         &self,
     ) -> Result<Xpriv, error::ReusablePayments> {
-        let mnemonic = {
+        let read = {
             let connection = self.self_db.lock().await;
-            let read = Self::read_db_mnemonic(&connection)?;
-            drop(connection);
-            match read {
-                Some(Either::Left(m)) => m,
-                Some(Either::Right(_)) => return Err(error::NotUnlocked.into()),
-                None => return Err(error::NotFound.into()),
-            }
+            Self::read_db_mnemonic(&connection)?
+        };
+        let mnemonic = match read {
+            Some(Either::Left(m)) => m,
+            Some(Either::Right(_)) => return Err(error::NotUnlocked.into()),
+            None => return Err(error::NotFound.into()),
         };
         let network: bitcoin::Network = self.validator.network();
         Ok(Self::mnemonic_to_xpriv(&mnemonic, network)?)
@@ -44,9 +45,10 @@ impl WalletInner {
     pub(in crate::wallet) async fn ensure_wallet_unlocked(
         &self,
     ) -> Result<(), error::ReusablePayments> {
-        let connection = self.self_db.lock().await;
-        let read = Self::read_db_mnemonic(&connection)?;
-        drop(connection);
+        let read = {
+            let connection = self.self_db.lock().await;
+            Self::read_db_mnemonic(&connection)?
+        };
         match read {
             Some(Either::Left(_)) => Ok(()),
             Some(Either::Right(_)) => Err(error::NotUnlocked.into()),
@@ -163,7 +165,7 @@ impl WalletInner {
             eligible_input_inputs
                 .iter()
                 .map(|(outpoint, spk)| {
-                    if !super::silent_payments::is_bip352_eligible_spk(spk) {
+                    if !silent_payments::is_bip352_eligible_spk(spk) {
                         return Err(error::ReusablePayments::SilentPaymentCrypto(
                             silent_payments::CryptoError::IneligibleInput {
                                 outpoint: *outpoint,
@@ -214,28 +216,26 @@ impl WalletInner {
             .await
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     async fn build_scan_context_with_lookahead(
         &self,
         lookahead: u32,
     ) -> Result<ScanContext, error::ReusablePayments> {
         // Read everything the context needs from the DB before deriving any
         // secrets so no key material is held across an await point
-        let label_ms: Vec<u32> = {
+        let collected: Result<Vec<i64>, _> = {
             let connection = self.self_db.lock().await;
             let mut stmt = connection
                 .prepare("SELECT m FROM silent_payment_labels WHERE m >= 1")
                 .map_err(error::ReusablePayments::db)?;
-            let collected: Result<Vec<i64>, _> = stmt
-                .query_map([], |row| row.get::<_, i64>(0))
-                .and_then(|iter| iter.collect());
-            drop(stmt);
-            drop(connection);
-            collected
-                .map_err(error::ReusablePayments::db)?
-                .into_iter()
-                .filter_map(|m| u32::try_from(m).ok())
-                .collect()
+            stmt.query_map([], |row| row.get::<_, i64>(0))
+                .and_then(|iter| iter.collect())
         };
+        let label_ms: Vec<u32> = collected
+            .map_err(error::ReusablePayments::db)?
+            .into_iter()
+            .filter_map(|m| u32::try_from(m).ok())
+            .collect();
         let payers = self.read_inbound_payers().await?;
         let master = self.master_xpriv_inner().await?;
 
@@ -252,7 +252,7 @@ impl WalletInner {
             .private_key
             .public_key(&secp);
 
-        Ok(super::scan::build_scan_context(
+        Ok(scan::build_scan_context(
             &bip47_acct,
             b_scan,
             b_spend_pub,
@@ -264,23 +264,23 @@ impl WalletInner {
         )?)
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     async fn read_inbound_payers(
         &self,
     ) -> Result<Vec<(bip47::PaymentCode, u32)>, error::ReusablePayments> {
-        let connection = self.self_db.lock().await;
-        let mut stmt = connection
-            .prepare(
-                "SELECT sender_payment_code, next_receive_index \
-                 FROM bip47_inbound_payers",
-            )
-            .map_err(error::ReusablePayments::db)?;
-        let rows: Result<Vec<(String, u32)>, _> = stmt
-            .query_map([], |row| {
+        let rows: Result<Vec<(String, u32)>, _> = {
+            let connection = self.self_db.lock().await;
+            let mut stmt = connection
+                .prepare(
+                    "SELECT sender_payment_code, next_receive_index \
+                     FROM bip47_inbound_payers",
+                )
+                .map_err(error::ReusablePayments::db)?;
+            stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
             })
-            .and_then(|iter| iter.collect());
-        drop(stmt);
-        drop(connection);
+            .and_then(|iter| iter.collect())
+        };
         Ok(rows
             .map_err(error::ReusablePayments::db)?
             .into_iter()
@@ -293,7 +293,7 @@ impl WalletInner {
         sender: &bip47::PaymentCode,
         lookahead: u32,
     ) -> Result<
-        std::collections::HashMap<[u8; 20], super::scan::Bip47ReceiveSource>,
+        std::collections::HashMap<[u8; 20], scan::Bip47ReceiveSource>,
         error::ReusablePayments,
     > {
         let master = self.master_xpriv_inner().await?;
@@ -301,7 +301,7 @@ impl WalletInner {
         let network = self.validator.network();
         let coin = bip44_coin_type(network);
         let account = master.derive_priv(&secp, &bip47::account_path(coin)?)?;
-        Ok(super::scan::build_bip47_receive_lookup(
+        Ok(scan::build_bip47_receive_lookup(
             &account,
             &[(sender.clone(), 0)],
             lookahead,
@@ -440,7 +440,7 @@ impl WalletInner {
         }
 
         let prevouts = self.resolve_block_prevouts(block).await?;
-        let scanned = super::scan::block_to_scanned_txs(block, &prevouts);
+        let scanned = scan::block_to_scanned_txs(block, &prevouts);
 
         let secp = Secp256k1::new();
         let mut events: Vec<ScanEvent> = Vec::new();
@@ -479,7 +479,7 @@ impl WalletInner {
             }
             let mut recovered: Vec<ScanEvent> = Vec::new();
             for tx in &scanned {
-                recovered.extend(super::scan::detect_bip47_receives(tx, &new_entries));
+                recovered.extend(scan::detect_bip47_receives(tx, &new_entries));
             }
             if !recovered.is_empty() {
                 tracing::info!(
@@ -509,6 +509,7 @@ impl WalletInner {
     /// scanning must also detect them: rescans re-insert receive rows without
     /// their spent markers, and spends signed outside this wallet instance
     /// are only ever visible in blocks.
+    #[expect(clippy::significant_drop_tightening)]
     async fn mark_reusable_spent_in_block(
         &self,
         block: &bitcoin::Block,
@@ -536,7 +537,6 @@ impl WalletInner {
             }
         }
         tx.commit().map_err(map_err)?;
-        drop(connection);
         Ok(())
     }
 
@@ -553,17 +553,18 @@ impl WalletInner {
         };
         let birthday = tip_height.max(1);
 
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "INSERT INTO reusable_scan_state \
-                 (wallet_id, birthday_height, last_scanned_height) \
-                 VALUES (1, ?1, ?2) \
-                 ON CONFLICT(wallet_id) DO NOTHING",
-                rusqlite::params![birthday, birthday.saturating_sub(1)],
-            )
-            .map_err(error::ReusablePayments::db)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "INSERT INTO reusable_scan_state \
+                     (wallet_id, birthday_height, last_scanned_height) \
+                     VALUES (1, ?1, ?2) \
+                     ON CONFLICT(wallet_id) DO NOTHING",
+                    rusqlite::params![birthday, birthday.saturating_sub(1)],
+                )
+                .map_err(error::ReusablePayments::db)?;
+        }
 
         tracing::info!(
             birthday_height = birthday,
@@ -575,21 +576,19 @@ impl WalletInner {
     pub(in crate::wallet) async fn load_scan_cursor_if_present(
         &self,
     ) -> Result<Option<ScanCursor>, error::ReusablePayments> {
-        let connection = self.self_db.lock().await;
-        let row: Option<(u32, u32, Option<Vec<u8>>)> = match connection.query_row(
-            "SELECT birthday_height, last_scanned_height, last_scanned_block_hash \
-             FROM reusable_scan_state WHERE wallet_id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ) {
-            Ok(r) => Some(r),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(e) => {
-                drop(connection);
-                return Err(error::ReusablePayments::db(e));
+        let row: Option<(u32, u32, Option<Vec<u8>>)> = {
+            let connection = self.self_db.lock().await;
+            match connection.query_row(
+                "SELECT birthday_height, last_scanned_height, last_scanned_block_hash \
+                 FROM reusable_scan_state WHERE wallet_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ) {
+                Ok(r) => Some(r),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(error::ReusablePayments::db(e)),
             }
         };
-        drop(connection);
         Ok(row.map(|(birthday, last, hash_bytes)| ScanCursor {
             birthday_height: birthday,
             last_scanned_height: last,
@@ -597,31 +596,52 @@ impl WalletInner {
         }))
     }
 
+    /// Lower the scanner birthday so a rescan can cover blocks from before
+    /// scanner activation. Never raises it.
+    pub(in crate::wallet) async fn lower_scan_birthday(
+        &self,
+        new_birthday: u32,
+    ) -> Result<(), error::ReusablePayments> {
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "UPDATE reusable_scan_state SET birthday_height = ?1 \
+                     WHERE wallet_id = 1 AND birthday_height > ?1",
+                    rusqlite::params![new_birthday],
+                )
+                .map_err(error::ReusablePayments::db)?;
+        }
+        Ok(())
+    }
+
     async fn save_scan_cursor(&self, cursor: ScanCursor) -> Result<(), error::ReusablePayments> {
         let map_err = error::ReusablePayments::db;
         let hash_bytes: Option<Vec<u8>> = cursor
             .last_scanned_block_hash
             .map(|h| h.as_byte_array().to_vec());
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "INSERT INTO reusable_scan_state \
-                 (wallet_id, birthday_height, last_scanned_height, last_scanned_block_hash) \
-                 VALUES (1, ?1, ?2, ?3) \
-                 ON CONFLICT(wallet_id) DO UPDATE SET \
-                     last_scanned_height = excluded.last_scanned_height, \
-                     last_scanned_block_hash = excluded.last_scanned_block_hash",
-                rusqlite::params![
-                    cursor.birthday_height,
-                    cursor.last_scanned_height,
-                    hash_bytes,
-                ],
-            )
-            .map_err(map_err)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "INSERT INTO reusable_scan_state \
+                     (wallet_id, birthday_height, last_scanned_height, last_scanned_block_hash) \
+                     VALUES (1, ?1, ?2, ?3) \
+                     ON CONFLICT(wallet_id) DO UPDATE SET \
+                         last_scanned_height = excluded.last_scanned_height, \
+                         last_scanned_block_hash = excluded.last_scanned_block_hash",
+                    rusqlite::params![
+                        cursor.birthday_height,
+                        cursor.last_scanned_height,
+                        hash_bytes,
+                    ],
+                )
+                .map_err(map_err)?;
+        }
         Ok(())
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     async fn persist_scan_events(
         &self,
         block_height: u32,
@@ -719,7 +739,6 @@ impl WalletInner {
             }
         }
         tx.commit().map_err(map_err)?;
-        drop(connection);
         Ok(())
     }
 
@@ -727,21 +746,19 @@ impl WalletInner {
         &self,
         recipient_code: &str,
     ) -> Result<(Option<Txid>, u32), error::ReusablePayments> {
-        let connection = self.self_db.lock().await;
-        let row: Option<(Option<Vec<u8>>, u32)> = match connection.query_row(
-            "SELECT notification_txid, next_send_index \
-             FROM bip47_send_state WHERE recipient_payment_code = ?1",
-            rusqlite::params![recipient_code],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ) {
-            Ok(r) => Some(r),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(e) => {
-                drop(connection);
-                return Err(error::ReusablePayments::db(e));
+        let row: Option<(Option<Vec<u8>>, u32)> = {
+            let connection = self.self_db.lock().await;
+            match connection.query_row(
+                "SELECT notification_txid, next_send_index \
+                 FROM bip47_send_state WHERE recipient_payment_code = ?1",
+                rusqlite::params![recipient_code],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ) {
+                Ok(r) => Some(r),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(error::ReusablePayments::db(e)),
             }
         };
-        drop(connection);
         Ok(match row {
             None => (None, 0),
             Some((txid_bytes, idx)) => (txid_bytes.and_then(|b| Txid::from_slice(&b).ok()), idx),
@@ -751,7 +768,7 @@ impl WalletInner {
     pub(in crate::wallet) async fn persist_bip47_notification(
         &self,
         recipient_code: &str,
-        version: super::bip47::Version,
+        version: bip47::Version,
         notification_txid: Txid,
         notification_height: u32,
     ) -> Result<(), error::ReusablePayments> {
@@ -762,27 +779,28 @@ impl WalletInner {
             .unwrap_or(0);
         let version_i64 = version as i64;
         let txid_bytes = notification_txid.as_byte_array().to_vec();
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "INSERT INTO bip47_send_state \
-                 (recipient_payment_code, version, notification_txid, \
-                  notification_broadcast_at, notification_height, next_send_index) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0) \
-                 ON CONFLICT(recipient_payment_code) DO UPDATE SET \
-                     notification_txid = excluded.notification_txid, \
-                     notification_broadcast_at = excluded.notification_broadcast_at, \
-                     notification_height = excluded.notification_height",
-                rusqlite::params![
-                    recipient_code,
-                    version_i64,
-                    txid_bytes,
-                    now_unix,
-                    notification_height,
-                ],
-            )
-            .map_err(map_err)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "INSERT INTO bip47_send_state \
+                     (recipient_payment_code, version, notification_txid, \
+                      notification_broadcast_at, notification_height, next_send_index) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0) \
+                     ON CONFLICT(recipient_payment_code) DO UPDATE SET \
+                         notification_txid = excluded.notification_txid, \
+                         notification_broadcast_at = excluded.notification_broadcast_at, \
+                         notification_height = excluded.notification_height",
+                    rusqlite::params![
+                        recipient_code,
+                        version_i64,
+                        txid_bytes,
+                        now_unix,
+                        notification_height,
+                    ],
+                )
+                .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -791,15 +809,16 @@ impl WalletInner {
         recipient_code: &str,
         new_index: u32,
     ) -> Result<(), error::ReusablePayments> {
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "UPDATE bip47_send_state SET next_send_index = ?1 \
-                 WHERE recipient_payment_code = ?2",
-                rusqlite::params![new_index, recipient_code],
-            )
-            .map_err(error::ReusablePayments::db)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "UPDATE bip47_send_state SET next_send_index = ?1 \
+                     WHERE recipient_payment_code = ?2",
+                    rusqlite::params![new_index, recipient_code],
+                )
+                .map_err(error::ReusablePayments::db)?;
+        }
         Ok(())
     }
 
@@ -808,17 +827,18 @@ impl WalletInner {
         recipient_code: &str,
     ) -> Result<(), error::ReusablePayments> {
         let map_err = error::ReusablePayments::db;
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "UPDATE bip47_send_state \
-                 SET notification_txid = NULL, notification_height = NULL, \
-                     notification_broadcast_at = NULL \
-                 WHERE recipient_payment_code = ?1",
-                rusqlite::params![recipient_code],
-            )
-            .map_err(map_err)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "UPDATE bip47_send_state \
+                     SET notification_txid = NULL, notification_height = NULL, \
+                         notification_broadcast_at = NULL \
+                     WHERE recipient_payment_code = ?1",
+                    rusqlite::params![recipient_code],
+                )
+                .map_err(map_err)?;
+        }
         Ok(())
     }
 
@@ -827,15 +847,16 @@ impl WalletInner {
         recipient_code: &str,
         restore_to: u32,
     ) -> Result<(), error::ReusablePayments> {
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "UPDATE bip47_send_state SET next_send_index = ?1 \
-                 WHERE recipient_payment_code = ?2 AND next_send_index = ?1 + 1",
-                rusqlite::params![restore_to, recipient_code],
-            )
-            .map_err(error::ReusablePayments::db)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "UPDATE bip47_send_state SET next_send_index = ?1 \
+                     WHERE recipient_payment_code = ?2 AND next_send_index = ?1 + 1",
+                    rusqlite::params![restore_to, recipient_code],
+                )
+                .map_err(error::ReusablePayments::db)?;
+        }
         Ok(())
     }
 
@@ -858,6 +879,7 @@ impl WalletInner {
         }
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     pub(in crate::wallet) async fn drop_scan_events_above(
         &self,
         height: u32,
@@ -897,12 +919,12 @@ impl WalletInner {
         )
         .map_err(map_err)?;
         tx.commit().map_err(map_err)?;
-        drop(connection);
         Ok(())
     }
     /// Unspent outputs the wallet owns via reusable payments (BIP47 / silent
     /// payments), which live outside the BDK descriptor. Each carries the data
     /// needed to recover its spend key. Excludes outputs marked spent.
+    #[expect(clippy::significant_drop_tightening)]
     pub(in crate::wallet) async fn read_reusable_owned_outputs(
         &self,
     ) -> Result<Vec<super::ReusableOwnedOutput>, error::ReusablePayments> {
@@ -910,14 +932,14 @@ impl WalletInner {
         let connection = self.self_db.lock().await;
         let mut outputs = Vec::new();
 
-        let mut stmt = connection
-            .prepare(
-                "SELECT txid, vout, sender_payment_code, sender_index, amount_sats, \
-                 script_pubkey, height FROM bip47_received WHERE spent_in_txid IS NULL",
-            )
-            .map_err(error::ReusablePayments::db)?;
-        let bip47_rows = stmt
-            .query_map([], |row| {
+        let bip47_rows = {
+            let mut stmt = connection
+                .prepare(
+                    "SELECT txid, vout, sender_payment_code, sender_index, amount_sats, \
+                     script_pubkey, height FROM bip47_received WHERE spent_in_txid IS NULL",
+                )
+                .map_err(error::ReusablePayments::db)?;
+            stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, u32>(1)?,
@@ -929,8 +951,8 @@ impl WalletInner {
                 ))
             })
             .and_then(|iter| iter.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(error::ReusablePayments::db)?;
-        drop(stmt);
+            .map_err(error::ReusablePayments::db)?
+        };
         for (txid_b, vout, code_str, index, amount, spk, height) in bip47_rows {
             let Ok(txid) = Txid::from_slice(&txid_b) else {
                 continue;
@@ -949,14 +971,14 @@ impl WalletInner {
             });
         }
 
-        let mut stmt = connection
-            .prepare(
-                "SELECT txid, vout, output_pubkey, amount_sats, tweak_k, label_m, height \
-                 FROM silent_payment_received WHERE spent_in_txid IS NULL",
-            )
-            .map_err(error::ReusablePayments::db)?;
-        let sp_rows = stmt
-            .query_map([], |row| {
+        let sp_rows = {
+            let mut stmt = connection
+                .prepare(
+                    "SELECT txid, vout, output_pubkey, amount_sats, tweak_k, label_m, height \
+                     FROM silent_payment_received WHERE spent_in_txid IS NULL",
+                )
+                .map_err(error::ReusablePayments::db)?;
+            stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, u32>(1)?,
@@ -968,9 +990,8 @@ impl WalletInner {
                 ))
             })
             .and_then(|iter| iter.collect::<rusqlite::Result<Vec<_>>>())
-            .map_err(error::ReusablePayments::db)?;
-        drop(stmt);
-        drop(connection);
+            .map_err(error::ReusablePayments::db)?
+        };
         for (txid_b, vout, xonly_b, amount, tweak_k, label_m, height) in sp_rows {
             let Ok(txid) = Txid::from_slice(&txid_b) else {
                 continue;
@@ -1052,7 +1073,7 @@ impl WalletInner {
                 let block: bitcoin::Block = bitcoin::consensus::encode::deserialize(&bytes)
                     .map_err(|e| error::ReusablePayments::ConsensusDecode(e.to_string()))?;
                 let prevouts = self.resolve_block_prevouts(&block).await?;
-                let scanned = super::scan::block_to_scanned_txs(&block, &prevouts);
+                let scanned = scan::block_to_scanned_txs(&block, &prevouts);
                 let funding = scanned
                     .iter()
                     .find(|t| t.txid == owned.outpoint.txid)
@@ -1061,7 +1082,7 @@ impl WalletInner {
                             "silent-payment funding tx not found in its block".to_string(),
                         )
                     })?;
-                Ok(super::scan::recover_sp_spending_key(
+                Ok(scan::recover_sp_spending_key(
                     &b_spend, &b_scan, funding, *tweak_k, *label, &secp,
                 )?)
             }
@@ -1077,21 +1098,22 @@ impl WalletInner {
         let map_err = error::ReusablePayments::db;
         let txid_b = outpoint.txid.as_byte_array().to_vec();
         let spent_b = spent_in.as_byte_array().to_vec();
-        let connection = self.self_db.lock().await;
-        connection
-            .execute(
-                "UPDATE bip47_received SET spent_in_txid = ?1 WHERE txid = ?2 AND vout = ?3",
-                rusqlite::params![spent_b, txid_b, outpoint.vout],
-            )
-            .map_err(map_err)?;
-        connection
-            .execute(
-                "UPDATE silent_payment_received SET spent_in_txid = ?1 \
-                 WHERE txid = ?2 AND vout = ?3",
-                rusqlite::params![spent_b, txid_b, outpoint.vout],
-            )
-            .map_err(map_err)?;
-        drop(connection);
+        {
+            let connection = self.self_db.lock().await;
+            connection
+                .execute(
+                    "UPDATE bip47_received SET spent_in_txid = ?1 WHERE txid = ?2 AND vout = ?3",
+                    rusqlite::params![spent_b, txid_b, outpoint.vout],
+                )
+                .map_err(map_err)?;
+            connection
+                .execute(
+                    "UPDATE silent_payment_received SET spent_in_txid = ?1 \
+                     WHERE txid = ?2 AND vout = ?3",
+                    rusqlite::params![spent_b, txid_b, outpoint.vout],
+                )
+                .map_err(map_err)?;
+        }
         Ok(())
     }
 }

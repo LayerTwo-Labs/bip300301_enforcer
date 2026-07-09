@@ -2586,8 +2586,8 @@ impl Wallet {
 
     pub async fn bip47_payment_code(
         &self,
-        version: reusable_payments::Bip47Version,
-    ) -> Result<reusable_payments::PaymentCode, error::ReusablePayments> {
+        version: reusable_payments::bip47::Version,
+    ) -> Result<reusable_payments::bip47::PaymentCode, error::ReusablePayments> {
         self.inner.ensure_scanner_activated().await?;
         self.inner.bip47_payment_code_inner(version).await
     }
@@ -2595,7 +2595,8 @@ impl Wallet {
     pub async fn silent_payment_address(
         &self,
         label: Option<u32>,
-    ) -> Result<reusable_payments::SilentPaymentAddress, error::ReusablePayments> {
+    ) -> Result<reusable_payments::silent_payments::SilentPaymentAddress, error::ReusablePayments>
+    {
         self.inner.ensure_scanner_activated().await?;
         self.inner.silent_payment_address_inner(label).await
     }
@@ -2606,77 +2607,82 @@ impl Wallet {
     ) -> Result<u32, error::ReusablePayments> {
         self.inner.ensure_wallet_unlocked().await?;
         self.inner.ensure_scanner_activated().await?;
-        let connection = self.inner.self_db.lock().await;
-        let next_m: i64 = connection
-            .query_row(
-                "SELECT COALESCE(MAX(m), 0) + 1 FROM silent_payment_labels WHERE m >= 1",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(error::ReusablePayments::db)?;
-        let m: u32 = u32::try_from(next_m).unwrap_or(1);
-        let now_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        connection
-            .execute(
-                "INSERT INTO silent_payment_labels (m, name, created_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![m, name, now_unix],
-            )
-            .map_err(error::ReusablePayments::db)?;
-        drop(connection);
+        let m: u32 = {
+            let connection = self.inner.self_db.lock().await;
+            let m: u32 = connection
+                .query_row(
+                    "SELECT COALESCE(MAX(m), 0) + 1 FROM silent_payment_labels WHERE m >= 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(error::ReusablePayments::db)?;
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            connection
+                .execute(
+                    "INSERT INTO silent_payment_labels (m, name, created_at) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![m, name, now_unix],
+                )
+                .map_err(error::ReusablePayments::db)?;
+            m
+        };
 
-        if let Some(cursor) = self.inner.load_scan_cursor_if_present().await? {
-            self.rescan_reusable_payments(cursor.birthday_height)
-                .await?;
+        if self.inner.load_scan_cursor_if_present().await?.is_some() {
+            // At activation the birthday is tip.max(1), which can sit above a
+            // fresh chain's tip — nothing to scan yet in that case.
+            match self.rescan_reusable_payments(0).await {
+                Ok(_) | Err(error::ReusablePayments::RescanAboveTip { .. }) => {}
+                Err(err) => return Err(err),
+            }
         }
 
         Ok(m)
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     pub async fn list_silent_payment_labels(
         &self,
     ) -> Result<Vec<(u32, String)>, error::ReusablePayments> {
         self.inner.ensure_wallet_unlocked().await?;
-        let connection = self.inner.self_db.lock().await;
-        let mut stmt = connection
-            .prepare("SELECT m, name FROM silent_payment_labels ORDER BY m ASC")
-            .map_err(error::ReusablePayments::db)?;
-        let rows_result: Result<Vec<(u32, String)>, _> = stmt
-            .query_map([], |row| {
+        let rows_result: Result<Vec<(u32, String)>, _> = {
+            let connection = self.inner.self_db.lock().await;
+            let mut stmt = connection
+                .prepare("SELECT m, name FROM silent_payment_labels ORDER BY m ASC")
+                .map_err(error::ReusablePayments::db)?;
+            stmt.query_map([], |row| {
                 Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
             })
-            .and_then(|iter| iter.collect());
-        drop(stmt);
-        drop(connection);
+            .and_then(|iter| iter.collect())
+        };
         let out = rows_result.map_err(error::ReusablePayments::db)?;
         Ok(out)
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     pub async fn list_bip47_inbound_payers(
         &self,
     ) -> Result<Vec<reusable_payments::Bip47InboundPayer>, error::ReusablePayments> {
         self.inner.ensure_wallet_unlocked().await?;
-        let connection = self.inner.self_db.lock().await;
-        let mut stmt = connection
-            .prepare(
-                "SELECT p.sender_payment_code, p.next_receive_index, p.first_seen_unix, \
-                        COALESCE(SUM(r.amount_sats), 0) \
-                 FROM bip47_inbound_payers p \
-                 LEFT JOIN bip47_received r \
-                     ON r.sender_payment_code = p.sender_payment_code \
-                 GROUP BY p.sender_payment_code \
-                 ORDER BY p.first_seen_unix ASC",
-            )
-            .map_err(error::ReusablePayments::db)?;
-        let rows_result: Result<Vec<(String, u32, i64, i64)>, _> = stmt
-            .query_map([], |row| {
+        let rows_result: Result<Vec<(String, u32, i64, i64)>, _> = {
+            let connection = self.inner.self_db.lock().await;
+            let mut stmt = connection
+                .prepare(
+                    "SELECT p.sender_payment_code, p.next_receive_index, p.first_seen_unix, \
+                            COALESCE(SUM(r.amount_sats), 0) \
+                     FROM bip47_inbound_payers p \
+                     LEFT JOIN bip47_received r \
+                         ON r.sender_payment_code = p.sender_payment_code \
+                     GROUP BY p.sender_payment_code \
+                     ORDER BY p.first_seen_unix ASC",
+                )
+                .map_err(error::ReusablePayments::db)?;
+            stmt.query_map([], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
-            .and_then(|iter| iter.collect());
-        drop(stmt);
-        drop(connection);
+            .and_then(|iter| iter.collect())
+        };
         let raw_rows = rows_result.map_err(error::ReusablePayments::db)?;
         let mut out = Vec::new();
         for (code_str, next_idx, first_seen, total_sats) in raw_rows {
@@ -2691,6 +2697,7 @@ impl Wallet {
         Ok(out)
     }
 
+    #[expect(clippy::significant_drop_tightening)]
     pub async fn list_silent_payment_receives(
         &self,
         min_confirmations: Option<u32>,
@@ -2703,25 +2710,12 @@ impl Wallet {
             .await?
             .map(|c| c.last_scanned_height)
             .unwrap_or(0);
-        let connection = self.inner.self_db.lock().await;
-
         let min_conf = min_confirmations.unwrap_or(0);
         let max_height_for_filter = last_scanned_height
             .saturating_sub(min_conf)
             .saturating_add(1);
         let limit_val = limit.unwrap_or(1000).min(10_000) as i64;
 
-        let mut stmt = connection
-            .prepare(
-                "SELECT r.txid, r.vout, r.output_pubkey, r.amount_sats, r.tweak_k, \
-                        r.label_m, l.name, r.height, r.spent_in_txid \
-                 FROM silent_payment_received r \
-                 LEFT JOIN silent_payment_labels l ON l.m = r.label_m \
-                 WHERE r.height < ?1 \
-                 ORDER BY r.height ASC, r.vout ASC \
-                 LIMIT ?2",
-            )
-            .map_err(error::ReusablePayments::db)?;
         type RawReceiveRow = (
             Vec<u8>,
             u32,
@@ -2733,8 +2727,20 @@ impl Wallet {
             u32,
             Option<Vec<u8>>,
         );
-        let rows_result: Result<Vec<RawReceiveRow>, _> = stmt
-            .query_map(rusqlite::params![max_height_for_filter, limit_val], |row| {
+        let rows_result: Result<Vec<RawReceiveRow>, _> = {
+            let connection = self.inner.self_db.lock().await;
+            let mut stmt = connection
+                .prepare(
+                    "SELECT r.txid, r.vout, r.output_pubkey, r.amount_sats, r.tweak_k, \
+                            r.label_m, l.name, r.height, r.spent_in_txid \
+                     FROM silent_payment_received r \
+                     LEFT JOIN silent_payment_labels l ON l.m = r.label_m \
+                     WHERE r.height < ?1 \
+                     ORDER BY r.height ASC, r.vout ASC \
+                     LIMIT ?2",
+                )
+                .map_err(error::ReusablePayments::db)?;
+            stmt.query_map(rusqlite::params![max_height_for_filter, limit_val], |row| {
                 let txid: Vec<u8> = row.get(0)?;
                 let vout: u32 = row.get(1)?;
                 let output_pk: Vec<u8> = row.get(2)?;
@@ -2748,9 +2754,8 @@ impl Wallet {
                     txid, vout, output_pk, amount, tweak_k, label_m, label_name, height, spent_in,
                 ))
             })
-            .and_then(|iter| iter.collect());
-        drop(stmt);
-        drop(connection);
+            .and_then(|iter| iter.collect())
+        };
         let raw_rows = rows_result.map_err(error::ReusablePayments::db)?;
 
         let mut out = Vec::new();
@@ -2785,7 +2790,7 @@ impl Wallet {
 
     pub async fn send_to_payment_code(
         &self,
-        recipient: reusable_payments::PaymentCode,
+        recipient: reusable_payments::bip47::PaymentCode,
         amount: bitcoin::Amount,
         fee_sat_per_vbyte: u64,
     ) -> Result<reusable_payments::Bip47SendResult, error::ReusablePayments> {
@@ -2904,7 +2909,7 @@ impl Wallet {
 
     async fn broadcast_bip47_notification(
         &self,
-        recipient: &reusable_payments::PaymentCode,
+        recipient: &reusable_payments::bip47::PaymentCode,
         version: reusable_payments::bip47::Version,
         fee_rate: bitcoin::FeeRate,
     ) -> Result<bitcoin::Txid, error::ReusablePayments> {
@@ -3006,7 +3011,7 @@ impl Wallet {
     /// output, where A is a fresh change pubkey used for the blinding ECDH.
     async fn broadcast_bip47_notification_v3(
         &self,
-        recipient: &reusable_payments::PaymentCode,
+        recipient: &reusable_payments::bip47::PaymentCode,
         fee_rate: bitcoin::FeeRate,
     ) -> Result<bitcoin::Txid, error::ReusablePayments> {
         // Above Core's dust threshold (~786 sats) for a bare 1-of-3 multisig output.
@@ -3124,7 +3129,10 @@ impl Wallet {
 
     pub async fn send_to_silent_payment(
         &self,
-        recipients: Vec<(reusable_payments::SilentPaymentAddress, bitcoin::Amount)>,
+        recipients: Vec<(
+            reusable_payments::silent_payments::SilentPaymentAddress,
+            bitcoin::Amount,
+        )>,
         fee_sat_per_vbyte: u64,
     ) -> Result<bitcoin::Txid, error::ReusablePayments> {
         use bitcoin::FeeRate;
@@ -3185,7 +3193,7 @@ impl Wallet {
                             "sp send: input {i} has no witness_utxo"
                         ))
                     })?;
-                if !reusable_payments::is_bip352_eligible_spk(spk.as_script()) {
+                if !reusable_payments::silent_payments::is_bip352_eligible_spk(spk.as_script()) {
                     return Err(error::ReusablePayments::SilentPaymentCrypto(
                         reusable_payments::silent_payments::CryptoError::IneligibleInput {
                             outpoint,
@@ -3305,10 +3313,12 @@ impl Wallet {
         })
     }
 
+    /// Returns the effective height the rescan started from (`from_height`,
+    /// or the scanner birthday when `from_height` is 0).
     pub async fn rescan_reusable_payments(
         &self,
         from_height: u32,
-    ) -> Result<(), error::ReusablePayments> {
+    ) -> Result<u32, error::ReusablePayments> {
         use bitcoin_jsonrpsee::{
             client::MainClient,
             jsonrpsee::core::{client::ClientT, params::ArrayParams},
@@ -3324,8 +3334,6 @@ impl Wallet {
             .await
             .expect("scanner semaphore is never closed");
 
-        self.inner.drop_scan_events_above(from_height).await?;
-
         let map_rpc =
             |err: bitcoin_jsonrpsee::jsonrpsee::core::client::Error| -> error::ReusablePayments {
                 error::ReusablePayments::Rpc(err.to_string())
@@ -3337,10 +3345,33 @@ impl Wallet {
             .await
             .map_err(map_rpc)? as u32;
 
+        let cursor = self.inner.load_scan_cursor_if_present().await?;
+        // 0 means "from the scanner birthday".
+        let from_height = match (&cursor, from_height) {
+            (Some(cursor), 0) => cursor.birthday_height,
+            (None, 0) => 1,
+            (_, h) => h,
+        };
+        if from_height > tip_height {
+            return Err(error::ReusablePayments::RescanAboveTip {
+                from_height,
+                tip_height,
+            });
+        }
+        // Allow rescanning history from before scanner activation; otherwise
+        // scan_block_with_ctx would silently skip below-birthday blocks.
+        if let Some(cursor) = &cursor
+            && from_height < cursor.birthday_height
+        {
+            self.inner.lower_scan_birthday(from_height).await?;
+        }
+
+        self.inner.drop_scan_events_above(from_height).await?;
+
         let mut ctx = match self.inner.build_scan_context_for_deep_rescan().await {
             Ok(ctx) => ctx,
             Err(error::ReusablePayments::NotFound(_))
-            | Err(error::ReusablePayments::NotUnlocked(_)) => return Ok(()),
+            | Err(error::ReusablePayments::NotUnlocked(_)) => return Ok(from_height),
             Err(err) => return Err(err),
         };
 
@@ -3390,7 +3421,7 @@ impl Wallet {
                 .await?;
             prev_block_hash = Some(block.block_hash());
         }
-        Ok(())
+        Ok(from_height)
     }
 }
 

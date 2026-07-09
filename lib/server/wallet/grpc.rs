@@ -171,6 +171,38 @@ where
     Ok(sidechain_proposal)
 }
 
+fn bip47_version_from_proto(
+    raw: buffa::EnumValue<crate::proto::mainchain::Bip47Version>,
+) -> Result<crate::wallet::reusable_payments::bip47::Version, ConnectError> {
+    use crate::{proto::mainchain::Bip47Version as P, wallet::reusable_payments::bip47::Version};
+    match raw.as_known() {
+        Some(v) if v == P::V1 => Ok(Version::V1),
+        Some(v) if v == P::V3 => Ok(Version::V3),
+        _ => Err(ConnectError::invalid_argument(
+            "Bip47Version must be V1 or V3",
+        )),
+    }
+}
+
+fn bip47_version_to_proto(
+    v: crate::wallet::reusable_payments::bip47::Version,
+) -> crate::proto::mainchain::Bip47Version {
+    use crate::{proto::mainchain::Bip47Version as P, wallet::reusable_payments::bip47::Version};
+    match v {
+        Version::V1 => P::V1,
+        Version::V3 => P::V3,
+    }
+}
+
+fn bip47_notification_address(
+    code: &crate::wallet::reusable_payments::bip47::PaymentCode,
+    network: bitcoin::Network,
+) -> Result<String, crate::wallet::error::ReusablePayments> {
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let addr = crate::wallet::reusable_payments::bip47::notification_address(code, network, &secp)?;
+    Ok(addr.to_string())
+}
+
 #[expect(refining_impl_trait_reachable)]
 impl WalletService for crate::wallet::Wallet {
     async fn get_info(
@@ -851,7 +883,7 @@ impl WalletService for crate::wallet::Wallet {
         request: ServiceRequest<'_, crate::proto::mainchain::SendToBip47PaymentCodeRequest>,
     ) -> ServiceResult<crate::proto::mainchain::SendToBip47PaymentCodeResponse> {
         let req = request.to_owned_message();
-        let recipient: crate::wallet::reusable_payments::PaymentCode = req
+        let recipient: crate::wallet::reusable_payments::bip47::PaymentCode = req
             .payment_code
             .parse()
             .map_err(|err: crate::wallet::reusable_payments::bip47::ParseError| {
@@ -926,12 +958,13 @@ impl WalletService for crate::wallet::Wallet {
         request: ServiceRequest<'_, crate::proto::mainchain::RescanReusablePaymentsRequest>,
     ) -> ServiceResult<crate::proto::mainchain::RescanReusablePaymentsResponse> {
         let req = request.to_owned_message();
-        self.rescan_reusable_payments(req.from_height)
+        let scheduled_from_height = self
+            .rescan_reusable_payments(req.from_height)
             .await
             .map_err(|err| err.builder().to_connect_error())?;
         Ok(Response::new(
             crate::proto::mainchain::RescanReusablePaymentsResponse {
-                scheduled_from_height: req.from_height,
+                scheduled_from_height,
             },
         ))
     }
@@ -1014,7 +1047,7 @@ impl WalletService for crate::wallet::Wallet {
         let expected_network = self.validator().network();
         let mut parsed_recipients = Vec::with_capacity(req.recipients.len());
         for r in req.recipients {
-            let addr = crate::wallet::reusable_payments::SilentPaymentAddress::parse_for_network(
+            let addr = crate::wallet::reusable_payments::silent_payments::SilentPaymentAddress::parse_for_network(
                 &r.sp_address,
                 expected_network,
             )
@@ -1067,36 +1100,4 @@ impl WalletService for crate::wallet::Wallet {
             },
         ))
     }
-}
-
-fn bip47_version_from_proto(
-    raw: buffa::EnumValue<crate::proto::mainchain::Bip47Version>,
-) -> Result<crate::wallet::reusable_payments::bip47::Version, ConnectError> {
-    use crate::{proto::mainchain::Bip47Version as P, wallet::reusable_payments::bip47::Version};
-    match raw.as_known() {
-        Some(v) if v == P::V1 => Ok(Version::V1),
-        Some(v) if v == P::V3 => Ok(Version::V3),
-        _ => Err(ConnectError::invalid_argument(
-            "Bip47Version must be V1 or V3",
-        )),
-    }
-}
-
-fn bip47_version_to_proto(
-    v: crate::wallet::reusable_payments::bip47::Version,
-) -> crate::proto::mainchain::Bip47Version {
-    use crate::{proto::mainchain::Bip47Version as P, wallet::reusable_payments::bip47::Version};
-    match v {
-        Version::V1 => P::V1,
-        Version::V3 => P::V3,
-    }
-}
-
-fn bip47_notification_address(
-    code: &crate::wallet::reusable_payments::PaymentCode,
-    network: bitcoin::Network,
-) -> Result<String, crate::wallet::error::ReusablePayments> {
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    let addr = crate::wallet::reusable_payments::bip47::notification_address(code, network, &secp)?;
-    Ok(addr.to_string())
 }
