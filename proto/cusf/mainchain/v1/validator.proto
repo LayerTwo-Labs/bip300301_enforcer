@@ -213,6 +213,11 @@ message GetChainInfoResponse {
     // Number of votes required to activate a proposal for an unused sidechain
     // slot.
     uint32 unused_sidechain_slot_activation_threshold = 6;
+
+    // Height at which enforcement activates. Blocks below this
+    // height are plain Bitcoin history and are not scanned for BIP300
+    // messages or deposits. 0 means enforced from genesis.
+    uint32 activation_height = 7;
   }
 
   Network network = 1;

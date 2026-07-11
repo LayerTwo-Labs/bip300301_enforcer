@@ -32,7 +32,7 @@ use crate::{
     bins::{self, CommandExt as _},
     errors::ErrorChain,
     messages::{CoinbaseBuilder, M4AckBundles},
-    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, Thresholds},
+    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber},
     wallet::{
         Wallet,
         error::{self, BitcoinCoreRPC},
@@ -248,7 +248,7 @@ impl Wallet {
         &self,
         ctips: &HashMap<SidechainNumber, crate::types::Ctip>,
     ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
-        let thresholds = Thresholds::for_network(self.inner.validator.network());
+        let thresholds = self.inner.validator.network_params().thresholds;
         let mut res = Vec::new();
         for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
             let mut ctip = None;

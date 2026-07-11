@@ -18,6 +18,7 @@ use bip300301_enforcer_lib::{
         },
     },
     rpc_client, server,
+    types::NetworkParams,
     validator::{
         SyncStateSummary, Validator,
         main_rest_client::{MainRestClient, MainRestClientError},
@@ -1086,11 +1087,31 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Resolve BIP300 thresholds + enforcement activation height: from the
+    // explicit --network-preset if given, otherwise from the node's network.
+    let network_params = match cli.network_preset {
+        Some(preset) => {
+            let params = preset.params();
+            tracing::info!(
+                ?preset,
+                bip300_activation_height = params.bip300_activation_height,
+                thresholds = ?params.thresholds,
+                "Applying network parameter preset"
+            );
+            params
+        }
+        None => NetworkParams::for_network(info.chain),
+    };
+
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which
-    // is which.
-    let validator_data_dir = cli.data_dir.join("validator").join(info.chain.to_string());
-    let wallet_data_dir = cli.data_dir.join("wallet").join(info.chain.to_string());
+    // is which. Presets get their own namespace (e.g. `main-drynet1`)
+    let chain_dir_name = match network_params.datadir_suffix {
+        Some(suffix) => format!("{}-{}", info.chain, suffix),
+        None => info.chain.to_string(),
+    };
+    let validator_data_dir = cli.data_dir.join("validator").join(&chain_dir_name);
+    let wallet_data_dir = cli.data_dir.join("wallet").join(&chain_dir_name);
 
     // Ensure that the data directories exists
     for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
@@ -1103,6 +1124,7 @@ async fn main() -> Result<()> {
         cli.node_blocks_dir_opts.dir.clone(),
         &validator_data_dir,
         info.chain,
+        network_params,
     )
     .into_diagnostic()?;
 
