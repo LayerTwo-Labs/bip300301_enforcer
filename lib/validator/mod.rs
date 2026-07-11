@@ -18,8 +18,8 @@ use tokio::sync::watch::Receiver as WatchReceiver;
 use crate::{
     proto::{StatusBuilder, ToStatus, mainchain::HeaderSyncProgress},
     types::{
-        BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain,
-        SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+        BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, NetworkParams,
+        Sidechain, SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
     },
     validator::main_rest_client::MainRestClient,
 };
@@ -417,6 +417,7 @@ pub struct Validator {
     mainchain_rest_client: MainRestClient,
     mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
+    network_params: NetworkParams,
 }
 
 impl Validator {
@@ -426,6 +427,7 @@ impl Validator {
         mainchain_blocks_dir: Option<PathBuf>,
         data_dir: &Path,
         network: bitcoin::Network,
+        network_params: NetworkParams,
     ) -> Result<Self, InitError> {
         // Note: this needs to be reasonably big. If set too small,
         // we're going to run into strange issues with the broadcast
@@ -449,11 +451,16 @@ impl Validator {
             mainchain_rest_client,
             mainchain_blocks_dir,
             network,
+            network_params,
         })
     }
 
     pub fn network(&self) -> bitcoin::Network {
         self.network
+    }
+
+    pub fn network_params(&self) -> NetworkParams {
+        self.network_params
     }
 
     pub fn subscribe_events(
@@ -828,6 +835,7 @@ mod ctip_sequence_number_tests {
             None,
             dir,
             bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
         )
         .expect("construct validator")
     }

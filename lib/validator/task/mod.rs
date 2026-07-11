@@ -29,8 +29,9 @@ use crate::{
     proto::mainchain::HeaderSyncProgress,
     types::{
         BlockEvent, BlockInfo, BmmCommitments, Ctip, Deposit, Event, HeaderInfo, M6id,
-        PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposal, SidechainProposalId,
-        SidechainProposalStatus, Thresholds, WithdrawalBundleEvent, WithdrawalBundleEventKind,
+        NetworkParams, PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposal,
+        SidechainProposalId, SidechainProposalStatus, Thresholds, WithdrawalBundleEvent,
+        WithdrawalBundleEventKind,
     },
     validator::{
         dbs::{
@@ -46,20 +47,23 @@ pub mod error;
 
 /// Bundles the consensus inputs that every BIP 300/301 handler needs: a
 /// reference to the validator's databases, the Bitcoin network we're running
-/// against, and the matching voting/aging [`Thresholds`].
+/// against, and the resolved [`NetworkParams`] (voting/aging [`Thresholds`]
+/// plus the enforcement activation height).
 #[derive(Clone, Copy)]
 pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) dbs: &'a Dbs,
     pub(super) network: Network,
+    pub(super) params: NetworkParams,
     pub(super) thresholds: Thresholds,
 }
 
 impl<'a> BlockHandler<'a> {
-    pub(in crate::validator) fn new(dbs: &'a Dbs, network: Network) -> Self {
+    pub(in crate::validator) fn new(dbs: &'a Dbs, network: Network, params: NetworkParams) -> Self {
         Self {
             dbs,
             network,
-            thresholds: Thresholds::for_network(network),
+            params,
+            thresholds: params.thresholds,
         }
     }
 }
@@ -1070,6 +1074,24 @@ impl BlockHandler<'_> {
         let Some(coinbase) = block.txdata.first() else {
             return Err(error::ConnectBlock::NoCoinbase);
         };
+        // Everything below activation height is plain Bitcoin history. We need
+        // to record the block, but with an empty info + diff and skip all processing.
+        if height < self.params.bip300_activation_height {
+            let block_info = BlockInfo {
+                bmm_commitments: BmmCommitments::new(),
+                coinbase_txid: coinbase.compute_txid(),
+                events: Vec::new(),
+            };
+            let block_diff = diff::Block {
+                coinbase: diff::Coinbase {
+                    msgs: Vec::new(),
+                    failed_proposals: diff::FailedProposals(Default::default()),
+                    failed_m6ids: diff::FailedM6ids(Default::default()),
+                },
+                txs: Vec::new(),
+            };
+            return self.record_block(rwtxn, block, height, block_info, block_diff);
+        }
         let mut coinbase_messages = CoinbaseMessages::default();
         // map of sidechain proposals to first vout
         let mut m1_sidechain_proposals = HashMap::new();
@@ -1223,6 +1245,23 @@ impl BlockHandler<'_> {
             coinbase: coinbase_diff,
             txs: tx_diffs,
         };
+        self.record_block(rwtxn, block, height, block_info, block_diff)
+    }
+
+    /// Shared tail of [`Self::connect_block`]: persist the block's info +
+    /// diff, advance the chain tip if this block has the most cumulative
+    /// work, and build the `ConnectBlock` event.
+    #[expect(clippy::result_large_err)]
+    fn record_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        block: &Block,
+        height: u32,
+        block_info: BlockInfo,
+        block_diff: diff::Block,
+    ) -> Result<Event, error::ConnectBlock> {
+        let dbs = self.dbs;
+        let block_hash = block.header.block_hash();
         tracing::trace!("Storing block info");
         let () = dbs
             .block_hashes
@@ -1247,7 +1286,7 @@ impl BlockHandler<'_> {
         let event = {
             let header_info = HeaderInfo {
                 block_hash,
-                prev_block_hash: prev_mainchain_block_hash,
+                prev_block_hash: block.header.prev_blockhash,
                 height,
                 work: block.header.work(),
                 timestamp: block.header.time,
@@ -1853,7 +1892,11 @@ mod tests {
 
     /// `BlockHandler` bound to a test `Dbs`. Regtest gets [`Thresholds::SHORT`].
     fn test_handler(dbs: &Dbs) -> BlockHandler<'_> {
-        BlockHandler::new(dbs, bitcoin::Network::Regtest)
+        BlockHandler::new(
+            dbs,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+        )
     }
 
     fn build_m8_tx(
@@ -2131,6 +2174,81 @@ mod tests {
             ),
             "connect_block must reject an empty block, not panic"
         );
+        Ok(())
+    }
+
+    /// Blocks below a preset's BIP300 activation height are recorded but not
+    /// scanned: an M1 proposal in a pre-activation coinbase must be ignored,
+    /// while the identical block is processed once activation is reached.
+    #[test]
+    fn connect_block_ignores_bip300_messages_below_activation_height() -> Result<()> {
+        let m1_script: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: SidechainNumber(4),
+            description: SidechainDescription(b"pre-activation".to_vec()),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let mk_block = || {
+            build_test_block(
+                BlockHash::all_zeros(),
+                TestBlockParts {
+                    extra_coinbase_outputs: vec![TxOut {
+                        script_pubkey: m1_script.clone(),
+                        value: Amount::ZERO,
+                    }],
+                    ..Default::default()
+                },
+            )
+        };
+
+        // Activation height above the block's height: the M1 is ignored.
+        {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let block = mk_block();
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(block.header, 0)])
+                .into_diagnostic()?;
+            let params = NetworkParams {
+                bip300_activation_height: 1,
+                ..NetworkParams::for_network(bitcoin::Network::Regtest)
+            };
+            let handler = BlockHandler::new(&dbs, bitcoin::Network::Regtest, params);
+            let Event::ConnectBlock { block_info, .. } = handler
+                .connect_block(&mut rwtxn, &block)
+                .into_diagnostic()?
+            else {
+                panic!("expected ConnectBlock event");
+            };
+            assert!(
+                block_info.events.is_empty(),
+                "pre-activation block must produce no BIP300 events"
+            );
+        }
+
+        // Same block with enforcement from genesis: the M1 is processed.
+        {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let block = mk_block();
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(block.header, 0)])
+                .into_diagnostic()?;
+            let handler = test_handler(&dbs);
+            let Event::ConnectBlock { block_info, .. } = handler
+                .connect_block(&mut rwtxn, &block)
+                .into_diagnostic()?
+            else {
+                panic!("expected ConnectBlock event");
+            };
+            assert!(
+                matches!(
+                    block_info.events.as_slice(),
+                    [BlockEvent::SidechainProposal { .. }]
+                ),
+                "post-activation block must record the M1 proposal"
+            );
+        }
         Ok(())
     }
 
