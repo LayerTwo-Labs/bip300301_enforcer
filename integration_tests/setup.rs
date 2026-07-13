@@ -448,6 +448,9 @@ pub struct SetupOpts<
     pub bitcoind_args: BitcoindArgs,
     pub bitcoind_kind: BitcoindKind,
     pub enforcer_args: EnforcerArgs,
+    /// Create the enforcer wallet from this seed file instead of a random
+    /// mnemonic, so tests can derive the wallet's keys independently.
+    pub wallet_seed_file: Option<PathBuf>,
 }
 
 type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
@@ -636,6 +639,7 @@ impl PostSetup {
             serve_rpc_port: reserved_ports.enforcer_serve_rpc.port(),
             wallet_electrum_rpc_port: electrs.electrum_rpc_port,
             wallet_electrum_http_port: electrs.electrum_http_port,
+            wallet_seed_file: opts.wallet_seed_file.clone(),
         };
         let enforcer_task = enforcer.spawn_command_with_args(
             [(

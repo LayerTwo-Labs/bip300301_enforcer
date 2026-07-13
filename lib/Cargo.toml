@@ -44,6 +44,7 @@ ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
 rand = { workspace = true }
 reqwest = { workspace = true }
+reusable-payments = { workspace = true }
 # needs to line up with BDK version
 rusqlite = { workspace = true, features = ["bundled"] }
 rusqlite_migration = { workspace = true }

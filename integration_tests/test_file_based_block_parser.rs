@@ -93,6 +93,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         serve_rpc_port: setup.reserved_ports.enforcer_serve_rpc.port(),
         wallet_electrum_rpc_port: 0,
         wallet_electrum_http_port: 0,
+        wallet_seed_file: None,
     };
 
     tracing::info!("Starting enforcer");

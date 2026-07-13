@@ -2701,6 +2701,126 @@ pub type OwnedGenerateBlocksResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<GetBip47PaymentCodeRequestView<'static>>`.
+pub type OwnedGetBip47PaymentCodeRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetBip47PaymentCodeResponseView<'static>>`.
+pub type OwnedGetBip47PaymentCodeResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<SendToBip47PaymentCodeRequestView<'static>>`.
+pub type OwnedSendToBip47PaymentCodeRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<SendToBip47PaymentCodeResponseView<'static>>`.
+pub type OwnedSendToBip47PaymentCodeResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListBip47InboundPayersRequestView<'static>>`.
+pub type OwnedListBip47InboundPayersRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListBip47InboundPayersResponseView<'static>>`.
+pub type OwnedListBip47InboundPayersResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetSilentPaymentAddressRequestView<'static>>`.
+pub type OwnedGetSilentPaymentAddressRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetSilentPaymentAddressResponseView<'static>>`.
+pub type OwnedGetSilentPaymentAddressResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<CreateSilentPaymentLabelRequestView<'static>>`.
+pub type OwnedCreateSilentPaymentLabelRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<CreateSilentPaymentLabelResponseView<'static>>`.
+pub type OwnedCreateSilentPaymentLabelResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListSilentPaymentLabelsRequestView<'static>>`.
+pub type OwnedListSilentPaymentLabelsRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListSilentPaymentLabelsResponseView<'static>>`.
+pub type OwnedListSilentPaymentLabelsResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<SendToSilentPaymentRequestView<'static>>`.
+pub type OwnedSendToSilentPaymentRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<SendToSilentPaymentResponseView<'static>>`.
+pub type OwnedSendToSilentPaymentResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListSilentPaymentReceivesRequestView<'static>>`.
+pub type OwnedListSilentPaymentReceivesRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListSilentPaymentReceivesResponseView<'static>>`.
+pub type OwnedListSilentPaymentReceivesResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetReusableScanStatusRequestView<'static>>`.
+pub type OwnedGetReusableScanStatusRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetReusableScanStatusResponseView<'static>>`.
+pub type OwnedGetReusableScanStatusResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<RescanReusablePaymentsRequestView<'static>>`.
+pub type OwnedRescanReusablePaymentsRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<RescanReusablePaymentsResponseView<'static>>`.
+pub type OwnedRescanReusablePaymentsResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsResponseView<
+        'static,
+    >,
+>;
 impl ::connectrpc::Encodable<
     crate::proto::generated::buffa::cusf::mainchain::v1::BroadcastWithdrawalBundleResponse,
 >
@@ -3121,6 +3241,286 @@ for ::buffa::view::OwnedView<
         ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
     }
 }
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
 /// Full service name for this service.
 pub const WALLET_SERVICE_SERVICE_NAME: &str = "cusf.mainchain.v1.WalletService";
 /// Static [`Spec`](::connectrpc::Spec) for the server-side `BroadcastWithdrawalBundle` RPC.
@@ -3258,6 +3658,96 @@ pub const WALLET_SERVICE_GENERATE_BLOCKS_SPEC: ::connectrpc::Spec = ::connectrpc
         ::connectrpc::StreamType::ServerStream,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `GetBip47PaymentCode` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_GET_BIP47_PAYMENT_CODE_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/GetBip47PaymentCode",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `SendToBip47PaymentCode` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_SEND_TO_BIP47_PAYMENT_CODE_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/SendToBip47PaymentCode",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `ListBip47InboundPayers` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_LIST_BIP47_INBOUND_PAYERS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/ListBip47InboundPayers",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `GetSilentPaymentAddress` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_GET_SILENT_PAYMENT_ADDRESS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/GetSilentPaymentAddress",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `CreateSilentPaymentLabel` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_CREATE_SILENT_PAYMENT_LABEL_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/CreateSilentPaymentLabel",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `ListSilentPaymentLabels` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_LIST_SILENT_PAYMENT_LABELS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/ListSilentPaymentLabels",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `SendToSilentPayment` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_SEND_TO_SILENT_PAYMENT_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/SendToSilentPayment",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `ListSilentPaymentReceives` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_LIST_SILENT_PAYMENT_RECEIVES_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/ListSilentPaymentReceives",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `GetReusableScanStatus` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_GET_REUSABLE_SCAN_STATUS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/GetReusableScanStatus",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `RescanReusablePayments` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_RESCAN_REUSABLE_PAYMENTS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/RescanReusablePayments",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Idempotent);
 /// Server trait for WalletService.
 ///
 /// # Implementing handlers
@@ -3658,6 +4148,237 @@ pub trait WalletService: Send + Sync + 'static {
                     crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksResponse,
                 > + Send + use<Self>,
             >,
+        >,
+    > + Send;
+    /// Handle the GetBip47PaymentCode RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn get_bip47_payment_code<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the SendToBip47PaymentCode RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn send_to_bip47_payment_code<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the ListBip47InboundPayers RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn list_bip47_inbound_payers<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the GetSilentPaymentAddress RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn get_silent_payment_address<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Also rescans from the wallet birthday, so that past payments to the
+    /// new label surface.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn create_silent_payment_label<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the ListSilentPaymentLabels RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn list_silent_payment_labels<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the SendToSilentPayment RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn send_to_silent_payment<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the ListSilentPaymentReceives RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn list_silent_payment_receives<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the GetReusableScanStatus RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn get_reusable_scan_status<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Returns immediately; observe progress via GetReusableScanStatus.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn rescan_reusable_payments<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsResponse,
+            > + Send + use<'a, Self>,
         >,
     > + Send;
 }
@@ -4122,6 +4843,296 @@ impl<S: WalletService> WalletServiceExt for S {
                 }),
             )
             .with_spec(WALLET_SERVICE_GENERATE_BLOCKS_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "GetBip47PaymentCode",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.get_bip47_payment_code(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_GET_BIP47_PAYMENT_CODE_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "SendToBip47PaymentCode",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.send_to_bip47_payment_code(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_SEND_TO_BIP47_PAYMENT_CODE_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListBip47InboundPayers",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.list_bip47_inbound_payers(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_LIST_BIP47_INBOUND_PAYERS_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "GetSilentPaymentAddress",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.get_silent_payment_address(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_GET_SILENT_PAYMENT_ADDRESS_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "CreateSilentPaymentLabel",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.create_silent_payment_label(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_CREATE_SILENT_PAYMENT_LABEL_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListSilentPaymentLabels",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.list_silent_payment_labels(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_LIST_SILENT_PAYMENT_LABELS_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "SendToSilentPayment",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.send_to_silent_payment(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_SEND_TO_SILENT_PAYMENT_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListSilentPaymentReceives",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.list_silent_payment_receives(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_LIST_SILENT_PAYMENT_RECEIVES_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "GetReusableScanStatus",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.get_reusable_scan_status(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_GET_REUSABLE_SCAN_STATUS_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "RescanReusablePayments",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.rescan_reusable_payments(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_RESCAN_REUSABLE_PAYMENTS_SPEC)
     }
 }
 /// Monomorphic dispatcher for `WalletService`.
@@ -4259,6 +5270,66 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::server_streaming()
                         .with_spec(WALLET_SERVICE_GENERATE_BLOCKS_SPEC),
+                )
+            }
+            "GetBip47PaymentCode" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_GET_BIP47_PAYMENT_CODE_SPEC),
+                )
+            }
+            "SendToBip47PaymentCode" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_SEND_TO_BIP47_PAYMENT_CODE_SPEC),
+                )
+            }
+            "ListBip47InboundPayers" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_LIST_BIP47_INBOUND_PAYERS_SPEC),
+                )
+            }
+            "GetSilentPaymentAddress" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_GET_SILENT_PAYMENT_ADDRESS_SPEC),
+                )
+            }
+            "CreateSilentPaymentLabel" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_CREATE_SILENT_PAYMENT_LABEL_SPEC),
+                )
+            }
+            "ListSilentPaymentLabels" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_LIST_SILENT_PAYMENT_LABELS_SPEC),
+                )
+            }
+            "SendToSilentPayment" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_SEND_TO_SILENT_PAYMENT_SPEC),
+                )
+            }
+            "ListSilentPaymentReceives" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_LIST_SILENT_PAYMENT_RECEIVES_SPEC),
+                )
+            }
+            "GetReusableScanStatus" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_GET_REUSABLE_SCAN_STATUS_SPEC),
+                )
+            }
+            "RescanReusablePayments" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_RESCAN_REUSABLE_PAYMENTS_SPEC),
                 )
             }
             _ => None,
@@ -4546,6 +5617,216 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                         .await?
                         .encode::<
                             crate::proto::generated::buffa::cusf::mainchain::v1::UnlockWalletResponse,
+                        >(format)
+                })
+            }
+            "GetBip47PaymentCode" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeRequest,
+                    >::from_parts(&req, &body);
+                    svc.get_bip47_payment_code(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeResponse,
+                        >(format)
+                })
+            }
+            "SendToBip47PaymentCode" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeRequest,
+                    >::from_parts(&req, &body);
+                    svc.send_to_bip47_payment_code(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeResponse,
+                        >(format)
+                })
+            }
+            "ListBip47InboundPayers" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersRequest,
+                    >::from_parts(&req, &body);
+                    svc.list_bip47_inbound_payers(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersResponse,
+                        >(format)
+                })
+            }
+            "GetSilentPaymentAddress" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressRequest,
+                    >::from_parts(&req, &body);
+                    svc.get_silent_payment_address(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressResponse,
+                        >(format)
+                })
+            }
+            "CreateSilentPaymentLabel" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelRequest,
+                    >::from_parts(&req, &body);
+                    svc.create_silent_payment_label(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelResponse,
+                        >(format)
+                })
+            }
+            "ListSilentPaymentLabels" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsRequest,
+                    >::from_parts(&req, &body);
+                    svc.list_silent_payment_labels(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsResponse,
+                        >(format)
+                })
+            }
+            "SendToSilentPayment" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentRequest,
+                    >::from_parts(&req, &body);
+                    svc.send_to_silent_payment(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentResponse,
+                        >(format)
+                })
+            }
+            "ListSilentPaymentReceives" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesRequest,
+                    >::from_parts(&req, &body);
+                    svc.list_silent_payment_receives(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesResponse,
+                        >(format)
+                })
+            }
+            "GetReusableScanStatus" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusRequest,
+                    >::from_parts(&req, &body);
+                    svc.get_reusable_scan_status(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusResponse,
+                        >(format)
+                })
+            }
+            "RescanReusablePayments" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsRequest,
+                    >::from_parts(&req, &body);
+                    svc.rescan_reusable_payments(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsResponse,
                         >(format)
                 })
             }
@@ -5389,6 +6670,456 @@ where
                 &self.config,
                 WALLET_SERVICE_SERVICE_NAME,
                 "GenerateBlocks",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the GetBip47PaymentCode RPC. Sends a request to /cusf.mainchain.v1.WalletService/GetBip47PaymentCode.
+    pub async fn get_bip47_payment_code(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.get_bip47_payment_code_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GetBip47PaymentCode RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn get_bip47_payment_code_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetBip47PaymentCodeRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBip47PaymentCodeResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "GetBip47PaymentCode",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the SendToBip47PaymentCode RPC. Sends a request to /cusf.mainchain.v1.WalletService/SendToBip47PaymentCode.
+    pub async fn send_to_bip47_payment_code(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.send_to_bip47_payment_code_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the SendToBip47PaymentCode RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn send_to_bip47_payment_code_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::SendToBip47PaymentCodeRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToBip47PaymentCodeResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "SendToBip47PaymentCode",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the ListBip47InboundPayers RPC. Sends a request to /cusf.mainchain.v1.WalletService/ListBip47InboundPayers.
+    pub async fn list_bip47_inbound_payers(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.list_bip47_inbound_payers_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the ListBip47InboundPayers RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn list_bip47_inbound_payers_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListBip47InboundPayersRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListBip47InboundPayersResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListBip47InboundPayers",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the GetSilentPaymentAddress RPC. Sends a request to /cusf.mainchain.v1.WalletService/GetSilentPaymentAddress.
+    pub async fn get_silent_payment_address(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.get_silent_payment_address_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GetSilentPaymentAddress RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn get_silent_payment_address_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetSilentPaymentAddressRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSilentPaymentAddressResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "GetSilentPaymentAddress",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the CreateSilentPaymentLabel RPC. Sends a request to /cusf.mainchain.v1.WalletService/CreateSilentPaymentLabel.
+    pub async fn create_silent_payment_label(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.create_silent_payment_label_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the CreateSilentPaymentLabel RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn create_silent_payment_label_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::CreateSilentPaymentLabelRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateSilentPaymentLabelResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "CreateSilentPaymentLabel",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the ListSilentPaymentLabels RPC. Sends a request to /cusf.mainchain.v1.WalletService/ListSilentPaymentLabels.
+    pub async fn list_silent_payment_labels(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.list_silent_payment_labels_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the ListSilentPaymentLabels RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn list_silent_payment_labels_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentLabelsRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentLabelsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListSilentPaymentLabels",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the SendToSilentPayment RPC. Sends a request to /cusf.mainchain.v1.WalletService/SendToSilentPayment.
+    pub async fn send_to_silent_payment(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.send_to_silent_payment_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the SendToSilentPayment RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn send_to_silent_payment_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::SendToSilentPaymentRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SendToSilentPaymentResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "SendToSilentPayment",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the ListSilentPaymentReceives RPC. Sends a request to /cusf.mainchain.v1.WalletService/ListSilentPaymentReceives.
+    pub async fn list_silent_payment_receives(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.list_silent_payment_receives_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the ListSilentPaymentReceives RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn list_silent_payment_receives_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListSilentPaymentReceivesRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListSilentPaymentReceivesResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListSilentPaymentReceives",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the GetReusableScanStatus RPC. Sends a request to /cusf.mainchain.v1.WalletService/GetReusableScanStatus.
+    pub async fn get_reusable_scan_status(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.get_reusable_scan_status_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GetReusableScanStatus RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn get_reusable_scan_status_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetReusableScanStatusRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetReusableScanStatusResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "GetReusableScanStatus",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the RescanReusablePayments RPC. Sends a request to /cusf.mainchain.v1.WalletService/RescanReusablePayments.
+    pub async fn rescan_reusable_payments(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.rescan_reusable_payments_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the RescanReusablePayments RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn rescan_reusable_payments_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::RescanReusablePaymentsRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::RescanReusablePaymentsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "RescanReusablePayments",
                 request,
                 options,
             )
