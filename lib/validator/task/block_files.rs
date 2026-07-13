@@ -239,7 +239,13 @@ pub fn sync_from_directory(
             has_found_start = true;
         }
 
-        let expected_block_hash = *missing_blocks.last().expect("missing blocks is empty");
+        let Some(expected_block_hash) = missing_blocks.last().copied() else {
+            // All requested blocks have been synced. Stop parsing: block
+            // files can contain further blocks after the tip block (e.g. a
+            // stale sibling of the tip), which would otherwise land here.
+            tracing::debug!("all missing blocks synced from files; stopping file parser");
+            break;
+        };
 
         let current_block_hash = block.header.block_hash();
 
