@@ -99,7 +99,6 @@ echo "==> grpcurl: ListServices via reflection"
 EXPECTED_SERVICES='cusf.crypto.v1.CryptoService
 cusf.mainchain.v1.ValidatorService
 cusf.mainchain.v1.WalletService
-cusf.sidechain.v1.SidechainService
 grpc.reflection.v1.ServerReflection
 grpc.reflection.v1alpha.ServerReflection'
 ACTUAL_SERVICES="$(grpcurl -plaintext "$GRPC_ADDR" list | sort)"

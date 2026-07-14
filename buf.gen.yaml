@@ -5,9 +5,9 @@
 version: v2
 
 inputs:
-  - git_repo: https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
-    ref: cdc2f279cc2edeeda0acaeca7ff937427aa500f1
-    subdir: proto
+  # Protos are vendored under proto/ rather than fetched from git, so that this
+  # repo can define its own alongside them. See proto/buf.yaml for provenance.
+  - directory: proto
 
 plugins:
   - remote: buf.build/anthropics/buffa:v0.8.0

@@ -33,6 +33,16 @@ jobs:
         with:
           setup_only: true
 
+      - name: Lint protos
+        run: buf lint proto
+
+      - name: Check proto formatting
+        run: |
+          if ! buf format --diff --exit-code proto; then
+            echo "::error::proto/ is not formatted. Run \`just fmt\` locally and commit the result."
+            exit 1
+          fi
+
       - name: Regenerate proto code
         run: buf generate --clean
 
@@ -43,7 +53,7 @@ jobs:
         run: |
           git add -N lib/proto/generated
           if ! git diff --exit-code lib/proto/generated; then
-            echo "::error::lib/proto/generated/ is out of sync with buf.gen.yaml. Run \`just generate\` locally and commit the result."
+            echo "::error::lib/proto/generated/ is out of sync with proto/. Run \`just generate\` locally and commit the result."
             exit 1
           fi
 

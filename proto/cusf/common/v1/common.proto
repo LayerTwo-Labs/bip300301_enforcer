@@ -1,0 +1,23 @@
+/* Common message types */
+
+syntax = "proto3";
+package cusf.common.v1;
+
+import "google/protobuf/wrappers.proto";
+
+/// Consensus-encoded hex.
+/// Variable length data uses a length prefix.
+message ConsensusHex {
+  google.protobuf.StringValue hex = 1;
+}
+
+/// Hex encoding of byte arrays/vectors.
+/// Length prefixes are not used.
+message Hex {
+  google.protobuf.StringValue hex = 1;
+}
+
+/// Reverse consensus-encoded hex
+message ReverseHex {
+  google.protobuf.StringValue hex = 1;
+}
