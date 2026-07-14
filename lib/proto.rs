@@ -73,11 +73,6 @@ pub mod generated {
                     include!("proto/generated/buffa/cusf.mainchain.v1.rs");
                 }
             }
-            pub mod sidechain {
-                pub mod v1 {
-                    include!("proto/generated/buffa/cusf.sidechain.v1.rs");
-                }
-            }
         }
     }
 
@@ -92,11 +87,6 @@ pub mod generated {
             pub mod mainchain {
                 pub mod v1 {
                     include!("proto/generated/connect/cusf.mainchain.v1.rs");
-                }
-            }
-            pub mod sidechain {
-                pub mod v1 {
-                    include!("proto/generated/connect/cusf.sidechain.v1.rs");
                 }
             }
         }
@@ -129,10 +119,6 @@ pub mod mainchain {
             }
         }
     }
-}
-
-pub mod sidechain {
-    pub use crate::proto::generated::buffa::cusf::sidechain::v1::*;
 }
 
 pub use crate::proto::generated::connect::cusf::{

@@ -1,0 +1,285 @@
+/* CUSF mainchain wallet service */
+
+syntax = "proto3";
+package cusf.mainchain.v1;
+
+import "cusf/common/v1/common.proto";
+import "cusf/mainchain/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+message WalletTransaction {
+  message Confirmation {
+    uint32 height = 1;
+    cusf.common.v1.ReverseHex block_hash = 2;
+    google.protobuf.Timestamp timestamp = 3;
+  }
+
+  cusf.common.v1.ReverseHex txid = 1;
+  cusf.common.v1.ConsensusHex raw_transaction = 6;
+
+  uint64 fee_sats = 2;
+  uint64 received_sats = 3;
+  uint64 sent_sats = 4;
+
+  Confirmation confirmation_info = 5;
+}
+
+service WalletService {
+  rpc BroadcastWithdrawalBundle(BroadcastWithdrawalBundleRequest) returns (BroadcastWithdrawalBundleResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc CreateBmmCriticalDataTransaction(CreateBmmCriticalDataTransactionRequest) returns (CreateBmmCriticalDataTransactionResponse);
+  rpc CreateDepositTransaction(CreateDepositTransactionRequest) returns (CreateDepositTransactionResponse);
+  rpc CreateNewAddress(CreateNewAddressRequest) returns (CreateNewAddressResponse);
+  // Create a new sidechain proposal (M1 in BIP300) and persist to the local
+  // database for further processing.
+  // Sidechain proposals must be included in the coinbase transaction of a
+  // newly mined block, so this proposal is not active until the wallet has
+  // been able to generate a new block.
+  // Returns a stream of (non-)confirmation events for the sidechain proposal.
+  rpc CreateSidechainProposal(CreateSidechainProposalRequest) returns (stream CreateSidechainProposalResponse);
+  // Unary variant of `CreateSidechainProposal`. Creates a new sidechain
+  // proposal (M1 in BIP300) and persists it to the local database for further
+  // processing, returning immediately once the proposal has been created.
+  rpc SubmitSidechainProposal(SubmitSidechainProposalRequest) returns (SubmitSidechainProposalResponse);
+  rpc CreateWallet(CreateWalletRequest) returns (CreateWalletResponse);
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc ListSidechainDepositTransactions(ListSidechainDepositTransactionsRequest) returns (ListSidechainDepositTransactionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc ListUnspentOutputs(ListUnspentOutputsRequest) returns (ListUnspentOutputsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc SendTransaction(SendTransactionRequest) returns (SendTransactionResponse);
+  rpc UnlockWallet(UnlockWalletRequest) returns (UnlockWalletResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Available on regtest and signet only.
+  rpc GenerateBlocks(GenerateBlocksRequest) returns (stream GenerateBlocksResponse);
+}
+
+message BroadcastWithdrawalBundleRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  google.protobuf.BytesValue transaction = 2;
+}
+message BroadcastWithdrawalBundleResponse {}
+
+message CreateBmmCriticalDataTransactionRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  google.protobuf.UInt64Value value_sats = 2;
+  google.protobuf.UInt32Value height = 3;
+  cusf.common.v1.ConsensusHex critical_hash = 4;
+  cusf.common.v1.ReverseHex prev_bytes = 5;
+}
+message CreateBmmCriticalDataTransactionResponse {
+  cusf.common.v1.ReverseHex txid = 1;
+}
+
+message CreateDepositTransactionRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  // Addresses are encoded in UTF8.
+  // *Sidechain deposit addresses* (not sidechain addresses) are typically
+  // formatted as `s<SLOT_NUMBER>_<ADDRESS>_<CHECKSUM>`,
+  // where `CHECKSUM` is a hex encoding of the first 6 bytes of the SHA256
+  // hash of `s<SLOT_NUMBER>_<ADDRESS>`.
+  // protolint:disable:next MAX_LINE_LENGTH
+  // https://github.com/LayerTwo-Labs/testchain-deprecated/blob/4b7bae3e1218e058f59a43caf6ccac2a4e9a91f6/src/sidechain.cpp#L219
+  // The address used here is a sidechain address, the middle component of a
+  // sidechain deposit address.
+  google.protobuf.StringValue address = 2;
+  google.protobuf.UInt64Value value_sats = 3;
+  google.protobuf.UInt64Value fee_sats = 4;
+}
+message CreateDepositTransactionResponse {
+  cusf.common.v1.ReverseHex txid = 1;
+}
+
+message CreateNewAddressRequest {}
+
+message CreateNewAddressResponse {
+  string address = 1;
+}
+
+message CreateSidechainProposalRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  SidechainDeclaration declaration = 2;
+}
+
+message CreateSidechainProposalResponse {
+  message Confirmed {
+    cusf.common.v1.ReverseHex block_hash = 1;
+    google.protobuf.UInt32Value confirmations = 2;
+    google.protobuf.UInt32Value height = 3;
+    OutPoint outpoint = 4;
+    cusf.common.v1.ReverseHex prev_block_hash = 5;
+  }
+  message NotConfirmed {
+    cusf.common.v1.ReverseHex block_hash = 1;
+    google.protobuf.UInt32Value height = 2;
+    cusf.common.v1.ReverseHex prev_block_hash = 3;
+  }
+  oneof event {
+    Confirmed confirmed = 1;
+    NotConfirmed not_confirmed = 2;
+  }
+}
+
+message SubmitSidechainProposalRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  SidechainDeclaration declaration = 2;
+}
+message SubmitSidechainProposalResponse {}
+
+message CreateWalletRequest {
+  // BIP39 mnemonic. 12 or 24 words.
+  repeated string mnemonic_words = 1;
+
+  // Path to a file containing the mnemonic.
+  string mnemonic_path = 2;
+
+  // Password for the wallet. Used to encrypt the mnemonic in storage.
+  // NOT a BIP39 passphrase.
+  string password = 3;
+}
+message CreateWalletResponse {}
+
+message GetBalanceRequest {}
+message GetBalanceResponse {
+  uint64 confirmed_sats = 1;
+  uint64 pending_sats = 2;
+
+  // Whether the wallet has completed its initial sync.
+  bool has_synced = 3;
+}
+
+message ListSidechainDepositTransactionsRequest {}
+message ListSidechainDepositTransactionsResponse {
+  message SidechainDepositTransaction {
+    google.protobuf.UInt32Value sidechain_number = 1;
+    WalletTransaction tx = 2;
+  }
+  repeated SidechainDepositTransaction transactions = 1;
+}
+
+message ListTransactionsRequest {}
+message ListTransactionsResponse {
+  repeated WalletTransaction transactions = 1;
+}
+
+message SendTransactionRequest {
+  message FeeRate {
+    oneof fee {
+      // Fee rate, measured in sat/vbyte.
+      uint64 sat_per_vbyte = 1;
+
+      // Fee amount, measured in sats.
+      uint64 sats = 2;
+    }
+  }
+
+  // A previous unspent transaction output that must be included in the
+  // transaction.
+  message RequiredUtxo {
+    cusf.common.v1.ReverseHex txid = 1;
+    uint32 vout = 2;
+  }
+
+  // Address -> satoshi amount
+  map<string, uint64> destinations = 1;
+
+  // If not set, a reasonable rate is used by asking Core for an estimate.
+  optional FeeRate fee_rate = 2;
+
+  // if set, the transaction will add a separate OP_RETURN output with this
+  // message.
+  optional cusf.common.v1.Hex op_return_message = 3;
+
+  // UTXOs that must be included in the transaction. Incompatible with
+  // specifying a draining address.
+  repeated RequiredUtxo required_utxos = 4;
+
+  // If set, the transaction will send all UTXOs in the wallet to this address.
+  // Incompatible with specifying required UTXOs.
+  optional string drain_wallet_to = 5;
+}
+message SendTransactionResponse {
+  cusf.common.v1.ReverseHex txid = 1;
+}
+
+message UnlockWalletRequest {
+  string password = 1;
+}
+message UnlockWalletResponse {}
+
+message GenerateBlocksRequest {
+  // Number of blocks to generate.
+  google.protobuf.UInt32Value blocks = 1;
+
+  // ACK all sidechain proposals, irregardless of if they are already
+  // in the wallet DB.
+  bool ack_all_proposals = 2;
+}
+message GenerateBlocksResponse {
+  cusf.common.v1.ReverseHex block_hash = 1;
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  // The network the wallet is on
+  string network = 1;
+
+  // Total number of transactions in the wallet
+  uint32 transaction_count = 2;
+
+  // Number of UTXOs in the wallet.
+  uint32 unspent_output_count = 3;
+
+  map<string, string> descriptors = 4;
+
+  message Tip {
+    // The height of the tip of the wallet.
+    uint32 height = 1;
+
+    // The hash of the tip of the wallet.
+    cusf.common.v1.ReverseHex hash = 2;
+  }
+
+  // The chain tip the wallet is synced to.
+  Tip tip = 5;
+}
+
+message ListUnspentOutputsRequest {}
+
+message ListUnspentOutputsResponse {
+  message Output {
+    cusf.common.v1.ReverseHex txid = 1;
+    uint32 vout = 2;
+    uint64 value_sats = 3;
+
+    // An internal output is one that was created by the wallet itself
+    // as change output for a transaction.
+    bool is_internal = 4;
+
+    bool is_confirmed = 5;
+    uint32 confirmed_at_block = 6;
+    google.protobuf.Timestamp confirmed_at_time = 7;
+    cusf.common.v1.ReverseHex confirmed_transitively = 8;
+    google.protobuf.Timestamp unconfirmed_last_seen = 9;
+
+    // The address corresponding to this output. Empty if we're unable
+    // to represent it as an address.
+    google.protobuf.StringValue address = 10;
+  }
+
+  repeated Output outputs = 1;
+}
