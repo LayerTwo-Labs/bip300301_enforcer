@@ -20,7 +20,7 @@ anyhow = "1.0.102"
 argon2 = "0.5.3"
 async-broadcast = "0.7.1"
 async-lock = "3.4.0"
-axum = { version = "0.8", features = ["http2"] }
+axum = { version = "0.8", default-features = false, features = ["tracing"] }
 bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
@@ -35,7 +35,7 @@ buffa-types = { version = "0.8", features = ["json"] }
 byteorder = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
-connectrpc = { version = "0.8", features = ["axum", "client", "server"] }
+connectrpc = "0.8"
 connectrpc-health = "0.8"
 connectrpc-reflection = "0.8"
 derive_more = "2.0.1"
@@ -59,7 +59,7 @@ nonempty = "0.12.0"
 ordermap = "1.2.0"
 parking_lot = "0.12.3"
 rand = "0.10.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
+reqwest = { version = "0.13.4", default-features = false }
 reserve-port = "2.4.0"
 # needs to line up with BDK version
 rusqlite = "0.31.0"

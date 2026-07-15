@@ -43,7 +43,7 @@ ordermap = { workspace = true, features = ["serde"] }
 ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
 rand = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 # needs to line up with BDK version
 rusqlite = { workspace = true, features = ["bundled"] }
 rusqlite_migration = { workspace = true }
@@ -68,6 +68,7 @@ uuid = { workspace = true }
 default = ["rustls"]
 openssl = ["bdk_electrum/use-openssl"]
 rustls = ["bdk_electrum/use-rustls"]
+rustls-ring = ["bdk_electrum/use-rustls-ring"]
 
 [dev-dependencies]
 temp-dir = { workspace = true }
