@@ -957,6 +957,8 @@ pub(in crate::wallet) enum InitialBlockTemplateInner {
     ),
     #[error(transparent)]
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
+    #[error(transparent)]
+    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -974,7 +976,7 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(in crate::wallet) enum SuffixTxsInner {
+pub(in crate::wallet) enum FinalizeBlockTemplateInner {
     #[error(transparent)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
     #[error("Failed to apply initial block template: {reason}")]
@@ -994,11 +996,11 @@ pub(in crate::wallet) enum SuffixTxsInner {
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct SuffixTxs(SuffixTxsInner);
+pub struct FinalizeBlockTemplate(FinalizeBlockTemplateInner);
 
-impl<Err> From<Err> for SuffixTxs
+impl<Err> From<Err> for FinalizeBlockTemplate
 where
-    SuffixTxsInner: From<Err>,
+    FinalizeBlockTemplateInner: From<Err>,
 {
     fn from(err: Err) -> Self {
         Self(err.into())
