@@ -4,7 +4,7 @@ default:
     @just --list
 
 # Regenerate checked-in protobuf code under lib/proto/generated/ via buf.
-# Protos are vendored under proto/ (see proto/buf.yaml for provenance).
+# Protos live in proto/ 
 #
 # NB: no `--include-imports`/`--include-wkt`: well-known types come from the
 # `buffa-types` crate, not from generated code.
