@@ -1,10 +1,21 @@
 # Feature matrix
 
-| Build | Command |
-|-------|---------|
-| Drivechain (default) | `cargo build` |
-| BIP 360 CUSF only | `cargo build --no-default-features --features bip360` |
-| Both rule sets | `cargo build --features "drivechain,bip360"` |
+| Feature              | Default  | Scope                                          |
+| -------------------- | -------- | ---------------------------------------------- |
+| `drivechain`         | yes      | BIP 300/301 sidechain rules (upstream default) |
+| `bip360`             | no       | P2MR + PQC validation in `lib/validator/pqc/`  |
+| `rustls` / `openssl` | `rustls` | TLS backend                                    |
+| `shrincs`            | no       | Reserved placeholder — no implementation       |
+
+| Build                | Command                                               |
+| -------------------- | ----------------------------------------------------- |
+| Drivechain (default) | `cargo build`                                         |
+| BIP 360 CUSF only    | `cargo build --no-default-features --features bip360` |
+| Both rule sets       | `cargo build --features "drivechain,bip360"`          |
+
+Default `cargo build` and `just test-drivechain` / `just drivechain-smoke` pass
+**without** `bip360` — optional PQC deps (`bitcoin-p2mr-pqc`, `bitcoinpqc`) are
+not pulled in. `just drivechain-smoke` is **local-only** — CI wiring remains **HITL** (Phase D delivered local `bip360-verify-full`).
 
 See [docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md) for BIP 360 activation height,
 signature duck typing, and module layout.
@@ -12,12 +23,12 @@ signature duck typing, and module layout.
 Contributors and agents: read [AGENTS.md](./AGENTS.md) for fork context, TDD
 expectations, **workspace boundary** (stay within the opened workspace root;
 external paths need permission and read-only access), integration-test
-prerequisites, git signing
-policy, and **HITL guardrails** (human-only upstream PR, live integration,
-Kellnr publish).
+prerequisites, git signing policy, and **HITL guardrails** (human-only upstream
+PR, live integration, Kellnr publish).
 
 Day-to-day commands live in [Justfile](./Justfile) — run `just` from this
-directory (or from the workspace root). Quick start: `just verify`, `just setup-core`,
+directory (or from the workspace root). Quick start: `just drivechain-smoke`
+(upstream default), `just verify` (BIP 360 pre-submit), `just setup-core`,
 `just demo-a`, `just demo-b`.
 
 Requirements traceability: [`cusf/CRITERIA_AUDIT.md`](../CRITERIA_AUDIT.md);

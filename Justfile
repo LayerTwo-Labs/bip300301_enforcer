@@ -67,11 +67,21 @@ test-it *args='':
 
 # --- BIP 360 verification (AGENTS.md / CI check-bip360) ---
 
-test-quantum:
-    cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::
+test-pqc:
+    cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::
+
+# Alias for backwards compatibility
+test-quantum: test-pqc
 
 test-drivechain:
     cargo test -p bip300301_enforcer_lib
+
+# Delivered in Phase B (plan lists under Phase C/D) — early step toward Phase D
+# `bip360-verify-full`. Local-only until that recipe wires CI.
+# Minimal upstream regression: default (drivechain) build + drivechain unit tests.
+drivechain-smoke:
+    cargo build -p bip300301_enforcer
+    just test-drivechain
 
 clippy-bip360:
     cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
@@ -94,8 +104,10 @@ p2mr-signer-smoke:
         --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111 \
         | grep -q signed_spend_tx_hex
 
-verify: check-bip360 test-quantum p2mr-signer-smoke test-drivechain clippy-bip360 fmt-check check-integration-build
+verify: check-bip360 test-pqc p2mr-signer-smoke test-drivechain clippy-bip360 fmt-check check-integration-build
 
+# Block-matrix trials: bip360-only enforcer is sufficient.
+# P2P E2E (`bip360-p2p-e2e`) rebuilds with `drivechain,bip360` — wallet+mempool path needs default drivechain wiring.
 build-bip360:
     cargo build -p bip300301_enforcer --no-default-features --features bip360
     cargo build --example integration_tests --features bip360
@@ -298,7 +310,7 @@ demo-steps:
     @echo "  just demo-a          # valid Schnorr spend retained"
     @echo "  just demo-b          # empty witness → invalidateblock"
     @echo "  just it <trial>      # single integration trial"
-    @echo "  just it-all          # all 31 BIP 360 trials"
+    @echo "  just it-all          # all 33 block-only BIP 360 trials"
 
 demo-a auto='':
     @just _run-it bip360_valid_schnorr_spend {{auto}}
@@ -309,9 +321,51 @@ demo-b auto='':
 it trial auto='':
     @just _run-it {{trial}} {{auto}}
 
+# Alias: all 33 block-only BIP 360 integration trials.
+bip360-block-matrix auto='': (it-all auto)
+
+# Dual-node P2P mempool E2E (5 rounds on one sat pile).
+# Requires full bootstrap (`just setup`) for electrs — not `setup-core` alone.
+bip360-p2p-e2e auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    if [ -z "${ELECTRS:-}" ] || [ ! -x "${ELECTRS}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            echo "WARN: ELECTRS missing — running just setup" >&2
+            just setup
+        else
+            echo "ELECTRS not set or not executable — P2P E2E needs wallet+mempool (run: just setup)" >&2
+            echo "or re-run with: just bip360-p2p-e2e yes" >&2
+            exit 1
+        fi
+    fi
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    just _run-it bip360_p2p_mempool_e2e "{{auto}}"
+
+# Full local verification stack (Phase D recipe wiring; does not add CI steps).
+# P2P E2E requires full bootstrap (`just setup`) for electrs — pass `yes` to auto-setup when env is missing.
+bip360-verify-full auto='':
+    just drivechain-smoke
+    just verify
+    just build-bip360
+    just bip360-block-matrix {{auto}}
+    just bip360-p2p-e2e {{auto}}
+
 it-all auto='':
     #!/usr/bin/env bash
     set -euo pipefail
+    just build-bip360
+    export BIP360_SKIP_REBUILD=1
     trials=(
         bip360_valid_schnorr_spend bip360_valid_mldsa_spend bip360_valid_slh_spend
         bip360_valid_cross_block_schnorr_spend bip360_valid_cross_block_mldsa_spend
@@ -323,6 +377,7 @@ it-all auto='':
         bip360_invalid_cross_block_merkle_path_mldsa bip360_invalid_cross_block_merkle_path_slh
         bip360_invalid_cross_block_pubkey_size_mldsa bip360_invalid_hybrid_ec_slh_tamper_ec_sig
         bip360_invalid_hybrid_ec_slh_tamper_slh_sig bip360_invalid_hybrid_ec_slh_swap_sigs
+        bip360_valid_kitchen_sink_spend bip360_invalid_kitchen_sink_tamper_ec_sig
         bip360_valid_multi_leaf_schnorr_spend bip360_valid_multi_leaf_mldsa_spend
         bip360_valid_multi_leaf_slh_spend bip360_valid_multi_leaf_cross_block_mldsa_spend
         bip360_invalid_multi_leaf_wrong_control_block
@@ -359,11 +414,11 @@ _run-it trial auto_setup='':
     # shellcheck disable=SC1090
     source "$ENV_FILE"
     set +a
-    if [ ! -x "$ENFORCER" ] || [ ! -x "target/debug/examples/integration_tests" ]; then
+    if [ "${BIP360_SKIP_REBUILD:-}" != "1" ]; then
+        # drivechain-smoke / default `cargo build` leaves a drivechain-only enforcer
+        # that lacks bip360 CLI flags (`--activation-height`, etc.).
         echo "==> building bip360 binaries"
         just build-bip360
-    else
-        echo "==> bip360 binaries already built — skipping rebuild"
     fi
     export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="$ENV_FILE"
     export BIP300301_ENFORCER="$ENFORCER"

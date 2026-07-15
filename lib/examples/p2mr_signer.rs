@@ -12,7 +12,7 @@
 
 use std::process::ExitCode;
 
-use bip300301_enforcer_lib::validator::quantum::signer_dev::{
+use bip300301_enforcer_lib::validator::pqc::signer_dev::{
     SignAlgorithm, sighash_label, sign_p2mr_script_path_spend, tx_to_hex, validate_entropy,
     validate_output_value,
 };

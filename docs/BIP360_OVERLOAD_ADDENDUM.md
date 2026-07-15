@@ -119,8 +119,8 @@ SHRINCs / XMSS hybrid backup signatures are **out of scope** in this addendum. S
 
 | Component | Location |
 |-----------|----------|
-| Leaf parser | `lib/validator/quantum/leaf_script.rs` |
-| Scheme verification | `lib/validator/quantum/schemes.rs` |
-| Spend validation | `lib/validator/quantum/spend.rs` |
+| Leaf parser | `lib/validator/pqc/leaf_script.rs` |
+| Scheme verification | `lib/validator/pqc/schemes.rs` |
+| Spend validation | `lib/validator/pqc/spend.rs` |
 | Enforcer docs | [`CUSF-BIP360.md`](./CUSF-BIP360.md) |
 | External signer | [`P2MR_SIGNER.md`](./P2MR_SIGNER.md) |

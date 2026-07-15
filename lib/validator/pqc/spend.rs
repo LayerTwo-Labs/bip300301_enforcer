@@ -570,6 +570,338 @@ mod tests {
     }
 
     #[test]
+    fn kitchen_sink_triple_algo_leaf_roundtrip() {
+        use bitcoinpqc::{Algorithm, generate_keypair, sign};
+
+        let secp = Secp256k1::new();
+        let ec_keypair = Keypair::new(&secp, &mut thread_rng());
+        let mldsa_kp = generate_keypair(Algorithm::ML_DSA_44, &[0x44; 128]).expect("ML-DSA");
+        let slh_kp = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, &[0x55; 128]).expect("SLH");
+
+        let ec_pk: [u8; 32] = XOnlyPublicKey::from_keypair(&ec_keypair).0.serialize();
+        let mldsa_pk = mldsa_kp.public_key.bytes.clone();
+        let slh_pk: [u8; 32] = slh_kp
+            .public_key
+            .bytes
+            .as_slice()
+            .try_into()
+            .expect("slh pk");
+
+        let leaf_script =
+            super::super::leaf_script::build_kitchen_sink_leaf(&ec_pk, &mldsa_pk, &slh_pk);
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![],
+        };
+        let prevout = dummy_prevout();
+        let leaf_hash = TapLeafHash::from_script(
+            leaf_script.as_script(),
+            LeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("leaf version"),
+        );
+        let sighash = tapscript_sighash_all(&tx, 0, &leaf_script, &prevout);
+
+        let mut cache = SighashCache::new(&tx);
+        let msg = cache
+            .taproot_script_spend_signature_hash(
+                0,
+                &prevouts_of(&prevout),
+                leaf_hash,
+                TapSighashType::All,
+            )
+            .expect("sighash");
+        let ec_sig =
+            secp.sign_schnorr_no_aux_rand(&Message::from_digest(msg.to_byte_array()), &ec_keypair);
+        let mldsa_sig = sign(&mldsa_kp.secret_key, &sighash).expect("mldsa sign");
+        let slh_sig = sign(&slh_kp.secret_key, &sighash).expect("slh sign");
+
+        let parsed = parse_leaf_script(leaf_script.as_script()).unwrap();
+        assert_eq!(parsed.sig_sites.len(), 3);
+        assert_eq!(parsed.sig_sites[0].pubkey.len(), 32);
+        assert_eq!(parsed.sig_sites[1].pubkey.len(), ML_DSA_44_PUBLIC_KEY_SIZE);
+        assert_eq!(parsed.sig_sites[2].pubkey.len(), 32);
+
+        let prevouts = prevouts_of(&prevout);
+        let mut budget = None;
+        let mut verify_ctx = schemes::TapscriptVerifyContext {
+            tx: &tx,
+            input_index: 0,
+            prevouts: &prevouts,
+            leaf_hash,
+            pqc_budget: &mut budget,
+        };
+        schemes::verify_overloaded_checksig(
+            &parsed.sig_sites[0].pubkey,
+            &ec_sig.serialize(),
+            &mut verify_ctx,
+        )
+        .expect("ec sig");
+        schemes::verify_overloaded_checksig(
+            &parsed.sig_sites[1].pubkey,
+            &mldsa_sig.bytes,
+            &mut verify_ctx,
+        )
+        .expect("mldsa sig");
+        schemes::verify_overloaded_checksig(
+            &parsed.sig_sites[2].pubkey,
+            &slh_sig.bytes,
+            &mut verify_ctx,
+        )
+        .expect("slh sig");
+    }
+
+    fn kitchen_sink_spend_tx(
+        ec_keypair: &Keypair,
+        mldsa_kp: &bitcoinpqc::KeyPair,
+        slh_kp: &bitcoinpqc::KeyPair,
+        leaf_script: &bitcoin::ScriptBuf,
+        prevout: &TxOut,
+    ) -> Transaction {
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![],
+        };
+        let leaf_hash = TapLeafHash::from_script(
+            leaf_script.as_script(),
+            LeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("leaf version"),
+        );
+        let sighash = tapscript_sighash_all(&tx, 0, leaf_script, prevout);
+        let mut cache = SighashCache::new(&tx);
+        let msg = cache
+            .taproot_script_spend_signature_hash(
+                0,
+                &prevouts_of(prevout),
+                leaf_hash,
+                TapSighashType::All,
+            )
+            .expect("sighash");
+        let secp = Secp256k1::new();
+        let ec_sig =
+            secp.sign_schnorr_no_aux_rand(&Message::from_digest(msg.to_byte_array()), ec_keypair);
+        let mldsa_sig = sign(&mldsa_kp.secret_key, &sighash).expect("mldsa sign");
+        let slh_sig = sign(&slh_kp.secret_key, &sighash).expect("slh sign");
+
+        let mut witness = Witness::new();
+        witness.push(ec_sig.serialize());
+        witness.push(mldsa_sig.bytes);
+        witness.push(slh_sig.bytes);
+        witness.push(leaf_script.as_bytes());
+        witness.push(single_leaf_control_block());
+
+        let mut tx = tx;
+        tx.input[0].witness = witness;
+        tx
+    }
+
+    fn kitchen_sink_fixture() -> (
+        Keypair,
+        bitcoinpqc::KeyPair,
+        bitcoinpqc::KeyPair,
+        bitcoin::ScriptBuf,
+        TxOut,
+    ) {
+        let secp = Secp256k1::new();
+        let ec_keypair = Keypair::new(&secp, &mut thread_rng());
+        let mldsa_kp = generate_keypair(Algorithm::ML_DSA_44, &[0x44; 128]).expect("ML-DSA");
+        let slh_kp = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, &[0x66; 128]).expect("SLH");
+        let ec_pk: [u8; 32] = XOnlyPublicKey::from_keypair(&ec_keypair).0.serialize();
+        let mldsa_pk = mldsa_kp.public_key.bytes.clone();
+        let slh_pk: [u8; 32] = slh_kp
+            .public_key
+            .bytes
+            .as_slice()
+            .try_into()
+            .expect("slh pk");
+        let leaf_script =
+            super::super::leaf_script::build_kitchen_sink_leaf(&ec_pk, &mldsa_pk, &slh_pk);
+        let merkle_root = single_leaf_merkle_root(&leaf_script);
+        let prevout = p2mr_prevout(merkle_root);
+        (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout)
+    }
+
+    #[test]
+    fn kitchen_sink_validate_p2mr_input_spend_roundtrip() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+
+        assert_eq!(tx.input[0].witness.len(), 5);
+        assert_eq!(tx.input[0].witness.nth(0).expect("ec sig").len(), 64);
+        assert!(
+            tx.input[0].witness.nth(1).expect("mldsa sig").len() > 2400,
+            "expected ML-DSA signature size"
+        );
+        assert!(
+            tx.input[0].witness.nth(2).expect("slh sig").len() > 7800,
+            "expected SLH-DSA signature size"
+        );
+
+        validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .expect("kitchen-sink P2MR spend");
+    }
+
+    #[test]
+    fn kitchen_sink_accepts_at_wu_boundary() {
+        use super::super::limits::{
+            ML_DSA_44_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE, SLH_DSA_128S_SIGNATURE_SIZE,
+            estimate_sig_wu,
+        };
+
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let sig_wu: usize = (0..3)
+            .map(|i| estimate_sig_wu(witness.nth(i).expect("sig").len()))
+            .sum();
+        assert_eq!(sig_wu, 10_340);
+        assert_eq!(
+            sig_wu,
+            estimate_sig_wu(SCHNORR_SIGNATURE_SIZE)
+                + estimate_sig_wu(ML_DSA_44_SIGNATURE_SIZE)
+                + estimate_sig_wu(SLH_DSA_128S_SIGNATURE_SIZE)
+        );
+
+        validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .expect("kitchen-sink at WU boundary");
+    }
+
+    #[test]
+    fn kitchen_sink_rejects_signature_weight_over_limit() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let mut tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let mut bad_witness = Witness::new();
+        bad_witness.push(witness.nth(0).expect("ec sig"));
+        bad_witness.push(witness.nth(1).expect("mldsa sig"));
+        bad_witness.push(witness.nth(2).expect("slh sig"));
+        bad_witness.push(vec![0u8; 2_000]);
+        bad_witness.push(witness.nth(3).expect("leaf script"));
+        bad_witness.push(witness.nth(4).expect("control block"));
+        tx.input[0].witness = bad_witness;
+
+        let err = validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .unwrap_err();
+        assert!(matches!(err, SpendError::SignatureWeightExceeded { .. }));
+    }
+
+    #[test]
+    fn kitchen_sink_rejects_wrong_witness_sig_count() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let mut tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let mut bad_witness = Witness::new();
+        bad_witness.push(witness.nth(0).expect("ec sig"));
+        bad_witness.push(witness.nth(1).expect("mldsa sig"));
+        bad_witness.push(witness.nth(3).expect("leaf script"));
+        bad_witness.push(witness.nth(4).expect("control block"));
+        tx.input[0].witness = bad_witness;
+
+        let err = validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not match script signature sites"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn kitchen_sink_rejects_tampered_ec_signature() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let mut tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let mut bad_ec_sig = witness.nth(0).expect("ec sig").to_vec();
+        bad_ec_sig[0] ^= 0x01;
+        let mut bad_witness = Witness::new();
+        bad_witness.push(bad_ec_sig);
+        bad_witness.push(witness.nth(1).expect("mldsa sig"));
+        bad_witness.push(witness.nth(2).expect("slh sig"));
+        bad_witness.push(witness.nth(3).expect("leaf script"));
+        bad_witness.push(witness.nth(4).expect("control block"));
+        tx.input[0].witness = bad_witness;
+
+        let err = validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid Schnorr signature"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn kitchen_sink_rejects_tampered_mldsa_signature() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let mut tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let mut bad_mldsa_sig = witness.nth(1).expect("mldsa sig").to_vec();
+        bad_mldsa_sig[0] ^= 0x01;
+        let mut bad_witness = Witness::new();
+        bad_witness.push(witness.nth(0).expect("ec sig"));
+        bad_witness.push(bad_mldsa_sig);
+        bad_witness.push(witness.nth(2).expect("slh sig"));
+        bad_witness.push(witness.nth(3).expect("leaf script"));
+        bad_witness.push(witness.nth(4).expect("control block"));
+        tx.input[0].witness = bad_witness;
+
+        let err = validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid ML-DSA-44 signature"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn kitchen_sink_rejects_tampered_slh_signature() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let mut tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let mut bad_slh_sig = witness.nth(2).expect("slh sig").to_vec();
+        bad_slh_sig[0] ^= 0x01;
+        let mut bad_witness = Witness::new();
+        bad_witness.push(witness.nth(0).expect("ec sig"));
+        bad_witness.push(witness.nth(1).expect("mldsa sig"));
+        bad_witness.push(bad_slh_sig);
+        bad_witness.push(witness.nth(3).expect("leaf script"));
+        bad_witness.push(witness.nth(4).expect("control block"));
+        tx.input[0].witness = bad_witness;
+
+        let err = validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid SLH-DSA-SHA2-128s signature"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn kitchen_sink_rejects_swapped_ec_and_mldsa_signatures() {
+        let (ec_keypair, mldsa_kp, slh_kp, leaf_script, prevout) = kitchen_sink_fixture();
+        let mut tx = kitchen_sink_spend_tx(&ec_keypair, &mldsa_kp, &slh_kp, &leaf_script, &prevout);
+        let witness = &tx.input[0].witness;
+        let mut bad_witness = Witness::new();
+        bad_witness.push(witness.nth(1).expect("mldsa sig"));
+        bad_witness.push(witness.nth(0).expect("ec sig"));
+        bad_witness.push(witness.nth(2).expect("slh sig"));
+        bad_witness.push(witness.nth(3).expect("leaf script"));
+        bad_witness.push(witness.nth(4).expect("control block"));
+        tx.input[0].witness = bad_witness;
+
+        let err = validate_p2mr_input_spend(&tx, 0, &prevout, &prevouts_of(&prevout), &mut None)
+            .unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("invalid ML-DSA-44 signature")
+                || err_msg.contains("incompatible with signature scheme"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn rejects_pubkey_sig_size_mismatch_via_scheme() {
         let err =
             schemes::validate_pubkey_for_scheme(&[0u8; 32], schemes::SignatureScheme::MlDsa44)

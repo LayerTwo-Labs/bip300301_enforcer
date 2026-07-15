@@ -107,8 +107,8 @@ jobs:
       - name: Cargo check (bip360 only)
         run: cargo check --no-default-features --features bip360 --all-targets
 
-      - name: Test quantum module
-        run: cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::
+      - name: Test PQC module
+        run: cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::
 
       - name: P2MR signer smoke test
         run: |

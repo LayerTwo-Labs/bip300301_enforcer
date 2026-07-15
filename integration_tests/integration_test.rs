@@ -781,6 +781,33 @@ pub fn tests(
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
     async_trials.push(peer_bmm_request_trial);
+
+    #[cfg(feature = "bip360")]
+    {
+        let p2p_e2e_trial: TestTrial = {
+            let name = crate::bip360_dual_node::TEST_NAME;
+            AsyncTrial::new(
+                name,
+                Box::pin({
+                    let bin_paths = bin_paths.clone();
+                    let file_registry = file_registry.clone();
+                    async move {
+                        let test_future =
+                            crate::test_bip360_p2p_mempool_e2e::test_bip360_p2p_mempool_e2e(
+                                bin_paths,
+                                file_registry,
+                            )
+                            .instrument(tracing::info_span!("test", name = %name));
+                        catch_unwind(test_future).await
+                    }
+                }),
+                file_registry.clone(),
+                failure_collector.clone(),
+            )
+        };
+        async_trials.push(p2p_e2e_trial);
+    }
+
     async_trials.extend([new_trial(
         "file_based_block_parser".to_string(),
         TestSetupComponents {
@@ -958,6 +985,14 @@ pub fn tests(
         bip360_trial!(
             "bip360_invalid_hybrid_ec_slh_swap_sigs",
             crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_swap_sigs
+        );
+        bip360_trial!(
+            "bip360_valid_kitchen_sink_spend",
+            crate::test_bip360_valid_spend::test_bip360_valid_kitchen_sink_spend
+        );
+        bip360_trial!(
+            "bip360_invalid_kitchen_sink_tamper_ec_sig",
+            crate::test_bip360_invalid_spend::test_bip360_invalid_kitchen_sink_tamper_ec_sig
         );
         bip360_trial!(
             "bip360_valid_multi_leaf_schnorr_spend",

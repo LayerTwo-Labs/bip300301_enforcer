@@ -1,4 +1,4 @@
-//! BIP 360 P2MR + post-quantum signature validation (CUSF quantum rules).
+//! BIP 360 P2MR + PQC signature validation (CUSF PQC rules).
 //!
 //! SHRINCs / XMSS hybrid verification is deferred — see `docs/SHRINCS_DEFERRED.md`.
 //! A future `shrincs` Cargo feature may gate optional backup-signature paths when a
@@ -36,7 +36,7 @@ use self::limits::PqcVerifyBudget;
 use self::spend::SpendError;
 
 #[derive(Debug, Error)]
-pub enum QuantumValidationError {
+pub enum PqcValidationError {
     #[error("BIP 360 validation failed for tx {txid}: {source}")]
     Transaction {
         txid: bitcoin::Txid,
@@ -56,7 +56,7 @@ pub fn validate_transaction(
     chain_p2mr_utxos: Option<&HashMap<OutPoint, TxOut>>,
     spent_p2mr_in_block: Option<&HashSet<OutPoint>>,
     pqc_budget: &mut Option<PqcVerifyBudget>,
-) -> Result<(), QuantumValidationError> {
+) -> Result<(), PqcValidationError> {
     if !activation.is_active(height) {
         return Ok(());
     }
@@ -67,7 +67,7 @@ pub fn validate_transaction(
         spent_p2mr_in_block,
         pqc_budget,
     )
-    .map_err(|source| QuantumValidationError::Transaction {
+    .map_err(|source| PqcValidationError::Transaction {
         txid: tx.compute_txid(),
         source,
     })
@@ -89,7 +89,7 @@ pub fn validate_block_transactions(
     activation: Bip360Activation,
     chain_p2mr_utxos: &HashMap<OutPoint, TxOut>,
     pqc_verify_budget_ms: u64,
-) -> Result<(), QuantumValidationError> {
+) -> Result<(), PqcValidationError> {
     if !activation.is_active(height) {
         return Ok(());
     }
@@ -123,7 +123,7 @@ pub fn validate_mempool_transaction<TxRef>(
     height: u32,
     activation: Bip360Activation,
     parent_txs: &HashMap<bitcoin::Txid, TxRef>,
-) -> Result<(), QuantumValidationError>
+) -> Result<(), PqcValidationError>
 where
     TxRef: Borrow<Transaction>,
 {
@@ -199,7 +199,7 @@ pub fn validate_and_diff_block_transactions(
     activation: Bip360Activation,
     chain_p2mr_utxos: &HashMap<OutPoint, TxOut>,
     pqc_verify_budget_ms: u64,
-) -> Result<p2mr_utxo::P2mrUtxoBlockDiff, QuantumValidationError> {
+) -> Result<p2mr_utxo::P2mrUtxoBlockDiff, PqcValidationError> {
     if !activation.is_active(height) {
         return Ok(p2mr_utxo::compute_block_diff(block, chain_p2mr_utxos));
     }
@@ -504,7 +504,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            QuantumValidationError::Transaction {
+            PqcValidationError::Transaction {
                 source: SpendError::Scheme(schemes::SchemeError::PqcVerifyBudgetExceeded),
                 ..
             }
@@ -602,7 +602,7 @@ mod tests {
                 .unwrap_err();
         assert!(matches!(
             err,
-            QuantumValidationError::Transaction {
+            PqcValidationError::Transaction {
                 source: SpendError::Scheme(_),
                 ..
             }
@@ -699,7 +699,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            QuantumValidationError::Transaction {
+            PqcValidationError::Transaction {
                 source: SpendError::MissingPrevout { input_index: 0 },
                 ..
             }
@@ -747,7 +747,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            QuantumValidationError::Transaction {
+            PqcValidationError::Transaction {
                 source: SpendError::MissingPrevout { input_index: 0 },
                 ..
             }

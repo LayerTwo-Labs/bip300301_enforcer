@@ -7,15 +7,15 @@ use std::time::Duration;
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     proto::mainchain::GetChainTipRequest,
-    validator::quantum::{
+    validator::pqc::{
         multi_leaf::{
             MLDSA_LEAF_INDEX, ThreeAlgorithmP2mrTree, build_block_three_leaf_p2mr_spend,
             swap_multi_leaf_control_block,
         },
         signer_dev::{
-            SignAlgorithm, build_block_hybrid_ec_slh_p2mr_spend, build_block_p2mr_spend,
-            build_checksig_leaf, p2mr_script_pubkey, single_leaf_control_block,
-            single_leaf_merkle_root,
+            SignAlgorithm, build_block_hybrid_ec_slh_p2mr_spend,
+            build_block_kitchen_sink_p2mr_spend, build_block_p2mr_spend, build_checksig_leaf,
+            p2mr_script_pubkey, single_leaf_control_block, single_leaf_merkle_root,
         },
     },
 };
@@ -468,6 +468,26 @@ pub async fn build_valid_p2mr_spend_txs(
     Ok((funding_tx, spend_tx))
 }
 
+/// Build coinbase + P2MR funding + signed kitchen-sink (Schnorr + ML-DSA + SLH) script-path spend.
+pub async fn build_valid_kitchen_sink_spend_txs(
+    post_setup: &PostSetup,
+    funding_prevout: OutPoint,
+) -> anyhow::Result<(Transaction, Transaction)> {
+    let (funding_tx, spend_tx) = build_block_kitchen_sink_p2mr_spend(
+        &HYBRID_EC_ENTROPY,
+        &MLDSA_ENTROPY,
+        &SLH_ENTROPY,
+        TapSighashType::All,
+        funding_prevout,
+        P2MR_PREVOUT_VALUE,
+        P2MR_SPEND_OUTPUT_VALUE,
+        post_setup.mining_address.script_pubkey(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let funding_tx = wallet_sign_transaction(post_setup, funding_tx).await?;
+    Ok((funding_tx, spend_tx))
+}
+
 /// Build coinbase + P2MR funding + signed hybrid EC+SLH script-path spend.
 pub async fn build_valid_hybrid_ec_slh_p2mr_spend_txs(
     post_setup: &PostSetup,
@@ -525,6 +545,21 @@ pub fn tamper_hybrid_witness_slh_signature(spend_tx: &mut Transaction) -> anyhow
     Ok(())
 }
 
+/// Flip the first byte of the EC (Schnorr) signature in a kitchen-sink witness (stack item 0).
+pub fn tamper_kitchen_sink_witness_ec_signature(spend_tx: &mut Transaction) -> anyhow::Result<()> {
+    let witness = &spend_tx.input[0].witness;
+    let mut bad_sig = witness_stack_element(witness, 0, "EC signature")?.to_vec();
+    bad_sig[0] ^= 0x01;
+    let mut bad_witness = Witness::new();
+    bad_witness.push(bad_sig);
+    bad_witness.push(witness_stack_element(witness, 1, "ML-DSA signature")?);
+    bad_witness.push(witness_stack_element(witness, 2, "SLH signature")?);
+    bad_witness.push(witness_stack_element(witness, 3, "leaf script")?);
+    bad_witness.push(witness_stack_element(witness, 4, "control block")?);
+    spend_tx.input[0].witness = bad_witness;
+    Ok(())
+}
+
 /// Swap EC and SLH signature positions in a hybrid witness (stack items 0 and 1).
 pub fn swap_hybrid_witness_signatures(spend_tx: &mut Transaction) -> anyhow::Result<()> {
     let witness = &spend_tx.input[0].witness;
@@ -550,12 +585,31 @@ pub fn tamper_witness_signature(spend_tx: &mut Transaction) -> anyhow::Result<()
     Ok(())
 }
 
-/// Corrupt the control block bytes in the witness (stack item 2).
+/// Corrupt the merkle-path portion of the witness control block (stack item 2).
+///
+/// Keeps the `0xc1` leaf version byte intact so the enforcer reports
+/// `merkle root mismatch for leaf script` (not `invalid P2MR control byte`).
+/// Mirrors the multi-leaf wrong-control-block pattern: tamper branch bytes only.
 pub fn tamper_witness_control_block(spend_tx: &mut Transaction) -> anyhow::Result<()> {
     let witness = &spend_tx.input[0].witness;
     let mut bad_control = witness_stack_element(witness, 2, "control block")?.to_vec();
-    if let Some(byte) = bad_control.first_mut() {
-        *byte ^= 0x01;
+    anyhow::ensure!(
+        bad_control.first() == Some(&0xc1),
+        "expected P2MR control block starting with 0xc1"
+    );
+    // Wire layout: 0xc1 || 32-byte base padding || merkle branch (32 bytes per sibling).
+    const BASE_LEN: usize = 33;
+    if bad_control.len() < BASE_LEN {
+        bad_control.resize(BASE_LEN, 0);
+        bad_control[0] = 0xc1;
+    }
+    if bad_control.len() == BASE_LEN {
+        // Single-leaf: append a bogus merkle sibling (no branch in valid control block).
+        bad_control.extend_from_slice(&[0xBB; 32]);
+    } else {
+        // Flip a byte in the merkle branch (past base padding), not the version byte.
+        let branch_idx = bad_control.len() - 1;
+        bad_control[branch_idx] ^= 0x01;
     }
     let mut bad_witness = Witness::new();
     bad_witness.push(witness_stack_element(witness, 0, "signature")?);
@@ -566,11 +620,15 @@ pub fn tamper_witness_control_block(spend_tx: &mut Transaction) -> anyhow::Resul
 }
 
 /// Build a P2MR spend with ML-DSA-sized signature but a 32-byte Schnorr-style leaf pubkey.
+///
+/// The funding output uses the wrong-leaf merkle root **before** the spend prevout is bound,
+/// so Core accepts `submitblock` and the enforcer rejects on pubkey/sig size mismatch.
 pub async fn build_mldsa_sig_wrong_pubkey_spend_txs(
     post_setup: &PostSetup,
     funding_prevout: OutPoint,
 ) -> anyhow::Result<(Transaction, Transaction)> {
-    let (funding_tx, mut spend_tx) = build_block_p2mr_spend(
+    // Reuse ML-DSA signature bytes from a valid spend; leaf script is swapped below.
+    let (_, valid_spend_tx) = build_block_p2mr_spend(
         SignAlgorithm::Mldsa,
         &MLDSA_ENTROPY,
         TapSighashType::All,
@@ -580,18 +638,49 @@ pub async fn build_mldsa_sig_wrong_pubkey_spend_txs(
         post_setup.mining_address.script_pubkey(),
     )
     .map_err(anyhow::Error::msg)?;
+    let mldsa_sig = witness_stack_element(&valid_spend_tx.input[0].witness, 0, "ML-DSA signature")?;
 
     let wrong_leaf = build_checksig_leaf(&[0xAB; 32]).map_err(anyhow::Error::msg)?;
-    let wrong_merkle_root = single_leaf_merkle_root(&wrong_leaf);
-    let mut funding_tx = funding_tx;
-    funding_tx.output[0].script_pubkey = p2mr_script_pubkey(wrong_merkle_root);
+    let wrong_script_pubkey = p2mr_script_pubkey(single_leaf_merkle_root(&wrong_leaf));
 
-    let witness = &spend_tx.input[0].witness;
+    let funding_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: funding_prevout,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(P2MR_PREVOUT_VALUE),
+            script_pubkey: wrong_script_pubkey,
+        }],
+    };
+    let funding_txid = funding_tx.compute_txid();
+
     let mut bad_witness = Witness::new();
-    bad_witness.push(witness_stack_element(witness, 0, "ML-DSA signature")?);
+    bad_witness.push(mldsa_sig);
     bad_witness.push(wrong_leaf.as_bytes());
     bad_witness.push(single_leaf_control_block());
-    spend_tx.input[0].witness = bad_witness;
+
+    let spend_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: funding_txid,
+                vout: 0,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: bad_witness,
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(P2MR_SPEND_OUTPUT_VALUE),
+            script_pubkey: post_setup.mining_address.script_pubkey(),
+        }],
+    };
 
     let funding_tx = wallet_sign_transaction(post_setup, funding_tx).await?;
     Ok((funding_tx, spend_tx))

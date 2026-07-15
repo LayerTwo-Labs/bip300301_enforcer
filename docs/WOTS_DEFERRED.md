@@ -13,7 +13,7 @@ The enforcer today supports:
 - ML-DSA-44
 - SLH-DSA-SHA2-128s
 
-via the overloaded `OP_CHECKSIG` family in `lib/validator/quantum/schemes.rs`.
+via the overloaded `OP_CHECKSIG` family in `lib/validator/pqc/schemes.rs`.
 
 WOTS+ was discussed as an **exposed internal** for tests and migration experiments (alongside
 SLH-DSA as a stateless hash fallback). No separate WOTS+ duck-typing size class or pubkey

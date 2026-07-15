@@ -5,12 +5,12 @@ CUSF-specific JSON v1 vectors mirroring BIP 360 ref-impl tree shapes with **over
 
 | File | Tests |
 |------|-------|
-| `test_vectors/p2mr_overload_construction.json` | `lib/validator/quantum/overload_vectors.rs` (`quantum::overload_vectors::`) |
+| `test_vectors/p2mr_overload_construction.json` | `lib/validator/pqc/overload_vectors.rs` (`pqc::overload_vectors::`) |
 
 Run:
 
 ```bash
-cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::overload_vectors
+cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::overload_vectors
 ```
 
 Regenerate golden `intermediary` / `expected` fields after editing `given.scriptTree`:
@@ -81,7 +81,7 @@ forbids those opcodes outside sig sites).
 Ref-impl `priv_key` fields use `SLH_DSA_128S` (SHAKE); the CUSF enforcer verifies
 `SLH_DSA_SHA2_128S`. Construction vectors retain ref-impl `priv_key` metadata for cross-reference
 only — they are **not** wired into spend round-trip tests here (scheme naming mismatch). End-to-end
-SLH spend round-trips live in `quantum::spend` (`slh_only_leaf_roundtrip`, integration
+SLH spend round-trips live in `pqc::spend` (`slh_only_leaf_roundtrip`, integration
 `bip360_valid_slh_spend`).
 
 ## Related docs

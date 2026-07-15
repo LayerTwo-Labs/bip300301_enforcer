@@ -4,15 +4,16 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::validator::quantum::signer_dev::SignAlgorithm;
+use bip300301_enforcer_lib::validator::pqc::signer_dev::SignAlgorithm;
 use futures::channel::mpsc;
 
 use crate::{
     bip360_block::{
         MLDSA_ENTROPY, SCHNORR_ENTROPY, SLH_ENTROPY, bip360_setup_opts, build_block_with_coinbase,
-        build_valid_hybrid_ec_slh_p2mr_spend_txs, build_valid_p2mr_spend_txs, funding_prevout,
-        prepare_coinbase, submit_block, submit_cross_block_p2mr_spend,
-        submit_cross_block_p2mr_spend_with_txs, wait_for_enforcer_synced,
+        build_valid_hybrid_ec_slh_p2mr_spend_txs, build_valid_kitchen_sink_spend_txs,
+        build_valid_p2mr_spend_txs, funding_prevout, prepare_coinbase, submit_block,
+        submit_cross_block_p2mr_spend, submit_cross_block_p2mr_spend_with_txs,
+        wait_for_enforcer_synced,
     },
     block_verdict::{Expect, assert_enforcer_verdict},
     setup::{Mode, PreSetup},
@@ -174,4 +175,35 @@ pub async fn test_bip360_valid_hybrid_ec_slh_cross_block_spend(
     pre_setup: PreSetup,
 ) -> anyhow::Result<()> {
     run_valid_cross_block_hybrid_ec_slh_spend_trial(pre_setup).await
+}
+
+async fn run_valid_kitchen_sink_spend_trial(pre_setup: PreSetup) -> anyhow::Result<()> {
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let mut post_setup = pre_setup
+        .setup(Mode::NoMempool, bip360_setup_opts(), res_tx)
+        .await?;
+
+    wait_for_enforcer_synced(&mut post_setup).await?;
+
+    let prevout = funding_prevout(&post_setup).await?;
+    let (template, coinbase) = prepare_coinbase(&mut post_setup).await?;
+    let (funding_tx, spend_tx) = build_valid_kitchen_sink_spend_txs(&post_setup, prevout).await?;
+
+    let block =
+        build_block_with_coinbase(&post_setup, &template, coinbase, vec![funding_tx, spend_tx])
+            .await?;
+    let block_hash = submit_block(&mut post_setup, &block).await?;
+    tracing::info!(%block_hash, "submitted valid kitchen-sink BIP 360 block");
+
+    assert_enforcer_verdict(
+        &mut post_setup,
+        block_hash,
+        Expect::Accepted,
+        Duration::from_secs(15),
+    )
+    .await
+}
+
+pub async fn test_bip360_valid_kitchen_sink_spend(pre_setup: PreSetup) -> anyhow::Result<()> {
+    run_valid_kitchen_sink_spend_trial(pre_setup).await
 }

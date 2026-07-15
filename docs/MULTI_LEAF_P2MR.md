@@ -40,8 +40,8 @@ Deterministic merkle root with that entropy: `741e59741422eab4fe6dcc3bb3c73ad4d5
 
 | Component | Path |
 |-----------|------|
-| Tree builder + unit tests | `lib/validator/quantum/multi_leaf.rs` |
-| Shared control-block padding | `lib/validator/quantum/merkle.rs` (`control_block_bytes_for_enforcer`) |
+| Tree builder + unit tests | `lib/validator/pqc/multi_leaf.rs` |
+| Shared control-block padding | `lib/validator/pqc/merkle.rs` (`control_block_bytes_for_enforcer`) |
 | Block spend helpers | `build_block_three_leaf_p2mr_spend`, `build_three_leaf_p2mr_spend_txs` |
 | Integration trials | `integration_tests/test_bip360_multi_leaf.rs` |
 
@@ -59,12 +59,12 @@ Deterministic merkle root with that entropy: `741e59741422eab4fe6dcc3bb3c73ad4d5
 | `bip360_invalid_multi_leaf_cross_block_wrong_control_block` | Rejected | Cross-block variant; funding block accepted first |
 | `bip360_invalid_multi_leaf_tampered_signature_mldsa` | Rejected | Tampered ML-DSA signature on revealed ML-DSA leaf (same-block) |
 
-**9 trials** in Phase C multi-leaf module (**31 trials total** with Phases A+B).
+**9 trials** in Phase C multi-leaf module. Full matrix: **34 trials total** (33 block-matrix incl. 2 kitchen-sink + 1 dual-node P2P E2E) with Phases A+B+C kitchen-sink.
 
 ## Unit tests
 
 ```bash
-cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::multi_leaf
+cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::multi_leaf
 ```
 
 Covers deterministic merkle root, placement-depth topology, sign+validate per leaf index, invalid leaf index rejection, `build_block_three_leaf_p2mr_spend` prevout wiring, and wrong-control-block rejection via `validate_p2mr_input_spend`.

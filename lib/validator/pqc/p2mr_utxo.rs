@@ -119,7 +119,7 @@ mod tests {
     use bitcoin::{Amount, ScriptBuf, TxOut, transaction::Version};
     use miette::IntoDiagnostic;
 
-    use crate::validator::quantum::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
+    use crate::validator::pqc::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
     use crate::validator::test_utils::{create_test_dbs, test_block_header};
     use bitcoin::hashes::Hash as _;
     use bitcoin::sighash::TapSighashType;

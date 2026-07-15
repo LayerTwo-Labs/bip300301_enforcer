@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::validator::quantum::signer_dev::p2mr_script_pubkey;
+use bip300301_enforcer_lib::validator::pqc::signer_dev::p2mr_script_pubkey;
 use bitcoin::{
     Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, transaction::Version,
 };

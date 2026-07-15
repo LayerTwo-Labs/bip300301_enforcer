@@ -3,7 +3,7 @@
 Minimal command-line signer for P2MR **script-path** spends using the CUSF **overload
 model** (`PUSH <pk> OP_CHECKSIG` — not ref-impl `OP_SUBSTR`).
 
-Source: `lib/examples/p2mr_signer.rs` (uses shared helpers in `lib/validator/quantum/signer_dev.rs`)
+Source: `lib/examples/p2mr_signer.rs` (uses shared helpers in `lib/validator/pqc/signer_dev.rs`)
 
 ## Security warning
 
@@ -117,7 +117,7 @@ SIGNED_HEX=$(echo "$SIGNER_JSON" | jq -r .signed_spend_tx_hex)
 # 3. Confirm enforcer retains block (no "BIP 360 validation failed" in logs)
 ```
 
-Automated enforcer acceptance is covered by `quantum::spend` roundtrip tests
+Automated enforcer acceptance is covered by `pqc::spend` roundtrip tests
 (`p2mr_signer_roundtrip_*`).
 
 ## Leaf format
@@ -134,6 +134,6 @@ those scripts manually and sign each sighash site separately.
 ## References
 
 - Enforcer overload rules: [`BIP360_OVERLOAD_ADDENDUM.md`](./BIP360_OVERLOAD_ADDENDUM.md)
-- Shared signing logic: `lib/validator/quantum/signer_dev.rs`
-- Roundtrip tests: `lib/validator/quantum/spend.rs` (`p2mr_signer_roundtrip_*`)
+- Shared signing logic: `lib/validator/pqc/signer_dev.rs`
+- Roundtrip tests: `lib/validator/pqc/spend.rs` (`p2mr_signer_roundtrip_*`)
 - Crypto: [`bitcoinpqc`](https://github.com/cryptoquick/libbitcoinpqc-bindings) via workspace git pin ([PR #1](https://github.com/cryptoquick/libbitcoinpqc-bindings/pull/1))

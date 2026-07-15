@@ -106,7 +106,7 @@ After Kellnr has `bitcoinpqc` 0.4.0:
 
    ```bash
    cd bip300301_enforcer
-   cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::
+   cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::
    cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
    ```
 

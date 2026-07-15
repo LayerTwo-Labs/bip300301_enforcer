@@ -24,7 +24,9 @@ pub const MAX_P2MR_WITNESS_STACK: usize = 100;
 pub const MAX_P2MR_LEAF_SCRIPT_SIZE: usize = 10_000;
 
 /// Maximum witness weight units for signature elements per input (1 WU per byte).
-pub const MAX_PQC_SIG_WU_PER_INPUT: usize = 8192;
+///
+/// Must accommodate a kitchen-sink leaf (Schnorr + ML-DSA-44 + SLH-DSA in one witness).
+pub const MAX_PQC_SIG_WU_PER_INPUT: usize = 12_288;
 
 /// Default per-block wall-time budget for PQC signature verification.
 pub const DEFAULT_PQC_VERIFY_BUDGET_MS: u64 = 500;
@@ -85,6 +87,15 @@ mod tests {
     #[test]
     fn slh_sig_fits_per_input_wu_budget() {
         assert!(estimate_sig_wu(SLH_DSA_128S_SIGNATURE_SIZE + 1) <= MAX_PQC_SIG_WU_PER_INPUT);
+    }
+
+    #[test]
+    fn kitchen_sink_triple_sig_fits_per_input_wu_budget() {
+        let total = estimate_sig_wu(SCHNORR_SIGNATURE_SIZE)
+            + estimate_sig_wu(ML_DSA_44_SIGNATURE_SIZE)
+            + estimate_sig_wu(SLH_DSA_128S_SIGNATURE_SIZE);
+        assert_eq!(total, 10_340);
+        assert!(total <= MAX_PQC_SIG_WU_PER_INPUT);
     }
 
     #[test]

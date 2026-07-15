@@ -403,7 +403,7 @@ pub(in crate::validator) enum ConnectBlock {
     Bip360 {
         block_hash: bitcoin::BlockHash,
         #[source]
-        source: crate::validator::quantum::QuantumValidationError,
+        source: crate::validator::pqc::PqcValidationError,
     },
 }
 

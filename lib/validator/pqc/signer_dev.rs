@@ -19,7 +19,7 @@ use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
 use bitcoin_p2mr_pqc::taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash};
 use bitcoinpqc::{Algorithm, generate_keypair, sign};
 
-use super::leaf_script::build_hybrid_ec_slh_leaf;
+use super::leaf_script::{build_hybrid_ec_slh_leaf, build_kitchen_sink_leaf};
 use super::limits::ML_DSA_44_PUBLIC_KEY_SIZE;
 
 /// Signature algorithm for single-leaf `PUSH <pk> OP_CHECKSIG` spends.
@@ -399,6 +399,245 @@ fn slh_pk32(keypair: &bitcoinpqc::KeyPair) -> Result<[u8; 32], String> {
     })
 }
 
+/// Validate entropy lengths for kitchen-sink (EC 32 B, ML-DSA ≥128 B, SLH ≥128 B) spends.
+pub fn validate_kitchen_sink_entropy(
+    ec_entropy: &[u8],
+    mldsa_entropy: &[u8],
+    slh_entropy: &[u8],
+) -> Result<(), String> {
+    if ec_entropy.len() != 32 {
+        return Err(
+            "EC entropy must be exactly 32 bytes (64 hex chars) for secp256k1 Schnorr".into(),
+        );
+    }
+    if mldsa_entropy.len() < 128 {
+        return Err(
+            "ML-DSA entropy must be at least 128 bytes (256 hex chars) for ML-DSA-44".into(),
+        );
+    }
+    if slh_entropy.len() < 128 {
+        return Err(
+            "SLH entropy must be at least 128 bytes (256 hex chars) for SLH-DSA-SHA2-128s".into(),
+        );
+    }
+    Ok(())
+}
+
+fn mldsa_pk(keypair: &bitcoinpqc::KeyPair) -> Result<Vec<u8>, String> {
+    if keypair.public_key.bytes.len() == ML_DSA_44_PUBLIC_KEY_SIZE {
+        Ok(keypair.public_key.bytes.clone())
+    } else {
+        Err(format!(
+            "expected {}-byte ML-DSA pubkey, got {} bytes",
+            ML_DSA_44_PUBLIC_KEY_SIZE,
+            keypair.public_key.bytes.len()
+        ))
+    }
+}
+
+/// Build a P2MR `scriptPubKey` for a single Schnorr / ML-DSA / SLH leaf.
+pub fn p2mr_output_for_algorithm(
+    algorithm: SignAlgorithm,
+    entropy: &[u8],
+) -> Result<(ScriptBuf, ScriptBuf), String> {
+    let keypair = generate_p2mr_keypair(algorithm, entropy)?;
+    let leaf_script = build_checksig_leaf(&keypair.public_key.bytes)?;
+    let script_pubkey = p2mr_script_pubkey(single_leaf_merkle_root(&leaf_script));
+    Ok((script_pubkey, leaf_script))
+}
+
+/// Build a P2MR `scriptPubKey` for a hybrid EC+SLH leaf.
+pub fn p2mr_output_for_hybrid_ec_slh(
+    ec_entropy: &[u8; 32],
+    slh_entropy: &[u8],
+) -> Result<(ScriptBuf, ScriptBuf), String> {
+    validate_hybrid_entropy(ec_entropy, slh_entropy)?;
+    let ec_keypair = ec_keypair_from_entropy(ec_entropy)?;
+    let slh_keypair = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, slh_entropy)
+        .map_err(|e| format!("SLH key generation failed: {e}"))?;
+    let ec_pk: [u8; 32] = XOnlyPublicKey::from_keypair(&ec_keypair).0.serialize();
+    let slh_pk = slh_pk32(&slh_keypair)?;
+    let leaf_script = build_hybrid_ec_slh_leaf(&ec_pk, &slh_pk);
+    let script_pubkey = p2mr_script_pubkey(single_leaf_merkle_root(&leaf_script));
+    Ok((script_pubkey, leaf_script))
+}
+
+/// Build a P2MR `scriptPubKey` for a kitchen-sink (Schnorr + ML-DSA + SLH) leaf.
+pub fn p2mr_output_for_kitchen_sink(
+    ec_entropy: &[u8; 32],
+    mldsa_entropy: &[u8],
+    slh_entropy: &[u8],
+) -> Result<(ScriptBuf, ScriptBuf), String> {
+    validate_kitchen_sink_entropy(ec_entropy, mldsa_entropy, slh_entropy)?;
+    let ec_keypair = ec_keypair_from_entropy(ec_entropy)?;
+    let mldsa_keypair = generate_keypair(Algorithm::ML_DSA_44, mldsa_entropy)
+        .map_err(|e| format!("ML-DSA key generation failed: {e}"))?;
+    let slh_keypair = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, slh_entropy)
+        .map_err(|e| format!("SLH key generation failed: {e}"))?;
+    let ec_pk: [u8; 32] = XOnlyPublicKey::from_keypair(&ec_keypair).0.serialize();
+    let mldsa_pk = mldsa_pk(&mldsa_keypair)?;
+    let slh_pk = slh_pk32(&slh_keypair)?;
+    let leaf_script = build_kitchen_sink_leaf(&ec_pk, &mldsa_pk, &slh_pk);
+    let script_pubkey = p2mr_script_pubkey(single_leaf_merkle_root(&leaf_script));
+    Ok((script_pubkey, leaf_script))
+}
+
+/// Sign a single-leaf P2MR script-path spend from an existing confirmed prevout.
+pub fn build_p2mr_spend_from_prevout(
+    algorithm: SignAlgorithm,
+    entropy: &[u8],
+    sighash_type: TapSighashType,
+    spend_previous_output: OutPoint,
+    prevout: TxOut,
+    output_value: u64,
+    spend_destination: ScriptBuf,
+) -> Result<Transaction, String> {
+    let keypair = generate_p2mr_keypair(algorithm, entropy)?;
+    let signed = sign_p2mr_spend_core(
+        &keypair,
+        sighash_type,
+        prevout,
+        spend_previous_output,
+        output_value,
+        spend_destination,
+    )?;
+    Ok(signed.signed_spend_tx)
+}
+
+/// Sign a hybrid EC+SLH P2MR script-path spend from an existing confirmed prevout.
+pub fn build_hybrid_ec_slh_spend_from_prevout(
+    ec_entropy: &[u8; 32],
+    slh_entropy: &[u8],
+    sighash_type: TapSighashType,
+    spend_previous_output: OutPoint,
+    prevout: TxOut,
+    output_value: u64,
+    spend_destination: ScriptBuf,
+) -> Result<Transaction, String> {
+    validate_hybrid_entropy(ec_entropy, slh_entropy)?;
+    validate_output_value(output_value, prevout.value.to_sat())?;
+
+    let ec_keypair = ec_keypair_from_entropy(ec_entropy)?;
+    let slh_keypair = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, slh_entropy)
+        .map_err(|e| format!("SLH key generation failed: {e}"))?;
+
+    let ec_pk: [u8; 32] = XOnlyPublicKey::from_keypair(&ec_keypair).0.serialize();
+    let slh_pk = slh_pk32(&slh_keypair)?;
+    let leaf_script = build_hybrid_ec_slh_leaf(&ec_pk, &slh_pk);
+    let leaf_hash = TapLeafHash::from_script(
+        leaf_script.as_script(),
+        LeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("valid leaf version"),
+    );
+
+    let unsigned_spend_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: spend_previous_output,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(output_value),
+            script_pubkey: spend_destination,
+        }],
+    };
+
+    let prevouts = Prevouts::All(std::slice::from_ref(&prevout));
+    let mut cache = SighashCache::new(&unsigned_spend_tx);
+    let sighash = cache
+        .taproot_script_spend_signature_hash(0, &prevouts, leaf_hash, sighash_type)
+        .map_err(|e| format!("sighash computation failed: {e}"))?;
+
+    let secp = Secp256k1::new();
+    let ec_sig =
+        secp.sign_schnorr_no_aux_rand(&Message::from_digest(sighash.to_byte_array()), &ec_keypair);
+    let slh_sig = sign(&slh_keypair.secret_key, sighash.as_byte_array())
+        .map_err(|e| format!("SLH signing failed: {e}"))?;
+
+    let mut witness = Witness::new();
+    witness.push(ec_sig.serialize());
+    witness.push(slh_sig.bytes);
+    witness.push(leaf_script.as_bytes());
+    witness.push(single_leaf_control_block());
+
+    let mut signed_spend_tx = unsigned_spend_tx;
+    signed_spend_tx.input[0].witness = witness;
+    Ok(signed_spend_tx)
+}
+
+/// Sign a kitchen-sink P2MR script-path spend from an existing confirmed prevout.
+#[expect(clippy::too_many_arguments)]
+pub fn build_kitchen_sink_spend_from_prevout(
+    ec_entropy: &[u8; 32],
+    mldsa_entropy: &[u8],
+    slh_entropy: &[u8],
+    sighash_type: TapSighashType,
+    spend_previous_output: OutPoint,
+    prevout: TxOut,
+    output_value: u64,
+    spend_destination: ScriptBuf,
+) -> Result<Transaction, String> {
+    validate_kitchen_sink_entropy(ec_entropy, mldsa_entropy, slh_entropy)?;
+    validate_output_value(output_value, prevout.value.to_sat())?;
+
+    let ec_keypair = ec_keypair_from_entropy(ec_entropy)?;
+    let mldsa_keypair = generate_keypair(Algorithm::ML_DSA_44, mldsa_entropy)
+        .map_err(|e| format!("ML-DSA key generation failed: {e}"))?;
+    let slh_keypair = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, slh_entropy)
+        .map_err(|e| format!("SLH key generation failed: {e}"))?;
+
+    let ec_pk: [u8; 32] = XOnlyPublicKey::from_keypair(&ec_keypair).0.serialize();
+    let mldsa_pk = mldsa_pk(&mldsa_keypair)?;
+    let slh_pk = slh_pk32(&slh_keypair)?;
+    let leaf_script = build_kitchen_sink_leaf(&ec_pk, &mldsa_pk, &slh_pk);
+    let leaf_hash = TapLeafHash::from_script(
+        leaf_script.as_script(),
+        LeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("valid leaf version"),
+    );
+
+    let unsigned_spend_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: spend_previous_output,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(output_value),
+            script_pubkey: spend_destination,
+        }],
+    };
+
+    let prevouts = Prevouts::All(std::slice::from_ref(&prevout));
+    let mut cache = SighashCache::new(&unsigned_spend_tx);
+    let sighash = cache
+        .taproot_script_spend_signature_hash(0, &prevouts, leaf_hash, sighash_type)
+        .map_err(|e| format!("sighash computation failed: {e}"))?;
+
+    let secp = Secp256k1::new();
+    let ec_sig =
+        secp.sign_schnorr_no_aux_rand(&Message::from_digest(sighash.to_byte_array()), &ec_keypair);
+    let mldsa_sig = sign(&mldsa_keypair.secret_key, sighash.as_byte_array())
+        .map_err(|e| format!("ML-DSA signing failed: {e}"))?;
+    let slh_sig = sign(&slh_keypair.secret_key, sighash.as_byte_array())
+        .map_err(|e| format!("SLH signing failed: {e}"))?;
+
+    let mut witness = Witness::new();
+    witness.push(ec_sig.serialize());
+    witness.push(mldsa_sig.bytes);
+    witness.push(slh_sig.bytes);
+    witness.push(leaf_script.as_bytes());
+    witness.push(single_leaf_control_block());
+
+    let mut signed_spend_tx = unsigned_spend_tx;
+    signed_spend_tx.input[0].witness = witness;
+    Ok(signed_spend_tx)
+}
+
 /// Build a coinbase-funded hybrid EC+SLH P2MR output and signed script-path spend.
 ///
 /// Witness layout (bottom → top): `[ec_sig (64B), slh_sig (~7856B), leaf_script, control_block]`.
@@ -483,6 +722,59 @@ pub fn build_block_hybrid_ec_slh_p2mr_spend(
 
     let mut signed_spend_tx = unsigned_spend_tx;
     signed_spend_tx.input[0].witness = witness;
+
+    Ok((funding_tx, signed_spend_tx))
+}
+
+/// Build a coinbase-funded kitchen-sink P2MR output and signed script-path spend.
+///
+/// Witness layout (bottom → top): `[ec_sig (64B), mldsa_sig (~2420B), slh_sig (~7856B), leaf_script, control_block]`.
+#[expect(clippy::too_many_arguments)]
+pub fn build_block_kitchen_sink_p2mr_spend(
+    ec_entropy: &[u8; 32],
+    mldsa_entropy: &[u8],
+    slh_entropy: &[u8],
+    sighash_type: TapSighashType,
+    coinbase_outpoint: OutPoint,
+    prevout_value: u64,
+    output_value: u64,
+    spend_destination: ScriptBuf,
+) -> Result<(Transaction, Transaction), String> {
+    validate_kitchen_sink_entropy(ec_entropy, mldsa_entropy, slh_entropy)?;
+    validate_output_value(output_value, prevout_value)?;
+
+    let (script_pubkey, _) = p2mr_output_for_kitchen_sink(ec_entropy, mldsa_entropy, slh_entropy)?;
+
+    let funding_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: coinbase_outpoint,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(prevout_value),
+            script_pubkey: script_pubkey.clone(),
+        }],
+    };
+    let funding_txid = funding_tx.compute_txid();
+    let prevout = funding_tx.output[0].clone();
+
+    let signed_spend_tx = build_kitchen_sink_spend_from_prevout(
+        ec_entropy,
+        mldsa_entropy,
+        slh_entropy,
+        sighash_type,
+        OutPoint {
+            txid: funding_txid,
+            vout: 0,
+        },
+        prevout,
+        output_value,
+        spend_destination,
+    )?;
 
     Ok((funding_tx, signed_spend_tx))
 }
@@ -603,5 +895,91 @@ mod tests {
             &spend_tx, 0, &prevout, &prevouts, &mut None,
         )
         .expect("hybrid P2MR spend validates");
+    }
+
+    #[test]
+    fn validate_kitchen_sink_entropy_rejects_short_ec() {
+        let err = validate_kitchen_sink_entropy(&[0x11; 31], &[0x22; 128], &[0x33; 128])
+            .expect_err("31-byte EC entropy");
+        assert!(err.contains("exactly 32 bytes"));
+    }
+
+    #[test]
+    fn validate_kitchen_sink_entropy_rejects_short_mldsa() {
+        let err = validate_kitchen_sink_entropy(&[0x11; 32], &[0x22; 127], &[0x33; 128])
+            .expect_err("127-byte ML-DSA entropy");
+        assert!(err.contains("at least 128 bytes"));
+        assert!(err.contains("ML-DSA"));
+    }
+
+    #[test]
+    fn validate_kitchen_sink_entropy_rejects_short_slh() {
+        let err = validate_kitchen_sink_entropy(&[0x11; 32], &[0x22; 128], &[0x33; 127])
+            .expect_err("127-byte SLH entropy");
+        assert!(err.contains("at least 128 bytes"));
+        assert!(err.contains("SLH"));
+    }
+
+    #[test]
+    fn validate_kitchen_sink_entropy_accepts_valid_lengths() {
+        validate_kitchen_sink_entropy(&[0x11; 32], &[0x22; 128], &[0x33; 128])
+            .expect("valid kitchen-sink entropy lengths");
+    }
+
+    #[test]
+    fn build_block_kitchen_sink_p2mr_spend_links_coinbase_to_triple_witness() {
+        let coinbase = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: Builder::new().push_int(1).into_script(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let coinbase_outpoint = OutPoint {
+            txid: coinbase.compute_txid(),
+            vout: 0,
+        };
+
+        let (funding_tx, spend_tx) = build_block_kitchen_sink_p2mr_spend(
+            &[0x44; 32],
+            &[0x55; 128],
+            &[0x66; 128],
+            TapSighashType::All,
+            coinbase_outpoint,
+            50_000,
+            40_000,
+            ScriptBuf::new(),
+        )
+        .expect("build_block_kitchen_sink_p2mr_spend");
+
+        assert_eq!(funding_tx.input[0].previous_output, coinbase_outpoint);
+        assert_eq!(
+            spend_tx.input[0].previous_output.txid,
+            funding_tx.compute_txid()
+        );
+        assert_eq!(spend_tx.input[0].witness.len(), 5);
+        assert_eq!(spend_tx.input[0].witness.nth(0).expect("ec sig").len(), 64);
+        assert!(
+            spend_tx.input[0].witness.nth(1).expect("mldsa sig").len() > 2400,
+            "expected ML-DSA signature size"
+        );
+        assert!(
+            spend_tx.input[0].witness.nth(2).expect("slh sig").len() > 7800,
+            "expected SLH-DSA signature size"
+        );
+
+        let prevout = funding_tx.output[0].clone();
+        let prevouts = Prevouts::All(std::slice::from_ref(&prevout));
+        super::super::spend::validate_p2mr_input_spend(
+            &spend_tx, 0, &prevout, &prevouts, &mut None,
+        )
+        .expect("kitchen-sink P2MR spend validates");
     }
 }

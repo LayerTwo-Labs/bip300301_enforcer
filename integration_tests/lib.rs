@@ -1,5 +1,9 @@
 #[cfg(feature = "bip360")]
 pub mod bip360_block;
+#[cfg(feature = "bip360")]
+pub mod bip360_dual_node;
+#[cfg(feature = "bip360")]
+pub mod bip360_tx_report;
 pub mod block_verdict;
 pub mod integration_test;
 pub mod mine;
@@ -10,6 +14,8 @@ mod test_bip360_invalid_block;
 mod test_bip360_invalid_spend;
 #[cfg(feature = "bip360")]
 mod test_bip360_multi_leaf;
+#[cfg(feature = "bip360")]
+mod test_bip360_p2p_mempool_e2e;
 #[cfg(feature = "bip360")]
 mod test_bip360_valid_spend;
 mod test_blinded_m6_roundtrip;

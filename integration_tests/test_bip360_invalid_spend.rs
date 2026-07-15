@@ -4,16 +4,17 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::validator::quantum::signer_dev::SignAlgorithm;
+use bip300301_enforcer_lib::validator::pqc::signer_dev::SignAlgorithm;
 use futures::channel::mpsc;
 
 use crate::{
     bip360_block::{
         MLDSA_ENTROPY, SCHNORR_ENTROPY, SLH_ENTROPY, bip360_setup_opts, build_block_with_coinbase,
         build_mldsa_sig_wrong_pubkey_spend_txs, build_valid_hybrid_ec_slh_p2mr_spend_txs,
-        build_valid_p2mr_spend_txs, funding_prevout, prepare_coinbase, submit_block,
-        submit_cross_block_p2mr_spend_with_txs, swap_hybrid_witness_signatures,
-        tamper_hybrid_witness_ec_signature, tamper_hybrid_witness_slh_signature,
+        build_valid_kitchen_sink_spend_txs, build_valid_p2mr_spend_txs, funding_prevout,
+        prepare_coinbase, submit_block, submit_cross_block_p2mr_spend_with_txs,
+        swap_hybrid_witness_signatures, tamper_hybrid_witness_ec_signature,
+        tamper_hybrid_witness_slh_signature, tamper_kitchen_sink_witness_ec_signature,
         tamper_witness_control_block, tamper_witness_signature, wait_for_enforcer_synced,
     },
     block_verdict::{Expect, assert_enforcer_verdict},
@@ -40,6 +41,7 @@ enum InvalidSpendCase {
     TamperedHybridEcSig,
     TamperedHybridSlhSig,
     SwappedHybridSigs,
+    TamperedKitchenSinkEcSig,
 }
 
 async fn build_invalid_spend_txs(
@@ -67,6 +69,9 @@ async fn build_invalid_spend_txs(
         }
         InvalidSpendCase::SwappedHybridSigs => {
             build_swapped_hybrid_signatures_spend_txs(post_setup, funding_prevout).await
+        }
+        InvalidSpendCase::TamperedKitchenSinkEcSig => {
+            build_tampered_kitchen_sink_ec_signature_spend_txs(post_setup, funding_prevout).await
         }
     }
 }
@@ -332,6 +337,28 @@ pub async fn test_bip360_invalid_hybrid_ec_slh_swap_sigs(
         REJECT_LOG_SIGNATURE_SLH,
         SpendBlockMode::SameBlock,
         InvalidSpendCase::SwappedHybridSigs,
+    )
+    .await
+}
+
+async fn build_tampered_kitchen_sink_ec_signature_spend_txs(
+    post_setup: &crate::setup::PostSetup,
+    funding_prevout: bitcoin::OutPoint,
+) -> anyhow::Result<(bitcoin::Transaction, bitcoin::Transaction)> {
+    let (funding_tx, mut spend_tx) =
+        build_valid_kitchen_sink_spend_txs(post_setup, funding_prevout).await?;
+    tamper_kitchen_sink_witness_ec_signature(&mut spend_tx)?;
+    Ok((funding_tx, spend_tx))
+}
+
+pub async fn test_bip360_invalid_kitchen_sink_tamper_ec_sig(
+    pre_setup: PreSetup,
+) -> anyhow::Result<()> {
+    run_invalid_p2mr_spend_trial(
+        pre_setup,
+        REJECT_LOG_SIGNATURE_SCHNORR,
+        SpendBlockMode::SameBlock,
+        InvalidSpendCase::TamperedKitchenSinkEcSig,
     )
     .await
 }

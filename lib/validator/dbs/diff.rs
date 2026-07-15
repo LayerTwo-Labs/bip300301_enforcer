@@ -610,11 +610,11 @@ pub struct Block {
     /// P2MR UTXO changes applied when this block was connected.
     #[cfg(feature = "bip360")]
     #[serde(default)]
-    pub p2mr_utxo: crate::validator::quantum::p2mr_utxo::P2mrUtxoBlockDiff,
+    pub p2mr_utxo: crate::validator::pqc::p2mr_utxo::P2mrUtxoBlockDiff,
 }
 
 #[cfg(feature = "bip360")]
-impl Diff for crate::validator::quantum::p2mr_utxo::P2mrUtxoBlockDiff {
+impl Diff for crate::validator::pqc::p2mr_utxo::P2mrUtxoBlockDiff {
     type Dbs = dbs::Dbs;
     type ApplyError = db::Error;
     type UndoError = db::Error;

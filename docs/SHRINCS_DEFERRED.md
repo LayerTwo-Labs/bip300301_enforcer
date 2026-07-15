@@ -13,7 +13,7 @@ The enforcer today supports:
 - ML-DSA-44
 - SLH-DSA-SHA2-128s
 
-via the overloaded `OP_CHECKSIG` family in `lib/validator/quantum/schemes.rs`.
+via the overloaded `OP_CHECKSIG` family in `lib/validator/pqc/schemes.rs`.
 
 ## Why deferred
 
@@ -37,7 +37,7 @@ A reserved Cargo feature exists on `bip300301_enforcer_lib`:
 shrincs = []   # placeholder — no dependencies wired
 ```
 
-`lib/validator/quantum/mod.rs` notes that a future `shrincs` feature may gate optional
+`lib/validator/pqc/mod.rs` notes that a future `shrincs` feature may gate optional
 backup-signature verification when reference vectors land.
 
 **Do not enable `shrincs` expecting functionality** — it is a naming reservation only.
@@ -51,7 +51,7 @@ backup-signature verification when reference vectors land.
 
 Then:
 
-- Add `shrincs` feature dependencies and `quantum/shrincs.rs` (or extend `schemes.rs`).
+- Add `shrincs` feature dependencies and `pqc/shrincs.rs` (or extend `schemes.rs`).
 - Wire activation height / annex parsing in `spend.rs`.
 - Add unit + integration tests before enabling by default in `bip360`.
 

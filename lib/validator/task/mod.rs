@@ -1060,8 +1060,8 @@ impl BlockHandler<'_> {
         };
         #[cfg(not(feature = "drivechain"))]
         let drivechain_ok = true;
-        use crate::validator::quantum::{self, activation::Bip360Activation};
-        let bip360_ok = match quantum::validate_mempool_transaction(
+        use crate::validator::pqc::{self, activation::Bip360Activation};
+        let bip360_ok = match pqc::validate_mempool_transaction(
             transaction,
             tip_height,
             Bip360Activation(self.bip360_activation_height),
@@ -1132,9 +1132,9 @@ impl BlockHandler<'_> {
         use crate::validator::dbs::diff::{FailedM6ids, FailedProposals};
         #[cfg(feature = "bip360")]
         let p2mr_utxo_diff = {
-            use crate::validator::quantum::{self, activation::Bip360Activation};
+            use crate::validator::pqc::{self, activation::Bip360Activation};
             let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
-            let p2mr_utxo_diff = quantum::validate_and_diff_block_transactions(
+            let p2mr_utxo_diff = pqc::validate_and_diff_block_transactions(
                 block,
                 height,
                 Bip360Activation(self.bip360_activation_height),
@@ -1406,9 +1406,9 @@ impl BlockHandler<'_> {
             tracing::trace!("Handled block txs");
             #[cfg(feature = "bip360")]
             let p2mr_utxo_diff = {
-                use crate::validator::quantum::{self, activation::Bip360Activation};
+                use crate::validator::pqc::{self, activation::Bip360Activation};
                 let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
-                let p2mr_utxo_diff = quantum::validate_and_diff_block_transactions(
+                let p2mr_utxo_diff = pqc::validate_and_diff_block_transactions(
                     block,
                     height,
                     Bip360Activation(self.bip360_activation_height),
@@ -2065,7 +2065,7 @@ mod tests {
             #[cfg(feature = "bip360")]
             0,
             #[cfg(feature = "bip360")]
-            crate::validator::quantum::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
         )
     }
 
@@ -3662,7 +3662,7 @@ mod bip360_connect_disconnect_tests {
 
     use super::BlockHandler;
     use crate::validator::{
-        quantum::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend},
+        pqc::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend},
         test_utils::create_test_dbs,
     };
     use bitcoin::sighash::TapSighashType;
@@ -3672,7 +3672,7 @@ mod bip360_connect_disconnect_tests {
             dbs,
             bitcoin::Network::Regtest,
             0,
-            crate::validator::quantum::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
         )
     }
 

@@ -34,7 +34,7 @@ ML-DSA-44, and SLH-DSA-SHA2-128s) on regtest/signet without patching Core.
 ### Architecture
 
 - **Hook points:** `BlockHandler::connect_block` and `CusfEnforcer::accept_tx` call into
-  `lib/validator/quantum/` when `height >= --activation-height`.
+  `lib/validator/pqc/` when `height >= --activation-height`.
 - **Rejection path:** fatal validation → `ConnectBlockAction::Reject` → mempool adapter
   `invalidateblock` (unchanged CUSF flow).
 - **Overload model:** existing tapscript sig opcodes are size-gated; `OP_SUBSTR` as a PQ
@@ -68,7 +68,7 @@ New CLI flags (behind `bip360`):
 **Unit tests (BIP 360):**
 
 ```bash
-cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::
+cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::
 cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
 ```
 
@@ -133,15 +133,18 @@ cargo run --example integration_tests --features bip360 -- --exact bip360_invali
 | `bip360_valid_multi_leaf_cross_block_schnorr_spend` | Accepted (multi-leaf fund N, Schnorr spend N+1) |
 | `bip360_valid_multi_leaf_cross_block_slh_spend` | Accepted (multi-leaf fund N, SLH spend N+1) |
 | `bip360_invalid_multi_leaf_tampered_signature_mldsa` | Rejected (tampered ML-DSA sig, multi-leaf) |
+| `bip360_valid_kitchen_sink_spend` | Accepted (kitchen-sink triple-algo leaf, same-block) |
+| `bip360_invalid_kitchen_sink_tamper_ec_sig` | Rejected (tampered EC sig, kitchen-sink) |
+| `bip360_p2p_mempool_e2e` | Accepted (dual-node P2P E2E; needs `just setup` + electrs) |
 
-**31 trials total.** See `docs/REGTEST_DEMO.md` and `docs/MULTI_LEAF_P2MR.md`.
+**34 trials total** (33 block-matrix + 1 P2P E2E). See `docs/REGTEST_DEMO.md` and `docs/MULTI_LEAF_P2MR.md`.
 
 ### CI changes
 
 New job **`check-bip360`** in `.github/workflows/check_lint_build_release.yaml`:
 
 1. `cargo check --no-default-features --features bip360 --all-targets`
-2. `cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 quantum::`
+2. `cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::`
 3. P2MR signer smoke test (build `p2mr_signer` example + `p2mr_signer_roundtrip` tests + grep `signed_spend_tx_hex`)
 4. `cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings`
 5. `cargo clippy -p bip300301_enforcer_integration_tests --features bip360 -- -D warnings`
@@ -158,15 +161,17 @@ human-only steps (see [`cusf/STATUS.md`](../../STATUS.md)).
 
 - **Cross-block P2MR prevout lookup** — Done (`dbs/p2mr_utxos.rs`). Integration trials cover
   valid + invalid cross-block spends for Schnorr, ML-DSA, and SLH, plus hybrid EC+SLH
-  trials (31 trials total, incl. Phase C multi-leaf).
+  trials (34 trials total: 33 block-matrix incl. kitchen-sink + 1 P2P E2E).
 - **Overload-model JSON vectors** — Done. Converted in `test_vectors/p2mr_overload_construction.json`
-  (6 vectors: 5 construction + 1 error); `quantum::overload_vectors` (8 passing + 1 ignored
+  (6 vectors: 5 construction + 1 error); `pqc::overload_vectors` (8 passing + 1 ignored
   golden dump). See `docs/OVERLOAD_VECTORS.md`.
 - **BIP author review** — Overload wording draft in `docs/BIP360_OVERLOAD_ADDENDUM.md`; not yet
   confirmed with BIP 360 authors.
-- **Live integration trials** — Implemented and compile-verified (31 trials registered;
-  `cargo clippy` / `cargo check --example integration_tests --features bip360`). Live regtest
-  execution against stock bitcoind is pending; not wired into CI.
+- **Live integration trials** — Implemented and compile-verified (34 trials registered;
+  `cargo clippy` / `cargo check --example integration_tests --features bip360`). **Block-matrix
+  live execution: 33/33 PASS** on stock bitcoind (Phase D, `just bip360-block-matrix` after
+  harness fixes in `bip360_block.rs`). P2P E2E trial (#34) live run still HITL-deferred
+  (needs electrs via `just setup`). Not wired into CI.
 - **Upstream submission** — All code/docs ready locally; commit, push, and PR opening are
   human-only ([exact commands below](#exact-human-commands)).
 
@@ -198,17 +203,17 @@ From `git status` / `git diff --stat` on the working tree (not yet committed).
 | `app/main.rs` | Wire activation height + PQC budget into validator |
 | `integration_tests/Cargo.toml` | `bip360` feature |
 | `integration_tests/README.md` | BIP 360 trials table + run commands |
-| `integration_tests/integration_test.rs` | Register 31 BIP 360 integration trials |
+| `integration_tests/integration_test.rs` | Register 34 BIP 360 integration trials (33 block-matrix + 1 P2P E2E) |
 | `integration_tests/lib.rs` | Module exports for BIP 360 tests |
 | `lib/Cargo.toml` | `bip360` feature + optional deps |
 | `lib/cli.rs` | `--activation-height`, `--pqc-verify-budget-ms` |
-| `lib/lib.rs` | Export `validator::quantum` behind feature |
+| `lib/lib.rs` | Export `validator::pqc` behind feature |
 | `lib/validator/cusf_enforcer.rs` | `accept_tx` BIP 360 hooks |
 | `lib/validator/dbs/diff.rs` | P2MR UTXO diff hooks for block connect/disconnect |
 | `lib/validator/dbs/mod.rs` | Export `p2mr_utxos` module |
-| `lib/validator/mod.rs` | Feature-gate drivechain vs quantum modules |
+| `lib/validator/mod.rs` | Feature-gate drivechain vs PQC modules |
 | `lib/validator/task/error.rs` | BIP 360 error variants |
-| `lib/validator/task/mod.rs` | Feature-split drivechain handlers; `connect_block` quantum path |
+| `lib/validator/task/mod.rs` | Feature-split drivechain handlers; `connect_block` pqc path |
 
 ### New (untracked)
 
@@ -236,18 +241,18 @@ From `git status` / `git diff --stat` on the working tree (not yet committed).
 | `integration_tests/test_bip360_multi_leaf.rs` | Multi-leaf P2MR trials (9: 6 valid + 3 invalid) |
 | `lib/examples/p2mr_signer.rs` | Minimal CLI signer for Schnorr / ML-DSA / SLH P2MR spends |
 | `lib/validator/dbs/p2mr_utxos.rs` | redb table `OutPoint → TxOut` for confirmed P2MR outputs |
-| `lib/validator/quantum/activation.rs` | Activation height gating |
-| `lib/validator/quantum/leaf_script.rs` | Tapscript walker + sig sites |
-| `lib/validator/quantum/limits.rs` | Witness/sig DoS limits |
-| `lib/validator/quantum/merkle.rs` | Control block / merkle path |
-| `lib/validator/quantum/multi_leaf.rs` | Three-leaf P2MR tree builder + unit tests |
-| `lib/validator/quantum/mod.rs` | Public entry points |
-| `lib/validator/quantum/overload_vectors.rs` | Overload-model construction vector tests |
-| `lib/validator/quantum/p2mr_output.rs` | P2MR `scriptPubKey` validation |
-| `lib/validator/quantum/p2mr_utxo.rs` | Intra-block + cross-block P2MR UTXO diff application |
-| `lib/validator/quantum/schemes.rs` | Overloaded `OP_CHECKSIG` verification |
-| `lib/validator/quantum/signer_dev.rs` | Shared P2MR signing (`build_block_p2mr_spend`, `sign_p2mr_script_path_spend`) |
-| `lib/validator/quantum/spend.rs` | Witness stack + spend validation |
+| `lib/validator/pqc/activation.rs` | Activation height gating |
+| `lib/validator/pqc/leaf_script.rs` | Tapscript walker + sig sites |
+| `lib/validator/pqc/limits.rs` | Witness/sig DoS limits |
+| `lib/validator/pqc/merkle.rs` | Control block / merkle path |
+| `lib/validator/pqc/multi_leaf.rs` | Three-leaf P2MR tree builder + unit tests |
+| `lib/validator/pqc/mod.rs` | Public entry points |
+| `lib/validator/pqc/overload_vectors.rs` | Overload-model construction vector tests |
+| `lib/validator/pqc/p2mr_output.rs` | P2MR `scriptPubKey` validation |
+| `lib/validator/pqc/p2mr_utxo.rs` | Intra-block + cross-block P2MR UTXO diff application |
+| `lib/validator/pqc/schemes.rs` | Overloaded `OP_CHECKSIG` verification |
+| `lib/validator/pqc/signer_dev.rs` | Shared P2MR signing (`build_block_p2mr_spend`, `sign_p2mr_script_path_spend`) |
+| `lib/validator/pqc/spend.rs` | Witness stack + spend validation |
 | `Justfile` | Task runner (`just verify`, `just setup-core`, `just demo-a` / `just demo-b`, `just it-all`) |
 | `test_vectors/p2mr_overload_construction.json` | Converted P2MR construction JSON (no `OP_SUBSTR`) |
 
@@ -262,7 +267,7 @@ From `git status` / `git diff --stat` on the working tree (not yet committed).
 - [ ] Overloaded `OP_CHECKSIG` model documented vs ref-impl `OP_SUBSTR` — confirm with BIP authors
 - [ ] `invalidateblock` still fires on `ConnectBlockAction::Reject` (wallet skips sync on reject)
 - [ ] Activation height `0` default is appropriate for regtest prototype only
-- [ ] Cross-block prevout lookup + integration matrix (31 trials incl. hybrid EC+SLH + multi-leaf) acceptable for prototype?
+- [ ] Cross-block prevout lookup + integration matrix (34 trials incl. hybrid EC+SLH + kitchen-sink + multi-leaf + P2P E2E) acceptable for prototype?
 - [ ] Integration trials use **stock** `bitcoind` (`BitcoindKind::Unpatched`)
 - [ ] `check-bip360` includes integration crate clippy + example check
 
@@ -300,9 +305,11 @@ git commit -m "$(cat <<'EOF'
 feat: add optional bip360 CUSF enforcement for P2MR + PQC
 
 Gate BIP 360 P2MR output and post-quantum signature rules behind a
-bip360 Cargo feature. Drivechain remains the default. Adds quantum
-validator module, 31 regtest integration trials (cross-block, hybrid
-EC+SLH, multi-leaf P2MR), CLI activation height, CI check-bip360 job,
+bip360 Cargo feature. Drivechain remains the default. Adds PQC
+validator module, 34 regtest integration trials (33 block-matrix incl.
+kitchen-sink + 1 dual-node P2P E2E; cross-block, hybrid EC+SLH,
+multi-leaf P2MR), 123 PQC unit tests, CLI activation height, CI
+check-bip360 job,
 and docs including AGENTS.md.
 EOF
 )"

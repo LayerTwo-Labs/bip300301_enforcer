@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::validator::quantum::multi_leaf::{
+use bip300301_enforcer_lib::validator::pqc::multi_leaf::{
     MLDSA_LEAF_INDEX, SCHNORR_LEAF_INDEX, SLH_LEAF_INDEX,
 };
 use futures::channel::mpsc;

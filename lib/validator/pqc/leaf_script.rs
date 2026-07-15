@@ -4,7 +4,8 @@ use bitcoin::Script;
 use bitcoin::blockdata::opcodes::Opcode;
 use bitcoin::blockdata::opcodes::all::{
     OP_BOOLAND, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY, OP_CHECKSIG, OP_CHECKSIGADD,
-    OP_CHECKSIGVERIFY, OP_PUSHBYTES_0, OP_PUSHNUM_1, OP_PUSHNUM_16, OP_SUBSTR, OP_VERIFY,
+    OP_CHECKSIGVERIFY, OP_PUSHBYTES_0, OP_PUSHBYTES_32, OP_PUSHNUM_1, OP_PUSHNUM_16, OP_SUBSTR,
+    OP_VERIFY,
 };
 use bitcoin::blockdata::script::Instruction;
 use thiserror::Error;
@@ -322,6 +323,32 @@ pub(crate) fn build_hybrid_ec_slh_multisig_leaf(
     build_2of2_multisig_leaf(ec_pk, slh_pk)
 }
 
+/// Build kitchen-sink leaf: Schnorr + ML-DSA-44 + SLH via three `OP_CHECKSIG` sites.
+///
+/// Script layout:
+/// `PUSH32 <schnorr_pk> OP_CHECKSIG PUSHDATA2 <mldsa_pk> OP_CHECKSIG PUSH32 <slh_pk> OP_CHECKSIG OP_BOOLAND OP_BOOLAND OP_VERIFY`
+pub(crate) fn build_kitchen_sink_leaf(
+    ec_pk: &[u8; 32],
+    mldsa_pk: &[u8],
+    slh_pk: &[u8; 32],
+) -> bitcoin::ScriptBuf {
+    let mut bytes = Vec::with_capacity(3 + 32 + 1 + 3 + mldsa_pk.len() + 1 + 3 + 32 + 4);
+    bytes.push(OP_PUSHBYTES_32.to_u8());
+    bytes.extend_from_slice(ec_pk);
+    bytes.push(OP_CHECKSIG.to_u8());
+    bytes.push(0x4d); // OP_PUSHDATA2
+    bytes.extend_from_slice(&(mldsa_pk.len() as u16).to_le_bytes());
+    bytes.extend_from_slice(mldsa_pk);
+    bytes.push(OP_CHECKSIG.to_u8());
+    bytes.push(OP_PUSHBYTES_32.to_u8());
+    bytes.extend_from_slice(slh_pk);
+    bytes.push(OP_CHECKSIG.to_u8());
+    bytes.push(OP_BOOLAND.to_u8());
+    bytes.push(OP_BOOLAND.to_u8());
+    bytes.push(OP_VERIFY.to_u8());
+    bitcoin::ScriptBuf::from_bytes(bytes)
+}
+
 /// Build hybrid EC+SLH leaf: two `PUSH32 OP_CHECKSIG` + `OP_BOOLAND OP_VERIFY`.
 pub(crate) fn build_hybrid_ec_slh_leaf(ec_pk: &[u8; 32], slh_pk: &[u8; 32]) -> bitcoin::ScriptBuf {
     use bitcoin::blockdata::script::Builder;
@@ -361,6 +388,20 @@ mod tests {
         assert_eq!(parsed.sig_sites.len(), 2);
         assert_eq!(parsed.sig_sites[0].pubkey, vec![0x11; 32]);
         assert_eq!(parsed.sig_sites[1].pubkey, vec![0x22; 32]);
+    }
+
+    #[test]
+    fn parses_kitchen_sink_leaf() {
+        let script =
+            build_kitchen_sink_leaf(&[0x11; 32], &[0x22; ML_DSA_44_PUBLIC_KEY_SIZE], &[0x33; 32]);
+        let parsed = parse_leaf_script(script.as_script()).unwrap();
+        assert_eq!(parsed.sig_sites.len(), 3);
+        assert_eq!(parsed.sig_sites[0].pubkey, vec![0x11; 32]);
+        assert_eq!(
+            parsed.sig_sites[1].pubkey,
+            vec![0x22; ML_DSA_44_PUBLIC_KEY_SIZE]
+        );
+        assert_eq!(parsed.sig_sites[2].pubkey, vec![0x33; 32]);
     }
 
     #[test]
@@ -413,6 +454,20 @@ mod tests {
             Err(LeafScriptError::WitnessSigCountMismatch {
                 witness_sigs: 1,
                 script_sites: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn witness_sig_count_must_match_kitchen_sink_sites() {
+        let script =
+            build_kitchen_sink_leaf(&[0x11; 32], &[0x22; ML_DSA_44_PUBLIC_KEY_SIZE], &[0x33; 32]);
+        assert!(validate_witness_sig_count(script.as_script(), 3).is_ok());
+        assert_eq!(
+            validate_witness_sig_count(script.as_script(), 2),
+            Err(LeafScriptError::WitnessSigCountMismatch {
+                witness_sigs: 2,
+                script_sites: 3,
             })
         );
     }

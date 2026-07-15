@@ -54,7 +54,7 @@ calls the enforcer's `CusfEnforcer` implementation:
 
 In `bip300301_enforcer`, `Validator` implements `CusfEnforcer` in
 `lib/validator/cusf_enforcer.rs`. With `bip360` enabled, `accept_tx` routes through
-`BlockHandler::validate_tx` → `quantum::validate_mempool_transaction`.
+`BlockHandler::validate_tx` → `pqc::validate_mempool_transaction`.
 
 ### What `accept_tx` enforces today (BIP 360)
 
@@ -112,5 +112,5 @@ Integration tests often use `Mode::NoMempool` for simpler block-only trials
 
 - Mempool crate: [`cusf-enforcer-mempool`](https://github.com/LayerTwo-Labs/cusf-enforcer-mempool)
 - Enforcer trait impl: `lib/validator/cusf_enforcer.rs`
-- Quantum mempool hook: `lib/validator/task/mod.rs` (`validate_mempool_transaction`)
+- PQC mempool hook: `lib/validator/task/mod.rs` (`validate_mempool_transaction`)
 - Design overview: [`cusf/DESIGN.md`](../../DESIGN.md)

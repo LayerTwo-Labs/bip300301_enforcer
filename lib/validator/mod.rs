@@ -29,7 +29,7 @@ mod dbs;
 pub mod main_rest_client;
 pub mod parse_block_files;
 #[cfg(feature = "bip360")]
-pub mod quantum;
+pub mod pqc;
 mod sync_state_summary;
 mod task;
 #[cfg(test)]

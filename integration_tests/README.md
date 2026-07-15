@@ -54,7 +54,8 @@ Or use just recipes:
 ```sh
 just demo-a   # bip360_valid_schnorr_spend
 just demo-b   # bip360_invalid_block
-just it-all   # all 31 BIP 360 trials
+just it-all   # all 33 block-only BIP 360 trials
+just bip360-p2p-e2e   # dual-node P2P mempool E2E (trial #34; needs `just setup` for electrs)
 ```
 
 | Trial | Expect | Notes |
@@ -81,6 +82,8 @@ just it-all   # all 31 BIP 360 trials
 | `bip360_invalid_hybrid_ec_slh_tamper_ec_sig` | Rejected | Tampered EC (Schnorr) sig only (hybrid, same-block) |
 | `bip360_invalid_hybrid_ec_slh_tamper_slh_sig` | Rejected | Tampered SLH sig only (hybrid, same-block) |
 | `bip360_invalid_hybrid_ec_slh_swap_sigs` | Rejected | EC/SLH sig positions swapped (hybrid, same-block) |
+| `bip360_valid_kitchen_sink_spend` | Accepted | Same-block kitchen-sink leaf (Schnorr + ML-DSA + SLH, `OP_BOOLAND OP_BOOLAND OP_VERIFY`) |
+| `bip360_invalid_kitchen_sink_tamper_ec_sig` | Rejected | Tampered EC (Schnorr) sig only (kitchen-sink, same-block) |
 | `bip360_valid_multi_leaf_schnorr_spend` | Accepted | Three-leaf tree; reveal Schnorr leaf (same-block) |
 | `bip360_valid_multi_leaf_mldsa_spend` | Accepted | Three-leaf tree; reveal ML-DSA leaf (same-block) |
 | `bip360_valid_multi_leaf_slh_spend` | Accepted | Three-leaf tree; reveal SLH leaf (same-block) |
@@ -91,7 +94,35 @@ just it-all   # all 31 BIP 360 trials
 | `bip360_valid_multi_leaf_cross_block_slh_spend` | Accepted | Fund multi-leaf in block N, spend SLH leaf in N+1 |
 | `bip360_invalid_multi_leaf_tampered_signature_mldsa` | Rejected | Tampered ML-DSA signature on revealed ML-DSA leaf (same-block) |
 
-**31 trials total** (Phase A: 17 + Phase B hybrid: 5 + Phase C multi-leaf: 9).
+**33 block-matrix trials total** (Phase A: 17 + Phase B hybrid: 5 + Phase C multi-leaf: 9 + kitchen-sink: 2).
+
+## Dual-node P2P mempool E2E (trial #34)
+
+Harness: `integration_tests/bip360_dual_node.rs`, `bip360_tx_report.rs`, `test_bip360_p2p_mempool_e2e.rs`.
+
+| Trial | Expect | Notes |
+|-------|--------|-------|
+| `bip360_p2p_mempool_e2e` | Accepted | Two peered regtest nodes; 5 rounds (wallet→P2MR, Schnorr, hybrid, ML-DSA, kitchen-sink) on one sat pile; P2P inject + dual mempool + enforcer GBT mining |
+
+**Prerequisites (stricter than block-matrix trials):**
+
+- Full bootstrap: `just setup` (patched + stock bitcoind + **electrs**) — `setup-core` alone is insufficient.
+- Enforcer built with `drivechain,bip360` (recipe `just bip360-p2p-e2e` handles this).
+- Wallet + electrs enabled in harness (`enable_enforcer_wallet: true`).
+
+```sh
+just setup
+just bip360-p2p-e2e
+# or full stack:
+just bip360-verify-full yes
+```
+
+**34 trials total** (33 block-matrix + 1 P2P E2E).
+
+> **`BIP360_SKIP_REBUILD`:** `just it-all` / `just bip360-block-matrix` run
+> `build-bip360` once, then set this env var for the trial loop. Do not export it
+> manually — a drivechain-only enforcer left by `drivechain-smoke` will break
+> bip360 CLI flags.
 
 > **Compile-verified disclaimer:** All trials are **registered and compile-verified**
 > (`cargo check --example integration_tests --features bip360`). **Live regtest execution**

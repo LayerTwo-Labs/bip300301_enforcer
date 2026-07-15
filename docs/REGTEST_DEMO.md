@@ -38,7 +38,7 @@ If `integrationtests.env` is missing, recipes exit with instructions unless you 
 
 This runs the `bip360_invalid_block` integration trial end-to-end. Additional BIP 360
 trials (valid Schnorr / ML-DSA / SLH spends, same-block and cross-block invalid sig /
-pubkey / merkle-path / hybrid EC+SLH / multi-leaf matrix — 31 trials total) are registered in
+pubkey / merkle-path / hybrid EC+SLH / kitchen-sink / multi-leaf matrix — 33 block-matrix trials + 1 P2P E2E = 34 total) are registered in
 `integration_tests/integration_test.rs` — run with
 `cargo run --example integration_tests --features bip360 -- --exact <trial_name>`.
 For a guided walkthrough with RPC transcripts, use the manual steps below or:
@@ -187,7 +187,7 @@ retains the block.
 
 **Valid P2MR spend via signer:** use [`P2MR_SIGNER.md`](./P2MR_SIGNER.md) to produce
 `funding_tx_hex` and `signed_spend_tx_hex`, then submit a block containing coinbase +
-funding + signed spend. Enforcer roundtrip coverage: `quantum::spend` tests
+funding + signed spend. Enforcer roundtrip coverage: `pqc::spend` tests
 `p2mr_signer_roundtrip_*`.
 
 ```bash
@@ -259,7 +259,7 @@ Look for (substring match from integration test):
 BIP 360 validation failed
 ```
 
-Broader context may include witness / spend validation errors from `quantum::spend`.
+Broader context may include witness / spend validation errors from `pqc::spend`.
 
 ---
 
@@ -313,6 +313,9 @@ Broader context may include witness / spend validation errors from `quantum::spe
 | `bip360_invalid_hybrid_ec_slh_tamper_ec_sig` | Rejected (tampered EC sig, hybrid) |
 | `bip360_invalid_hybrid_ec_slh_tamper_slh_sig` | Rejected (tampered SLH sig, hybrid) |
 | `bip360_invalid_hybrid_ec_slh_swap_sigs` | Rejected (swapped EC/SLH sig positions) |
+| `bip360_valid_kitchen_sink_spend` | Accepted (kitchen-sink triple-algo leaf, same-block) |
+| `bip360_invalid_kitchen_sink_tamper_ec_sig` | Rejected (tampered EC sig, kitchen-sink) |
+| `bip360_p2p_mempool_e2e` | Accepted (dual-node P2P E2E; needs `just setup` + electrs) |
 | `bip360_valid_multi_leaf_schnorr_spend` | Accepted (three-leaf tree, Schnorr leaf) |
 | `bip360_valid_multi_leaf_mldsa_spend` | Accepted (three-leaf tree, ML-DSA leaf) |
 | `bip360_valid_multi_leaf_slh_spend` | Accepted (three-leaf tree, SLH leaf) |
@@ -323,7 +326,7 @@ Broader context may include witness / spend validation errors from `quantum::spe
 | `bip360_valid_multi_leaf_cross_block_slh_spend` | Accepted (multi-leaf fund N, SLH spend N+1) |
 | `bip360_invalid_multi_leaf_tampered_signature_mldsa` | Rejected (tampered ML-DSA sig, multi-leaf) |
 
-**31 trials total.** Shared block builders: `integration_tests/bip360_block.rs`. Multi-leaf design: `docs/MULTI_LEAF_P2MR.md`.
+**34 trials total** (33 block-matrix + 1 P2P E2E). Shared block builders: `integration_tests/bip360_block.rs`. Kitchen-sink and P2P harness: `integration_tests/bip360_dual_node.rs`. Multi-leaf design: `docs/MULTI_LEAF_P2MR.md`.
 
 ## References
 

@@ -53,7 +53,7 @@ stateless hash role for the prototype. See [`WOTS_DEFERRED.md`](./WOTS_DEFERRED.
 ## Open items for support window
 
 - BIP author review of overload wording (human)
-- Live regtest execution of 31 integration trials (human env setup)
+- Live regtest execution of 34 integration trials (33 block-matrix + 1 P2P E2E; human env setup; P2P needs electrs)
 - SHRINCs / WOTS+ when reference vectors land (deferred)
 
 ## References
