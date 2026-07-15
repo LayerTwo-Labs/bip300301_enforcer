@@ -9,7 +9,8 @@ use bitcoin::{BlockHash, Transaction, Txid, hashes::Hash as _};
 use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
-        BlockTemplateSuffix, CoinbaseTxn, CoinbaseTxouts, CusfBlockProducer, InitialBlockTemplate,
+        CoinbaseTxn, CoinbaseTxouts, CusfBlockProducer, FilledBlockTemplate, InitialBlockTemplate,
+        initial_block_template,
         typewit::const_marker::{Bool, BoolWit},
     },
     cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
@@ -340,8 +341,8 @@ impl CusfBlockProducer for Wallet {
         &self,
         parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
-        template: InitialBlockTemplate<COINBASE_TXN>,
-    ) -> Result<InitialBlockTemplate<COINBASE_TXN>, Self::InitialBlockTemplateError>
+        template: &mut InitialBlockTemplate<COINBASE_TXN>,
+    ) -> Result<(), Self::InitialBlockTemplateError>
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
@@ -352,14 +353,14 @@ impl CusfBlockProducer for Wallet {
         res
     }
 
-    type SuffixTxsError = error::SuffixTxs;
+    type FinalizeBlockTemplateError = error::FinalizeBlockTemplate;
 
-    async fn block_template_suffix<const COINBASE_TXN: bool>(
+    async fn finalize_block_template<const COINBASE_TXN: bool>(
         &self,
         parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
-        template: &InitialBlockTemplate<COINBASE_TXN>,
-    ) -> Result<BlockTemplateSuffix<COINBASE_TXN>, Self::SuffixTxsError>
+        template: &mut FilledBlockTemplate<COINBASE_TXN>,
+    ) -> Result<(), Self::FinalizeBlockTemplateError>
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
@@ -390,8 +391,8 @@ impl Wallet {
         &self,
         parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
-        mut template: InitialBlockTemplate<COINBASE_TXN>,
-    ) -> Result<InitialBlockTemplate<COINBASE_TXN>, error::InitialBlockTemplate>
+        template: &mut InitialBlockTemplate<COINBASE_TXN>,
+    ) -> Result<(), error::InitialBlockTemplate>
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
@@ -444,20 +445,42 @@ impl Wallet {
                 };
                 template.exclude_mempool_txs.extend(exclude);
             }
+            // Reserve suffix txs
+            {
+                let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
+                    let fake_ctip = crate::types::Ctip {
+                        outpoint: bitcoin::OutPoint {
+                            txid: bitcoin::Txid::from_byte_array([slot_number; 32]),
+                            vout: 0,
+                        },
+                        value: bitcoin::Amount::MAX_MONEY,
+                    };
+                    (slot_number.into(), fake_ctip)
+                }));
+                let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
+                template
+                    .suffix_txs
+                    .extend(fake_suffix_txs.into_iter().map(|tx| {
+                        initial_block_template::SuffixTxsItem::Reserved {
+                            weight: tx.weight(),
+                        }
+                    }));
+            }
         }
         // FIXME: set prefix txns and exclude mempool txs
-        Ok(template)
+        Ok(())
     }
 
     async fn block_template_suffix_inner<const COINBASE_TXN: bool>(
         &self,
         _parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
-        template: &InitialBlockTemplate<COINBASE_TXN>,
-    ) -> Result<BlockTemplateSuffix<COINBASE_TXN>, error::SuffixTxs>
+        template: &mut FilledBlockTemplate<COINBASE_TXN>,
+    ) -> Result<(), error::FinalizeBlockTemplate>
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
+        let template = template.as_mut();
         match coinbase_txn_wit {
             BoolWit::True(wit) => {
                 let (tip, height) = match self.validator().try_get_mainchain_tip()? {
@@ -472,13 +495,12 @@ impl Wallet {
                     .push_int(height as i64)
                     .push_opcode(bitcoin::opcodes::OP_0)
                     .into_script();
-                let mut coinbase_txouts = wit
+                let coinbase_txouts = wit
                     .map(cusf_enforcer_mempool::cusf_block_producer::CoinbaseTxouts)
-                    .in_ref()
-                    .to_right(&template.coinbase_txouts)
-                    .clone();
-                let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts)?;
-                for (tx, _) in &template.prefix_txs {
+                    .in_mut()
+                    .to_right(template.coinbase_txouts);
+                let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
+                for (tx, _) in template.prefix_txs {
                     if let Some(bmm_request) = parse_m8_tx(tx)
                         && coinbase_builder
                             .messages()
@@ -493,7 +515,7 @@ impl Wallet {
                 }
                 let coinbase_txouts_suffix = coinbase_builder
                     .build_extension()
-                    .map_err(error::SuffixTxsInner::GenerateSuffixCoinbaseTxouts)?;
+                    .map_err(error::FinalizeBlockTemplateInner::GenerateSuffixCoinbaseTxouts)?;
                 coinbase_txouts.extend(coinbase_txouts_suffix.iter().cloned());
                 let coinbase_tx = Transaction {
                     version: bitcoin::transaction::Version::TWO,
@@ -507,7 +529,7 @@ impl Wallet {
                         witness: bitcoin::Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
                         script_sig: bip34_height_script,
                     }],
-                    output: coinbase_txouts,
+                    output: coinbase_txouts.clone(),
                 };
                 let merkle_root = {
                     let hashes = std::iter::once(coinbase_tx.compute_txid().to_raw_hash()).chain(
@@ -542,26 +564,16 @@ impl Wallet {
                     &self.inner.validator,
                     &block,
                 )?
-                .map_err(|reason| error::SuffixTxsInner::InitialBlockTemplate { reason })?;
-                let suffix_txs = self
-                    .generate_suffix_txs(&ctips)
-                    .await?
-                    .into_iter()
-                    .map(|tx| (tx, bitcoin::Amount::ZERO))
-                    .collect();
-                Ok(BlockTemplateSuffix {
-                    coinbase_txouts: wit
-                        .map(cusf_enforcer_mempool::cusf_block_producer::CoinbaseTxouts)
-                        .to_left(coinbase_txouts_suffix),
-                    txs: suffix_txs,
-                })
+                .map_err(|reason| {
+                    error::FinalizeBlockTemplateInner::InitialBlockTemplate { reason }
+                })?;
+                let suffix_txs = self.generate_suffix_txs(&ctips).await?;
+                template
+                    .suffix_txs
+                    .extend(suffix_txs.into_iter().map(|tx| (tx, bitcoin::Amount::ZERO)));
+                Ok(())
             }
-            BoolWit::False(wit) => Ok(BlockTemplateSuffix {
-                coinbase_txouts: wit
-                    .map(cusf_enforcer_mempool::cusf_block_producer::CoinbaseTxouts)
-                    .to_left(()),
-                txs: Vec::new(),
-            }),
+            BoolWit::False(_wit) => Ok(()),
         }
     }
 }
