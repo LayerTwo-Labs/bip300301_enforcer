@@ -86,6 +86,21 @@ pub(in crate::validator) enum HandleM3ProposeBundle {
     )]
     #[fatal(false)]
     InactiveSidechain { sidechain_number: SidechainNumber },
+    /// BIP 300 M4 (Ack Bundle) upvotes address a pending bundle by its two-byte
+    /// index, reserving `0xFFFE` (Alarm) and `0xFFFF` (Abstain). A pending
+    /// bundle whose index reaches `0xFFFE` can never be encoded by an M4 vote,
+    /// so accepting more proposals would silently make honest bundles
+    /// unvoteable until they expire.
+    #[error(
+        "sidechain slot {} already holds the maximum {max} pending withdrawal bundles; \
+         proposing another would place it beyond the addressable M4 vote index space",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    TooManyPending {
+        sidechain_number: SidechainNumber,
+        max: usize,
+    },
 }
 
 impl From<db::Error> for HandleM3ProposeBundle {
@@ -356,6 +371,9 @@ pub(in crate::validator) enum ConnectBlock {
         tip: bitcoin::BlockHash,
         tip_height: u32,
     },
+    #[error("BMM commitment for sidechain slot {} which is inactive", .sidechain_number.0)]
+    #[fatal(false)]
+    BmmAcceptInactiveSidechain { sidechain_number: SidechainNumber },
     #[error(transparent)]
     #[fatal(false)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
@@ -383,6 +401,11 @@ pub(in crate::validator) enum ConnectBlock {
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
     #[fatal(false)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },
+    #[error(
+        "Block contains multiple M1 (propose sidechain) messages; at most one is permitted per block"
+    )]
+    #[fatal(false)]
+    MultipleM1Proposals,
     #[error("Block has no transactions (missing coinbase)")]
     #[fatal(false)]
     NoCoinbase,
