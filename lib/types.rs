@@ -120,6 +120,16 @@ impl NetworkParams {
         }
     }
 
+    /// Dry run v2: a later mainnet fork point than [`Self::drynet1`], same
+    /// hours-scale thresholds.
+    pub const fn drynet2() -> Self {
+        Self {
+            thresholds: Thresholds::DRYNET1,
+            bip300_activation_height: 957_599,
+            datadir_suffix: Some("drynet2"),
+        }
+    }
+
     /// Integration-test parameters: a tiny activation height on a fresh
     /// chain. See `NetworkPreset::TestActivation`.
     pub const fn test_activation() -> Self {
