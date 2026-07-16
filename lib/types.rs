@@ -62,11 +62,71 @@ impl Thresholds {
         unused_sidechain_slot_activation_threshold: 5,
     };
 
+    /// Forknet dry run v1 ("drynet1"). These put a sidechain activation at a
+    /// ~6h vote window and a withdrawal bundle at ~12h of votes within a
+    /// ~24h window: a full activation/deposit/withdrawal cycle is
+    /// exercisable in about a day and a half, while voting still plays
+    /// out over enough blocks to be meaningful, unlike [`Self::SHORT`].
+    pub const DRYNET1: Self = Self {
+        withdrawal_bundle_max_age: 144,
+        withdrawal_bundle_inclusion_threshold: 72,
+        used_sidechain_slot_proposal_max_age: 144,
+        used_sidechain_slot_activation_threshold: 72,
+        unused_sidechain_slot_proposal_max_age: 36,
+        unused_sidechain_slot_activation_threshold: 30,
+    };
+
     #[inline]
     pub const fn for_network(network: bitcoin::Network) -> Self {
         match network {
             bitcoin::Network::Bitcoin => Self::MAINNET,
             _ => Self::SHORT,
+        }
+    }
+}
+
+/// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for dry-run
+/// forknet presets, the height at which BIP 300/301 enforcement activates.
+/// Selected either implicitly from the node's reported network, or explicitly
+/// via `--network-preset` (each forknet dry run is one preset).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkParams {
+    pub thresholds: Thresholds,
+    /// Blocks strictly below this height are plain Bitcoin history: they are
+    /// recorded, but not scanned for BIP 300 messages or deposits. `0`
+    /// enforces from genesis.
+    pub bip300_activation_height: u32,
+    /// Datadir namespace suffix (e.g. `main-drynet1`), so preset state never
+    /// collides with a non-preset enforcer datadir for the same chain.
+    pub datadir_suffix: Option<&'static str>,
+}
+
+impl NetworkParams {
+    /// The non-preset defaults: thresholds from the network, enforcement
+    /// from genesis.
+    pub const fn for_network(network: bitcoin::Network) -> Self {
+        Self {
+            thresholds: Thresholds::for_network(network),
+            bip300_activation_height: 0,
+            datadir_suffix: None,
+        }
+    }
+
+    pub const fn drynet1() -> Self {
+        Self {
+            thresholds: Thresholds::DRYNET1,
+            bip300_activation_height: 955_584,
+            datadir_suffix: Some("drynet1"),
+        }
+    }
+
+    /// Integration-test parameters: a tiny activation height on a fresh
+    /// chain. See `NetworkPreset::TestActivation`.
+    pub const fn test_activation() -> Self {
+        Self {
+            thresholds: Thresholds::SHORT,
+            bip300_activation_height: 10,
+            datadir_suffix: Some("test-activation"),
         }
     }
 }

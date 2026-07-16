@@ -11,6 +11,8 @@ use thiserror::Error;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format as tracing_format;
 
+use crate::types::NetworkParams;
+
 const DEFAULT_NODE_RPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 18443));
 
@@ -298,6 +300,27 @@ pub struct NodeRpcConfig {
     pub pass: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+pub enum NetworkPreset {
+    /// Dry run forknet v1: mainnet fork at block 955584. Hours-scale thresholds
+    Drynet1,
+
+    /// Integration-test-only preset: SHORT thresholds with BIP300/301
+    /// activating at height 10, so tests can exercise the activation-height
+    /// machinery on a fresh chain. Hidden from --help
+    #[value(hide = true)]
+    TestActivation,
+}
+
+impl NetworkPreset {
+    pub fn params(self) -> NetworkParams {
+        match self {
+            Self::Drynet1 => NetworkParams::drynet1(),
+            Self::TestActivation => NetworkParams::test_activation(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, ValueEnum)]
 pub enum WalletSyncSource {
     /// Communicates over the Electrum protocol.
@@ -407,6 +430,10 @@ pub struct Config {
     pub node_rpc_opts: NodeRpcConfig,
     #[command(flatten)]
     pub node_blocks_dir_opts: NodeBlocksDirConfig,
+    /// Apply a network parameter preset By default parameters derive from the
+    /// node's reported network.
+    #[arg(long, value_enum)]
+    pub network_preset: Option<NetworkPreset>,
     /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
     /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]

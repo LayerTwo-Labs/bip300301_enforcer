@@ -7,12 +7,16 @@ default:
     @just --list
 
 # Regenerate checked-in protobuf code under lib/proto/generated/ via buf.
-# The proto source ref is pinned in buf.gen.yaml. Bump it there to upgrade.
+# Protos live in proto/ 
 #
 # NB: no `--include-imports`/`--include-wkt`: well-known types come from the
 # `buffa-types` crate, not from generated code.
 generate:
     buf generate --clean
+
+# Lint the protos under proto/. Run by CI.
+lint-proto:
+    buf lint proto
 
 # Benchmark a from-scratch signet sync. Each run creates a brand-new, isolated
 # data dir with a random suffix (./datadir-sync-benchmark.XXXXXX). Logs stats
@@ -56,6 +60,7 @@ build *args='':
 fmt:
     cargo +nightly fmt --all
     bunx prettier --write .
+    buf format -w proto
 
 # Run integration tests (drivechain default; pass trial names / flags after --).
 test-it *args='':

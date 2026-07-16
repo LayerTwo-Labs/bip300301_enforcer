@@ -1,0 +1,53 @@
+/* CUSF crypto service */
+
+syntax = "proto3";
+package cusf.crypto.v1;
+
+import "cusf/common/v1/common.proto";
+
+service CryptoService {
+  rpc HmacSha512(HmacSha512Request) returns (HmacSha512Response);
+  rpc Ripemd160(Ripemd160Request) returns (Ripemd160Response);
+  rpc Secp256k1SecretKeyToPublicKey(Secp256k1SecretKeyToPublicKeyRequest) returns (Secp256k1SecretKeyToPublicKeyResponse);
+  rpc Secp256k1Sign(Secp256k1SignRequest) returns (Secp256k1SignResponse);
+  rpc Secp256k1Verify(Secp256k1VerifyRequest) returns (Secp256k1VerifyResponse);
+}
+
+message HmacSha512Request {
+  cusf.common.v1.Hex key = 1;
+  cusf.common.v1.Hex msg = 2;
+}
+message HmacSha512Response {
+  cusf.common.v1.Hex hmac = 1;
+}
+
+message Ripemd160Request {
+  cusf.common.v1.Hex msg = 1;
+}
+message Ripemd160Response {
+  cusf.common.v1.Hex digest = 1;
+}
+
+message Secp256k1SecretKeyToPublicKeyRequest {
+  cusf.common.v1.ConsensusHex secret_key = 1;
+}
+message Secp256k1SecretKeyToPublicKeyResponse {
+  cusf.common.v1.ConsensusHex public_key = 1;
+}
+
+message Secp256k1SignRequest {
+  cusf.common.v1.Hex message = 1;
+  cusf.common.v1.ConsensusHex secret_key = 2;
+}
+message Secp256k1SignResponse {
+  cusf.common.v1.Hex signature = 1;
+}
+
+message Secp256k1VerifyRequest {
+  cusf.common.v1.Hex message = 1;
+  cusf.common.v1.Hex signature = 2;
+  cusf.common.v1.ConsensusHex public_key = 3;
+}
+message Secp256k1VerifyResponse {
+  bool valid = 1;
+}

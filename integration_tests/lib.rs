@@ -18,6 +18,7 @@ mod test_bip360_multi_leaf;
 mod test_bip360_p2p_mempool_e2e;
 #[cfg(feature = "bip360")]
 mod test_bip360_valid_spend;
+mod test_activation_height;
 mod test_blinded_m6_roundtrip;
 mod test_consecutive_deposits;
 mod test_file_based_block_parser;

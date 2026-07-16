@@ -18,8 +18,8 @@ use tokio::sync::watch::Receiver as WatchReceiver;
 use crate::{
     proto::{StatusBuilder, ToStatus, mainchain::HeaderSyncProgress},
     types::{
-        BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, Sidechain,
-        SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
+        BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, NetworkParams,
+        Sidechain, SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
     },
     validator::main_rest_client::MainRestClient,
 };
@@ -419,6 +419,7 @@ pub struct Validator {
     mainchain_rest_client: MainRestClient,
     mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
+    network_params: NetworkParams,
     #[cfg(feature = "bip360")]
     bip360_activation_height: u32,
     #[cfg(feature = "bip360")]
@@ -432,6 +433,7 @@ impl Validator {
         mainchain_blocks_dir: Option<PathBuf>,
         data_dir: &Path,
         network: bitcoin::Network,
+        network_params: NetworkParams,
         #[cfg(feature = "bip360")] bip360_activation_height: u32,
         #[cfg(feature = "bip360")] pqc_verify_budget_ms: u64,
     ) -> Result<Self, InitError> {
@@ -457,6 +459,7 @@ impl Validator {
             mainchain_rest_client,
             mainchain_blocks_dir,
             network,
+            network_params,
             #[cfg(feature = "bip360")]
             bip360_activation_height,
             #[cfg(feature = "bip360")]
@@ -476,6 +479,10 @@ impl Validator {
 
     pub fn network(&self) -> bitcoin::Network {
         self.network
+    }
+
+    pub fn network_params(&self) -> NetworkParams {
+        self.network_params
     }
 
     pub fn subscribe_events(
@@ -541,8 +548,11 @@ impl Validator {
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
         // In order to get the current sequence number we decrement it by one.
+        // A count of `Some(0)` is not supposed to happen. We guard against this
+        // when inserting data. But just for good measure, do a checked_sub instead
+        // of underflowing/panicking.
         let sequence_number =
-            treasury_utxo_count.map(|treasury_utxo_count| treasury_utxo_count - 1);
+            treasury_utxo_count.and_then(|treasury_utxo_count| treasury_utxo_count.checked_sub(1));
         Ok(sequence_number)
     }
 
@@ -825,5 +835,62 @@ impl Validator {
             .block_hashes
             .get_seen_bmm_requests_for_parent_block(&rotxn, parent_block_hash)?;
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod ctip_sequence_number_tests {
+    use bitcoin::{Amount, OutPoint, Txid, hashes::Hash as _};
+
+    use super::*;
+    use crate::types::Ctip;
+
+    fn dummy_validator(dir: &std::path::Path) -> Validator {
+        let mainchain_client = jsonrpsee::http_client::HttpClientBuilder::default()
+            .build("http://127.0.0.1:1")
+            .expect("build dummy rpc client");
+        let mainchain_rest_client =
+            MainRestClient::new(url::Url::parse("http://127.0.0.1:1").expect("valid url"));
+        Validator::new(
+            mainchain_client,
+            mainchain_rest_client,
+            None,
+            dir,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+        )
+        .expect("construct validator")
+    }
+
+    #[tokio::test]
+    async fn get_ctip_sequence_number_after_disconnecting_last_ctip_is_none() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let validator = dummy_validator(dir.path());
+        let sc = SidechainNumber(1);
+
+        let mut rwtxn = validator.dbs.write_txn().unwrap();
+        validator
+            .dbs
+            .active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: OutPoint {
+                        txid: Txid::from_byte_array([0x33; 32]),
+                        vout: 0,
+                    },
+                    value: Amount::from_sat(1_000),
+                },
+            )
+            .unwrap();
+        validator
+            .dbs
+            .active_sidechains
+            .delete_ctip(&mut rwtxn, sc)
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        assert_eq!(validator.get_ctip_sequence_number(sc).unwrap(), None);
     }
 }

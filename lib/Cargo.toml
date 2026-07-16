@@ -23,7 +23,7 @@ buffa-types = { workspace = true }
 byteorder = { workspace = true }
 connectrpc = { workspace = true }
 http-body = { workspace = true }
-clap = { workspace = true, features = ["derive", "string", "std"] }
+clap = { workspace = true, features = ["derive", "string", "std", "help", "usage", "error-context"] }
 cusf-enforcer-mempool = { workspace = true }
 derive_more = { workspace = true, features = ["debug", "display"] }
 either = { workspace = true }

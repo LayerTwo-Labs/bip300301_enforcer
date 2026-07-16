@@ -18,23 +18,3 @@ entry = "bunx prettier --write"
 language = "system"
 # prettier respects .prettierrc and .prettierignore
 types_or = ["markdown", "yaml", "json", "css", "html", "javascript", "ts"]
-
-[[repos.hooks]]
-id = "cargo-check"
-name = "cargo check"
-# Fast-fail on plain compile errors before the heavier clippy pass.
-entry = "cargo check --all-features --all-targets"
-language = "system"
-types = ["rust"]
-pass_filenames = false
-
-[[repos.hooks]]
-id = "clippy"
-name = "cargo clippy"
-# Mirrors `just clippy` exactly (stable --fix pass + nightly unqualified-imports
-# pass), so the lint config lives in one place. --fix may rewrite files; prek
-# then fails the commit so you can review and re-stage, same as prettier --write.
-entry = "just clippy"
-language = "system"
-types = ["rust"]
-pass_filenames = false

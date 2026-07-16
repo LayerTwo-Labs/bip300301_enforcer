@@ -172,6 +172,7 @@ impl ValidatorService for Server {
     ) -> ServiceResult<GetChainInfoResponse> {
         let bitcoin_network = self.validator.network();
         let network: Network = bitcoin_network.into();
+        let network_params = self.validator.network_params();
         let Thresholds {
             withdrawal_bundle_max_age,
             withdrawal_bundle_inclusion_threshold,
@@ -179,7 +180,7 @@ impl ValidatorService for Server {
             used_sidechain_slot_activation_threshold,
             unused_sidechain_slot_proposal_max_age,
             unused_sidechain_slot_activation_threshold,
-        } = Thresholds::for_network(bitcoin_network);
+        } = network_params.thresholds;
         Ok(Response::new(GetChainInfoResponse {
             network: network.into(),
             bip300_constants: MessageField::some(Bip300Constants {
@@ -192,6 +193,7 @@ impl ValidatorService for Server {
                     .into(),
                 unused_sidechain_slot_activation_threshold:
                     unused_sidechain_slot_activation_threshold.into(),
+                activation_height: network_params.bip300_activation_height,
             }),
         }))
     }

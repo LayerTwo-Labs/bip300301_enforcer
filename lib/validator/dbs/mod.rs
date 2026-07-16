@@ -158,8 +158,17 @@ impl ActiveSidechainDbs {
             .delete(rwtxn, &ctip.outpoint)?;
         let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
         let sequence_number = treasury_utxo_count - 1;
-        self.treasury_utxo_count
-            .put(rwtxn, &sidechain_number, &sequence_number)?;
+        // When the last treasury UTXO for this slot is disconnected the count
+        // drops to 0. Delete the key rather than storing `0`, so that "no
+        // treasury UTXO" is always represented by an absent key (symmetric with
+        // the `ctip` deletion below). Storing `Some(0)` would later make
+        // `get_ctip_sequence_number` compute `0 - 1` and underflow.
+        if sequence_number == 0 {
+            let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
+        } else {
+            self.treasury_utxo_count
+                .put(rwtxn, &sidechain_number, &sequence_number)?;
+        }
         let _ = self
             .slot_sequence_to_treasury_utxo
             .delete(rwtxn, &(sidechain_number, sequence_number))?;

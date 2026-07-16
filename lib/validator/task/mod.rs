@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     proto::mainchain::HeaderSyncProgress,
-    types::{BlockInfo, BmmCommitments, Event, HeaderInfo},
+    types::{BlockInfo, BmmCommitments, Event, HeaderInfo, NetworkParams},
     validator::{
         dbs::{
             Dbs,
@@ -61,6 +61,7 @@ pub mod error;
 pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) dbs: &'a Dbs,
     pub(super) network: Network,
+    pub(super) params: NetworkParams,
     #[cfg(feature = "drivechain")]
     pub(super) thresholds: Thresholds,
     #[cfg(feature = "bip360")]
@@ -73,14 +74,16 @@ impl<'a> BlockHandler<'a> {
     pub(in crate::validator) fn new(
         dbs: &'a Dbs,
         network: Network,
+        params: NetworkParams,
         #[cfg(feature = "bip360")] bip360_activation_height: u32,
         #[cfg(feature = "bip360")] pqc_verify_budget_ms: u64,
     ) -> Self {
         Self {
             dbs,
             network,
+            params,
             #[cfg(feature = "drivechain")]
-            thresholds: Thresholds::for_network(network),
+            thresholds: params.thresholds,
             #[cfg(feature = "bip360")]
             bip360_activation_height,
             #[cfg(feature = "bip360")]
@@ -1117,7 +1120,7 @@ impl BlockHandler<'_> {
         }
     }
 
-    #[cfg(not(feature = "drivechain"))]
+    #[cfg(any(not(feature = "drivechain"), feature = "bip360"))]
     #[expect(clippy::result_large_err)]
     fn connect_block_pass_through(
         &self,
@@ -1239,6 +1242,68 @@ impl BlockHandler<'_> {
         let Some(coinbase) = block.txdata.first() else {
             return Err(error::ConnectBlock::NoCoinbase);
         };
+
+        // Pre-activation: plain Bitcoin history (upstream NetworkParams.bip300_activation_height).
+        // Still run BIP 360 pass-through validation when enabled.
+        if height < self.params.bip300_activation_height {
+            #[cfg(feature = "bip360")]
+            {
+                let block_hash = block.header.block_hash();
+                let prev = block.header.prev_blockhash;
+                return self.connect_block_pass_through(
+                    rwtxn,
+                    block,
+                    height,
+                    coinbase,
+                    block_hash,
+                    prev,
+                );
+            }
+            #[cfg(not(feature = "bip360"))]
+            {
+                use crate::validator::dbs::diff::{FailedM6ids, FailedProposals};
+                let block_info = BlockInfo {
+                    bmm_commitments: BmmCommitments::new(),
+                    coinbase_txid: coinbase.compute_txid(),
+                    events: Vec::new(),
+                };
+                let block_diff = diff::Block {
+                    coinbase: diff::Coinbase {
+                        msgs: Vec::new(),
+                        failed_proposals: FailedProposals(Default::default()),
+                        failed_m6ids: FailedM6ids(Default::default()),
+                    },
+                    txs: Vec::new(),
+                };
+                // Inline record-block equivalent (HEAD lacked record_block helper)
+                let dbs = self.dbs;
+                let block_hash = block.header.block_hash();
+                dbs.block_hashes
+                    .put_block_info(rwtxn, &block_hash, &block_info, &block_diff)
+                    .map_err(error::ConnectBlock::PutBlockInfo)?;
+                let current_tip_cumulative_work: Option<Work> = 'work: {
+                    let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
+                        break 'work None;
+                    };
+                    Some(dbs.block_hashes.cumulative_work().get(rwtxn, &current_tip)?)
+                };
+                let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
+                if Some(cumulative_work) > current_tip_cumulative_work {
+                    dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
+                }
+                return Ok(Event::ConnectBlock {
+                    header_info: HeaderInfo {
+                        block_hash,
+                        prev_block_hash: block.header.prev_blockhash,
+                        height,
+                        work: block.header.work(),
+                        timestamp: block.header.time,
+                    },
+                    block_info,
+                });
+            }
+        }
+
         let block_hash = block.header.block_hash();
         let prev_mainchain_block_hash = block.header.prev_blockhash;
 
@@ -2062,6 +2127,7 @@ mod tests {
         BlockHandler::new(
             dbs,
             bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
             #[cfg(feature = "bip360")]
             0,
             #[cfg(feature = "bip360")]
@@ -3671,6 +3737,7 @@ mod bip360_connect_disconnect_tests {
         BlockHandler::new(
             dbs,
             bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
             0,
             crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
         )

@@ -115,6 +115,21 @@ where
     F: FnOnce(PostSetup) -> Fut + Send + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
+    new_trial_with_setup_opts(name, comps, Default::default(), test_fn)
+}
+
+/// Like [`new_trial_with_setup`], for tests that need non-default
+/// [`SetupOpts`] (e.g. extra enforcer CLI flags).
+fn new_trial_with_setup_opts<F, Fut>(
+    name: String,
+    comps: TestSetupComponents,
+    setup_opts: crate::setup::SetupOpts,
+    test_fn: F,
+) -> TestTrial
+where
+    F: FnOnce(PostSetup) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
     let file_registry = comps.file_registry.clone();
     AsyncTrial::new(
         name.clone(),
@@ -122,7 +137,6 @@ where
             let (res_tx, _) = mpsc::unbounded();
             let pre_setup = PreSetup::new(comps.bin_paths.clone(), comps.network)?;
             register_files(&file_registry, &name, &pre_setup.directories);
-            let setup_opts: crate::setup::SetupOpts = Default::default();
             let post_setup = pre_setup.setup(comps.mode, setup_opts, res_tx).await?;
 
             let test_future =
@@ -808,6 +822,21 @@ pub fn tests(
         async_trials.push(p2p_e2e_trial);
     }
 
+    async_trials.push(new_trial_with_setup_opts(
+        "activation_height".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts {
+            enforcer_args: vec!["--network-preset=test-activation".to_owned()],
+            ..Default::default()
+        },
+        crate::test_activation_height::test_activation_height,
+    ));
     async_trials.extend([new_trial(
         "file_based_block_parser".to_string(),
         TestSetupComponents {

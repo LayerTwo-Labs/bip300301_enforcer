@@ -31,6 +31,11 @@ const TESTNET_MAGIC: [u8; 4] = [0x0B, 0x11, 0x09, 0x07];
 const SIGNET_MAGIC: [u8; 4] = [0x0A, 0x03, 0xCF, 0x40];
 const REGTEST_MAGIC: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
 
+/// Consensus maximum serialized block size (Bitcoin Core's
+/// `MAX_BLOCK_SERIALIZED_SIZE`). A block file entry declaring a larger size is
+/// malformed.
+const MAX_BLOCK_SERIALIZED_SIZE: usize = 4_000_000;
+
 #[derive(Debug, Diagnostic, Error)]
 #[error("error parsing block number {index} in file {file_path}")]
 pub struct ParseAllBlocksError {
@@ -243,6 +248,13 @@ impl BlockFileParser {
 
         let size = u32::consensus_decode(&mut self.reader)
             .map_err(ParseBlockFileError::UintDecode)? as usize;
+
+        // Reject an oversized entry before allocating. Without this bound the
+        // `size` prefix drives an unbounded `vec![0; size - 80]` (up to ~4 GiB),
+        // exhausting memory on a corrupt or crafted block file.
+        if size > MAX_BLOCK_SERIALIZED_SIZE {
+            return Err(ParseBlockFileError::BlockSizeTooLarge { size: size as u32 });
+        }
 
         // Read the block header
         let header = Header::consensus_decode(&mut self.reader)
@@ -595,7 +607,10 @@ impl CDiskBlockIndex {
     pub fn adjusted_data_pos(&self) -> Option<u64> {
         // Magic bytes + size? Found by trial and error
         const ADJUST_BY: u64 = 8;
-        self.data_pos.map(|pos| pos - ADJUST_BY)
+        // `checked_sub` so a corrupt index entry with `data_pos < ADJUST_BY`
+        // yields `None` (handled as a missing data position) instead of
+        // underflowing.
+        self.data_pos.and_then(|pos| pos.checked_sub(ADJUST_BY))
     }
 
     /// Deserialize from byte slice
@@ -832,6 +847,57 @@ mod tests {
             .unwrap();
         let mut parser = BlockFileParser::new(None, path, Network::Regtest).unwrap();
         assert!(parser.next_block().is_err());
+    }
+
+    /// A block whose declared size exceeds the consensus maximum must be
+    /// rejected before allocating, not exhaust memory via an unbounded
+    /// `vec![0; size - 80]`. A corrupt or crafted blk*.dat triggers this.
+    #[test]
+    fn next_block_rejects_oversized_block_without_allocating() {
+        use std::io::Write as _;
+        let mut bytes = REGTEST_MAGIC.to_vec();
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // size ~4 GiB, above the max
+        bytes.extend_from_slice(&[0u8; 80]); // a well-formed 80 byte header
+        let path = std::env::temp_dir().join("bip300_oversized_blk00000.dat");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let mut parser = BlockFileParser::new(None, path, Network::Regtest).unwrap();
+        assert!(matches!(
+            parser.next_block(),
+            Err(ParseBlockFileError::BlockSizeTooLarge { size }) if size == u32::MAX
+        ));
+    }
+
+    /// A corrupt `blocks/index` entry with a `data_pos` below the 8-byte file
+    /// offset adjustment must yield `None` (a missing data position), not
+    /// underflow. Reachable via `fetch_block_index` on the fast-sync path.
+    #[test]
+    fn adjusted_data_pos_does_not_underflow() {
+        let with_data_pos = |data_pos| CDiskBlockIndex {
+            version: 0,
+            height: 0,
+            status: BlockStatus::new(0),
+            tx_count: 0,
+            file_number: None,
+            data_pos,
+            undo_pos: None,
+            block_version: 0,
+            prev_block_hash: BlockHash::from_byte_array([0; 32]),
+            merkle_root: BlockHash::from_byte_array([0; 32]),
+            timestamp: 0,
+            difficulty_target: CompactTarget::from_consensus(0),
+            nonce: 0,
+        };
+        // Below the adjustment: None, not an underflow.
+        assert_eq!(with_data_pos(Some(0)).adjusted_data_pos(), None);
+        assert_eq!(with_data_pos(Some(7)).adjusted_data_pos(), None);
+        // At or above the adjustment: the adjusted position.
+        assert_eq!(with_data_pos(Some(8)).adjusted_data_pos(), Some(0));
+        assert_eq!(with_data_pos(Some(80)).adjusted_data_pos(), Some(72));
+        // No data position stays None.
+        assert_eq!(with_data_pos(None).adjusted_data_pos(), None);
     }
 
     #[test]
