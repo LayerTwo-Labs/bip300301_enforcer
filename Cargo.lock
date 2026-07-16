@@ -698,8 +698,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-p2mr-pqc"
 version = "0.32.6-p2mr-pqc.1"
-source = "sparse+https://crates.denver.space/api/v1/crates/"
-checksum = "ce8a80e619111bf8d228f3f1b169a2487e6e28974f39c8935657640e0214f9ed"
+source = "git+https://github.com/cryptoquick/rust-bitcoin?rev=9093253a69a85530e492043817a71897de7897e4#9093253a69a85530e492043817a71897de7897e4"
 dependencies = [
  "base58ck",
  "bech32",

@@ -18,7 +18,7 @@ cd bip300301_enforcer
 cargo build --example p2mr_signer --no-default-features --features bip360
 ```
 
-Requires Kellnr registry (`.cargo/config.toml`) for `bitcoin-p2mr-pqc`.
+Requires git access for `bitcoin-p2mr-pqc` (`cryptoquick/rust-bitcoin` p2mr rev in workspace `Cargo.toml`).
 
 ## Usage
 

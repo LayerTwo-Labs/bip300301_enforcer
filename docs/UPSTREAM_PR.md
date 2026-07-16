@@ -40,7 +40,7 @@ ML-DSA-44, and SLH-DSA-SHA2-128s) on regtest/signet without patching Core.
 - **Overload model:** existing tapscript sig opcodes are size-gated; `OP_SUBSTR` as a PQ
   tag is rejected (differs from ref-impl vectors — see open questions in
   `docs/CUSF-BIP360.md`).
-- **Dependencies:** `bitcoin-p2mr-pqc` (Kellnr), `bitcoinpqc` (git pin:
+- **Dependencies:** `bitcoin-p2mr-pqc` (git: `cryptoquick/rust-bitcoin` p2mr rev), `bitcoinpqc` (git pin:
   [cryptoquick/libbitcoinpqc-bindings](https://github.com/cryptoquick/libbitcoinpqc-bindings) PR [#1](https://github.com/cryptoquick/libbitcoinpqc-bindings/pull/1)
   `wasm-tests` @ `5ef7067`, libbitcoinpqc @ `b309f44`). Registry config in `.cargo/config.toml`.
 
@@ -219,7 +219,7 @@ From `git status` / `git diff --stat` on the working tree (not yet committed).
 
 | File | Summary |
 |------|---------|
-| `.cargo/config.toml` | Kellnr registry (`crates.denver.space`) |
+| ~~`.cargo/config.toml`~~ | Removed — no Kellnr; `bitcoin-p2mr-pqc` is a git pin |
 | `docs/BIP360_OVERLOAD_ADDENDUM.md` | Draft BIP wording for overload model |
 | `docs/CUSF-BIP360.md` | BIP 360 enforcer reference |
 | `docs/KELLNR_PUBLISH.md` | Kellnr publish steps for `bitcoinpqc` 0.4.0 |

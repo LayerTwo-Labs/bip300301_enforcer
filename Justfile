@@ -456,6 +456,53 @@ bip360-kitchen-sink-tier-a auto='':
     export BIP360_SKIP_REBUILD=1
     just _run-it bip360_kitchen_sink_tier_a "{{auto}}"
 
+# Tier B — known OPEN problem (expected FAIL until Bob admits enforcer-format spends).
+# Opt-in bounty target; not part of green CI / it-all / bip360-verify-full.
+# Docs: docs/TIER_B_P2MR_MEMPOOL.md
+bip360-tier-b-mempool auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    if [ -z "${BITCOIND_P2MR:-}" ] || [ ! -x "${BITCOIND_P2MR}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            just setup-p2mr
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "BITCOIND_P2MR required — run: just setup-p2mr" >&2
+            exit 1
+        fi
+    fi
+    if [ -z "${ELECTRS:-}" ] || [ ! -x "${ELECTRS}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            just setup
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "ELECTRS required — run: just setup" >&2
+            exit 1
+        fi
+    fi
+    echo "==> Tier B (EXPECTED FAIL until fixed): Bob P2MR mempool must accept enforcer spends"
+    echo "    See docs/TIER_B_P2MR_MEMPOOL.md"
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    export BIP360_TIER_B=1
+    just _run-it bip360_tier_b_p2mr_mempool "{{auto}}"
+
 # Full local verification stack (Phase D recipe wiring; does not add CI steps).
 # P2P E2E requires full bootstrap (`just setup`) for electrs — pass `yes` to auto-setup when env is missing.
 bip360-verify-full auto='':

@@ -56,6 +56,8 @@ Trial: `just bip360-kitchen-sink-tier-a` → **PASS** (kitchen-sink weight **121
 
 **Takeaway:** Tier A topology works (stock Alice + cryptoquick Bob, dual tip retention). Enforcer-format spends still need **submitblock** on this Bob build (both dialects valid; overload not yet mempool-admitted on Bob). Future overload alignment on `cryptoquick:p2mr` can flip rounds to `P2mrMempool` without harness rewrite.
 
+**Tier B (open / bounty):** pure mempool success is tracked as a **known-fail** opt-in trial — see [`TIER_B_P2MR_MEMPOOL.md`](./TIER_B_P2MR_MEMPOOL.md) and `just bip360-tier-b-mempool`.
+
 Build note: default cmake had `WITH_ZMQ=OFF` — enforcer needs ZMQ. Rebuild:
 
 ```bash

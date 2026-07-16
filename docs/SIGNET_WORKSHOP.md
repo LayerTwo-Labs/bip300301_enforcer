@@ -57,7 +57,7 @@ signet bitcoind ──ZMQ──► bip300301_enforcer (--features bip360)
 | Signet `bitcoind` | Workshop signet definition or custom signet params from ref-impl docs |
 | `electrs` | Same pattern as regtest integration harness (wallet / indexer) |
 | Enforcer binary | `cargo build -p bip300301_enforcer --no-default-features --features bip360` |
-| Kellnr registry | `.cargo/config.toml` for `bitcoin-p2mr-pqc` / `bitcoinpqc` |
+| Git deps | `bitcoin-p2mr-pqc` + `bitcoinpqc` pins in workspace `Cargo.toml` (no Kellnr) |
 | Signet miner | `signet_miner_loop.sh` or workshop miner; produces blocks for `submitblock` / ZMQ |
 
 ### Enforcer flags (signet)

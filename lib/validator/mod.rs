@@ -858,6 +858,10 @@ mod ctip_sequence_number_tests {
             dir,
             bitcoin::Network::Regtest,
             NetworkParams::for_network(bitcoin::Network::Regtest),
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
         )
         .expect("construct validator")
     }

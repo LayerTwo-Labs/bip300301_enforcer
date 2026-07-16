@@ -3728,6 +3728,7 @@ mod bip360_connect_disconnect_tests {
 
     use super::BlockHandler;
     use crate::validator::{
+        NetworkParams,
         pqc::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend},
         test_utils::create_test_dbs,
     };

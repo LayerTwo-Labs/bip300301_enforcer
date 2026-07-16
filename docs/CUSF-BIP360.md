@@ -175,8 +175,9 @@ top.
 
 ## Dependencies
 
-- `bitcoin-p2mr-pqc` — P2MR types and merkle/control-block helpers (Kellnr
-  registry)
+- `bitcoin-p2mr-pqc` — P2MR types and merkle/control-block helpers (git pin:
+  [cryptoquick/rust-bitcoin](https://github.com/cryptoquick/rust-bitcoin) `p2mr`
+  @ `9093253a` / `0.32.6-p2mr-pqc.1`)
 - `bitcoinpqc` — Schnorr + ML-DSA-44 + SLH-DSA-SHA2-128s verification (git pin:
   [cryptoquick/libbitcoinpqc-bindings](https://github.com/cryptoquick/libbitcoinpqc-bindings)
   PR [#1](https://github.com/cryptoquick/libbitcoinpqc-bindings/pull/1)
@@ -184,8 +185,7 @@ top.
   [cryptoquick/libbitcoinpqc](https://github.com/cryptoquick/libbitcoinpqc) PR
   [#29](https://github.com/cryptoquick/libbitcoinpqc/pull/29))
 
-Registry config: `.cargo/config.toml` → `kellnr-denver-space`
-(`bitcoin-p2mr-pqc` only).
+No Kellnr / `crates.denver.space` required.
 
 ## Module layout
 

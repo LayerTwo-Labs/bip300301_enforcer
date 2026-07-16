@@ -10,7 +10,7 @@ Walkthrough demonstrating how **stock Bitcoin Core** accepts a block via
 | Stock `bitcoind` + `bitcoin-cli` + `bitcoin-util` | No drivechain patches. Use `just setup-core` or a local Core build. |
 | Enforcer built with `bip360` | See build commands below. |
 | Rust 1.88+ (toolchain pins 1.96.0) | See `rust-toolchain.toml`. |
-| Kellnr registry | `.cargo/config.toml` must be present for `bitcoin-p2mr-pqc`. |
+| Network for git deps | `bitcoin-p2mr-pqc` from `cryptoquick/rust-bitcoin` (p2mr rev); `bitcoinpqc` git pin |
 
 ### Build
 
@@ -298,7 +298,7 @@ Broader context may include witness / spend validation errors from `pqc::spend`.
 
 | Symptom | Fix |
 |---------|-----|
-| `bitcoin-p2mr-pqc` resolve error | Ensure `.cargo/config.toml` (Kellnr) is present. |
+| `bitcoin-p2mr-pqc` resolve error | Needs git access to `https://github.com/cryptoquick/rust-bitcoin` (p2mr rev in workspace `Cargo.toml`). |
 | Integration test can't find `bitcoind` | Run `just setup-core` or set `BITCOIND_UNPATCHED` in env file. |
 | Enforcer won't start (version check) | Use a supported Core version per `lib/version.rs`, or `--bitcoin-core-skip-version-check`. |
 | `bip360_invalid_block` not in test list | Build with `--features bip360`. |

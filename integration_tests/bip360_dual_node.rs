@@ -38,6 +38,9 @@ use crate::{
 pub const TEST_NAME: &str = "bip360_p2p_mempool_e2e";
 /// Tier A kitchen-sink demo: stock Alice + cryptoquick P2MR Bob.
 pub const TIER_A_TEST_NAME: &str = "bip360_kitchen_sink_tier_a";
+/// Tier B open problem: enforcer-format P2MR spend must enter Bob P2MR mempool.
+/// Opt-in (`BIP360_TIER_B=1`); **expected FAIL** until interop is fixed — bounty target.
+pub const TIER_B_TEST_NAME: &str = "bip360_tier_b_p2mr_mempool";
 
 /// Initial sat pile funded from Alice's wallet (round 0 output value).
 pub const INITIAL_PILE_VALUE: u64 = 50_000;
@@ -768,6 +771,70 @@ fn vout_for_script_pubkey(tx: &Transaction, script_pubkey: &ScriptBuf) -> anyhow
         .position(|output| output.script_pubkey == *script_pubkey)
         .map(|index| index as u32)
         .ok_or_else(|| anyhow::anyhow!("spend tx missing output with expected script_pubkey"))
+}
+
+/// Require Bob (P2MR Core) to admit an enforcer-built spend to its **mempool**.
+///
+/// This is the Tier B success criterion. Today Bob typically rejects with
+/// `Witness program hash mismatch` / `-26` (control-block / leaf dialect gap).
+/// See `docs/TIER_B_P2MR_MEMPOOL.md`.
+pub async fn assert_bob_p2mr_mempool_accepts_spend(
+    peers: &DualNodePeers,
+    spend_tx: &Transaction,
+    label: &str,
+) -> anyhow::Result<()> {
+    let txid = spend_tx.compute_txid();
+    bip360_tx_report::log_tx_report(
+        0,
+        &format!("tier-b-{label}"),
+        &bip360_tx_report::tx_report(spend_tx, None),
+    );
+
+    match send_raw_to_node(&peers.bob, spend_tx).await {
+        Ok(()) => {}
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "TIER B OPEN: Bob P2MR Core rejected enforcer-format {label} spend via \
+                 sendrawtransaction (txid {txid}).\n\
+                 error: {err:#}\n\
+                 \n\
+                 Success means: enforcer-built overload P2MR spends enter cryptoquick/jbride \
+                 P2MR mempool without submitblock.\n\
+                 Background + bounty notes: docs/TIER_B_P2MR_MEMPOOL.md\n\
+                 Reproduce: BIP360_TIER_B=1 just bip360-tier-b-mempool"
+            ));
+        }
+    }
+
+    bip360_tx_report::wait_for_mempool_entry(&peers.bob, txid, Duration::from_secs(15))
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "TIER B OPEN: sendraw to Bob returned ok but getmempoolentry failed for \
+                 {label} spend {txid}: {err:#}\n\
+                 See docs/TIER_B_P2MR_MEMPOOL.md"
+            )
+        })?;
+
+    // Stock Alice must still reject (documents CUSF mempool gap — not the Tier B prize).
+    if bip360_tx_report::wait_for_mempool_entry(&peers.alice, txid, Duration::from_secs(2))
+        .await
+        .is_ok()
+    {
+        tracing::warn!(
+            %txid,
+            label,
+            "stock Alice also has spend in mempool (unexpected for Core 31)"
+        );
+    } else {
+        tracing::info!(
+            %txid,
+            label,
+            "stock Alice mempool absent (expected); Bob P2MR holds spend — Tier B criterion met"
+        );
+    }
+
+    Ok(())
 }
 
 /// Round 0: Alice wallet → initial Schnorr P2MR pile.
