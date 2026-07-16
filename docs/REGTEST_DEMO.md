@@ -64,7 +64,14 @@ just bip360-kitchen-sink-tier-a
 ```
 
 Spends try **Bob mempool first**, then submitblock fallback. See
-[`TIER_A_P2MR_ALIGNMENT.md`](./TIER_A_P2MR_ALIGNMENT.md) (dual-valid dialects: overload vs OP_SUBSTR).
+[`TIER_A_P2MR_ALIGNMENT.md`](./TIER_A_P2MR_ALIGNMENT.md).
+
+## Tier B
+
+| Path | Command | Expect |
+|------|---------|--------|
+| **CUSF mining** (stock + enforcer, `submitblock`) | `just bip360-tier-b-cusf` | **PASS** — [`TIER_B_CUSF_MINER.md`](./TIER_B_CUSF_MINER.md) |
+| **P2MR Core mempool** (Bob `sendraw` enforcer spends) | `just bip360-tier-b-mempool` | **FAIL** until protocol matches — [`TIER_B_P2MR_MEMPOOL.md`](./TIER_B_P2MR_MEMPOOL.md) |
 
 ## Architecture (one diagram)
 

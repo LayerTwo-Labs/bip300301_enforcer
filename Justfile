@@ -456,7 +456,12 @@ bip360-kitchen-sink-tier-a auto='':
     export BIP360_SKIP_REBUILD=1
     just _run-it bip360_kitchen_sink_tier_a "{{auto}}"
 
-# Tier B — known OPEN problem (expected FAIL until Bob admits enforcer-format spends).
+# Tier B CUSF mining path (expect PASS): stock Core + enforcer, spends via submitblock.
+# No P2MR Core required. Docs: docs/TIER_B_CUSF_MINER.md
+bip360-tier-b-cusf auto='':
+    @just _run-it bip360_tier_b_cusf_miner {{auto}}
+
+# Tier B — P2MR Core mempool / protocol match (expected FAIL until sendraw accepts enforcer spends).
 # Opt-in bounty target; not part of green CI / it-all / bip360-verify-full.
 # Docs: docs/TIER_B_P2MR_MEMPOOL.md
 bip360-tier-b-mempool auto='':

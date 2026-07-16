@@ -1067,6 +1067,10 @@ pub fn tests(
             crate::test_bip360_valid_spend::test_bip360_valid_kitchen_sink_spend
         );
         bip360_trial!(
+            "bip360_tier_b_cusf_miner",
+            crate::test_bip360_tier_b_cusf_miner::test_bip360_tier_b_cusf_miner
+        );
+        bip360_trial!(
             "bip360_invalid_kitchen_sink_tamper_ec_sig",
             crate::test_bip360_invalid_spend::test_bip360_invalid_kitchen_sink_tamper_ec_sig
         );

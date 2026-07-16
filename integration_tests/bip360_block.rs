@@ -161,9 +161,17 @@ pub fn build_coinbase(post_setup: &PostSetup, template: &BlockTemplate) -> Trans
 
 /// Mature coinbase outpoint from block #1 (requires ≥101 blocks mined in setup).
 pub async fn funding_prevout(post_setup: &PostSetup) -> anyhow::Result<OutPoint> {
+    funding_prevout_at_height(post_setup, 1).await
+}
+
+/// Coinbase outpoint at `height` (must be mature for wallet signing / spends).
+pub async fn funding_prevout_at_height(
+    post_setup: &PostSetup,
+    height: u32,
+) -> anyhow::Result<OutPoint> {
     let block_hash = post_setup
         .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblockhash", ["1"])
+        .command::<String, _, _, _, _>([], "getblockhash", [height.to_string()])
         .run_utf8()
         .await?;
     let block_hex = post_setup
