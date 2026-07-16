@@ -976,22 +976,46 @@ async fn main() -> Result<()> {
     );
 
     let ts = tokio::time::Instant::now();
-    match mainchain_rest_client.get_chain_info().await {
-        Ok(_) => {
-            tracing::info!(
-                "verified mainchain REST server is enabled in {:?}",
-                ts.elapsed()
-            );
-        }
-        Err(err @ MainRestClientError::RestServerNotEnabled) => {
-            return Err(miette::Report::from_err(err));
-        }
+    let mut retries = 0;
+    loop {
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+        const MAX_RETRIES: u32 = 5;
 
-        Err(err) => {
-            let wrapped = miette::Report::from_err(err)
-                .wrap_err("unable to check availability of mainchain REST server");
+        match mainchain_rest_client.get_chain_info().await {
+            Ok(_) => {
+                tracing::info!(
+                    "verified mainchain REST server is enabled in {:?}",
+                    ts.elapsed()
+                );
+                break;
+            }
+            Err(err @ MainRestClientError::RestServerNotEnabled) => {
+                return Err(miette::Report::from_err(err));
+            }
+            // Bitcoin Core responds 503 on the REST interface while warming
+            // up. Tolerate this, the same way we tolerate RPC_IN_WARMUP on
+            // the JSON-RPC interface below.
+            Err(MainRestClientError::Http(err))
+                if err.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE) =>
+            {
+                if retries >= MAX_RETRIES {
+                    return Err(miette::Report::from_err(err).wrap_err(format!(
+                        "mainchain REST server still unavailable after {MAX_RETRIES} retries"
+                    )));
+                }
+                retries += 1;
+                tracing::debug!(
+                    err = %err,
+                    "Mainchain REST server not ready yet, retrying ({retries}/{MAX_RETRIES})...",
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(err) => {
+                let wrapped = miette::Report::from_err(err)
+                    .wrap_err("unable to check availability of mainchain REST server");
 
-            return Err(wrapped);
+                return Err(wrapped);
+            }
         }
     }
     tracing::info!("verified mainchain REST server at `{raw_url}` is available");
