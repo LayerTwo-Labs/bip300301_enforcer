@@ -125,7 +125,7 @@ impl NetworkParams {
     pub const fn drynet2() -> Self {
         Self {
             thresholds: Thresholds::DRYNET1,
-            bip300_activation_height: 957_599,
+            bip300_activation_height: 957_600,
             datadir_suffix: Some("drynet2"),
         }
     }
