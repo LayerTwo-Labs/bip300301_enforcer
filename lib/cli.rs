@@ -305,6 +305,9 @@ pub enum NetworkPreset {
     /// Dry run forknet v1: mainnet fork at block 955584. Hours-scale thresholds
     Drynet1,
 
+    /// Dry run forknet v2: mainnet fork at block 957599. Hours-scale thresholds
+    Drynet2,
+
     /// Integration-test-only preset: SHORT thresholds with BIP300/301
     /// activating at height 10, so tests can exercise the activation-height
     /// machinery on a fresh chain. Hidden from --help
@@ -316,6 +319,7 @@ impl NetworkPreset {
     pub fn params(self) -> NetworkParams {
         match self {
             Self::Drynet1 => NetworkParams::drynet1(),
+            Self::Drynet2 => NetworkParams::drynet2(),
             Self::TestActivation => NetworkParams::test_activation(),
         }
     }
