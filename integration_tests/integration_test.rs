@@ -820,6 +820,29 @@ pub fn tests(
             )
         };
         async_trials.push(p2p_e2e_trial);
+
+        let tier_a_trial: TestTrial = {
+            let name = crate::bip360_dual_node::TIER_A_TEST_NAME;
+            AsyncTrial::new(
+                name,
+                Box::pin({
+                    let bin_paths = bin_paths.clone();
+                    let file_registry = file_registry.clone();
+                    async move {
+                        let test_future =
+                            crate::test_bip360_kitchen_sink_tier_a::test_bip360_kitchen_sink_tier_a(
+                                bin_paths,
+                                file_registry,
+                            )
+                            .instrument(tracing::info_span!("test", name = %name));
+                        catch_unwind(test_future).await
+                    }
+                }),
+                file_registry.clone(),
+                failure_collector.clone(),
+            )
+        };
+        async_trials.push(tier_a_trial);
     }
 
     async_trials.push(new_trial_with_setup_opts(

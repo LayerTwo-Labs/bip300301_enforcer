@@ -1,8 +1,13 @@
 # Mempool relay policy — stock Core vs CUSF companion
 
-Why **stock Bitcoin Core** will not relay or accept P2MR/PQC transactions into its
-mempool without a CUSF enforcer, and what the **cusf-enforcer-mempool** companion does
-today in this prototype.
+Why **stock Bitcoin Core** does **not** treat P2MR as a first-class program and will
+**not** admit witness-v2 **spends** (or full CUSF-valid PQC packages that only make sense
+as P2MR spends) into its mempool path the way a BIP 360 node would—and what the
+**cusf-enforcer-mempool** companion does today in this prototype.
+
+Pure v2 **funding** outputs are a different case: on stock Core 31 they are generally
+mempool-admissible as `WITNESS_UNKNOWN` (see table below and
+[`ZMQ_CUSF_BIP360_FINDINGS.md`](./ZMQ_CUSF_BIP360_FINDINGS.md) §2.3).
 
 ## Stock Core behavior
 
@@ -17,19 +22,36 @@ rules only:
 | `OP_SUBSTR` PQ tags | N/A (non-standard / invalid in tapscript context) | **Rejected** (overload model) |
 | Per-block PQC verify budget | N/A | Configurable wall-time cap |
 
-A P2MR funding or spend transaction that is valid under CUSF rules will typically be
-**rejected at mempool admission** on stock Core because:
+**Funding vs spending on stock Core 31** (see also
+[`ZMQ_CUSF_BIP360_FINDINGS.md`](./ZMQ_CUSF_BIP360_FINDINGS.md) §2.3):
 
-1. **Output type** — v2 witness programs with 32-byte commitments are not recognized as
-   standard pay-to-taproot/P2WPKH patterns Core expects.
-2. **Script validation** — Even if relayed, tapscript execution does not implement PQC
-   signature verification or the CUSF overload semantics for `OP_CHECKSIGADD` / multisig.
-3. **Witness weight** — Large PQC signatures (~2.4 KB / ~7.8 KB) may hit standardness
-   or policy limits before custom rules are considered.
+| Kind | Stock Core default mempool | Why |
+|------|----------------------------|-----|
+| **Funding** (pay *into* v2 `5220…`) | Generally **admissible** | Outputs of type `WITNESS_UNKNOWN` are standard on stock Core; Core does not treat them as P2MR, but also does not reject pure v2 outputs solely for version |
+| **Spend** (spend a v2 prevout) | **Rejected** | Under defaults: `AreInputsStandard` rejects `WITNESS_UNKNOWN` inputs; even if standardness is relaxed, `SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM` fails the spend. **No** ZMQ mempool `'A'` for the spend |
+
+Additional reasons CUSF-valid packages may still fail stock mempool policy:
+
+1. **Script validation for spends** — Core does not implement P2MR / PQC overload semantics; upgradable witness programs are discouraged in mempool script checks.
+2. **Witness weight** — Large PQC signatures (~2.4 KB / ~7.8 KB) may hit standardness or policy size limits.
+3. **Relay** — Without mempool admission, P2MR spends do not propagate on the ordinary tx relay path.
 
 **Blocks** mined without an enforcer can include txs that violate BIP 360 rules; Core
-will accept them under its own rules. The CUSF enforcer then **`invalidateblock`** on
-`connect_block` when violations are detected (see [`REGTEST_DEMO.md`](./REGTEST_DEMO.md)).
+will accept them under its own soft-fork-placeholder rules for unknown witness versions.
+
+## Tier A dual stack (stock + P2MR peer)
+
+Stock Core alone cannot demo mempool-path P2MR *spends*. Tier A pairs:
+
+| Peer | Role |
+|------|------|
+| Stock Core 31 + enforcer | CUSF tip; funding mempool; spend path = block/`submitblock` |
+| P2MR Core ([jbride/bitcoin#2](https://github.com/jbride/bitcoin/pull/2) head / `cryptoquick:p2mr`) | May admit v2 spends to mempool; mines when interop allows |
+
+Kitchen-sink demo: `just bip360-kitchen-sink-tier-a`. Alignment / dual-valid dialects:
+[`TIER_A_P2MR_ALIGNMENT.md`](./TIER_A_P2MR_ALIGNMENT.md).
+The CUSF enforcer then **`invalidateblock`** on `connect_block` when violations are
+detected (see [`REGTEST_DEMO.md`](./REGTEST_DEMO.md)).
 
 ## CUSF mempool companion role
 
@@ -114,3 +136,4 @@ Integration tests often use `Mode::NoMempool` for simpler block-only trials
 - Enforcer trait impl: `lib/validator/cusf_enforcer.rs`
 - PQC mempool hook: `lib/validator/task/mod.rs` (`validate_mempool_transaction`)
 - Design overview: [`cusf/DESIGN.md`](../../DESIGN.md)
+- Core 31 ZMQ inventory + spend-path limits: [`ZMQ_CUSF_BIP360_FINDINGS.md`](./ZMQ_CUSF_BIP360_FINDINGS.md)

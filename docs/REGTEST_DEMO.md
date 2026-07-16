@@ -38,7 +38,7 @@ If `integrationtests.env` is missing, recipes exit with instructions unless you 
 
 This runs the `bip360_invalid_block` integration trial end-to-end. Additional BIP 360
 trials (valid Schnorr / ML-DSA / SLH spends, same-block and cross-block invalid sig /
-pubkey / merkle-path / hybrid EC+SLH / kitchen-sink / multi-leaf matrix — 33 block-matrix trials + 1 P2P E2E = 34 total) are registered in
+pubkey / merkle-path / hybrid EC+SLH / kitchen-sink / multi-leaf matrix — 33 block-matrix trials + 1 P2P E2E + Tier A kitchen-sink) are registered in
 `integration_tests/integration_test.rs` — run with
 `cargo run --example integration_tests --features bip360 -- --exact <trial_name>`.
 For a guided walkthrough with RPC transcripts, use the manual steps below or:
@@ -46,6 +46,25 @@ For a guided walkthrough with RPC transcripts, use the manual steps below or:
 ```bash
 just demo-steps
 ```
+
+## Tier A kitchen-sink demo (stock Core + cryptoquick P2MR)
+
+Five rounds on one sat pile (wallet → Schnorr → hybrid → ML-DSA → **kitchen-sink**), with:
+
+| Peer | Binary |
+|------|--------|
+| Alice | Stock Core 31 + bip360 enforcer (CUSF tip) |
+| Bob | **jbride/bitcoin#2 head** (`cryptoquick:p2mr`, `BITCOIND_P2MR`) |
+
+```bash
+just setup              # electrs + stock Core
+just setup-p2mr         # symlink cryptoquick build → BITCOIND_P2MR
+just bip360-kitchen-sink-tier-a
+# or: just bip360-kitchen-sink-tier-a yes
+```
+
+Spends try **Bob mempool first**, then submitblock fallback. See
+[`TIER_A_P2MR_ALIGNMENT.md`](./TIER_A_P2MR_ALIGNMENT.md) (dual-valid dialects: overload vs OP_SUBSTR).
 
 ## Architecture (one diagram)
 

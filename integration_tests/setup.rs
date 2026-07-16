@@ -421,6 +421,8 @@ pub enum BitcoindKind {
     #[default]
     Patched,
     Unpatched,
+    /// jbride/bitcoin#2 head (`cryptoquick:p2mr`) — P2MR mempool + consensus peer.
+    P2mr,
 }
 
 fn bitcoind_path(
@@ -430,6 +432,7 @@ fn bitcoind_path(
     match bitcoind_kind {
         BitcoindKind::Patched => bin_paths.bitcoind(),
         BitcoindKind::Unpatched => bin_paths.bitcoind_unpatched(),
+        BitcoindKind::P2mr => bin_paths.bitcoind_p2mr(),
     }
 }
 

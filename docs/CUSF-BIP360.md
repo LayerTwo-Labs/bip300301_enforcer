@@ -360,4 +360,5 @@ just bip360-verify-full yes   # canonical pre-submit: full stack with auto-setup
 | Kellnr `bitcoinpqc` 0.4.0 | **Prepared**                | [`KELLNR_PUBLISH.md`](./KELLNR_PUBLISH.md). **Human:** publish + pin update                                  |
 | Signet workshop           | **Prepared**                | [`SIGNET_WORKSHOP.md`](./SIGNET_WORKSHOP.md). **Human:** signet infra / workshop                             |
 | Mempool relay policy      | **Done**                    | [`MEMPOOL_RELAY_POLICY.md`](./MEMPOOL_RELAY_POLICY.md)                                                       |
+| Core 31 ZMQ / BIP 360     | **Done** (findings)         | [`ZMQ_CUSF_BIP360_FINDINGS.md`](./ZMQ_CUSF_BIP360_FINDINGS.md) — ZMQ surface; stock Core cannot mempool v2 spends |
 | SHRINCs                   | **Deferred**                | [`SHRINCS_DEFERRED.md`](./SHRINCS_DEFERRED.md)                                                               |

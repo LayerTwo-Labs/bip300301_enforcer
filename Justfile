@@ -252,7 +252,11 @@ setup:
                 https://github.com/mempool/electrs.git "$ELECTRS_DIR"
             printf '\n[workspace]\n' >> "$ELECTRS_DIR/Cargo.toml"
         fi
-        (cd "$ELECTRS_DIR" && cargo build --locked --release)
+        # GCC 15+/16: vendored RocksDB 8.1.1 needs <cstdint> (facebook/rocksdb#13365).
+        # Same workaround as AUR electrs PKGBUILD; scoped to this subshell only.
+        (cd "$ELECTRS_DIR" && \
+            export CXXFLAGS="${CXXFLAGS:-} -include cstdint" && \
+            cargo build --locked --release)
     else
         echo "electrs: cached"
     fi
@@ -355,7 +359,102 @@ bip360-p2p-e2e auto='':
     cargo build --example integration_tests --features bip360
     export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
     export BIP300301_ENFORCER="{{enforcer_bin}}"
+    # Keep drivechain+bip360 binary: `_run-it` would otherwise rebuild bip360-only.
+    export BIP360_SKIP_REBUILD=1
     just _run-it bip360_p2p_mempool_e2e "{{auto}}"
+
+# Wire BITCOIND_P2MR to a local P2MR Core binary (jbride/bitcoin#2 head = cryptoquick:p2mr).
+# Default source: ~/Projects/cryptoquick/bitcoin/build/bin/bitcoind when present.
+# Override with CRYPTOQUICK_BITCOIN_BUILD=/path/to/build/bin
+# Requires WITH_ZMQ=ON (enforcer uses getzmqnotifications / pubsequence).
+setup-p2mr:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REPO_ROOT="$(pwd)"
+    DEPS_DIR="$REPO_ROOT/.integration-deps/bitcoin-p2mr"
+    ENV_FILE="$REPO_ROOT/integrationtests.env"
+    BUILD_BIN="${CRYPTOQUICK_BITCOIN_BUILD:-$HOME/Projects/cryptoquick/bitcoin/build/bin}"
+    mkdir -p "$DEPS_DIR"
+    if [ ! -x "$BUILD_BIN/bitcoind" ]; then
+        echo "No P2MR bitcoind at $BUILD_BIN/bitcoind" >&2
+        echo "Build jbride/bitcoin#2 head (cryptoquick:p2mr), e.g.:" >&2
+        echo "  git clone https://github.com/cryptoquick/bitcoin.git && cd bitcoin && git checkout p2mr" >&2
+        echo "  cmake -B build -DWITH_ZMQ=ON && cmake --build build -j\"\$(nproc)\" --target bitcoind bitcoin-cli" >&2
+        echo "Or: CRYPTOQUICK_BITCOIN_BUILD=/path/to/build/bin just setup-p2mr" >&2
+        exit 1
+    fi
+    if ! ldd "$BUILD_BIN/bitcoind" 2>/dev/null | grep -qi zmq; then
+        echo "WARN: $BUILD_BIN/bitcoind does not link libzmq — enforcer will fail." >&2
+        echo "Rebuild with: cmake -B build -DWITH_ZMQ=ON && cmake --build build -j\"\$(nproc)\" --target bitcoind" >&2
+    fi
+    for b in bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do
+        if [ -x "$BUILD_BIN/$b" ]; then
+            ln -sfn "$BUILD_BIN/$b" "$DEPS_DIR/$b"
+        fi
+    done
+    echo "P2MR bitcoind: $DEPS_DIR/bitcoind -> $(readlink -f "$DEPS_DIR/bitcoind")"
+    "$DEPS_DIR/bitcoind" -version | head -1
+    # Merge BITCOIND_P2MR into env file without clobbering other keys.
+    touch "$ENV_FILE"
+    if grep -q '^BITCOIND_P2MR=' "$ENV_FILE" 2>/dev/null; then
+        # portable in-place replace
+        tmp=$(mktemp)
+        sed "s|^BITCOIND_P2MR=.*|BITCOIND_P2MR='$DEPS_DIR/bitcoind'|" "$ENV_FILE" > "$tmp"
+        mv "$tmp" "$ENV_FILE"
+    else
+        echo "BITCOIND_P2MR='$DEPS_DIR/bitcoind'" >> "$ENV_FILE"
+    fi
+    echo "Updated $ENV_FILE (BITCOIND_P2MR)"
+    echo "Run: just bip360-kitchen-sink-tier-a"
+
+# Tier A kitchen-sink demo: Alice=stock Core 31+enforcer, Bob=P2MR Core (BITCOIND_P2MR).
+# Requires electrs (just setup) + P2MR binary (just setup-p2mr).
+bip360-kitchen-sink-tier-a auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    if [ -z "${BITCOIND_P2MR:-}" ] || [ ! -x "${BITCOIND_P2MR}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            echo "WARN: BITCOIND_P2MR missing — running just setup-p2mr" >&2
+            just setup-p2mr
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "BITCOIND_P2MR not set or not executable — run: just setup-p2mr" >&2
+            echo "Source of truth: jbride/bitcoin#2 head (cryptoquick:p2mr)" >&2
+            echo "or re-run with: just bip360-kitchen-sink-tier-a yes" >&2
+            exit 1
+        fi
+    fi
+    if [ -z "${ELECTRS:-}" ] || [ ! -x "${ELECTRS}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            echo "WARN: ELECTRS missing — running just setup" >&2
+            just setup
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "ELECTRS not set or not executable — Tier A needs wallet+mempool (run: just setup)" >&2
+            echo "or re-run with: just bip360-kitchen-sink-tier-a yes" >&2
+            exit 1
+        fi
+    fi
+    echo "==> Tier A: Alice stock + Bob P2MR ($BITCOIND_P2MR)"
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    just _run-it bip360_kitchen_sink_tier_a "{{auto}}"
 
 # Full local verification stack (Phase D recipe wiring; does not add CI steps).
 # P2P E2E requires full bootstrap (`just setup`) for electrs — pass `yes` to auto-setup when env is missing.

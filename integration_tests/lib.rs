@@ -17,6 +17,8 @@ mod test_bip360_multi_leaf;
 #[cfg(feature = "bip360")]
 mod test_bip360_p2p_mempool_e2e;
 #[cfg(feature = "bip360")]
+mod test_bip360_kitchen_sink_tier_a;
+#[cfg(feature = "bip360")]
 mod test_bip360_valid_spend;
 mod test_activation_height;
 mod test_blinded_m6_roundtrip;
