@@ -1,0 +1,33 @@
+[package]
+name = "cusf_miner_sidecar"
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+version.workspace = true
+description = "TB-sidecar: hold enforcer-format txs and submitblock to stock bitcoind"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+bitcoin = { workspace = true }
+bitcoin-jsonrpsee = { workspace = true }
+clap = { workspace = true, features = ["derive", "std", "help", "usage", "error-context"] }
+jsonrpsee = { workspace = true, features = ["client"] }
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true
+
+[lib]
+name = "cusf_miner_sidecar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cusf_miner_sidecar"
+path = "src/bin/cusf_miner_sidecar.rs"

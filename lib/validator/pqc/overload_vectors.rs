@@ -6,17 +6,20 @@
 mod tests {
     use std::collections::HashSet;
 
-    use bitcoin::ScriptBuf as BitcoinScriptBuf;
-    use bitcoin::hashes::Hash;
-    use bitcoin_p2mr_pqc::ScriptBuf;
-    use bitcoin_p2mr_pqc::p2mr::{P2mrBuilder, P2mrControlBlock, P2mrError};
-    use bitcoin_p2mr_pqc::taproot::{LeafVersion, TapLeafHash, TapTree};
+    use bitcoin::{ScriptBuf as BitcoinScriptBuf, hashes::Hash};
+    use bitcoin_p2mr_pqc::{
+        TapScriptBuf,
+        p2mr::{P2mrBuilder, P2mrControlBlock, P2mrError},
+        taproot::{LeafVersion, TapLeafHash, TapLeafHashExt as _, TapTree},
+    };
     use hex::{FromHex, ToHex};
     use serde::Deserialize;
 
-    use super::super::leaf_script::parse_leaf_script;
-    use super::super::merkle::{control_block_bytes_for_enforcer, verify_merkle_path};
-    use super::super::p2mr_output::validate_p2mr_output;
+    use super::super::{
+        leaf_script::parse_leaf_script,
+        merkle::{control_block_bytes_for_enforcer, verify_merkle_path},
+        p2mr_output::validate_p2mr_output,
+    };
 
     const VECTORS_JSON: &str =
         include_str!("../../../test_vectors/p2mr_overload_construction.json");
@@ -38,6 +41,7 @@ mod tests {
     struct TestVector {
         id: String,
         #[serde(default)]
+        #[expect(dead_code)]
         ref_impl_id: Option<String>,
         objective: String,
         given: TestVectorGiven,
@@ -71,11 +75,14 @@ mod tests {
 
     #[derive(Debug, Deserialize, Clone)]
     struct TVScriptLeaf {
+        /// Present in ref-impl JSON; not used by our merkle derivation.
+        #[expect(dead_code)]
         id: u8,
         script: String,
         #[serde(rename = "leafVersion")]
         leaf_version: u8,
         #[serde(default)]
+        #[expect(dead_code)]
         priv_key: Option<String>,
     }
 
@@ -162,7 +169,7 @@ mod tests {
 
     struct LeafPlacement {
         depth: u8,
-        script: ScriptBuf,
+        script: TapScriptBuf,
         version: LeafVersion,
     }
 
@@ -172,7 +179,7 @@ mod tests {
             if let TVScriptTree::Leaf(leaf) = node {
                 let script_hex = convert_substr_tag_to_checksig(&leaf.script);
                 let script_bytes = Vec::from_hex(&script_hex).expect("valid converted script hex");
-                let script = ScriptBuf::from_bytes(script_bytes);
+                let script = TapScriptBuf::from_bytes(script_bytes);
                 let version =
                     LeafVersion::from_consensus(leaf.leaf_version).expect("valid leaf version");
                 // Match ref-impl `p2mr_pqc_construction.rs`: pass traversal `depth` (not depth+1).
@@ -203,13 +210,13 @@ mod tests {
         let mut leaf_scripts = Vec::new();
 
         for derived_leaf in tap_tree.script_leaves() {
-            let script = derived_leaf.script().to_bytes();
+            let script = derived_leaf.script().to_vec();
             leaf_scripts.push(BitcoinScriptBuf::from_bytes(script.clone()));
             let leaf_hash = TapLeafHash::from_script(derived_leaf.script(), derived_leaf.version());
-            leaf_hashes.push(leaf_hash.as_raw_hash().to_byte_array().encode_hex());
+            leaf_hashes.push(leaf_hash.to_byte_array().encode_hex());
 
             let control_block = P2mrControlBlock {
-                merkle_branch: derived_leaf.merkle_branch().clone(),
+                merkle_branch: derived_leaf.merkle_branch().to_owned(),
             };
             control_blocks.push(control_block.serialize().encode_hex());
         }
@@ -444,7 +451,7 @@ mod tests {
                 }
                 let raw = BitcoinScriptBuf::from_bytes(Vec::from_hex(&script_hex).unwrap());
                 let converted = BitcoinScriptBuf::from_bytes(
-                    Vec::from_hex(&convert_substr_tag_to_checksig(&script_hex)).unwrap(),
+                    Vec::from_hex(convert_substr_tag_to_checksig(&script_hex)).unwrap(),
                 );
                 let raw_result = parse_leaf_script(raw.as_script());
                 match raw_result {
@@ -486,10 +493,16 @@ mod tests {
         }
     }
 
-    /// Helper to regenerate intermediary/expected fields after editing `given.scriptTree`.
+    /// Print derived goldens for manual refresh of intermediary/expected JSON fields.
+    ///
+    /// Default runs are a no-op (so `cargo test` does not report an *ignored* test).
+    /// To dump: `OVERLOAD_GOLDEN_DUMP=1 cargo test -p bip300301_enforcer_lib --features bip360 dump_overload_golden -- --nocapture`
     #[test]
-    #[ignore = "run manually to refresh golden values: cargo test dump_overload_golden -- --ignored --nocapture"]
+    #[expect(clippy::print_stdout)]
     fn dump_overload_golden() {
+        if std::env::var_os("OVERLOAD_GOLDEN_DUMP").is_none() {
+            return;
+        }
         let vectors = load_vectors();
         for vector in &vectors.test_vectors {
             if vector.expected.error.is_some() {

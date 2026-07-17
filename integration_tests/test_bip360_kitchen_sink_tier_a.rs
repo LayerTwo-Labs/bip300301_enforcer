@@ -2,7 +2,7 @@
 //!
 //! Same five-round sat pile as trial #34, but Bob is jbride/bitcoin#2 head so P2MR
 //! spends can try the mempool path. Overload kitchen-sink remains the CUSF product
-//! format; OP_SUBSTR dialects stay valid elsewhere (see docs/TIER_A_P2MR_ALIGNMENT.md).
+//! format; OP_SUBSTR protocols stay valid elsewhere (see docs/TIER_A_P2MR_ALIGNMENT.md).
 
 #![cfg(feature = "bip360")]
 
@@ -80,8 +80,7 @@ pub async fn test_bip360_kitchen_sink_tier_a(
         .instrument(tracing::info_span!("test", name = TIER_A_TEST_NAME))
     })
     .into();
-    res_rx
-        .next()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("unexpected end of Tier A kitchen-sink task result stream"))?
+    res_rx.next().await.ok_or_else(|| {
+        anyhow::anyhow!("unexpected end of Tier A kitchen-sink task result stream")
+    })?
 }

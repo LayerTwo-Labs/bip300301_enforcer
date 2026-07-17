@@ -427,6 +427,14 @@ pub struct Validator {
 }
 
 impl Validator {
+    // bip360 adds activation height + PQC budget args beyond the drivechain ctor.
+    #[cfg_attr(
+        feature = "bip360",
+        expect(
+            clippy::too_many_arguments,
+            reason = "bip360 adds activation + budget args"
+        )
+    )]
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
         mainchain_rest_client: MainRestClient,

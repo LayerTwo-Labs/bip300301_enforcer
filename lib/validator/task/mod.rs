@@ -1,43 +1,29 @@
-use std::{collections::HashMap, path::PathBuf, time::Instant};
-
-use async_broadcast::{Sender, TrySendError};
-use bitcoin::{Block, BlockHash, Network, Transaction, Work, hashes::Hash as _};
-use fallible_iterator::FallibleIterator;
-use futures::FutureExt as _;
-use jsonrpsee::core::{
-    client::BatchResponse,
-    params::{ArrayParams, BatchRequestBuilder},
-};
-use sneed::RwTxn;
-use tokio_util::sync::CancellationToken;
-
-use crate::{
-    proto::mainchain::HeaderSyncProgress,
-    types::{BlockInfo, BmmCommitments, Event, HeaderInfo, NetworkParams},
-    validator::{
-        dbs::{
-            Dbs,
-            diff::{self, Diff},
-        },
-        main_rest_client::MainRestClient,
-    },
-};
-
 #[cfg(feature = "drivechain")]
 use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
 };
+use std::{collections::HashMap, path::PathBuf, time::Instant};
 
+use async_broadcast::{Sender, TrySendError};
 #[cfg(feature = "drivechain")]
 use bitcoin::{Amount, OutPoint, hashes::sha256d};
+use bitcoin::{Block, BlockHash, Network, Transaction, Work, hashes::Hash as _};
 #[cfg(feature = "drivechain")]
 use error_fatality::Split as _;
+use fallible_iterator::FallibleIterator;
 #[cfg(feature = "drivechain")]
 use fallible_iterator::IteratorExt;
+use futures::FutureExt as _;
+use jsonrpsee::core::{
+    client::BatchResponse,
+    params::{ArrayParams, BatchRequestBuilder},
+};
+use sneed::RwTxn;
 #[cfg(feature = "drivechain")]
 use sneed::{RoTxn, db};
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "drivechain")]
 use crate::{
@@ -51,6 +37,17 @@ use crate::{
         WithdrawalBundleEvent, WithdrawalBundleEventKind,
     },
     validator::dbs::PendingM6ids,
+};
+use crate::{
+    proto::mainchain::HeaderSyncProgress,
+    types::{BlockInfo, BmmCommitments, Event, HeaderInfo, NetworkParams},
+    validator::{
+        dbs::{
+            Dbs,
+            diff::{self, Diff},
+        },
+        main_rest_client::MainRestClient,
+    },
 };
 
 mod block_files;
@@ -1250,14 +1247,8 @@ impl BlockHandler<'_> {
             {
                 let block_hash = block.header.block_hash();
                 let prev = block.header.prev_blockhash;
-                return self.connect_block_pass_through(
-                    rwtxn,
-                    block,
-                    height,
-                    coinbase,
-                    block_hash,
-                    prev,
-                );
+                return self
+                    .connect_block_pass_through(rwtxn, block, height, coinbase, block_hash, prev);
             }
             #[cfg(not(feature = "bip360"))]
             {
@@ -1285,7 +1276,11 @@ impl BlockHandler<'_> {
                     let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
                         break 'work None;
                     };
-                    Some(dbs.block_hashes.cumulative_work().get(rwtxn, &current_tip)?)
+                    Some(
+                        dbs.block_hashes
+                            .cumulative_work()
+                            .get(rwtxn, &current_tip)?,
+                    )
                 };
                 let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
                 if Some(cumulative_work) > current_tip_cumulative_work {
@@ -3722,7 +3717,7 @@ mod tests {
 mod bip360_connect_disconnect_tests {
     use bitcoin::{
         Amount, Block, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid,
-        hashes::Hash as _,
+        hashes::Hash as _, sighash::TapSighashType,
     };
     use miette::{IntoDiagnostic, Result};
 
@@ -3732,7 +3727,6 @@ mod bip360_connect_disconnect_tests {
         pqc::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend},
         test_utils::create_test_dbs,
     };
-    use bitcoin::sighash::TapSighashType;
 
     fn test_handler(dbs: &crate::validator::dbs::Dbs) -> BlockHandler<'_> {
         BlockHandler::new(

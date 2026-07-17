@@ -1,4 +1,4 @@
-//! Per-transaction metrics for BIP 360 P2P mempool E2E trials.
+//! Per-transaction metrics for BIP 360 dual-node / mining trials.
 
 #![cfg(feature = "bip360")]
 
@@ -8,8 +8,7 @@ use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     validator::pqc::schemes::{self, SignatureScheme},
 };
-use bitcoin::consensus::encode::serialize;
-use bitcoin::{Transaction, Txid};
+use bitcoin::{Transaction, Txid, consensus::encode::serialize};
 use serde::Deserialize;
 use tokio::time::sleep;
 
@@ -125,6 +124,8 @@ pub async fn wait_for_mempool_entry(
 }
 
 /// Log a concise transaction report at info level.
+///
+/// `peer` is a free-form label (node role, path, or round context) — not only P2P mempool.
 pub fn log_tx_report(round: u32, peer: &str, report: &TxReport) {
     tracing::info!(
         round,
@@ -135,6 +136,29 @@ pub fn log_tx_report(round: u32, peer: &str, report: &TxReport) {
         weight = report.weight,
         pqc_algos = ?report.pqc_algos,
         mempool_fees = ?report.mempool_fees,
-        "P2P mempool tx report"
+        "BIP 360 tx report"
     );
+}
+
+/// Kitchen-sink product-climax shape: witness depth 5, three algos, weight > 10_000 WU.
+///
+/// Shared by TB-mine / TB-factory / TB-sidecar so the bar cannot drift across trials.
+pub fn assert_kitchen_sink_spend_shape(spend_tx: &Transaction) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        spend_tx.input[0].witness.len() == 5,
+        "kitchen-sink witness stack depth must be 5 (3 sigs + leaf + control block; got {})",
+        spend_tx.input[0].witness.len()
+    );
+    let report = tx_report(spend_tx, None);
+    anyhow::ensure!(
+        report.pqc_algos.len() == 3,
+        "kitchen-sink expects three algorithms (got {:?})",
+        report.pqc_algos
+    );
+    anyhow::ensure!(
+        report.weight > 10_000,
+        "kitchen-sink weight should exceed 10_000 WU (got {})",
+        report.weight
+    );
+    Ok(())
 }

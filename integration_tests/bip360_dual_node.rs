@@ -1,9 +1,11 @@
-//! Dual-node regtest helpers for BIP 360 P2P mempool E2E trials.
+//! Dual-node regtest helpers for BIP 360 P2P / mining trials.
 //!
-//! Two topologies:
-//! - **Stock dual** (`setup_dual_node_peers`): Alice + Bob both stock Core — trial #34.
+//! Three topologies:
+//! - **Stock dual** (`setup_dual_node_peers`): Alice + Bob both stock Core — trial #34 (P2P E2E).
 //! - **Tier A** (`setup_tier_a_dual_node_peers`): Alice stock Core 31 + enforcer (CUSF);
 //!   Bob = P2MR Core from jbride/bitcoin#2 head (`cryptoquick:p2mr`, `BITCOIND_P2MR`).
+//! - **TB-factory** (`setup_cusf_factory_peers`): Alice stock tip + bip360 enforcer;
+//!   Miner = second stock Core block factory only (both Unpatched; dual-process demo).
 
 #![cfg(feature = "bip360")]
 
@@ -12,15 +14,20 @@ use std::time::Duration;
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     p2p::broadcast_nonstandard_tx,
-    validator::pqc::signer_dev::{
-        SignAlgorithm, build_hybrid_ec_slh_spend_from_prevout,
-        build_kitchen_sink_spend_from_prevout, build_p2mr_spend_from_prevout,
-        p2mr_output_for_algorithm, p2mr_output_for_hybrid_ec_slh, p2mr_output_for_kitchen_sink,
+    validator::pqc::{
+        core_interop::p2mr_output_for_core_hybrid_ec_slh,
+        protocol_dump::format_p2mr_spend_protocol_dump,
+        signer_dev::{
+            SignAlgorithm, build_hybrid_ec_slh_spend_from_prevout,
+            build_kitchen_sink_spend_from_prevout, build_p2mr_spend_from_prevout,
+            p2mr_output_for_algorithm, p2mr_output_for_hybrid_ec_slh, p2mr_output_for_kitchen_sink,
+        },
     },
 };
-use bitcoin::consensus::encode::deserialize_hex;
-use bitcoin::sighash::TapSighashType;
-use bitcoin::{Address, Amount, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+use bitcoin::{
+    Address, Amount, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
+    consensus::encode::deserialize_hex, sighash::TapSighashType,
+};
 use futures::channel::mpsc;
 use serde::Deserialize;
 use tokio::time::sleep;
@@ -38,9 +45,12 @@ use crate::{
 pub const TEST_NAME: &str = "bip360_p2p_mempool_e2e";
 /// Tier A kitchen-sink demo: stock Alice + cryptoquick P2MR Bob.
 pub const TIER_A_TEST_NAME: &str = "bip360_kitchen_sink_tier_a";
-/// Tier B open problem: enforcer-format P2MR spend must enter Bob P2MR mempool.
-/// Opt-in (`BIP360_TIER_B=1`); **expected FAIL** until interop is fixed — bounty target.
+/// Tier B (TB-sendraw): Bob P2MR mempool must accept shape 1 Schnorr + shape 2 Core hybrid.
+/// Opt-in (`BIP360_TIER_B=1`); not in `it-all`. Green twin tip path: TB-mine / CUSF miner.
 pub const TIER_B_TEST_NAME: &str = "bip360_tier_b_p2mr_mempool";
+/// Tier B (TB-factory): second stock bitcoind as block factory only (dual-process demo).
+/// Alice = tip authority + enforcer; Bob = Miner. Both Unpatched. Not in `it-all`.
+pub const TIER_B_FACTORY_TEST_NAME: &str = "bip360_tier_b_cusf_factory";
 
 /// Initial sat pile funded from Alice's wallet (round 0 output value).
 pub const INITIAL_PILE_VALUE: u64 = 50_000;
@@ -84,6 +94,12 @@ impl Directories<'_> {
     fn register_all(&self, file_registry: &TestFileRegistry, test_name: &str) {
         Self::register_files(file_registry, test_name, self.alice, "alice");
         Self::register_files(file_registry, test_name, self.bob, "bob");
+    }
+
+    /// Like [`Self::register_all`] but label the second peer as `"miner"` (TB-factory).
+    fn register_alice_miner(&self, file_registry: &TestFileRegistry, test_name: &str) {
+        Self::register_files(file_registry, test_name, self.alice, "alice");
+        Self::register_files(file_registry, test_name, self.bob, "miner");
     }
 }
 
@@ -232,6 +248,9 @@ async fn bootstrap_dual_peers(
     test_name: &'static str,
     tier_a: bool,
 ) -> anyhow::Result<DualNodePeers> {
+    // Child bitcoind/enforcer task failures are sent on res_tx. We discard res_rx
+    // here; process death surfaces later as RPC timeouts rather than immediate Err.
+    // Polling res_rx across wait loops would need a larger harness refactor.
     let (res_tx, _res_rx) = mpsc::unbounded();
     let mut peers = PreDualSetup::new(
         bin_paths,
@@ -268,6 +287,136 @@ pub async fn setup_dual_node_peers(
         false,
     )
     .await
+}
+
+/// TB-factory: two stock (Unpatched) nodes — Alice tip+enforcer, Bob=Miner block factory.
+///
+/// Asymmetric vs dual P2P wallet bootstrap:
+/// - Both `Mode::NoMempool` + `enable_enforcer_wallet: false` (no electrs; `setup-core` enough).
+/// - Alice runs bip360 enforcer (`--activation-height=0`, budget 5000 ms) as tip gate.
+/// - Miner still boots an enforcer process (`PostSetup` always starts one). Factory semantics:
+///   Miner's bip360 activation is set far above regtest tip (`--activation-height=1000000`) so
+///   the structural enforcer never tip-gates / `invalidateblock`s P2MR spends. Only Core GBT +
+///   `bitcoin-util grind` + `submitblock` matter on Miner; tip authority remains Alice.
+///
+/// Each node mines 101 independent blocks during setup, then peers; Alice extends by one so
+/// Miner reorgs onto Alice's chain (Alice owns the mature coinbases for wallet-sign).
+/// Bootstrap asserts tip **hash** equality after height wait.
+/// Spends are built with Alice's wallet; blocks are produced via Miner `submitblock`.
+pub async fn setup_cusf_factory_peers(
+    bin_paths: BinPaths,
+    file_registry: &TestFileRegistry,
+) -> anyhow::Result<DualNodePeers> {
+    // Same res_rx limitation as bootstrap_dual_peers — see comment there.
+    let (res_tx, _res_rx) = mpsc::unbounded();
+
+    let alice_pre = PreSetup::new(bin_paths.clone(), crate::setup::Network::Regtest)?;
+    let miner_pre = PreSetup::new(bin_paths, crate::setup::Network::Regtest)?;
+    Directories {
+        alice: &alice_pre.directories,
+        bob: &miner_pre.directories,
+    }
+    .register_alice_miner(file_registry, TIER_B_FACTORY_TEST_NAME);
+
+    let miner_listen = miner_pre.reserved_ports.bitcoind_listen.port();
+    let alice_listen = alice_pre.reserved_ports.bitcoind_listen.port();
+
+    tracing::info!(
+        test = TIER_B_FACTORY_TEST_NAME,
+        "starting TB-factory peers (Alice NoMempool+bip360, Miner NoMempool factory)"
+    );
+
+    let mut alice = alice_pre
+        .setup(
+            Mode::NoMempool,
+            SetupOpts {
+                bitcoind_kind: BitcoindKind::Unpatched,
+                enable_enforcer_wallet: false,
+                bitcoind_args: vec!["-debug=net".to_string(), "-debug=validation".to_string()],
+                enforcer_args: vec![
+                    "--activation-height=0".to_string(),
+                    "--pqc-verify-budget-ms=5000".to_string(),
+                ],
+            },
+            res_tx.clone(),
+        )
+        .await?;
+
+    let miner = miner_pre
+        .setup(
+            Mode::NoMempool,
+            SetupOpts {
+                bitcoind_kind: BitcoindKind::Unpatched,
+                enable_enforcer_wallet: false,
+                bitcoind_args: vec!["-debug=net".to_string(), "-debug=validation".to_string()],
+                // Structural enforcer only: activation far above regtest tip so Miner never
+                // tip-gates P2MR (kitchen-sink PQC would otherwise hit the default 500 ms budget).
+                enforcer_args: vec!["--activation-height=1000000".to_string()],
+            },
+            res_tx,
+        )
+        .await?;
+
+    drop(
+        alice
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "addnode",
+                [format!("127.0.0.1:{miner_listen}"), "add".to_owned()],
+            )
+            .run_utf8()
+            .await?,
+    );
+    drop(
+        miner
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "addnode",
+                [format!("127.0.0.1:{alice_listen}"), "add".to_owned()],
+            )
+            .run_utf8()
+            .await?,
+    );
+
+    // Divergent height-101 tips after independent setup; extend Alice so Miner reorgs.
+    let mining_addr = alice.mining_address.to_string();
+    drop(
+        alice
+            .bitcoin_cli
+            .command::<String, _, _, _, _>([], "generatetoaddress", ["1", &mining_addr])
+            .run_utf8()
+            .await?,
+    );
+    let alice_height = current_block_height(&alice).await? as u32;
+    crate::bip360_block::wait_for_bitcoind_height(&miner, alice_height).await?;
+
+    // Lock "Miner reorged onto Alice": tip hash, not only height.
+    let alice_tip = alice
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getbestblockhash", [])
+        .run_utf8()
+        .await?;
+    let miner_tip = miner
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getbestblockhash", [])
+        .run_utf8()
+        .await?;
+    anyhow::ensure!(
+        alice_tip.trim().eq_ignore_ascii_case(miner_tip.trim()),
+        "TB-factory bootstrap: Miner tip {} != Alice tip {} after height wait (reorg onto Alice failed)",
+        miner_tip.trim(),
+        alice_tip.trim()
+    );
+
+    crate::bip360_block::wait_for_enforcer_synced(&mut alice).await?;
+
+    Ok(DualNodePeers {
+        alice,
+        bob: miner,
+        tier_a: false,
+    })
 }
 
 /// Tier A: Alice = stock Core 31 (CUSF), Bob = P2MR Core (`BITCOIND_P2MR` / cryptoquick:p2mr).
@@ -401,7 +550,7 @@ async fn current_block_height(post_setup: &PostSetup) -> anyhow::Result<i32> {
 ///
 /// Uses `maxfeerate=0` so large PQC fee-rates never trip the default RPC ceiling.
 /// Nodes are started with `-acceptnonstdtxn` (see `Bitcoind::spawn_command_with_args`).
-async fn send_raw_to_node(node: &PostSetup, tx: &Transaction) -> anyhow::Result<()> {
+pub async fn send_raw_to_node(node: &PostSetup, tx: &Transaction) -> anyhow::Result<()> {
     use bitcoin::consensus::encode::serialize_hex;
     let hex = serialize_hex(tx);
     // Bitcoin Core: sendrawtransaction "hexstring" (maxfeerate)
@@ -482,9 +631,13 @@ pub async fn broadcast_to_peer(
                 )
                 .await
                 .is_ok()
-                    && bip360_tx_report::wait_for_mempool_entry(peer, txid, Duration::from_millis(500))
-                        .await
-                        .is_ok()
+                    && bip360_tx_report::wait_for_mempool_entry(
+                        peer,
+                        txid,
+                        Duration::from_millis(500),
+                    )
+                    .await
+                    .is_ok()
                 {
                     return Ok(());
                 }
@@ -597,7 +750,8 @@ async fn confirm_p2mr_spend_via_submitblock(
         &bip360_tx_report::tx_report(spend_tx, None),
     );
 
-    let block = crate::bip360_block::build_block_from_template(miner, vec![spend_tx.clone()]).await?;
+    let block =
+        crate::bip360_block::build_block_from_template(miner, vec![spend_tx.clone()]).await?;
     let block_hash = crate::bip360_block::submit_block(miner, &block).await?;
     let miner_height = current_block_height(miner).await? as u32;
 
@@ -639,9 +793,9 @@ fn tier_a_strict() -> bool {
 
 /// Tier A: try Bob (P2MR Core) mempool, then mine on Bob; fall back to submitblock.
 ///
-/// Stock Alice is expected **not** to hold the spend in mempool (CUSF gap). Bob
-/// (`cryptoquick:p2mr` / jbride#2 head) may accept overload-format spends — or not
-/// (OP_SUBSTR dialect still valid elsewhere); fallback keeps the kitchen-sink demo green.
+/// Stock Alice is expected **not** to hold the spend in mempool (stock Core mempool
+/// policy). Bob (`cryptoquick:p2mr` / jbride#2 head) may accept overload-format spends —
+/// or not (OP_SUBSTR protocol still valid elsewhere); fallback keeps the kitchen-sink demo green.
 async fn confirm_p2mr_spend_tier_a(
     peers: &mut DualNodePeers,
     round: u32,
@@ -653,20 +807,16 @@ async fn confirm_p2mr_spend_tier_a(
     // 1) Prefer Bob P2MR mempool.
     match send_raw_to_node(&peers.bob, spend_tx).await {
         Ok(()) => {
-            if bip360_tx_report::wait_for_mempool_entry(
-                &peers.bob,
-                txid,
-                Duration::from_secs(15),
-            )
-            .await
-            .is_ok()
+            if bip360_tx_report::wait_for_mempool_entry(&peers.bob, txid, Duration::from_secs(15))
+                .await
+                .is_ok()
             {
                 bip360_tx_report::log_tx_report(
                     round,
                     "bob-p2mr-mempool",
                     &bip360_tx_report::tx_report(spend_tx, None),
                 );
-                // Alice stock should typically reject / omit (document CUSF mempool gap).
+                // Alice stock should typically reject / omit (stock Core mempool policy).
                 if bip360_tx_report::wait_for_mempool_entry(
                     &peers.alice,
                     txid,
@@ -684,7 +834,7 @@ async fn confirm_p2mr_spend_tier_a(
                     tracing::info!(
                         round,
                         %txid,
-                        "stock Alice mempool absent (expected CUSF gap); Bob P2MR holds spend"
+                        "stock Alice mempool absent (stock Core mempool policy, expected); Bob P2MR holds spend"
                     );
                 }
 
@@ -715,7 +865,7 @@ async fn confirm_p2mr_spend_tier_a(
                 round,
                 %txid,
                 error = %format!("{err:#}"),
-                "Bob P2MR mempool rejected spend (dual-valid dialects; fallback submitblock)"
+                "Bob P2MR mempool rejected spend (dual-valid protocols; fallback submitblock)"
             );
             if tier_a_strict() {
                 return Err(anyhow::anyhow!(
@@ -726,7 +876,7 @@ async fn confirm_p2mr_spend_tier_a(
     }
 
     // 2) Fallback: submitblock. Prefer stock Alice as miner so undefined-v2 anyone-can-spend
-    //    consensus accepts even when Bob script-verify is dialect-strict on the tx alone.
+    //    consensus accepts even when Bob script-verify is protocol-strict on the tx alone.
     //    If preferred miner is Bob and mempool failed, still try Alice first for tip retention.
     let (miner_is_bob, reason) = if preferred_miner_is_bob {
         (
@@ -734,10 +884,7 @@ async fn confirm_p2mr_spend_tier_a(
             "Tier A fallback: mine on stock Alice (submitblock) after Bob mempool miss",
         )
     } else {
-        (
-            false,
-            "Tier A fallback: mine on stock Alice (submitblock)",
-        )
+        (false, "Tier A fallback: mine on stock Alice (submitblock)")
     };
     tracing::warn!(round, %txid, reason, miner_is_bob, "using submitblock path");
     let _ = miner_is_bob;
@@ -775,12 +922,18 @@ fn vout_for_script_pubkey(tx: &Transaction, script_pubkey: &ScriptBuf) -> anyhow
 
 /// Require Bob (P2MR Core) to admit an enforcer-built spend to its **mempool**.
 ///
-/// This is the Tier B success criterion. Today Bob typically rejects with
-/// `Witness program hash mismatch` / `-26` (control-block / leaf dialect gap).
-/// See `docs/TIER_B_P2MR_MEMPOOL.md`.
+/// This is the Tier B (TB-sendraw) success criterion. Today Bob typically rejects with
+/// `Witness program hash mismatch` / `-26` (control-block / leaf **protocol** mismatch).
+/// See `docs/TIER_B_P2MR_MEMPOOL.md`. Not a CUSF tip failure — see TB-mine
+/// (`bip360_tier_b_cusf_miner`).
+///
+/// On rejection, the error includes a structured **protocol dump** (prevout spk /
+/// witness program, leaf script, control block, tapleaf hash, recomputed root) for
+/// bounty hunters comparing enforcer builders vs P2MR Core (lanes 3A/3B/3C).
 pub async fn assert_bob_p2mr_mempool_accepts_spend(
     peers: &DualNodePeers,
     spend_tx: &Transaction,
+    prevout: &TxOut,
     label: &str,
 ) -> anyhow::Result<()> {
     let txid = spend_tx.compute_txid();
@@ -793,15 +946,26 @@ pub async fn assert_bob_p2mr_mempool_accepts_spend(
     match send_raw_to_node(&peers.bob, spend_tx).await {
         Ok(()) => {}
         Err(err) => {
+            let dump =
+                format_p2mr_spend_protocol_dump(spend_tx, Some(prevout.script_pubkey.as_script()));
             return Err(anyhow::anyhow!(
-                "TIER B OPEN: Bob P2MR Core rejected enforcer-format {label} spend via \
+                "TIER B (TB-sendraw) OPEN — P2MR protocol mismatch on mempool script verify:\n\
+                 Bob P2MR Core rejected enforcer-format {label} spend via \
                  sendrawtransaction (txid {txid}).\n\
                  error: {err:#}\n\
                  \n\
-                 Success means: enforcer-built overload P2MR spends enter cryptoquick/jbride \
+                 {dump}\n\
+                 \n\
+                 This is enforcer ↔ P2MR Core protocol alignment, not “CUSF broken.”\n\
+                 Green CUSF mining path: just bip360-tier-b-cusf (docs/TIER_B_CUSF_MINER.md).\n\
+                 Success here: enforcer-built overload spends enter cryptoquick/jbride \
                  P2MR mempool without submitblock.\n\
-                 Background + bounty notes: docs/TIER_B_P2MR_MEMPOOL.md\n\
-                 Reproduce: BIP360_TIER_B=1 just bip360-tier-b-mempool"
+                 Fix lanes: **3A** enforcer builders, **3B** P2MR Core, **3C** shared vectors \
+                 (docs/TIER_B_P2MR_MEMPOOL.md).\n\
+                 Bounty notes: docs/TIER_B_P2MR_MEMPOOL.md\n\
+                 Reproduce: just bip360-tier-b-mempool\n\
+                 (raw it: BIP360_TIER_B=1 just it bip360_tier_b_p2mr_mempool)\n\
+                 Shape 1 Schnorr is the green gate; shape 2 is Core hybrid OP_SUBSTR."
             ));
         }
     }
@@ -809,14 +973,19 @@ pub async fn assert_bob_p2mr_mempool_accepts_spend(
     bip360_tx_report::wait_for_mempool_entry(&peers.bob, txid, Duration::from_secs(15))
         .await
         .map_err(|err| {
+            let dump =
+                format_p2mr_spend_protocol_dump(spend_tx, Some(prevout.script_pubkey.as_script()));
             anyhow::anyhow!(
                 "TIER B OPEN: sendraw to Bob returned ok but getmempoolentry failed for \
                  {label} spend {txid}: {err:#}\n\
-                 See docs/TIER_B_P2MR_MEMPOOL.md"
+                 \n\
+                 {dump}\n\
+                 \n\
+                 See docs/TIER_B_P2MR_MEMPOOL.md (lanes 3A/3B/3C)"
             )
         })?;
 
-    // Stock Alice must still reject (documents CUSF mempool gap — not the Tier B prize).
+    // Stock Alice must still reject (stock Core mempool policy — not the TB-sendraw prize).
     if bip360_tx_report::wait_for_mempool_entry(&peers.alice, txid, Duration::from_secs(2))
         .await
         .is_ok()
@@ -837,12 +1006,13 @@ pub async fn assert_bob_p2mr_mempool_accepts_spend(
     Ok(())
 }
 
-/// Round 0: Alice wallet → initial Schnorr P2MR pile.
-pub async fn round0_wallet_to_p2mr(peers: &mut DualNodePeers) -> anyhow::Result<PileUtxo> {
-    let (script_pubkey, _) = p2mr_output_for_algorithm(SignAlgorithm::Schnorr, &SCHNORR_ENTROPY)
-        .map_err(anyhow::Error::msg)?;
-    let tx =
-        build_wallet_to_p2mr_tx(&peers.alice, script_pubkey.clone(), INITIAL_PILE_VALUE).await?;
+/// Alice wallet → confirmed P2MR pile paying `script_pubkey` (shared fund path).
+pub async fn fund_p2mr_from_wallet(
+    peers: &mut DualNodePeers,
+    script_pubkey: ScriptBuf,
+    amount_sats: u64,
+) -> anyhow::Result<PileUtxo> {
+    let tx = build_wallet_to_p2mr_tx(&peers.alice, script_pubkey.clone(), amount_sats).await?;
     let txid = tx.compute_txid();
     broadcast_to_peer(
         &peers.alice,
@@ -864,12 +1034,40 @@ pub async fn round0_wallet_to_p2mr(peers: &mut DualNodePeers) -> anyhow::Result<
     let vout = vout_for_script_pubkey(&tx, &script_pubkey)?;
     Ok(PileUtxo {
         outpoint: OutPoint { txid, vout },
-        amount: INITIAL_PILE_VALUE,
+        amount: amount_sats,
         txout: TxOut {
-            value: Amount::from_sat(INITIAL_PILE_VALUE),
+            value: Amount::from_sat(amount_sats),
             script_pubkey,
         },
     })
+}
+
+/// Round 0: Alice wallet → initial Schnorr P2MR pile.
+pub async fn round0_wallet_to_p2mr(peers: &mut DualNodePeers) -> anyhow::Result<PileUtxo> {
+    let (script_pubkey, _) = p2mr_output_for_algorithm(SignAlgorithm::Schnorr, &SCHNORR_ENTROPY)
+        .map_err(anyhow::Error::msg)?;
+    fund_p2mr_from_wallet(peers, script_pubkey, INITIAL_PILE_VALUE).await
+}
+
+/// Alice wallet → kitchen-sink P2MR pile (tip/CUSF overload shape funding).
+///
+/// Must fund the kitchen-sink scriptPubKey — not a Schnorr pile — so
+/// `root_matches_prevout_program` in the protocol dump is meaningful.
+pub async fn fund_kitchen_sink_p2mr(peers: &mut DualNodePeers) -> anyhow::Result<PileUtxo> {
+    let (script_pubkey, _) =
+        p2mr_output_for_kitchen_sink(&HYBRID_EC_ENTROPY, &MLDSA_ENTROPY, &SLH_ENTROPY)
+            .map_err(anyhow::Error::msg)?;
+    fund_p2mr_from_wallet(peers, script_pubkey, INITIAL_PILE_VALUE).await
+}
+
+/// Alice wallet → Core-legal hybrid OP_SUBSTR P2MR pile (TB-sendraw shape 2 funding).
+///
+/// Interop leaf only (`core_interop`); not enforcer-canonical. Fund the hybrid spk so
+/// `root_matches_prevout_program` in the protocol dump is meaningful on reject.
+pub async fn fund_core_hybrid_p2mr(peers: &mut DualNodePeers) -> anyhow::Result<PileUtxo> {
+    let (script_pubkey, _) = p2mr_output_for_core_hybrid_ec_slh(&HYBRID_EC_ENTROPY, &SLH_ENTROPY)
+        .map_err(anyhow::Error::msg)?;
+    fund_p2mr_from_wallet(peers, script_pubkey, INITIAL_PILE_VALUE).await
 }
 
 /// Round 1: Bob Schnorr-only spend → hybrid P2MR pile for round 2.

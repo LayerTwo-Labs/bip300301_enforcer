@@ -95,8 +95,9 @@ jobs:
         # Nightly introduces a bunch of new errors - we therefore run clippy in
         # two stages: one regular, and one on nightly with specifically only
         # checking for unqualified local imports.
-        # prettier-ignore
-        run: cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
+        run: >-
+          cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports
+          -Zcrate-attr="feature(unqualified_local_imports)"
 
   check-bip360:
     name: Check BIP 360 feature
@@ -118,7 +119,10 @@ jobs:
         run: cargo check --no-default-features --features bip360 --all-targets
 
       - name: Test PQC module
-        run: cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::
+        # Quote: unquoted `::` is invalid YAML (prettier/GitHub parsers reject it).
+        run:
+          "cargo test -p bip300301_enforcer_lib --no-default-features --features
+          bip360 pqc::"
 
       - name: P2MR signer smoke test
         run: |
@@ -130,10 +134,14 @@ jobs:
             | grep -q signed_spend_tx_hex
 
       - name: Clippy (bip360)
-        run: cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
+        run:
+          cargo clippy -p bip300301_enforcer_lib --no-default-features
+          --features bip360 -- -D warnings
 
       - name: Clippy (integration_tests bip360)
-        run: cargo clippy -p bip300301_enforcer_integration_tests --features bip360 -- -D warnings
+        run:
+          cargo clippy -p bip300301_enforcer_integration_tests --features bip360
+          -- -D warnings
 
       - name: Check integration_tests example (bip360)
         run: cargo check --example integration_tests --features bip360

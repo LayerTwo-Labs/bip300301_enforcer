@@ -6,29 +6,75 @@ enforcer_bin := env_var_or_default('BIP300301_ENFORCER', 'target/debug/bip300301
 default:
     @just --list
 
-# Regenerate checked-in protobuf code under lib/proto/generated/ via buf.
-# Protos live in proto/ 
-#
-# NB: no `--include-imports`/`--include-wkt`: well-known types come from the
-# `buffa-types` crate, not from generated code.
-generate:
+# Ensure buf is on PATH for generate / lint-proto.
+# Local: auto-installs to ~/.local/bin when missing (optional pre-install).
+# CI: buf is already present via bufbuild/buf-action.
+# fmt: optional — skips with a note if buf is absent (does not call this recipe).
+_ensure_buf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="${HOME}/.local/bin:${PATH}"
+    if command -v buf >/dev/null 2>&1; then
+        exit 0
+    fi
+    BUF_VERSION="${BUF_VERSION:-1.50.0}"
+    INSTALL_DIR="${HOME}/.local/bin"
+    mkdir -p "$INSTALL_DIR"
+    OS=$(uname -s)
+    ARCH=$(uname -m)
+    case "$OS" in
+        Linux) BUF_OS=Linux ;;
+        Darwin) BUF_OS=Darwin ;;
+        *)
+            echo "error: buf not on PATH and auto-install unsupported on OS=$OS" >&2
+            echo "       install: https://buf.build/docs/installation" >&2
+            echo "       or: put a buf binary on PATH / in ~/.local/bin" >&2
+            exit 1
+            ;;
+    esac
+    case "$ARCH" in
+        x86_64) BUF_ARCH=x86_64 ;;
+        aarch64|arm64)
+            if [ "$BUF_OS" = Darwin ]; then BUF_ARCH=arm64; else BUF_ARCH=aarch64; fi
+            ;;
+        *)
+            echo "error: buf not on PATH and unsupported arch $ARCH for auto-install" >&2
+            echo "       install: https://buf.build/docs/installation" >&2
+            exit 1
+            ;;
+    esac
+    URL="https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-${BUF_OS}-${BUF_ARCH}"
+    echo "buf not on PATH; installing ${BUF_VERSION} → ${INSTALL_DIR}/buf"
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "error: curl required to auto-install buf" >&2
+        echo "       install buf manually: https://buf.build/docs/installation" >&2
+        exit 1
+    fi
+    if ! curl -fsSL -o "${INSTALL_DIR}/buf" "$URL"; then
+        echo "error: failed to download buf from:" >&2
+        echo "       $URL" >&2
+        echo "       install manually: https://buf.build/docs/installation" >&2
+        rm -f "${INSTALL_DIR}/buf"
+        exit 1
+    fi
+    chmod +x "${INSTALL_DIR}/buf"
+    "${INSTALL_DIR}/buf" --version
+
+# Regenerate checked-in protobuf code (auto-installs buf if needed)
+generate: _ensure_buf
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="${HOME}/.local/bin:${PATH}"
     buf generate --clean
 
-# Lint the protos under proto/. Run by CI.
-lint-proto:
+# Lint protos under proto/ (auto-installs buf if needed)
+lint-proto: _ensure_buf
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="${HOME}/.local/bin:${PATH}"
     buf lint proto
 
-# Benchmark a from-scratch signet sync. Each run creates a brand-new, isolated
-# data dir with a random suffix (./datadir-sync-benchmark.XXXXXX). Logs stats
-# and a consensus-state digest on exit, and writes the full consensus state
-# to <data-dir>/consensus-state.json so runs are easy to diff.
-#
-# The single argument (default 0) is either:
-#   - a block height to sync to (0 = the chain tip), or
-#   - a path to a consensus-state.json file from a previous run: we sync to that
-#     file's tip height and then verify our consensus state matches it, exiting
-#     non-zero on any mismatch.
-#
+# Signet sync benchmark (arg: height or prior consensus-state.json path)
 @sync-benchmark-signet target='0':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -50,19 +96,35 @@ lint-proto:
         "${mode[@]}"
     echo "Consensus state written to $datadir/consensus-state.json"
 
+# Workspace clippy (avoid cargo --all-features: reserved shrincs)
 clippy:
-    cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- --deny warnings
-    cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
+    cargo clippy --all-targets --features "drivechain,bip360,rustls" --fix --allow-dirty --allow-staged -- --deny warnings
+    cargo clippy -p bip300301_enforcer_lib --all-targets --no-default-features --features bip360 -- --deny warnings
+    cargo clippy -p bip300301_enforcer_integration_tests --all-targets --features bip360 -- --deny warnings
+    cargo +nightly clippy --features "drivechain,bip360,rustls" -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
 
 build *args='':
-    cargo build --all-features {{ args }}
+    cargo build --features "drivechain,bip360,rustls" {{ args }}
 
+# Format Rust (nightly), optional prettier + buf
 fmt:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo +nightly fmt --all
-    bunx prettier --write .
-    buf format -w proto
+    if command -v bunx >/dev/null 2>&1; then
+        bunx prettier --write .
+    elif command -v npx >/dev/null 2>&1; then
+        npx --yes prettier --write .
+    else
+        echo "note: prettier skipped (install bunx or npx for md/yaml format)" >&2
+    fi
+    if command -v buf >/dev/null 2>&1; then
+        buf format -w proto
+    else
+        echo "note: buf format skipped (buf not on PATH)" >&2
+    fi
 
-# Run integration tests (drivechain default; pass trial names / flags after --).
+# Integration tests (pass trial names after --)
 test-it *args='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -72,35 +134,42 @@ test-it *args='':
 
 # --- BIP 360 verification (AGENTS.md / CI check-bip360) ---
 
+# pqc:: unit tests (bip360)
 test-pqc:
     cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 pqc::
 
-# Alias for backwards compatibility
+# Alias for test-pqc
 test-quantum: test-pqc
 
+# Drivechain default unit tests
 test-drivechain:
     cargo test -p bip300301_enforcer_lib
 
-# Delivered in Phase B (plan lists under Phase C/D) — early step toward Phase D
-# `bip360-verify-full`. Local-only until that recipe wires CI.
-# Minimal upstream regression: default (drivechain) build + drivechain unit tests.
+# Minimal drivechain build + unit tests
 drivechain-smoke:
     cargo build -p bip300301_enforcer
     just test-drivechain
 
+# Clippy bip360 lib + integration tests
 clippy-bip360:
     cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
     cargo clippy -p bip300301_enforcer_integration_tests --features bip360 -- -D warnings
 
+# rustfmt --check via nightly (matches rustfmt.toml; no stable spam)
 fmt-check:
-    cargo fmt --all -- --check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +nightly fmt --all -- --check
 
+# cargo check bip360 all targets
 check-bip360:
     cargo check --no-default-features --features bip360 --all-targets
 
+# cargo check integration_tests example
 check-integration-build:
     cargo check --example integration_tests --features bip360
 
+# p2mr_signer example smoke
 p2mr-signer-smoke:
     cargo build --example p2mr_signer --no-default-features --features bip360
     cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 p2mr_signer_roundtrip -- --nocapture
@@ -109,15 +178,15 @@ p2mr-signer-smoke:
         --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111 \
         | grep -q signed_spend_tx_hex
 
+# Local CI: check + unit tests + clippy-bip360 + fmt-check + it build
 verify: check-bip360 test-pqc p2mr-signer-smoke test-drivechain clippy-bip360 fmt-check check-integration-build
 
-# Block-matrix trials: bip360-only enforcer is sufficient.
-# P2P E2E (`bip360-p2p-e2e`) rebuilds with `drivechain,bip360` — wallet+mempool path needs default drivechain wiring.
+# Build bip360 enforcer + integration example
 build-bip360:
     cargo build -p bip300301_enforcer --no-default-features --features bip360
     cargo build --example integration_tests --features bip360
 
-# Download stock bitcoind only; write integrationtests.env for BIP 360 live trials.
+# Download stock bitcoind only; write integrationtests.env
 setup-core:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -173,7 +242,7 @@ setup-core:
     echo "Deps cache: $DEPS_DIR"
     echo "Run BIP 360 trials with: just demo-a / just it <trial_name>"
 
-# Full upstream bootstrap: patched + stock bitcoind, electrs, signet miner.
+# Full bootstrap: patched + stock bitcoind, electrs, signet miner
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -319,7 +388,7 @@ demo-steps:
     @echo "  just demo-a          # valid Schnorr spend retained"
     @echo "  just demo-b          # empty witness → invalidateblock"
     @echo "  just it <trial>      # single integration trial"
-    @echo "  just it-all          # all 33 block-only BIP 360 trials"
+    @echo "  just it-all          # all 34 block-only BIP 360 trials (incl. TB-mine)"
 
 demo-a auto='':
     @just _run-it bip360_valid_schnorr_spend {{auto}}
@@ -330,11 +399,10 @@ demo-b auto='':
 it trial auto='':
     @just _run-it {{trial}} {{auto}}
 
-# Alias: all 33 block-only BIP 360 integration trials.
+# Alias for it-all (34 green block-only trials)
 bip360-block-matrix auto='': (it-all auto)
 
-# Dual-node P2P mempool E2E (5 rounds on one sat pile).
-# Requires full bootstrap (`just setup`) for electrs — not `setup-core` alone.
+# Dual-node P2P E2E (needs electrs: just setup)
 bip360-p2p-e2e auto='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -363,10 +431,7 @@ bip360-p2p-e2e auto='':
     export BIP360_SKIP_REBUILD=1
     just _run-it bip360_p2p_mempool_e2e "{{auto}}"
 
-# Wire BITCOIND_P2MR to a local P2MR Core binary (jbride/bitcoin#2 head = cryptoquick:p2mr).
-# Default source: ~/Projects/cryptoquick/bitcoin/build/bin/bitcoind when present.
-# Override with CRYPTOQUICK_BITCOIN_BUILD=/path/to/build/bin
-# Requires WITH_ZMQ=ON (enforcer uses getzmqnotifications / pubsequence).
+# Point BITCOIND_P2MR at cryptoquick/jbride P2MR bitcoind (ZMQ required)
 setup-p2mr:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -407,8 +472,7 @@ setup-p2mr:
     echo "Updated $ENV_FILE (BITCOIND_P2MR)"
     echo "Run: just bip360-kitchen-sink-tier-a"
 
-# Tier A kitchen-sink demo: Alice=stock Core 31+enforcer, Bob=P2MR Core (BITCOIND_P2MR).
-# Requires electrs (just setup) + P2MR binary (just setup-p2mr).
+# Tier A kitchen-sink dual-node demo (stock Alice + P2MR Bob; needs electrs)
 bip360-kitchen-sink-tier-a auto='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -456,14 +520,39 @@ bip360-kitchen-sink-tier-a auto='':
     export BIP360_SKIP_REBUILD=1
     just _run-it bip360_kitchen_sink_tier_a "{{auto}}"
 
-# Tier B CUSF mining path (expect PASS): stock Core + enforcer, spends via submitblock.
-# No P2MR Core required. Docs: docs/TIER_B_CUSF_MINER.md
+# TB-mine: CUSF tip via submitblock (stock Core; in it-all)
 bip360-tier-b-cusf auto='':
-    @just _run-it bip360_tier_b_cusf_miner {{auto}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> Tier B CUSF mining (expect PASS)"
+    just _run-it bip360_tier_b_cusf_miner "{{auto}}"
 
-# Tier B — P2MR Core mempool / protocol match (expected FAIL until sendraw accepts enforcer spends).
-# Opt-in bounty target; not part of green CI / it-all / bip360-verify-full.
-# Docs: docs/TIER_B_P2MR_MEMPOOL.md
+# TB-factory: dual stock Miner + Alice tip (not in it-all)
+bip360-tier-b-cusf-factory auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> Tier B CUSF dual-process factory (expect PASS): Miner submitblock → Alice tip"
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    just _run-it bip360_tier_b_cusf_factory "{{auto}}"
+
+# TB-sidecar: inventory miner helper (not in it-all)
+bip360-tier-b-cusf-sidecar auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> Tier B CUSF miner sidecar (expect PASS): inventory → submitblock → tip retained"
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build -p cusf_miner_sidecar
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    just _run-it bip360_tier_b_cusf_sidecar "{{auto}}"
+
+# TB-sendraw: Bob mempool shapes 1+2+3 (opt-in; needs BITCOIND_P2MR)
 bip360-tier-b-mempool auto='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -498,8 +587,9 @@ bip360-tier-b-mempool auto='':
             exit 1
         fi
     fi
-    echo "==> Tier B (EXPECTED FAIL until fixed): Bob P2MR mempool must accept enforcer spends"
-    echo "    See docs/TIER_B_P2MR_MEMPOOL.md"
+    echo "==> Tier B TB-sendraw: Bob mempool interop (shapes 1 Schnorr + 2 Core hybrid + 3 kitchen-sink)"
+    echo "    Expect PASS all three hard green gates. Green tip twin: just bip360-tier-b-cusf."
+    echo "    Docs: docs/TIER_B_P2MR_MEMPOOL.md"
     cargo build -p bip300301_enforcer --features "drivechain,bip360"
     cargo build --example integration_tests --features bip360
     export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
@@ -508,8 +598,100 @@ bip360-tier-b-mempool auto='':
     export BIP360_TIER_B=1
     just _run-it bip360_tier_b_p2mr_mempool "{{auto}}"
 
-# Full local verification stack (Phase D recipe wiring; does not add CI steps).
-# P2P E2E requires full bootstrap (`just setup`) for electrs — pass `yes` to auto-setup when env is missing.
+# Bob-mined P2MR block vs Alice blk*.dat (needs P2MR + electrs)
+bip360-blk-dat-e2e auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    if [ -z "${BITCOIND_P2MR:-}" ] || [ ! -x "${BITCOIND_P2MR}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            just setup-p2mr
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "BITCOIND_P2MR required — run: just setup-p2mr" >&2
+            exit 1
+        fi
+    fi
+    if [ -z "${ELECTRS:-}" ] || [ ! -x "${ELECTRS}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            just setup
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "ELECTRS required — run: just setup" >&2
+            exit 1
+        fi
+    fi
+    echo "==> E2E blk.dat: Bob-mined block vs Alice on-disk (enforcer keeps tip)"
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    just _run-it bip360_blk_dat_e2e "{{auto}}"
+
+# Dual stock: Miner block == Alice blk*.dat (drivechain enforcer)
+drivechain-blk-dat-e2e auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    if [ -z "${BITCOIND_UNPATCHED:-}" ] || [ ! -x "${BITCOIND_UNPATCHED}" ]; then
+        if [ "{{auto}}" = "yes" ] || [ "{{auto}}" = "1" ]; then
+            just setup-core
+            set -a
+            # shellcheck disable=SC1090
+            source "$ENV_FILE"
+            set +a
+        else
+            echo "BITCOIND_UNPATCHED required — run: just setup-core" >&2
+            exit 1
+        fi
+    fi
+    echo "==> E2E blk.dat (drivechain): Miner block vs Alice on-disk (enforcer keeps tip)"
+    cargo build -p bip300301_enforcer --features drivechain
+    cargo build --example integration_tests --features drivechain
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    just _run-it drivechain_blk_dat_e2e "{{auto}}"
+
+# Claim pins: testmempoolaccept no-insert; stock rejects P2MR spend
+cusf-claims auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    cargo build -p bip300301_enforcer --features "drivechain,bip360"
+    cargo build --example integration_tests --features bip360
+    export BIP300301_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP300301_ENFORCER="{{enforcer_bin}}"
+    export BIP360_SKIP_REBUILD=1
+    just _run-it cusf_claim_testmempoolaccept_no_insert "{{auto}}"
+    just _run-it cusf_claim_stock_rejects_p2mr_spend "{{auto}}"
+
+# Full local verify stack (just verify + optional e2es; pass yes to auto-setup)
 bip360-verify-full auto='':
     just drivechain-smoke
     just verify
@@ -541,6 +723,7 @@ it-all auto='':
         bip360_valid_multi_leaf_cross_block_schnorr_spend
         bip360_valid_multi_leaf_cross_block_slh_spend
         bip360_invalid_multi_leaf_tampered_signature_mldsa
+        bip360_tier_b_cusf_miner
     )
     for trial in "${trials[@]}"; do
         echo "==> $trial"

@@ -844,7 +844,8 @@ pub fn tests(
         };
         async_trials.push(tier_a_trial);
 
-        // Tier B: opt-in known-fail mempool interop (BIP360_TIER_B=1). Not in it-all.
+        // Tier B TB-sendraw: opt-in Bob mempool shapes 1 Schnorr + 2 Core hybrid
+        // (BIP360_TIER_B=1). Not in it-all. Green twin: bip360_tier_b_cusf_miner.
         let tier_b_trial: TestTrial = {
             let name = crate::bip360_dual_node::TIER_B_TEST_NAME;
             AsyncTrial::new(
@@ -867,6 +868,111 @@ pub fn tests(
             )
         };
         async_trials.push(tier_b_trial);
+
+        // Tier B TB-factory: dual stock — Miner block factory + Alice tip/enforcer.
+        // Not in it-all (dual-process slower). Docs: TIER_B_CUSF_MINER.md § factory.
+        let tier_b_factory_trial: TestTrial = {
+            let name = crate::bip360_dual_node::TIER_B_FACTORY_TEST_NAME;
+            AsyncTrial::new(
+                name,
+                Box::pin({
+                    let bin_paths = bin_paths.clone();
+                    let file_registry = file_registry.clone();
+                    async move {
+                        let test_future = crate::test_bip360_tier_b_cusf_factory::test_bip360_tier_b_cusf_factory(
+                            bin_paths,
+                            file_registry,
+                        )
+                        .instrument(tracing::info_span!("test", name = %name));
+                        catch_unwind(test_future).await
+                    }
+                }),
+                file_registry.clone(),
+                failure_collector.clone(),
+            )
+        };
+        async_trials.push(tier_b_factory_trial);
+
+        // Bob-mined P2MR block vs Alice on-disk blk*.dat (needs BITCOIND_P2MR). Not in it-all.
+        let blk_dat_e2e_trial: TestTrial = {
+            let name = crate::test_bip360_blk_dat_e2e::TEST_NAME;
+            AsyncTrial::new(
+                name,
+                Box::pin({
+                    let bin_paths = bin_paths.clone();
+                    let file_registry = file_registry.clone();
+                    async move {
+                        let test_future = crate::test_bip360_blk_dat_e2e::test_bip360_blk_dat_e2e(
+                            bin_paths,
+                            file_registry,
+                        )
+                        .instrument(tracing::info_span!("test", name = %name));
+                        catch_unwind(test_future).await
+                    }
+                }),
+                file_registry.clone(),
+                failure_collector.clone(),
+            )
+        };
+        async_trials.push(blk_dat_e2e_trial);
+    }
+
+    // Drivechain dual-node: Miner mines standard tx block; Alice disk == Miner block.
+    {
+        let name = crate::test_drivechain_blk_dat_e2e::TEST_NAME;
+        async_trials.push(AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future =
+                        crate::test_drivechain_blk_dat_e2e::test_drivechain_blk_dat_e2e(
+                            bin_paths,
+                            file_registry,
+                        )
+                        .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ));
+    }
+
+    // FINAL_REPORT claim: testmempoolaccept never inserts (control: sendraw does).
+    async_trials.push(new_trial_with_setup_opts(
+        "cusf_claim_testmempoolaccept_no_insert".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts {
+            // Mature coinbases in bitcoind wallet; no electrs needed.
+            enable_enforcer_wallet: false,
+            bitcoind_args: vec!["-fallbackfee=0.0002".to_string()],
+            ..Default::default()
+        },
+        crate::test_cusf_claims::test_cusf_claim_testmempoolaccept_no_insert,
+    ));
+
+    #[cfg(feature = "bip360")]
+    {
+        // FINAL_REPORT claim: stock Core rejects P2MR *spends* via mempool RPC.
+        async_trials.push(new_trial(
+            "cusf_claim_stock_rejects_p2mr_spend".to_string(),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode: Mode::NoMempool,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_cusf_claims::test_cusf_claim_stock_rejects_p2mr_spend,
+        ));
     }
 
     async_trials.push(new_trial_with_setup_opts(
@@ -1069,6 +1175,10 @@ pub fn tests(
         bip360_trial!(
             "bip360_tier_b_cusf_miner",
             crate::test_bip360_tier_b_cusf_miner::test_bip360_tier_b_cusf_miner
+        );
+        bip360_trial!(
+            "bip360_tier_b_cusf_sidecar",
+            crate::test_bip360_tier_b_cusf_sidecar::test_bip360_tier_b_cusf_sidecar
         );
         bip360_trial!(
             "bip360_invalid_kitchen_sink_tamper_ec_sig",

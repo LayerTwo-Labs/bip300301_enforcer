@@ -98,23 +98,26 @@ Workflow commands live in [`Justfile`](./Justfile). Run from
 `bip300301_enforcer/` or from the workspace root (root `justfile` imports this
 file).
 
-| Recipe                        | Purpose                                                                                                          |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `just verify`                 | Full pre-submit check (matches CI `check-bip360` + drivechain tests + stable `fmt-check`)                        |
-| `just drivechain-smoke`       | Default build + drivechain unit tests (upstream regression, no bip360; **local-only** — CI wiring is HITL) |
-| `just test-pqc`               | PQC unit tests (`bip360` only; `pqc::` module)                                                                   |
-| `just test-quantum`           | Alias for `just test-pqc` (backwards compatibility)                                                              |
-| `just test-drivechain`        | Drivechain unit tests on default features (no bip360)                                                            |
-| `just test-it`                | Drivechain integration trials (upstream default)                                                                 |
-| `just setup-core`             | Download stock bitcoind; write `integrationtests.env` (BIP 360 live trials)                                      |
-| `just setup`                  | Full upstream bootstrap (patched + stock bitcoind + electrs) — drivechain trials only                            |
-| `just build-bip360`           | Build enforcer + integration harness with `bip360` only (`--no-default-features`) — sufficient for block-matrix trials |
-| `just demo-a` / `just demo-b` | Regtest smoke demos (valid / invalidateblock)                                                                    |
-| `just it <trial>`             | Run one BIP 360 integration trial                                                                                |
-| `just it-all`                 | Run all 33 block-only BIP 360 trials                                                                             |
-| `just bip360-block-matrix`    | Alias for `just it-all` (33 block-only trials)                                                                   |
-| `just bip360-p2p-e2e`         | Dual-node P2P mempool E2E (`bip360_p2p_mempool_e2e`; trial #34; rebuilds enforcer with `drivechain,bip360`; needs `just setup` for electrs, not `setup-core`) |
-| `just bip360-verify-full`     | **Canonical pre-submit:** `drivechain-smoke` + `verify` + `build-bip360` + `bip360-block-matrix` + `bip360-p2p-e2e`; accepts `auto` param (e.g. `yes`) for setup when env missing. Phase D = local full verify; **CI wiring remains HITL** |
+| Recipe                            | Purpose                                                                                                                                                                                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `just verify`                     | Full pre-submit check (matches CI `check-bip360` + drivechain tests + stable `fmt-check`)                                                                                                                                                  |
+| `just drivechain-smoke`           | Default build + drivechain unit tests (upstream regression, no bip360; **local-only** — CI wiring is HITL)                                                                                                                                 |
+| `just test-pqc`                   | PQC unit tests (`bip360` only; `pqc::` module)                                                                                                                                                                                             |
+| `just test-quantum`               | Alias for `just test-pqc` (backwards compatibility)                                                                                                                                                                                        |
+| `just test-drivechain`            | Drivechain unit tests on default features (no bip360)                                                                                                                                                                                      |
+| `just test-it`                    | Drivechain integration trials (upstream default)                                                                                                                                                                                           |
+| `just setup-core`                 | Download stock bitcoind; write `integrationtests.env` (BIP 360 live trials)                                                                                                                                                                |
+| `just setup`                      | Full upstream bootstrap (patched + stock bitcoind + electrs) — drivechain trials only                                                                                                                                                      |
+| `just build-bip360`               | Build enforcer + integration harness with `bip360` only (`--no-default-features`) — sufficient for block-matrix trials                                                                                                                     |
+| `just demo-a` / `just demo-b`     | Regtest smoke demos (valid / invalidateblock)                                                                                                                                                                                              |
+| `just it <trial>`                 | Run one BIP 360 integration trial                                                                                                                                                                                                          |
+| `just it-all`                     | Run all 34 green block-only BIP 360 trials (classic matrix + TB-mine)                                                                                                                                                                      |
+| `just bip360-block-matrix`        | Alias for `just it-all` (34 block-only trials)                                                                                                                                                                                             |
+| `just bip360-tier-b-cusf`         | TB-mine CUSF mining path alone (PASS; also in `it-all`)                                                                                                                                                                                    |
+| `just bip360-tier-b-cusf-factory` | TB-factory dual-process: Miner stock `submitblock` → Alice tip (PASS; not in `it-all`; `setup-core` enough)                                                                                                                                |
+| `just bip360-tier-b-mempool`      | TB-sendraw opt-in **PASS** shapes 1+2+**3** (Schnorr + Core hybrid + overload kitchen-sink; not in `it-all`)                                                                                                                               |
+| `just bip360-p2p-e2e`             | Dual-node P2P mempool E2E (`bip360_p2p_mempool_e2e`; not in `it-all`; rebuilds enforcer with `drivechain,bip360`; needs `just setup` for electrs)                                                                                          |
+| `just bip360-verify-full`         | **Canonical pre-submit:** `drivechain-smoke` + `verify` + `build-bip360` + `bip360-block-matrix` + `bip360-p2p-e2e`; accepts `auto` param (e.g. `yes`) for setup when env missing. Phase D = local full verify; **CI wiring remains HITL** |
 
 Append `yes` to auto-run setup when `integrationtests.env` is missing (e.g.
 `just demo-b yes`).
@@ -157,8 +160,8 @@ features (no `--activation-height` CLI). Live block-matrix needs stock bitcoind
 `it-all` / `bip360-block-matrix` set `BIP360_SKIP_REBUILD=1` after a single
 `build-bip360` prelude so trials do not rebuild per iteration. **Do not export
 `BIP360_SKIP_REBUILD` manually** — if set without a preceding `build-bip360`, a
-stale drivechain-only enforcer binary will break trials (`unexpected argument` on
-bip360 CLI flags).
+stale drivechain-only enforcer binary will break trials (`unexpected argument`
+on bip360 CLI flags).
 
 Phase D delivers **local** recipe wiring and smoke execution. Adding
 `drivechain-smoke` / `bip360-verify-full` to CI workflows is **human/HITL** per
@@ -214,8 +217,8 @@ externally visible actions.** Criteria traceability:
 | Confirm overload model with BIP 360 authors                    | [`docs/BIP360_OVERLOAD_ADDENDUM.md`](./docs/BIP360_OVERLOAD_ADDENDUM.md)        |
 | Kellnr `bitcoinpqc` 0.4.0 publish                              | [`docs/KELLNR_PUBLISH.md`](./docs/KELLNR_PUBLISH.md)                            |
 | Signet deployment / workshop                                   | [`docs/SIGNET_WORKSHOP.md`](./docs/SIGNET_WORKSHOP.md)                          |
-| Run live block-matrix trials (33 registered)                   | `just setup-core`; `just it-all` or `just it <trial>`                           |
-| Run live P2P E2E trial (#34)                                 | `just setup` (electrs required); `just bip360-p2p-e2e`                        |
+| Run live green block-only suite (34 in `it-all`)               | `just setup-core`; `just it-all` or `just it <trial>`                           |
+| Run live dual-node P2P E2E (`bip360_p2p_mempool_e2e`)          | `just setup` (electrs required); `just bip360-p2p-e2e` (not in `it-all`)        |
 
 ## Key paths
 

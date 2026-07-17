@@ -1,0 +1,24 @@
+{
+  "control_block_hex": "c1",
+  "ec_entropy_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "ec_pubkey_hex": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+  "enforcer_canonical": false,
+  "expected_leaf_script_len": 70,
+  "id": "core_hybrid_op_substr",
+  "lane": "interop",
+  "leaf_layout": "PUSH32 <ec_pk> OP_CHECKSIG PUSH32 <slh_pk> OP_SUBSTR OP_BOOLAND OP_VERIFY",
+  "leaf_script_hex": "203c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1ac20888888888888888888888888888888889ba5ff987ecbeffe3ce3bf278b9bf4a97f9a69",
+  "leaf_script_len": 70,
+  "merkle_root_hex": "2ec9e34d0cac5dcc1807209788d449975403abbaf75e6ad29583a5d7aaad9434",
+  "note": "Core-legal hybrid OP_SUBSTR; enforcer rejects OP_SUBSTR on tip verify (Bob-only criterion)",
+  "script_pubkey_hex": "52202ec9e34d0cac5dcc1807209788d449975403abbaf75e6ad29583a5d7aaad9434",
+  "shape": 2,
+  "slh_entropy_hex": "8888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888",
+  "slh_pubkey_hex": "888888888888888888888888888888889ba5ff987ecbeffe3ce3bf278b9bf4a9",
+  "witness_stack_sizes": {
+    "control": 1,
+    "ec_sig": 64,
+    "leaf": 70,
+    "slh_sig": 7856
+  }
+}

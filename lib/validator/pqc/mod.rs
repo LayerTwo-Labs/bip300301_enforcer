@@ -15,25 +15,34 @@ pub mod limits;
 pub mod merkle;
 pub mod p2mr_output;
 pub mod p2mr_utxo;
+pub mod protocol_dump;
 pub mod schemes;
 pub mod signer_dev;
 pub mod spend;
 
 #[cfg(feature = "bip360")]
+pub mod core_interop;
+#[cfg(feature = "bip360")]
+pub mod kitchen_sink_3b;
+#[cfg(feature = "bip360")]
 pub mod multi_leaf;
+#[cfg(feature = "bip360")]
+pub mod protocol_vectors;
+#[cfg(feature = "bip360")]
+pub mod published_vectors;
 
 #[cfg(all(test, feature = "bip360"))]
 mod overload_vectors;
 
-use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, HashSet},
+};
 
 use bitcoin::{Block, OutPoint, Transaction, TxOut};
 use thiserror::Error;
 
-use self::activation::Bip360Activation;
-use self::limits::PqcVerifyBudget;
-use self::spend::SpendError;
+use self::{activation::Bip360Activation, limits::PqcVerifyBudget, spend::SpendError};
 
 #[derive(Debug, Error)]
 pub enum PqcValidationError {
@@ -234,9 +243,11 @@ pub fn validate_and_diff_block_transactions(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use bitcoin::{Amount, TxOut, transaction::Version};
     use std::time::Duration;
+
+    use bitcoin::{Amount, TxOut, transaction::Version};
+
+    use super::*;
 
     fn p2mr_output_script() -> bitcoin::ScriptBuf {
         // 0x52 OP_2, 0x20 push 32, then 32 zero bytes
@@ -318,15 +329,20 @@ mod tests {
 
     #[test]
     fn block_validation_rejects_exhausted_pqc_budget() {
-        use bitcoin::blockdata::opcodes::all::OP_CHECKSIG;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::key::{Keypair, Secp256k1};
-        use bitcoin::secp256k1::rand::thread_rng;
-        use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
-        use bitcoin::taproot::{LeafVersion, TapLeafHash};
-        use bitcoin::{ScriptBuf, Sequence, TxIn, Witness, XOnlyPublicKey};
-        use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
-        use bitcoin_p2mr_pqc::taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash};
+        use bitcoin::{
+            ScriptBuf, Sequence, TxIn, Witness, XOnlyPublicKey,
+            blockdata::opcodes::all::OP_CHECKSIG,
+            hashes::Hash as _,
+            key::{Keypair, Secp256k1},
+            secp256k1::rand::thread_rng,
+            sighash::{Prevouts, SighashCache, TapSighashType},
+            taproot::{LeafVersion, TapLeafHash},
+        };
+        use bitcoin_p2mr_pqc::{
+    TapScriptBuf,
+            p2mr::P2MR_LEAF_VERSION,
+            taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash, TapNodeHashExt as _},
+        };
 
         let secp = Secp256k1::new();
         let keypair = Keypair::new(&secp, &mut thread_rng());
@@ -338,7 +354,7 @@ mod tests {
         let leaf_version =
             P2mrLeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("valid P2MR leaf version");
         let merkle_root = TapNodeHash::from_script(
-            bitcoin_p2mr_pqc::Script::from_bytes(leaf_script.as_bytes()),
+            &TapScriptBuf::from_bytes(leaf_script.as_bytes().to_vec()),
             leaf_version,
         )
         .to_byte_array();
@@ -380,8 +396,8 @@ mod tests {
             &bitcoin::secp256k1::Message::from_digest(msg.to_byte_array()),
             &keypair,
         );
-        let mut control_block = vec![0xc1];
-        control_block.extend_from_slice(&[0u8; 32]);
+        // Core wire single-leaf control: exactly 0xc1 (no 32-byte internal-key pad).
+        let control_block = vec![0xc1];
         let mut witness = Witness::new();
         witness.push(sig.serialize());
         witness.push(leaf_script.as_bytes());
@@ -405,13 +421,18 @@ mod tests {
 
     #[test]
     fn block_validation_natural_pqc_budget_exceeded_on_slh_verify() {
-        use bitcoin::blockdata::opcodes::all::OP_CHECKSIG;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::sighash::Prevouts;
-        use bitcoin::taproot::{LeafVersion, TapLeafHash};
-        use bitcoin::{ScriptBuf, Sequence, TxIn, Witness};
-        use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
-        use bitcoin_p2mr_pqc::taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash};
+        use bitcoin::{
+            ScriptBuf, Sequence, TxIn, Witness,
+            blockdata::opcodes::all::OP_CHECKSIG,
+            hashes::Hash as _,
+            sighash::Prevouts,
+            taproot::{LeafVersion, TapLeafHash},
+        };
+        use bitcoin_p2mr_pqc::{
+            TapScriptBuf,
+            p2mr::P2MR_LEAF_VERSION,
+            taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash, TapNodeHashExt as _},
+        };
         use bitcoinpqc::{Algorithm, generate_keypair, sign};
 
         let slh_kp = generate_keypair(Algorithm::SLH_DSA_SHA2_128S, &[0x88; 128]).expect("SLH");
@@ -428,7 +449,7 @@ mod tests {
         let leaf_version =
             P2mrLeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("valid P2MR leaf version");
         let merkle_root = TapNodeHash::from_script(
-            bitcoin_p2mr_pqc::Script::from_bytes(leaf_script.as_bytes()),
+            &TapScriptBuf::from_bytes(leaf_script.as_bytes().to_vec()),
             leaf_version,
         )
         .to_byte_array();
@@ -478,8 +499,8 @@ mod tests {
             .expect("sighash");
         let slh_sig = sign(&slh_kp.secret_key, sighash.as_byte_array()).expect("slh sign");
 
-        let mut control_block = vec![0xc1];
-        control_block.extend_from_slice(&[0u8; 32]);
+        // Core wire single-leaf control: exactly 0xc1 (no 32-byte internal-key pad).
+        let control_block = vec![0xc1];
         let mut witness = Witness::new();
         witness.push(slh_sig.bytes);
         witness.push(leaf_script.as_bytes());
@@ -513,10 +534,10 @@ mod tests {
 
     #[test]
     fn cross_block_p2mr_spend_validates_with_chain_utxos() {
+        use bitcoin::{hashes::Hash as _, sighash::TapSighashType};
+
         use super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use crate::validator::test_utils::test_block_header;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::sighash::TapSighashType;
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Schnorr,
@@ -552,10 +573,10 @@ mod tests {
 
     #[test]
     fn cross_block_p2mr_spend_rejects_bad_signature() {
+        use bitcoin::{hashes::Hash as _, sighash::TapSighashType};
+
         use super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use crate::validator::test_utils::test_block_header;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::sighash::TapSighashType;
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Schnorr,
@@ -611,10 +632,10 @@ mod tests {
 
     #[test]
     fn cross_block_p2mr_spend_no_longer_skipped_without_chain_utxos() {
+        use bitcoin::{hashes::Hash as _, sighash::TapSighashType};
+
         use super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use crate::validator::test_utils::test_block_header;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::sighash::TapSighashType;
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Schnorr,
@@ -655,10 +676,10 @@ mod tests {
 
     #[test]
     fn cross_block_p2mr_double_spend_in_block_rejects_missing_prevout() {
+        use bitcoin::{hashes::Hash as _, sighash::TapSighashType};
+
         use super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use crate::validator::test_utils::test_block_header;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::sighash::TapSighashType;
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Schnorr,
@@ -708,10 +729,10 @@ mod tests {
 
     #[test]
     fn intra_block_p2mr_double_spend_rejects_with_missing_prevout() {
+        use bitcoin::{hashes::Hash as _, sighash::TapSighashType};
+
         use super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use crate::validator::test_utils::test_block_header;
-        use bitcoin::hashes::Hash as _;
-        use bitcoin::sighash::TapSighashType;
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Schnorr,

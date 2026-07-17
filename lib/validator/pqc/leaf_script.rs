@@ -1,13 +1,19 @@
 //! Minimal tapscript parser for overloaded OP_CHECKSIG-family opcodes in P2MR leaves.
 
-use bitcoin::Script;
-use bitcoin::blockdata::opcodes::Opcode;
-use bitcoin::blockdata::opcodes::all::{
-    OP_BOOLAND, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY, OP_CHECKSIG, OP_CHECKSIGADD,
-    OP_CHECKSIGVERIFY, OP_PUSHBYTES_0, OP_PUSHBYTES_32, OP_PUSHNUM_1, OP_PUSHNUM_16, OP_SUBSTR,
-    OP_VERIFY,
+use bitcoin::{
+    Script,
+    blockdata::{
+        opcodes::{
+            Opcode,
+            all::{
+                OP_BOOLAND, OP_CHECKMULTISIG, OP_CHECKMULTISIGVERIFY, OP_CHECKSIG, OP_CHECKSIGADD,
+                OP_CHECKSIGVERIFY, OP_PUSHBYTES_0, OP_PUSHBYTES_32, OP_PUSHNUM_1, OP_PUSHNUM_16,
+                OP_SUBSTR, OP_VERIFY,
+            },
+        },
+        script::Instruction,
+    },
 };
-use bitcoin::blockdata::script::Instruction;
 use thiserror::Error;
 
 use super::limits::{
@@ -261,8 +267,7 @@ pub(crate) fn build_push32_checksigadd_leaf(pubkey: &[u8; 32]) -> bitcoin::Scrip
 /// Build a 2-of-2 multisig leaf: `OP_0 PUSH32 <pk1> PUSH32 <pk2> OP_2 OP_CHECKMULTISIG`.
 #[cfg(test)]
 pub(crate) fn build_2of2_multisig_leaf(pk1: &[u8; 32], pk2: &[u8; 32]) -> bitcoin::ScriptBuf {
-    use bitcoin::blockdata::opcodes::all::OP_PUSHNUM_2;
-    use bitcoin::blockdata::script::Builder;
+    use bitcoin::blockdata::{opcodes::all::OP_PUSHNUM_2, script::Builder};
     Builder::new()
         .push_opcode(OP_PUSHBYTES_0)
         .push_slice(pk1)
@@ -275,8 +280,7 @@ pub(crate) fn build_2of2_multisig_leaf(pk1: &[u8; 32], pk2: &[u8; 32]) -> bitcoi
 /// Build a 2-of-2 multisig leaf with `OP_CHECKMULTISIGVERIFY`.
 #[cfg(test)]
 pub(crate) fn build_2of2_multisigverify_leaf(pk1: &[u8; 32], pk2: &[u8; 32]) -> bitcoin::ScriptBuf {
-    use bitcoin::blockdata::opcodes::all::OP_PUSHNUM_2;
-    use bitcoin::blockdata::script::Builder;
+    use bitcoin::blockdata::{opcodes::all::OP_PUSHNUM_2, script::Builder};
     Builder::new()
         .push_opcode(OP_PUSHBYTES_0)
         .push_slice(pk1)
@@ -364,10 +368,11 @@ pub(crate) fn build_hybrid_ec_slh_leaf(ec_pk: &[u8; 32], slh_pk: &[u8; 32]) -> b
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bitcoin::blockdata::opcodes::all::{
         OP_IF, OP_NOTIF, OP_PUSHBYTES_32, OP_PUSHNUM_2, OP_RETURN,
     };
+
+    use super::*;
 
     #[test]
     fn parses_schnorr_only_leaf() {

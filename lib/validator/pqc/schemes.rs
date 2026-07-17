@@ -1,14 +1,15 @@
 //! Size-gated signature scheme selection and verification (no OP_SUBSTR).
 
-use std::borrow::Borrow;
-use std::time::Instant;
+use std::{borrow::Borrow, time::Instant};
 
-use bitcoin::hashes::Hash as _;
-use bitcoin::key::Secp256k1;
-use bitcoin::secp256k1::{Message, schnorr::Signature};
-use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
-use bitcoin::taproot::TapLeafHash;
-use bitcoin::{Transaction, XOnlyPublicKey};
+use bitcoin::{
+    Transaction, XOnlyPublicKey,
+    hashes::Hash as _,
+    key::Secp256k1,
+    secp256k1::{Message, schnorr::Signature},
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot::TapLeafHash,
+};
 use thiserror::Error;
 
 use super::limits::{
@@ -49,14 +50,18 @@ pub enum SchemeError {
 
 /// Parse tapscript sighash type from a witness signature element.
 ///
-/// When the element is a known canonical signature size with no trailing byte, defaults to
-/// [`TapSighashType::All`] (e.g. 64-byte Schnorr). When a valid trailing sighash byte is
-/// present after a canonical signature body, that type is returned.
+/// BIP 341/342: a bare canonical-size signature (e.g. 64-byte Schnorr) means
+/// [`TapSighashType::Default`] (`hash_type = 0x00` in the TapSighash preimage). When a valid
+/// trailing sighash byte follows a canonical body, that type is returned (including
+/// explicit `0x01` = [`TapSighashType::All`]).
+///
+/// **Not** the same as treating bare as `All`: `Default` and `All` cover the same outputs
+/// but produce different 32-byte messages because the preimage includes the raw hash_type.
 #[must_use]
 pub fn parse_sighash_type(signature: &[u8]) -> TapSighashType {
     let size = signature.len();
     if size <= 1 {
-        return TapSighashType::All;
+        return TapSighashType::Default;
     }
     let without_sighash = &signature[..size - 1];
     let last = signature[size - 1];
@@ -67,7 +72,7 @@ pub fn parse_sighash_type(signature: &[u8]) -> TapSighashType {
     {
         return sighash_type;
     }
-    TapSighashType::All
+    TapSighashType::Default
 }
 
 /// Classify a witness signature element by byte length (optionally with trailing sighash byte).
@@ -284,13 +289,15 @@ fn verify_pqc(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use bitcoin::Amount;
-    use bitcoin::key::{Keypair, Secp256k1};
-    use bitcoin::secp256k1::rand::thread_rng;
-    use bitcoin::taproot::{LeafVersion, TapLeafHash};
-    use bitcoin::{ScriptBuf, Sequence, TxIn, TxOut, Witness};
+    use bitcoin::{
+        Amount, ScriptBuf, Sequence, TxIn, TxOut, Witness,
+        key::{Keypair, Secp256k1},
+        secp256k1::rand::thread_rng,
+        taproot::{LeafVersion, TapLeafHash},
+    };
     use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
+
+    use super::*;
 
     #[test]
     fn classify_schnorr_size() {
@@ -306,8 +313,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_sighash_defaults_to_all_for_bare_schnorr() {
+    fn parse_sighash_defaults_to_default_for_bare_schnorr() {
         let sig = vec![0u8; 64];
+        assert_eq!(parse_sighash_type(&sig), TapSighashType::Default);
+    }
+
+    #[test]
+    fn parse_sighash_reads_trailing_all_byte() {
+        let mut sig = vec![0u8; 64];
+        sig.push(TapSighashType::All as u8);
         assert_eq!(parse_sighash_type(&sig), TapSighashType::All);
     }
 
@@ -321,6 +335,7 @@ mod tests {
     #[test]
     fn parse_sighash_matrix() {
         let cases = [
+            (TapSighashType::All, TapSighashType::All as u8),
             (TapSighashType::None, TapSighashType::None as u8),
             (TapSighashType::Single, TapSighashType::Single as u8),
             (
@@ -501,7 +516,8 @@ mod tests {
     }
 
     fn append_sighash(mut sig: Vec<u8>, sighash_type: TapSighashType) -> Vec<u8> {
-        if sighash_type != TapSighashType::All {
+        // Mirror production: only Default omits the trailing byte (BIP 341).
+        if sighash_type != TapSighashType::Default {
             sig.push(sighash_type as u8);
         }
         sig
@@ -525,8 +541,9 @@ mod tests {
 
     #[test]
     fn schnorr_sighash_matrix_overloaded_checksig() {
-        use super::super::leaf_script::build_push32_checksig_leaf;
         use bitcoin::XOnlyPublicKey;
+
+        use super::super::leaf_script::build_push32_checksig_leaf;
 
         let secp = Secp256k1::new();
         let keypair = Keypair::new(&secp, &mut thread_rng());
@@ -565,8 +582,9 @@ mod tests {
 
     #[test]
     fn ml_dsa_sighash_matrix_overloaded_checksig() {
-        use super::super::leaf_script::build_mldsa_checksig_leaf;
         use bitcoinpqc::{Algorithm, generate_keypair, sign};
+
+        use super::super::leaf_script::build_mldsa_checksig_leaf;
 
         let keypair = generate_keypair(Algorithm::ML_DSA_44, &[0x33; 128]).expect("ML-DSA keygen");
         let leaf_script = build_mldsa_checksig_leaf(&keypair.public_key.bytes);
@@ -601,8 +619,9 @@ mod tests {
 
     #[test]
     fn slh_dsa_sighash_matrix_overloaded_checksig() {
-        use super::super::leaf_script::build_push32_checksig_leaf;
         use bitcoinpqc::{Algorithm, generate_keypair, sign};
+
+        use super::super::leaf_script::build_push32_checksig_leaf;
 
         let keypair =
             generate_keypair(Algorithm::SLH_DSA_SHA2_128S, &[0x44; 128]).expect("SLH keygen");
@@ -644,8 +663,9 @@ mod tests {
 
     #[test]
     fn bitcoinpqc_schnorr_signs_native_verify_overloaded_checksig() {
-        use super::super::leaf_script::build_push32_checksig_leaf;
         use bitcoinpqc::{Algorithm, generate_keypair, sign};
+
+        use super::super::leaf_script::build_push32_checksig_leaf;
 
         let keypair =
             generate_keypair(Algorithm::SECP256K1_SCHNORR, &[0x11; 32]).expect("Schnorr keygen");

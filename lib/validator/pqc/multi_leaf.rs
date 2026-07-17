@@ -3,22 +3,26 @@
 //! Per BIP360 overload addendum, algorithm exclusion uses different merkle leaves;
 //! the enforcer validates only the revealed leaf script and its merkle path.
 
-use bitcoin::ScriptBuf;
-use bitcoin::hashes::Hash as _;
-use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
-use bitcoin::taproot::{LeafVersion, TapLeafHash};
 use bitcoin::{
-    Amount, OutPoint, Sequence, Transaction, TxIn, TxOut, Witness, transaction::Version,
+    Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+    hashes::Hash as _,
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot::{LeafVersion, TapLeafHash},
+    transaction::Version,
 };
-use bitcoin_p2mr_pqc::ScriptBuf as P2mrScriptBuf;
-use bitcoin_p2mr_pqc::p2mr::{P2MR_LEAF_VERSION, P2mrBuilder, P2mrControlBlock};
-use bitcoin_p2mr_pqc::taproot::{LeafVersion as P2mrLeafVersion, TapTree};
+use bitcoin_p2mr_pqc::{
+    TapScriptBuf as P2mrScriptBuf,
+    p2mr::{P2MR_LEAF_VERSION, P2mrBuilder, P2mrControlBlock},
+    taproot::{LeafVersion as P2mrLeafVersion, TapTree},
+};
 use bitcoinpqc::{KeyPair, generate_keypair, sign};
 
-use super::merkle::control_block_bytes_for_enforcer;
-use super::signer_dev::{
-    SignAlgorithm, append_sighash, build_checksig_leaf, p2mr_script_pubkey, validate_entropy,
-    validate_output_value,
+use super::{
+    merkle::control_block_bytes_for_enforcer,
+    signer_dev::{
+        SignAlgorithm, append_sighash, build_checksig_leaf, p2mr_script_pubkey, validate_entropy,
+        validate_output_value,
+    },
 };
 
 /// Schnorr overload leaf (index 0).
@@ -121,7 +125,7 @@ impl ThreeAlgorithmP2mrTree {
 
         let expected_scripts = [schnorr_leaf, mldsa_leaf, slh_leaf];
         for derived_leaf in tap_tree.script_leaves() {
-            let script_bytes = derived_leaf.script().to_bytes();
+            let script_bytes = derived_leaf.script().to_vec();
             let script = ScriptBuf::from_bytes(script_bytes.clone());
             let leaf_index = expected_scripts
                 .iter()
@@ -130,7 +134,7 @@ impl ThreeAlgorithmP2mrTree {
 
             leaf_scripts[leaf_index] = script;
             let control_block = P2mrControlBlock {
-                merkle_branch: derived_leaf.merkle_branch().clone(),
+                merkle_branch: derived_leaf.merkle_branch().to_owned(),
             };
             control_blocks[leaf_index] =
                 control_block_bytes_for_enforcer(&control_block.serialize());
@@ -305,9 +309,12 @@ pub fn swap_multi_leaf_control_block(
 
 #[cfg(test)]
 mod tests {
-    use super::super::spend::{SpendError, validate_p2mr_input_spend};
-    use super::*;
     use hex::ToHex;
+
+    use super::{
+        super::spend::{SpendError, validate_p2mr_input_spend},
+        *,
+    };
 
     const SCHNORR_ENTROPY: [u8; 32] = [0x11; 32];
     const MLDSA_ENTROPY: [u8; 128] = [0x22; 128];
@@ -341,13 +348,16 @@ mod tests {
     #[test]
     fn three_leaf_placement_depths_match_overload_shape() {
         let tree = build_tree();
-        // Wire layout: 0xc1 + 32-byte base padding + 32 bytes per merkle sibling.
+        // Core wire layout: 0xc1 + 32 bytes per merkle sibling (no internal-key pad).
         let schnorr_cb = tree.control_block(SCHNORR_LEAF_INDEX).expect("schnorr cb");
         let mldsa_cb = tree.control_block(MLDSA_LEAF_INDEX).expect("mldsa cb");
         let slh_cb = tree.control_block(SLH_LEAF_INDEX).expect("slh cb");
-        assert_eq!(schnorr_cb.len(), 33 + 32, "Schnorr at depth 1");
-        assert_eq!(mldsa_cb.len(), 33 + 64, "ML-DSA at depth 2");
-        assert_eq!(slh_cb.len(), 33 + 64, "SLH at depth 2");
+        assert_eq!(schnorr_cb.len(), 1 + 32, "Schnorr at depth 1");
+        assert_eq!(mldsa_cb.len(), 1 + 64, "ML-DSA at depth 2");
+        assert_eq!(slh_cb.len(), 1 + 64, "SLH at depth 2");
+        assert_eq!(schnorr_cb[0], 0xc1);
+        assert_eq!(mldsa_cb[0], 0xc1);
+        assert_eq!(slh_cb[0], 0xc1);
     }
 
     #[test]
@@ -369,8 +379,7 @@ mod tests {
 
     #[test]
     fn build_block_three_leaf_p2mr_spend_links_coinbase_to_signed_witness() {
-        use bitcoin::blockdata::script::Builder;
-        use bitcoin::locktime::absolute::LockTime;
+        use bitcoin::{blockdata::script::Builder, locktime::absolute::LockTime};
 
         let tree = build_tree();
         let coinbase = Transaction {

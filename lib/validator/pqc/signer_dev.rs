@@ -3,24 +3,28 @@
 //! **Demo-only:** deterministic entropy on the CLI is visible in process listings and shell
 //! history. Never use mainnet secrets with this tooling.
 
-use bitcoin::blockdata::opcodes::all::OP_CHECKSIG;
-use bitcoin::blockdata::script::Builder;
-use bitcoin::consensus::Encodable;
-use bitcoin::hashes::Hash as _;
-use bitcoin::key::Secp256k1;
-use bitcoin::secp256k1::{Keypair, Message, SecretKey};
-use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
-use bitcoin::taproot::{LeafVersion, TapLeafHash};
 use bitcoin::{
     Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, XOnlyPublicKey,
+    blockdata::{opcodes::all::OP_CHECKSIG, script::Builder},
+    consensus::Encodable,
+    hashes::Hash as _,
+    key::Secp256k1,
+    secp256k1::{Keypair, Message, SecretKey},
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot::{LeafVersion, TapLeafHash},
     transaction::Version,
 };
-use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
-use bitcoin_p2mr_pqc::taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash};
+use bitcoin_p2mr_pqc::{
+    TapScriptBuf,
+    p2mr::P2MR_LEAF_VERSION,
+    taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash, TapNodeHashExt as _},
+};
 use bitcoinpqc::{Algorithm, generate_keypair, sign};
 
-use super::leaf_script::{build_hybrid_ec_slh_leaf, build_kitchen_sink_leaf};
-use super::limits::ML_DSA_44_PUBLIC_KEY_SIZE;
+use super::{
+    leaf_script::{build_hybrid_ec_slh_leaf, build_kitchen_sink_leaf},
+    limits::ML_DSA_44_PUBLIC_KEY_SIZE,
+};
 
 /// Signature algorithm for single-leaf `PUSH <pk> OP_CHECKSIG` spends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,18 +149,19 @@ pub fn single_leaf_merkle_root(leaf_script: &ScriptBuf) -> [u8; 32] {
     let leaf_version =
         P2mrLeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("valid P2MR leaf version");
     TapNodeHash::from_script(
-        bitcoin_p2mr_pqc::Script::from_bytes(leaf_script.as_bytes()),
+        &TapScriptBuf::from_bytes(leaf_script.as_bytes().to_vec()),
         leaf_version,
     )
     .to_byte_array()
 }
 
-/// Single-leaf P2MR control block (`0xc1` + 32-byte base padding, empty merkle branch).
+/// Single-leaf P2MR control block — Core wire: exactly one byte `0xc1` (empty branch).
+///
+/// P2MR Core `P2MR_CONTROL_BASE_SIZE = 1` (no internal key). Do **not** pad with 32
+/// zero bytes; Core would treat them as a merkle sibling and fail witness-program match.
 #[must_use]
 pub fn single_leaf_control_block() -> Vec<u8> {
-    let mut control_block = vec![0xc1];
-    control_block.extend_from_slice(&[0u8; 32]);
-    control_block
+    vec![0xc1]
 }
 
 /// Build P2MR `scriptPubKey` from a merkle root (`0x52 0x20 <root>`).
@@ -167,10 +172,17 @@ pub fn p2mr_script_pubkey(merkle_root: [u8; 32]) -> ScriptBuf {
     ScriptBuf::from_bytes(spk)
 }
 
-/// Append tapscript sighash byte when not `SIGHASH_ALL`.
+/// Append the tapscript sighash type byte when required by BIP 341/342.
+///
+/// Only [`TapSighashType::Default`] (hash_type `0x00`) omits the trailing byte: a bare
+/// 64-byte Schnorr (or bare canonical PQ sig) is verified by Core as `SIGHASH_DEFAULT`.
+///
+/// **Do not** treat [`TapSighashType::All`] like Default. Signing with `All` embeds
+/// `hash_type = 0x01` in the TapSighash preimage; if the witness omits the `0x01` byte,
+/// Core re-hashes with `0x00` and rejects with "Invalid Schnorr signature".
 #[must_use]
 pub fn append_sighash(mut sig: Vec<u8>, sighash_type: TapSighashType) -> Vec<u8> {
-    if sighash_type != TapSighashType::All {
+    if sighash_type != TapSighashType::Default {
         sig.push(sighash_type as u8);
     }
     sig
@@ -557,8 +569,8 @@ pub fn build_hybrid_ec_slh_spend_from_prevout(
         .map_err(|e| format!("SLH signing failed: {e}"))?;
 
     let mut witness = Witness::new();
-    witness.push(ec_sig.serialize());
-    witness.push(slh_sig.bytes);
+    witness.push(append_sighash(ec_sig.serialize().to_vec(), sighash_type));
+    witness.push(append_sighash(slh_sig.bytes, sighash_type));
     witness.push(leaf_script.as_bytes());
     witness.push(single_leaf_control_block());
 
@@ -627,9 +639,9 @@ pub fn build_kitchen_sink_spend_from_prevout(
         .map_err(|e| format!("SLH signing failed: {e}"))?;
 
     let mut witness = Witness::new();
-    witness.push(ec_sig.serialize());
-    witness.push(mldsa_sig.bytes);
-    witness.push(slh_sig.bytes);
+    witness.push(append_sighash(ec_sig.serialize().to_vec(), sighash_type));
+    witness.push(append_sighash(mldsa_sig.bytes, sighash_type));
+    witness.push(append_sighash(slh_sig.bytes, sighash_type));
     witness.push(leaf_script.as_bytes());
     witness.push(single_leaf_control_block());
 
@@ -715,8 +727,8 @@ pub fn build_block_hybrid_ec_slh_p2mr_spend(
         .map_err(|e| format!("SLH signing failed: {e}"))?;
 
     let mut witness = Witness::new();
-    witness.push(ec_sig.serialize());
-    witness.push(slh_sig.bytes);
+    witness.push(append_sighash(ec_sig.serialize().to_vec(), sighash_type));
+    witness.push(append_sighash(slh_sig.bytes, sighash_type));
     witness.push(leaf_script.as_bytes());
     witness.push(single_leaf_control_block());
 
@@ -781,8 +793,134 @@ pub fn build_block_kitchen_sink_p2mr_spend(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bitcoin::locktime::absolute::LockTime;
+
+    use super::{
+        super::schemes::{self, SignatureScheme, TapscriptVerifyContext},
+        *,
+    };
+
+    #[test]
+    fn single_leaf_control_block_is_core_wire_one_byte() {
+        let cb = single_leaf_control_block();
+        assert_eq!(cb.len(), 1);
+        assert_eq!(cb, vec![0xc1]);
+    }
+
+    /// BIP 341: bare 64-byte Schnorr ⇒ `SIGHASH_DEFAULT` (hash_type 0x00 in preimage).
+    /// Signing with `All` (0x01) and omitting the trailing byte is Core-incompatible.
+    #[test]
+    fn bare_schnorr_must_use_default_not_all_preimage() {
+        const ENTROPY: [u8; 32] = [0x42; 32];
+        let signed_default = sign_p2mr_script_path_spend(
+            SignAlgorithm::Schnorr,
+            &ENTROPY,
+            TapSighashType::Default,
+            50_000,
+            40_000,
+        )
+        .expect("sign default");
+        let signed_all = sign_p2mr_script_path_spend(
+            SignAlgorithm::Schnorr,
+            &ENTROPY,
+            TapSighashType::All,
+            50_000,
+            40_000,
+        )
+        .expect("sign all");
+
+        // Same keys/prevout shape, different hash_type byte → different messages.
+        assert_ne!(
+            signed_default.sighash, signed_all.sighash,
+            "TapSighashType::Default and ::All must produce different TapSighash digests"
+        );
+
+        // Default → bare 64 B (Core SIGHASH_DEFAULT path).
+        assert_eq!(signed_default.signature.len(), 64);
+        assert_eq!(
+            schemes::parse_sighash_type(&signed_default.signature),
+            TapSighashType::Default
+        );
+
+        // All → 65 B with explicit 0x01 (Core SIGHASH_ALL path).
+        assert_eq!(signed_all.signature.len(), 65);
+        assert_eq!(signed_all.signature[64], TapSighashType::All as u8);
+        assert_eq!(
+            schemes::parse_sighash_type(&signed_all.signature),
+            TapSighashType::All
+        );
+
+        // Fixed-entropy, fixed template (Version::TWO, empty dest spk, 50k→40k):
+        // re-sign must be bit-identical (detects non-determinism / template drift).
+        let re_signed = sign_p2mr_script_path_spend(
+            SignAlgorithm::Schnorr,
+            &ENTROPY,
+            TapSighashType::Default,
+            50_000,
+            40_000,
+        )
+        .expect("re-sign");
+        assert_eq!(re_signed.sighash, signed_default.sighash);
+        assert_eq!(re_signed.signature, signed_default.signature);
+        // Distinct from All preimage (already asserted) — pin that Default digest is
+        // non-zero and 32 bytes so accidental empty/placeholder can't pass.
+        assert_ne!(signed_default.sighash, [0u8; 32]);
+        assert_eq!(signed_default.sighash.len(), 32);
+
+        // Self-verify both under enforcer schemes (matches Core hashtype selection).
+        for signed in [&signed_default, &signed_all] {
+            let prevout = &signed.funding_tx.output[0];
+            let prevouts = Prevouts::All(std::slice::from_ref(prevout));
+            let leaf_hash = TapLeafHash::from_script(
+                signed.leaf_script.as_script(),
+                LeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("leaf version"),
+            );
+            let mut budget = None;
+            let mut ctx = TapscriptVerifyContext {
+                tx: &signed.signed_spend_tx,
+                input_index: 0,
+                prevouts: &prevouts,
+                leaf_hash,
+                pqc_budget: &mut budget,
+            };
+            schemes::verify_tapscript_signature(
+                SignatureScheme::Schnorr,
+                &signed.signature,
+                &signed.public_key,
+                &mut ctx,
+            )
+            .expect("enforcer verifies own Schnorr spend");
+        }
+
+        // Legacy bug: All-preimage + bare 64 B must NOT verify (Core would reject).
+        let mut legacy = signed_all.signature.clone();
+        legacy.truncate(64);
+        let prevout = &signed_all.funding_tx.output[0];
+        let prevouts = Prevouts::All(std::slice::from_ref(prevout));
+        let leaf_hash = TapLeafHash::from_script(
+            signed_all.leaf_script.as_script(),
+            LeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("leaf version"),
+        );
+        let mut budget = None;
+        let mut ctx = TapscriptVerifyContext {
+            tx: &signed_all.signed_spend_tx,
+            input_index: 0,
+            prevouts: &prevouts,
+            leaf_hash,
+            pqc_budget: &mut budget,
+        };
+        // Witness still holds full sig; verify the truncated element alone.
+        let err = schemes::verify_tapscript_signature(
+            SignatureScheme::Schnorr,
+            &legacy,
+            &signed_all.public_key,
+            &mut ctx,
+        );
+        assert!(
+            err.is_err(),
+            "All-preimage signature without 0x01 byte must fail (Core Invalid Schnorr)"
+        );
+    }
 
     #[test]
     fn build_block_p2mr_spend_links_coinbase_to_signed_witness() {
@@ -883,7 +1021,8 @@ mod tests {
             funding_tx.compute_txid()
         );
         assert_eq!(spend_tx.input[0].witness.len(), 4);
-        assert_eq!(spend_tx.input[0].witness.nth(0).expect("ec sig").len(), 64);
+        // TapSighashType::All ⇒ trailing 0x01 (BIP 341); bare 64 B is only for Default.
+        assert_eq!(spend_tx.input[0].witness.nth(0).expect("ec sig").len(), 65);
         assert!(
             spend_tx.input[0].witness.nth(1).expect("slh sig").len() > 7800,
             "expected SLH-DSA signature size"
@@ -965,7 +1104,8 @@ mod tests {
             funding_tx.compute_txid()
         );
         assert_eq!(spend_tx.input[0].witness.len(), 5);
-        assert_eq!(spend_tx.input[0].witness.nth(0).expect("ec sig").len(), 64);
+        // TapSighashType::All ⇒ trailing 0x01 (BIP 341); bare 64 B is only for Default.
+        assert_eq!(spend_tx.input[0].witness.nth(0).expect("ec sig").len(), 65);
         assert!(
             spend_tx.input[0].witness.nth(1).expect("mldsa sig").len() > 2400,
             "expected ML-DSA signature size"

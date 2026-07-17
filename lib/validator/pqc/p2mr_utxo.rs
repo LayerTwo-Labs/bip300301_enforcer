@@ -115,14 +115,16 @@ pub fn apply_tx_to_available(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use bitcoin::{Amount, ScriptBuf, TxOut, transaction::Version};
+    use bitcoin::{
+        Amount, ScriptBuf, TxOut, hashes::Hash as _, sighash::TapSighashType, transaction::Version,
+    };
     use miette::IntoDiagnostic;
 
-    use crate::validator::pqc::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
-    use crate::validator::test_utils::{create_test_dbs, test_block_header};
-    use bitcoin::hashes::Hash as _;
-    use bitcoin::sighash::TapSighashType;
+    use super::*;
+    use crate::validator::{
+        pqc::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend},
+        test_utils::{create_test_dbs, test_block_header},
+    };
 
     fn p2mr_funding_tx() -> bitcoin::Transaction {
         let mut spk = vec![0x52, 0x20];

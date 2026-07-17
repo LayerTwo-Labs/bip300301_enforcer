@@ -102,7 +102,7 @@ At each signature-check site the enforcer
    verifier: 64 → Schnorr, ~2420 → ML-DSA-44, ~7856 → SLH-DSA-SHA2-128s.
 3. **Pubkey size** is checked for consistency with the classified scheme (32 B
    for Schnorr/SLH; 1312 B for ML-DSA-44). Mismatches are rejected.
-4. Parses optional trailing sighash byte (defaults to `SIGHASH_ALL` for bare
+4. Parses optional trailing sighash byte (defaults to `SIGHASH_DEFAULT` for bare
    64-byte Schnorr).
 5. Recomputes tapscript sighash with the parsed type and verifies.
 
@@ -124,8 +124,8 @@ OP_BOOLAND OP_VERIFY
 Witness (bottom → top): `[ec_sig, slh_sig, leaf_script, control_block]` —
 signatures are consumed in script execution order.
 
-**Kitchen-sink triple-algo leaf** combines Schnorr, ML-DSA-44, and SLH-DSA in one
-leaf (all three schemes on one sat pile end-to-end):
+**Kitchen-sink triple-algo leaf** combines Schnorr, ML-DSA-44, and SLH-DSA in
+one leaf (all three schemes on one sat pile end-to-end):
 
 ```text
 PUSH32 <ec_pk> OP_CHECKSIG
@@ -134,9 +134,11 @@ PUSH32 <slh_pk> OP_CHECKSIG
 OP_BOOLAND OP_BOOLAND OP_VERIFY
 ```
 
-Witness (bottom → top): `[ec_sig (64B), mldsa_sig (~2420B), slh_sig (~7856B), leaf_script, control_block]`.
-Total signature WU = **10_340** (64 + 2420 + 7856); per-input cap raised to **12_288 WU**
-(`MAX_PQC_SIG_WU_PER_INPUT` in `limits.rs`) so kitchen-sink spends validate.
+Witness (bottom → top):
+`[ec_sig (64B), mldsa_sig (~2420B), slh_sig (~7856B), leaf_script, control_block]`.
+Total signature WU = **10_340** (64 + 2420 + 7856); per-input cap raised to
+**12_288 WU** (`MAX_PQC_SIG_WU_PER_INPUT` in `limits.rs`) so kitchen-sink spends
+validate.
 
 **Exclusion** (different algorithms in different leaves) is a wallet/miner
 concern; the enforcer validates whichever leaf is revealed.
@@ -210,44 +212,44 @@ lib/validator/dbs/
 
 ## Implementation status
 
-| Component                                                            | Status                                                                                          |
-| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Feature gating (`drivechain` default, `bip360` optional)             | Done                                                                                            |
-| P2MR output + merkle + control block validation                      | Done                                                                                            |
-| Leaf script walker + `OP_SUBSTR` rejection                           | Done                                                                                            |
-| `verify_overloaded_checksig` (Schnorr, ML-DSA-44, SLH-DSA-SHA2-128s) | Done                                                                                            |
-| Hybrid EC+PQ (multi-site `OP_CHECKSIG` + `OP_BOOLAND OP_VERIFY`)     | Done                                                                                            |
-| `OP_CHECKSIGADD` / `OP_CHECKMULTISIG*`                               | Done                                                                                            |
-| DoS limits (witness stack, sig WU, per-block PQC budget)             | Done                                                                                            |
-| Sighash matrix tests (non-`ALL` types, all schemes)                  | Done                                                                                            |
-| `connect_block` intra-block UTXO map                                 | Done                                                                                            |
-| Cross-block P2MR prevout lookup                                      | Done — `dbs/p2mr_utxos.rs` + incremental block validation                                       |
-| Mempool `accept_tx` with explicit parents                            | Done                                                                                            |
-| Unit tests (`cargo test … --features bip360 pqc::`)                  | 123 passing (+ 1 ignored golden dump)                                                           |
-| CI `check-bip360`                                                    | Done                                                                                            |
-| Integration harness (`integration_tests/bip360_block.rs`)            | Done — shared `submitblock` helpers                                                             |
-| Integration trials (34 registered: 33 block-matrix + 1 P2P E2E)        | Registered; compile-verified; **33/33** block-matrix live **PASS** (2026-07-15) — see live column below |
-| Integration trial `bip360_invalid_block`                             | Live **PASS** (empty witness → `invalidateblock`)                                               |
-| Integration trial `bip360_valid_schnorr_spend`                       | Live **PASS**                                                                                     |
-| Integration trial `bip360_valid_mldsa_spend`                         | Live **PASS**                                                                                     |
-| Integration trial `bip360_valid_slh_spend`                           | Live **PASS**                                                                                     |
-| Integration trial `bip360_valid_cross_block_schnorr_spend`           | Live **PASS**                                                                                     |
-| Integration trial `bip360_valid_cross_block_mldsa_spend`             | Live **PASS**                                                                                     |
-| Integration trial `bip360_valid_cross_block_slh_spend`               | Live **PASS**                                                                                     |
-| Integration trial `bip360_invalid_signature`                         | Live **PASS**                                                                                     |
-| Integration trial `bip360_invalid_pubkey_size`                       | Live **PASS** (harness fix: `build_mldsa_sig_wrong_pubkey_spend_txs` — wrong merkle root before prevout bind) |
-| Integration trial `bip360_invalid_merkle_path`                       | Live **PASS** (harness fix: `tamper_witness_control_block` — bogus merkle sibling, keep `0xc1`)   |
-| Integration trial `bip360_valid_hybrid_ec_slh_spend`                 | Live **PASS** (hybrid EC+SLH, same-block)                                                         |
-| Integration trial `bip360_valid_hybrid_ec_slh_cross_block_spend`     | Live **PASS** (hybrid EC+SLH, cross-block)                                                        |
-| Integration trial `bip360_invalid_hybrid_ec_slh_tamper_ec_sig`       | Live **PASS** (tampered EC sig → reject)                                                          |
-| Integration trial `bip360_invalid_hybrid_ec_slh_tamper_slh_sig`      | Live **PASS** (tampered SLH sig → reject)                                                         |
-| Integration trial `bip360_invalid_hybrid_ec_slh_swap_sigs`           | Live **PASS** (swapped sig positions → reject)                                                  |
-| Integration trial `bip360_valid_kitchen_sink_spend`                  | Live **PASS** (triple-algo kitchen-sink, same-block)                                              |
-| Integration trial `bip360_invalid_kitchen_sink_tamper_ec_sig`        | Live **PASS** (tampered EC sig on kitchen-sink → reject)                                          |
-| Integration trial `bip360_invalid_cross_block_pubkey_size_mldsa`     | Live **PASS** (same harness as `bip360_invalid_pubkey_size`)                                      |
-| Integration trial `bip360_p2p_mempool_e2e`                           | Live **HITL** — needs `just setup` + electrs — see P2P E2E section below                          |
-| Cross-block invalid-spend matrix (sig / merkle / pubkey)             | Done — Schnorr, ML-DSA, SLH; hybrid invalid cross-block deferred (same-block coverage complete) |
-| Overload-model vectors (non-`OP_SUBSTR` scripts)                     | Done — `test_vectors/p2mr_overload_construction.json`, `pqc/overload_vectors.rs`                |
+| Component                                                                 | Status                                                                                                        |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Feature gating (`drivechain` default, `bip360` optional)                  | Done                                                                                                          |
+| P2MR output + merkle + control block validation                           | Done                                                                                                          |
+| Leaf script walker + `OP_SUBSTR` rejection                                | Done                                                                                                          |
+| `verify_overloaded_checksig` (Schnorr, ML-DSA-44, SLH-DSA-SHA2-128s)      | Done                                                                                                          |
+| Hybrid EC+PQ (multi-site `OP_CHECKSIG` + `OP_BOOLAND OP_VERIFY`)          | Done                                                                                                          |
+| `OP_CHECKSIGADD` / `OP_CHECKMULTISIG*`                                    | Done                                                                                                          |
+| DoS limits (witness stack, sig WU, per-block PQC budget)                  | Done                                                                                                          |
+| Sighash matrix tests (non-`ALL` types, all schemes)                       | Done                                                                                                          |
+| `connect_block` intra-block UTXO map                                      | Done                                                                                                          |
+| Cross-block P2MR prevout lookup                                           | Done — `dbs/p2mr_utxos.rs` + incremental block validation                                                     |
+| Mempool `accept_tx` with explicit parents                                 | Done                                                                                                          |
+| Unit tests (`cargo test … --features bip360 pqc::`)                       | 123 passing (+ 1 ignored golden dump)                                                                         |
+| CI `check-bip360`                                                         | Done                                                                                                          |
+| Integration harness (`integration_tests/bip360_block.rs`)                 | Done — shared `submitblock` helpers                                                                           |
+| Integration trials (34 green block-only in `it-all` + dual-node separate) | Registered; compile-verified; classic matrix live; TB-mine **PASS** 2026-07-16 — see live column below        |
+| Integration trial `bip360_invalid_block`                                  | Live **PASS** (empty witness → `invalidateblock`)                                                             |
+| Integration trial `bip360_valid_schnorr_spend`                            | Live **PASS**                                                                                                 |
+| Integration trial `bip360_valid_mldsa_spend`                              | Live **PASS**                                                                                                 |
+| Integration trial `bip360_valid_slh_spend`                                | Live **PASS**                                                                                                 |
+| Integration trial `bip360_valid_cross_block_schnorr_spend`                | Live **PASS**                                                                                                 |
+| Integration trial `bip360_valid_cross_block_mldsa_spend`                  | Live **PASS**                                                                                                 |
+| Integration trial `bip360_valid_cross_block_slh_spend`                    | Live **PASS**                                                                                                 |
+| Integration trial `bip360_invalid_signature`                              | Live **PASS**                                                                                                 |
+| Integration trial `bip360_invalid_pubkey_size`                            | Live **PASS** (harness fix: `build_mldsa_sig_wrong_pubkey_spend_txs` — wrong merkle root before prevout bind) |
+| Integration trial `bip360_invalid_merkle_path`                            | Live **PASS** (harness fix: `tamper_witness_control_block` — bogus merkle sibling, keep `0xc1`)               |
+| Integration trial `bip360_valid_hybrid_ec_slh_spend`                      | Live **PASS** (hybrid EC+SLH, same-block)                                                                     |
+| Integration trial `bip360_valid_hybrid_ec_slh_cross_block_spend`          | Live **PASS** (hybrid EC+SLH, cross-block)                                                                    |
+| Integration trial `bip360_invalid_hybrid_ec_slh_tamper_ec_sig`            | Live **PASS** (tampered EC sig → reject)                                                                      |
+| Integration trial `bip360_invalid_hybrid_ec_slh_tamper_slh_sig`           | Live **PASS** (tampered SLH sig → reject)                                                                     |
+| Integration trial `bip360_invalid_hybrid_ec_slh_swap_sigs`                | Live **PASS** (swapped sig positions → reject)                                                                |
+| Integration trial `bip360_valid_kitchen_sink_spend`                       | Live **PASS** (triple-algo kitchen-sink, same-block)                                                          |
+| Integration trial `bip360_invalid_kitchen_sink_tamper_ec_sig`             | Live **PASS** (tampered EC sig on kitchen-sink → reject)                                                      |
+| Integration trial `bip360_invalid_cross_block_pubkey_size_mldsa`          | Live **PASS** (same harness as `bip360_invalid_pubkey_size`)                                                  |
+| Integration trial `bip360_p2p_mempool_e2e`                                | Live **HITL** — needs `just setup` + electrs — see P2P E2E section below                                      |
+| Cross-block invalid-spend matrix (sig / merkle / pubkey)                  | Done — Schnorr, ML-DSA, SLH; hybrid invalid cross-block deferred (same-block coverage complete)               |
+| Overload-model vectors (non-`OP_SUBSTR` scripts)                          | Done — `test_vectors/p2mr_overload_construction.json`, `pqc/overload_vectors.rs`                              |
 
 ### Phase D — full local verification
 
@@ -259,20 +261,26 @@ just bip360-verify-full yes
 
 Equivalent steps (in order):
 
-1. `just drivechain-smoke` — default build + drivechain unit tests (**94** passed)
-2. `just verify` — `check-bip360`, `pqc::` (**123** passed, 1 ignored), `p2mr-signer-smoke`, `test-drivechain`, `clippy-bip360`, `fmt-check`, `check-integration-build`
-3. `just build-bip360` — rebuild enforcer with `bip360` CLI flags (required after step 1)
-4. `just bip360-block-matrix` — 33 block-only live trials (`just setup-core` for stock bitcoind)
-5. `just bip360-p2p-e2e` — dual-node P2P E2E (`just setup` for electrs)
+1. `just drivechain-smoke` — default build + drivechain unit tests (**94**
+   passed)
+2. `just verify` — `check-bip360`, `pqc::` (**123** passed, 1 ignored),
+   `p2mr-signer-smoke`, `test-drivechain`, `clippy-bip360`, `fmt-check`,
+   `check-integration-build`
+3. `just build-bip360` — rebuild enforcer with `bip360` CLI flags (required
+   after step 1)
+4. `just bip360-block-matrix` — 34 green block-only live trials incl. TB-mine
+   (`just setup-core` for stock bitcoind)
+5. `just bip360-p2p-e2e` — dual-node P2P E2E (`just setup` for electrs; not in
+   `it-all`)
 
 Pass `yes` to auto-run `setup-core` / `setup` when `integrationtests.env` or
 `ELECTRS` is missing. P2P E2E still requires a working electrs binary.
 
-**Phase D results (2026-07-15, this host):** steps 1–2 **PASS**; step 4 **PASS**
-(**33/33** live block-matrix trials; harness fixes in
+**Phase D / TB-mine results:** steps 1–2 **PASS** (2026-07-15); classic block
+matrix **PASS** 2026-07-15 (harness fixes in
 `build_mldsa_sig_wrong_pubkey_spend_txs` and `tamper_witness_control_block`);
-step 5 **HITL-deferred** (`just setup` electrs build fails: `librocksdb-sys` /
-RocksDB C++ compile).
+TB-mine **PASS** 2026-07-16 via `just bip360-tier-b-cusf`; step 5 dual-node is a
+separate recipe (needs electrs via `just setup`).
 
 Granular checks (subset of `just verify`):
 
@@ -306,31 +314,34 @@ See [`STATUS.md`](../../STATUS.md) for the canonical remaining-work list and
    (`bip360_valid_hybrid_ec_slh_*`, `bip360_invalid_hybrid_ec_slh_*`), and Phase
    C multi-leaf trials (`bip360_valid_multi_leaf_*`,
    `bip360_invalid_multi_leaf_*`), kitchen-sink trials
-   (`bip360_valid_kitchen_sink_spend`, `bip360_invalid_kitchen_sink_tamper_ec_sig`),
-   and P2P E2E (`bip360_p2p_mempool_e2e`). **34 trials total** (33 block-matrix + 1 P2P).
+   (`bip360_valid_kitchen_sink_spend`,
+   `bip360_invalid_kitchen_sink_tamper_ec_sig`), P2P E2E
+   (`bip360_p2p_mempool_e2e`), and TB-mine (`bip360_tier_b_cusf_miner`). Green
+   block-only: **34** in `it-all`; dual-node / Tier A / TB-sendraw separate.
    Output-structure checks remain in `lib/validator/pqc/` unit tests.
 3. ~~**Overload-model vectors**~~ — Done. See
    [`OVERLOAD_VECTORS.md`](./OVERLOAD_VECTORS.md)
    (`test_vectors/p2mr_overload_construction.json`, `pqc::overload_vectors`: 8
-   passed + 1 ignored `dump_overload_golden` golden dump).
+   passed; optional golden dump via `OVERLOAD_GOLDEN_DUMP=1`, not ignored).
 
 ### P1 — completeness
 
 4. ~~**Deferred opcodes**~~ — Done (`OP_CHECKSIGADD`, `OP_CHECKMULTISIG`,
    `OP_CHECKMULTISIGVERIFY` in `leaf_script.rs` with size-gated verification).
 5. ~~**DoS limits**~~ — Done (witness stack depth 100, 12_288 WU/sig budget per
-   input — raised for kitchen-sink triple-algo witnesses at 10_340 WU; configurable
-   500 ms per-block PQC verify budget in `connect_block`).
+   input — raised for kitchen-sink triple-algo witnesses at 10_340 WU;
+   configurable 500 ms per-block PQC verify budget in `connect_block`).
 6. ~~**Sighash coverage**~~ — Done (non-`ALL` sighash matrix tests for Schnorr,
    ML-DSA, SLH-DSA in `schemes.rs`).
 
 ### Dual-node P2P mempool E2E
 
-Harness (`integration_tests/bip360_dual_node.rs`) runs two peered stock regtest nodes,
-each with a mempool-enabled enforcer (`--enable-mempool`, wallet + electrs). Five rounds on
-one sat pile: wallet→P2MR, Schnorr, hybrid EC+SLH, ML-DSA, kitchen-sink. Non-standard txs are
-injected via `broadcast_nonstandard_tx`; acceptance is checked on both Core mempools and enforcer
-GBT templates (GBT inclusion proxies the enforcer `accept_tx` path).
+Harness (`integration_tests/bip360_dual_node.rs`) runs two peered stock regtest
+nodes, each with a mempool-enabled enforcer (`--enable-mempool`, wallet +
+electrs). Five rounds on one sat pile: wallet→P2MR, Schnorr, hybrid EC+SLH,
+ML-DSA, kitchen-sink. Non-standard txs are injected via
+`broadcast_nonstandard_tx`; acceptance is checked on both Core mempools and
+enforcer GBT templates (GBT inclusion proxies the enforcer `accept_tx` path).
 
 ```bash
 just setup                    # electrs required — not setup-core alone
@@ -353,12 +364,12 @@ just bip360-verify-full yes   # canonical pre-submit: full stack with auto-setup
 
 ### P3 — deferred (prepared)
 
-| Item                      | Status                      | Doc                                                                                                          |
-| ------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| External signer CLI       | **Done** (roundtrip tested) | [`P2MR_SIGNER.md`](./P2MR_SIGNER.md) — `lib/examples/p2mr_signer.rs`; `pqc::spend` `p2mr_signer_roundtrip_*` |
-| BIP overload addendum     | **Done** (draft)            | [`BIP360_OVERLOAD_ADDENDUM.md`](./BIP360_OVERLOAD_ADDENDUM.md)                                               |
-| Kellnr `bitcoinpqc` 0.4.0 | **Prepared**                | [`KELLNR_PUBLISH.md`](./KELLNR_PUBLISH.md). **Human:** publish + pin update                                  |
-| Signet workshop           | **Prepared**                | [`SIGNET_WORKSHOP.md`](./SIGNET_WORKSHOP.md). **Human:** signet infra / workshop                             |
-| Mempool relay policy      | **Done**                    | [`MEMPOOL_RELAY_POLICY.md`](./MEMPOOL_RELAY_POLICY.md)                                                       |
+| Item                      | Status                      | Doc                                                                                                               |
+| ------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| External signer CLI       | **Done** (roundtrip tested) | [`P2MR_SIGNER.md`](./P2MR_SIGNER.md) — `lib/examples/p2mr_signer.rs`; `pqc::spend` `p2mr_signer_roundtrip_*`      |
+| BIP overload addendum     | **Done** (draft)            | [`BIP360_OVERLOAD_ADDENDUM.md`](./BIP360_OVERLOAD_ADDENDUM.md)                                                    |
+| Kellnr `bitcoinpqc` 0.4.0 | **Prepared**                | [`KELLNR_PUBLISH.md`](./KELLNR_PUBLISH.md). **Human:** publish + pin update                                       |
+| Signet workshop           | **Prepared**                | [`SIGNET_WORKSHOP.md`](./SIGNET_WORKSHOP.md). **Human:** signet infra / workshop                                  |
+| Mempool relay policy      | **Done**                    | [`MEMPOOL_RELAY_POLICY.md`](./MEMPOOL_RELAY_POLICY.md)                                                            |
 | Core 31 ZMQ / BIP 360     | **Done** (findings)         | [`ZMQ_CUSF_BIP360_FINDINGS.md`](./ZMQ_CUSF_BIP360_FINDINGS.md) — ZMQ surface; stock Core cannot mempool v2 spends |
-| SHRINCs                   | **Deferred**                | [`SHRINCS_DEFERRED.md`](./SHRINCS_DEFERRED.md)                                                               |
+| SHRINCs                   | **Deferred**                | [`SHRINCS_DEFERRED.md`](./SHRINCS_DEFERRED.md)                                                                    |

@@ -1,17 +1,17 @@
-//! Tier B — CUSF mining path (expect PASS).
+//! Tier B (TB-mine) — CUSF mining path (**PASS**; also in `just it-all`).
 //!
 //! Soft-fork inventory is included via block assembly + `submitblock` on **stock**
 //! Core. The enforcer keeps the tip. No P2MR Core `sendrawtransaction` is required.
 //!
 //! This is the CUSF-facing Tier B (Sztorc: separate activator, Core untouched).
-//! For P2MR Core mempool protocol alignment see `bip360_tier_b_p2mr_mempool`
-//! (`just bip360-tier-b-mempool`, known FAIL until protocol matches).
+//! For Bob mempool interop (TB-sendraw, shapes 1+2+3 PASS; kitchen-sink green post-Core 3B) see
+//! `bip360_tier_b_p2mr_mempool` (`just bip360-tier-b-mempool`) — not a CUSF tip failure.
 
 #![cfg(feature = "bip360")]
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::validator::pqc::signer_dev::SignAlgorithm;
+use bip300301_enforcer_lib::{bins::CommandExt as _, validator::pqc::signer_dev::SignAlgorithm};
 use futures::channel::mpsc;
 
 use crate::{
@@ -24,6 +24,25 @@ use crate::{
     block_verdict::{Expect, assert_enforcer_verdict},
     setup::{Mode, PreSetup},
 };
+
+/// Stock Core tip must equal `block_hash` (not reorged / invalidated away).
+async fn ensure_stock_tip(
+    post_setup: &crate::setup::PostSetup,
+    block_hash: bitcoin::BlockHash,
+    label: &str,
+) -> anyhow::Result<()> {
+    let best = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getbestblockhash", [])
+        .run_utf8()
+        .await?;
+    anyhow::ensure!(
+        best.trim().eq_ignore_ascii_case(&block_hash.to_string()),
+        "stock Core tip {} != submitted block {block_hash} ({label})",
+        best.trim()
+    );
+    Ok(())
+}
 
 async fn submit_valid_spend_block(
     post_setup: &mut crate::setup::PostSetup,
@@ -49,6 +68,11 @@ async fn submit_valid_spend_block(
         "submitted enforcer-format spend via stock Core submitblock (CUSF mining path)"
     );
 
+    // Immediate stock tip check (pre-enforcer).
+    ensure_stock_tip(post_setup, block_hash, label).await?;
+
+    // Enforcer keeps tip: Accepted means still on active chain and enforcer height
+    // past the block (no invalidateblock).
     assert_enforcer_verdict(
         post_setup,
         block_hash,
@@ -56,6 +80,10 @@ async fn submit_valid_spend_block(
         Duration::from_secs(15),
     )
     .await?;
+
+    // Re-check tip after enforcer processing — proves stock tip retained post-verdict
+    // (not invalidated after the initial getbestblockhash).
+    ensure_stock_tip(post_setup, block_hash, &format!("{label}-post-enforcer")).await?;
     Ok(block_hash)
 }
 
@@ -69,7 +97,9 @@ pub async fn test_bip360_tier_b_cusf_miner(pre_setup: PreSetup) -> anyhow::Resul
     wait_for_enforcer_synced(&mut post_setup).await?;
 
     // 1) Schnorr-only script-path spend (minimal enforcer protocol leaf).
-    // Use distinct mature coinbases (heights 1 and 2) so the second fund is not double-spent.
+    // Distinct coinbases at heights 1 and 2 so the two funds never double-spend each other.
+    // After this submitblock the tip advances; kitchen-sink then funds from height 2 on the
+    // longer chain (not a claim that height 2 is immature until Schnorr alone).
     let prevout = funding_prevout_at_height(&post_setup, 1).await?;
     let schnorr_txs = build_valid_p2mr_spend_txs(
         &post_setup,
@@ -80,16 +110,10 @@ pub async fn test_bip360_tier_b_cusf_miner(pre_setup: PreSetup) -> anyhow::Resul
     .await?;
     let _ = submit_valid_spend_block(&mut post_setup, "schnorr", schnorr_txs).await?;
 
-    // 2) Kitchen-sink triple-algo spend (product climax).
+    // 2) Kitchen-sink triple-algo spend (product climax), funded from the height-2 coinbase.
     let prevout = funding_prevout_at_height(&post_setup, 2).await?;
     let kitchen_txs = build_valid_kitchen_sink_spend_txs(&post_setup, prevout).await?;
-    let report = bip360_tx_report::tx_report(&kitchen_txs.1, None);
-    assert_eq!(report.pqc_algos.len(), 3, "kitchen-sink expects three algorithms");
-    assert!(
-        report.weight > 10_000,
-        "kitchen-sink weight should exceed 10_000 WU (got {})",
-        report.weight
-    );
+    bip360_tx_report::assert_kitchen_sink_spend_shape(&kitchen_txs.1)?;
     let _ = submit_valid_spend_block(&mut post_setup, "kitchen-sink", kitchen_txs).await?;
 
     tracing::info!(

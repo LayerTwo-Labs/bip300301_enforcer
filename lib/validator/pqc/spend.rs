@@ -1,22 +1,25 @@
 //! P2MR script-path spend validation.
 
-use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::{borrow::Borrow, collections::HashMap};
 
-use bitcoin::sighash::{Prevouts, TapSighashType};
-use bitcoin::taproot::{LeafVersion, TapLeafHash};
-use bitcoin::{OutPoint, Script, Transaction, TxOut};
+use bitcoin::{
+    OutPoint, Script, Transaction, TxOut,
+    sighash::{Prevouts, TapSighashType},
+    taproot::{LeafVersion, TapLeafHash},
+};
 use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
 use thiserror::Error;
 
-use super::leaf_script::{self, LeafScriptError};
-use super::limits::{
-    MAX_P2MR_LEAF_SCRIPT_SIZE, MAX_P2MR_WITNESS_STACK, MAX_PQC_SIG_WU_PER_INPUT, PqcVerifyBudget,
-    estimate_sig_wu,
+use super::{
+    leaf_script::{self, LeafScriptError},
+    limits::{
+        MAX_P2MR_LEAF_SCRIPT_SIZE, MAX_P2MR_WITNESS_STACK, MAX_PQC_SIG_WU_PER_INPUT,
+        PqcVerifyBudget, estimate_sig_wu,
+    },
+    merkle::{self, MerkleError},
+    p2mr_output::{self, P2mrOutputError},
+    schemes::{self, SchemeError},
 };
-use super::merkle::{self, MerkleError};
-use super::p2mr_output::{self, P2mrOutputError};
-use super::schemes::{self, SchemeError};
 
 #[derive(Debug, Error)]
 pub enum SpendError {
@@ -245,27 +248,35 @@ pub fn validate_transaction_spends(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use bitcoin::TxIn;
-    use bitcoin::blockdata::opcodes::all::{OP_PUSHBYTES_32, OP_SUBSTR};
-    use bitcoin::hashes::Hash as _;
-    use bitcoin::key::{Keypair, Secp256k1};
-    use bitcoin::secp256k1::Message;
-    use bitcoin::secp256k1::rand::thread_rng;
-    use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
-    use bitcoin::taproot::{LeafVersion, TapLeafHash};
-    use bitcoin::{Amount, ScriptBuf, Sequence, Witness, XOnlyPublicKey};
-    use bitcoin_p2mr_pqc::p2mr::P2MR_LEAF_VERSION;
-    use bitcoin_p2mr_pqc::taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash};
-
-    use super::super::leaf_script::{
-        build_2of2_multisig_leaf, build_2of2_multisigverify_leaf,
-        build_hybrid_ec_slh_checksigadd_leaf, build_hybrid_ec_slh_leaf,
-        build_hybrid_ec_slh_multisig_leaf, build_mldsa_checksig_leaf, build_push32_checksig_leaf,
-        build_push32_checksigadd_leaf, build_push32_checksigverify_leaf, parse_leaf_script,
+    use bitcoin::{
+        Amount, ScriptBuf, Sequence, TxIn, Witness, XOnlyPublicKey,
+        blockdata::opcodes::all::{OP_PUSHBYTES_32, OP_SUBSTR},
+        hashes::Hash as _,
+        key::{Keypair, Secp256k1},
+        secp256k1::{Message, rand::thread_rng},
+        sighash::{Prevouts, SighashCache, TapSighashType},
+        taproot::{LeafVersion, TapLeafHash},
     };
-    use super::super::limits::ML_DSA_44_PUBLIC_KEY_SIZE;
+    use bitcoin_p2mr_pqc::{
+    TapScriptBuf,
+        p2mr::P2MR_LEAF_VERSION,
+        taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash, TapNodeHashExt as _},
+    };
     use bitcoinpqc::{Algorithm, generate_keypair, sign};
+
+    use super::{
+        super::{
+            leaf_script::{
+                build_2of2_multisig_leaf, build_2of2_multisigverify_leaf,
+                build_hybrid_ec_slh_checksigadd_leaf, build_hybrid_ec_slh_leaf,
+                build_hybrid_ec_slh_multisig_leaf, build_mldsa_checksig_leaf,
+                build_push32_checksig_leaf, build_push32_checksigadd_leaf,
+                build_push32_checksigverify_leaf, parse_leaf_script,
+            },
+            limits::ML_DSA_44_PUBLIC_KEY_SIZE,
+        },
+        *,
+    };
 
     fn dummy_prevout() -> TxOut {
         TxOut {
@@ -282,18 +293,15 @@ mod tests {
         let leaf_version =
             P2mrLeafVersion::from_consensus(P2MR_LEAF_VERSION).expect("valid P2MR leaf version");
         TapNodeHash::from_script(
-            bitcoin_p2mr_pqc::Script::from_bytes(leaf_script.as_bytes()),
+            &TapScriptBuf::from_bytes(leaf_script.as_bytes().to_vec()),
             leaf_version,
         )
         .to_byte_array()
     }
 
     fn single_leaf_control_block() -> Vec<u8> {
-        // P2MR decode expects TAPROOT_CONTROL_BASE_SIZE (33) bytes before the merkle branch;
-        // single-leaf script path uses 0xc1 + 32-byte padding + empty branch.
-        let mut control_block = vec![0xc1];
-        control_block.extend_from_slice(&[0u8; 32]);
-        control_block
+        // Core wire: P2MR_CONTROL_BASE_SIZE = 1 — single-leaf is exactly 0xc1.
+        vec![0xc1]
     }
 
     fn p2mr_prevout(merkle_root: [u8; 32]) -> TxOut {
@@ -329,7 +337,8 @@ mod tests {
     }
 
     fn append_sighash(mut sig: Vec<u8>, sighash_type: TapSighashType) -> Vec<u8> {
-        if sighash_type != TapSighashType::All {
+        // Mirror production: only Default omits the trailing byte (BIP 341).
+        if sighash_type != TapSighashType::Default {
             sig.push(sighash_type as u8);
         }
         sig
@@ -358,13 +367,23 @@ mod tests {
             .to_byte_array()
     }
 
+    /// Sighash for bare (no trailing type byte) signatures — BIP 341 `SIGHASH_DEFAULT`.
+    ///
+    /// Must not use [`TapSighashType::All`]: that embeds `hash_type=0x01` and requires a
+    /// trailing `0x01` witness byte. Core verifies bare 64-byte Schnorr as Default (`0x00`).
     fn tapscript_sighash_all(
         tx: &Transaction,
         input_index: usize,
         leaf_script: &ScriptBuf,
         prevout: &TxOut,
     ) -> [u8; 32] {
-        tapscript_sighash(tx, input_index, leaf_script, prevout, TapSighashType::All)
+        tapscript_sighash(
+            tx,
+            input_index,
+            leaf_script,
+            prevout,
+            TapSighashType::Default,
+        )
     }
 
     #[test]
@@ -538,7 +557,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig =
@@ -609,7 +628,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let ec_sig =
@@ -676,7 +695,7 @@ mod tests {
                 0,
                 &prevouts_of(prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let secp = Secp256k1::new();
@@ -940,7 +959,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig =
@@ -984,7 +1003,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig =
@@ -1028,7 +1047,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig =
@@ -1074,7 +1093,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig1 =
@@ -1131,7 +1150,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let ec_sig =
@@ -1174,7 +1193,7 @@ mod tests {
                 0,
                 &prevouts_of(prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let secp = Secp256k1::new();
@@ -1553,7 +1572,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig1 =
@@ -1610,7 +1629,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let ec_sig =
@@ -1666,7 +1685,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let ec_sig =
@@ -1725,7 +1744,7 @@ mod tests {
                 0,
                 &prevouts_of(&prevout),
                 leaf_hash,
-                TapSighashType::All,
+                TapSighashType::Default,
             )
             .expect("sighash");
         let sig1 = sign(&mldsa_kp1.secret_key, sighash.as_byte_array()).expect("mldsa sign");
@@ -1793,13 +1812,14 @@ mod tests {
 
     #[test]
     fn p2mr_signer_roundtrip_schnorr() {
-        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use bitcoin::sighash::TapSighashType;
+
+        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Schnorr,
             &[0x11; 32],
-            TapSighashType::All,
+            TapSighashType::Default,
             50_000,
             40_000,
         )
@@ -1812,13 +1832,14 @@ mod tests {
 
     #[test]
     fn p2mr_signer_roundtrip_mldsa() {
-        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use bitcoin::sighash::TapSighashType;
+
+        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Mldsa,
             &[0x22; 128],
-            TapSighashType::All,
+            TapSighashType::Default,
             50_000,
             40_000,
         )
@@ -1831,13 +1852,14 @@ mod tests {
 
     #[test]
     fn p2mr_signer_roundtrip_slh() {
-        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use bitcoin::sighash::TapSighashType;
+
+        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Slh,
             &[0x42; 128],
-            TapSighashType::All,
+            TapSighashType::Default,
             50_000,
             40_000,
         )
@@ -1850,8 +1872,9 @@ mod tests {
 
     #[test]
     fn p2mr_signer_roundtrip_sighash_none() {
-        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
         use bitcoin::sighash::TapSighashType;
+
+        use super::super::signer_dev::{SignAlgorithm, sign_p2mr_script_path_spend};
 
         let signed = sign_p2mr_script_path_spend(
             SignAlgorithm::Slh,

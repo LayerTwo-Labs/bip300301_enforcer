@@ -113,7 +113,10 @@ struct SignerOutput {
 
 fn main() -> ExitCode {
     if let Err(err) = run() {
-        eprintln!("{err}");
+        #[expect(clippy::print_stderr)]
+        {
+            eprintln!("{err}");
+        }
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

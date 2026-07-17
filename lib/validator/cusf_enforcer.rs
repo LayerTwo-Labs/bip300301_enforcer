@@ -228,14 +228,14 @@ fn connect_block_no_commit<'validator>(
     }
     .try_build()?;
     let handler = BlockHandler::new(
-            &validator.dbs,
-            validator.network,
-            validator.network_params(),
-            #[cfg(feature = "bip360")]
-            validator.bip360_activation_height(),
-            #[cfg(feature = "bip360")]
-            validator.pqc_verify_budget_ms(),
-        );
+        &validator.dbs,
+        validator.network,
+        validator.network_params(),
+        #[cfg(feature = "bip360")]
+        validator.bip360_activation_height(),
+        #[cfg(feature = "bip360")]
+        validator.pqc_verify_budget_ms(),
+    );
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
         .into_nested()?
@@ -387,14 +387,14 @@ impl CusfEnforcer for Validator {
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
         let handler = BlockHandler::new(
-                    &self.dbs,
-                    self.network,
-                    self.network_params(),
-                    #[cfg(feature = "bip360")]
-                    self.bip360_activation_height(),
-                    #[cfg(feature = "bip360")]
-                    self.pqc_verify_budget_ms(),
-                );
+            &self.dbs,
+            self.network,
+            self.network_params(),
+            #[cfg(feature = "bip360")]
+            self.bip360_activation_height(),
+            #[cfg(feature = "bip360")]
+            self.pqc_verify_budget_ms(),
+        );
         let sync_future = handler
             .sync_to_tip(
                 &self.mainchain_client,
@@ -439,14 +439,14 @@ impl CusfEnforcer for Validator {
     ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
         let handler = BlockHandler::new(
-                    &self.dbs,
-                    self.network,
-                    self.network_params(),
-                    #[cfg(feature = "bip360")]
-                    self.bip360_activation_height(),
-                    #[cfg(feature = "bip360")]
-                    self.pqc_verify_budget_ms(),
-                );
+            &self.dbs,
+            self.network,
+            self.network_params(),
+            #[cfg(feature = "bip360")]
+            self.bip360_activation_height(),
+            #[cfg(feature = "bip360")]
+            self.pqc_verify_budget_ms(),
+        );
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
         Ok(DisconnectBlockAction::default())

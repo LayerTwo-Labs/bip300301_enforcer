@@ -19,7 +19,6 @@ use bip300301_enforcer_lib::{
         },
     },
 };
-use bitcoin::sighash::TapSighashType;
 use bitcoin::{
     Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxMerkleNode,
     TxOut, Witness,
@@ -29,6 +28,7 @@ use bitcoin::{
     merkle_tree,
     opcodes::OP_0,
     script::{Builder as ScriptBuilder, PushBytesBuf},
+    sighash::TapSighashType,
     transaction::Version,
 };
 use serde::Deserialize;
@@ -64,7 +64,11 @@ pub const P2MR_PREVOUT_VALUE: u64 = 50_000;
 pub const P2MR_SPEND_OUTPUT_VALUE: u64 = 40_000;
 
 /// Fixed test entropy for Schnorr P2MR spends (32 bytes).
-pub const SCHNORR_ENTROPY: [u8; 32] = [0x11; 32];
+///
+/// Same bytes as [`bip300301_enforcer_lib::validator::pqc::protocol_vectors::SCHNORR_VECTOR_ENTROPY`]
+/// (3C TB-sendraw green-gate vector).
+pub const SCHNORR_ENTROPY: [u8; 32] =
+    bip300301_enforcer_lib::validator::pqc::protocol_vectors::SCHNORR_VECTOR_ENTROPY;
 /// Fixed test entropy for ML-DSA-44 P2MR spends (128 bytes).
 pub const MLDSA_ENTROPY: [u8; 128] = [0x22; 128];
 /// Fixed test entropy for SLH-DSA-SHA2-128s P2MR spends (128 bytes).
@@ -605,17 +609,13 @@ pub fn tamper_witness_control_block(spend_tx: &mut Transaction) -> anyhow::Resul
         bad_control.first() == Some(&0xc1),
         "expected P2MR control block starting with 0xc1"
     );
-    // Wire layout: 0xc1 || 32-byte base padding || merkle branch (32 bytes per sibling).
-    const BASE_LEN: usize = 33;
-    if bad_control.len() < BASE_LEN {
-        bad_control.resize(BASE_LEN, 0);
-        bad_control[0] = 0xc1;
-    }
-    if bad_control.len() == BASE_LEN {
+    // Core wire layout: 0xc1 || merkle branch (32 bytes per sibling); no internal-key pad.
+    const CORE_BASE_LEN: usize = 1;
+    if bad_control.len() == CORE_BASE_LEN {
         // Single-leaf: append a bogus merkle sibling (no branch in valid control block).
         bad_control.extend_from_slice(&[0xBB; 32]);
     } else {
-        // Flip a byte in the merkle branch (past base padding), not the version byte.
+        // Flip a byte in the merkle branch (past the control byte), not the version byte.
         let branch_idx = bad_control.len() - 1;
         bad_control[branch_idx] ^= 0x01;
     }
