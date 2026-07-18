@@ -16,7 +16,7 @@
 //! This module still decodes Core wire locally. Legacy padded form
 //! (`0xc1 || [0u8; 32] || branch`) is accepted by detecting an all-zero 32-byte slot.
 
-use bitcoin::{Script, hashes::Hash as _};
+use bitcoin::Script;
 use bitcoin_p2mr_pqc::{
     TapScriptBuf,
     p2mr::P2MR_LEAF_VERSION,
@@ -121,7 +121,7 @@ pub fn verify_merkle_path(
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::{ScriptBuf, hashes::Hash};
+    use bitcoin::ScriptBuf;
     use bitcoin_p2mr_pqc::{
         TapScriptBuf,
         p2mr::P2MR_LEAF_VERSION,

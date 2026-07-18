@@ -75,6 +75,7 @@ New CLI flags (behind `bip360`):
 
 ```bash
 just verify          # bip360 check + pqc tests + drivechain tests + clippy + fmt + it build
+just validate-rules-engine  # hub RuleEngine + worker crates (when touching rules/IPC)
 just clippy          # broader feature sets (do not use cargo --all-features)
 ```
 

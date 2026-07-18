@@ -30,6 +30,8 @@ pub mod main_rest_client;
 pub mod parse_block_files;
 #[cfg(feature = "bip360")]
 pub mod pqc;
+/// Soft-fork rule registry / consent composition (hub model). See `rules` + docs/MULTI_ENFORCER.md.
+pub mod rules;
 mod sync_state_summary;
 mod task;
 #[cfg(test)]
@@ -424,6 +426,8 @@ pub struct Validator {
     bip360_activation_height: u32,
     #[cfg(feature = "bip360")]
     pqc_verify_budget_ms: u64,
+    /// Remote UDS rule workers from hub `--rules-worker` (empty = Local-only).
+    remote_rules: Arc<rules::BackendEngine>,
 }
 
 impl Validator {
@@ -472,7 +476,23 @@ impl Validator {
             bip360_activation_height,
             #[cfg(feature = "bip360")]
             pqc_verify_budget_ms,
+            remote_rules: Arc::new(rules::BackendEngine::new()),
         })
+    }
+
+    /// Install remote rule backends (hub `--rules-worker`). Replaces any prior set.
+    /// Ballots from remotes are required on mempool/connect when registered
+    /// (fail-closed Timeout/Failure/Reject).
+    pub fn set_remote_rules(&mut self, engine: rules::BackendEngine) {
+        self.remote_rules = Arc::new(engine);
+    }
+
+    pub fn remote_rules(&self) -> &rules::BackendEngine {
+        &self.remote_rules
+    }
+
+    pub(crate) fn remote_rules_arc(&self) -> Arc<rules::BackendEngine> {
+        Arc::clone(&self.remote_rules)
     }
 
     #[cfg(feature = "bip360")]

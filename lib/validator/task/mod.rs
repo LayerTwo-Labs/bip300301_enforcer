@@ -4,7 +4,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
 };
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
 #[cfg(feature = "drivechain")]
@@ -20,9 +20,7 @@ use jsonrpsee::core::{
     client::BatchResponse,
     params::{ArrayParams, BatchRequestBuilder},
 };
-use sneed::RwTxn;
-#[cfg(feature = "drivechain")]
-use sneed::{RoTxn, db};
+use sneed::{RoTxn, RwTxn, db};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "drivechain")]
@@ -54,7 +52,16 @@ mod block_files;
 pub mod error;
 
 /// Bundles the consensus inputs that every handler needs.
-#[derive(Clone, Copy)]
+///
+/// `remote_rules` holds optional UDS remotes from hub `--rules-worker`.
+/// Only remotes that completed handshake with an **allowlisted** real
+/// `validation` token are registered (`build_remote_backend_engine`).
+///
+/// **Mempool:** Local feature ballots always run when the feature is on; remote
+/// ballots are **AND**ed (remote cannot sole-replace Local mempool consent).
+/// **Connect bip360:** Local validation always runs for UTXO diff; local consent
+/// ballot is also kept and AND'd with remote when present.
+#[derive(Clone)]
 pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) dbs: &'a Dbs,
     pub(super) network: Network,
@@ -65,6 +72,8 @@ pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) bip360_activation_height: u32,
     #[cfg(feature = "bip360")]
     pub(super) pqc_verify_budget_ms: u64,
+    /// Remote rule backends (may be empty). Shared across handlers via `Arc`.
+    pub(super) remote_rules: Arc<crate::validator::rules::BackendEngine>,
 }
 
 impl<'a> BlockHandler<'a> {
@@ -74,6 +83,7 @@ impl<'a> BlockHandler<'a> {
         params: NetworkParams,
         #[cfg(feature = "bip360")] bip360_activation_height: u32,
         #[cfg(feature = "bip360")] pqc_verify_budget_ms: u64,
+        remote_rules: Arc<crate::validator::rules::BackendEngine>,
     ) -> Self {
         Self {
             dbs,
@@ -85,6 +95,7 @@ impl<'a> BlockHandler<'a> {
             bip360_activation_height,
             #[cfg(feature = "bip360")]
             pqc_verify_budget_ms,
+            remote_rules,
         }
     }
 }
@@ -1019,21 +1030,70 @@ impl BlockHandler<'_> {
     /// Check if a tx is valid against the current tip.
     /// Although a rwtxn is required, it is only used to create a child rwtxn,
     /// which will always be aborted.
+    ///
+    /// Composition: feature-gated **local** ballots always run when the feature
+    /// is on; remote ballots from `--rules-worker` are **AND**ed (remote cannot
+    /// sole-replace Local mempool consent). Remote Timeout/Failure/Reject is
+    /// fail-closed.
     #[cfg(not(feature = "bip360"))]
     pub(in crate::validator) fn validate_tx(
         &self,
         parent_rwtxn: &mut RwTxn,
         transaction: &Transaction,
     ) -> Result<bool, error::ValidateTransaction> {
+        use crate::validator::rules::{self, RuleBallot, RuleTxContext};
+
+        let mut ballots: Vec<RuleBallot> = Vec::new();
+        let dbs = self.dbs;
+        // Single nested txn for tip + Local drivechain + remote snapshot (when needed).
+        // Fail-closed on DB/missing tip — never unwrap_or(0) (wrong activation).
         #[cfg(feature = "drivechain")]
-        {
-            self.validate_tx_drivechain(parent_rwtxn, transaction)
-        }
+        let need_tip_txn = true;
         #[cfg(not(feature = "drivechain"))]
-        {
-            let _ = (parent_rwtxn, transaction);
-            return Ok(true);
+        let need_tip_txn = !self.remote_rules.is_empty();
+
+        if need_tip_txn {
+            #[cfg_attr(not(feature = "drivechain"), allow(unused_mut))]
+            let mut child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
+            let tip_hash = dbs
+                .current_chain_tip
+                .try_get(&child_rwtxn, &())?
+                .ok_or(error::ValidateTransactionInner::NoChainTip)?;
+            let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
+
+            // Snapshot **before** Local M5/M6 apply so remotes see parent-tip
+            // ctips (post-mutation would false-Reject valid deposits under dual-AND).
+            let dc_state = if !self.remote_rules.is_empty() {
+                Some(self.drivechain_state_snapshot(&child_rwtxn, tip_hash, tip_height)?)
+            } else {
+                None
+            };
+
+            #[cfg(feature = "drivechain")]
+            {
+                use crate::validator::rules::drivechain::DrivechainRule;
+                // Always Local drivechain mempool ballot; remote AND if registered.
+                let ok = self.validate_tx_drivechain_on_child(
+                    &mut child_rwtxn,
+                    transaction,
+                    tip_height,
+                )?;
+                ballots.push(DrivechainRule::ballot_from_validation_ok(ok));
+            }
+
+            if let Some(dc_state) = dc_state.as_ref() {
+                let ctx = RuleTxContext::with_tx(tip_height, "mempool", transaction)
+                    .with_drivechain_state(dc_state);
+                ballots.extend(self.remote_rules.collect_tx_ballots(&ctx));
+            }
+        } else {
+            #[cfg(not(feature = "drivechain"))]
+            {
+                let _ = (parent_rwtxn, transaction);
+            }
         }
+
+        Ok(rules::RuleEngine::decide(&ballots).is_accept())
     }
 
     #[cfg(feature = "bip360")]
@@ -1046,50 +1106,165 @@ impl BlockHandler<'_> {
     where
         TxRef: std::borrow::Borrow<Transaction>,
     {
+        use crate::validator::rules::{self, RuleBallot, RuleTxContext};
+
         let dbs = self.dbs;
+        // Nested txn is only mutated by Local drivechain ballot (M5/M6).
+        #[cfg(feature = "drivechain")]
+        let mut child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
+        #[cfg(not(feature = "drivechain"))]
         let child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
         let tip_hash = dbs
             .current_chain_tip
             .try_get(&child_rwtxn, &())?
             .ok_or(error::ValidateTransactionInner::NoChainTip)?;
         let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
+
+        let mut ballots: Vec<RuleBallot> = Vec::new();
+
+        // Pre-mutation tip ctips for remotes (before Local M5/M6 apply below).
+        let dc_state = if !self.remote_rules.is_empty() {
+            Some(self.drivechain_state_snapshot(&child_rwtxn, tip_hash, tip_height)?)
+        } else {
+            None
+        };
+
         #[cfg(feature = "drivechain")]
-        let drivechain_ok = {
-            let mut child_rwtxn = child_rwtxn;
-            self.validate_tx_drivechain_on_child(&mut child_rwtxn, transaction, tip_height)?
-        };
-        #[cfg(not(feature = "drivechain"))]
-        let drivechain_ok = true;
-        use crate::validator::pqc::{self, activation::Bip360Activation};
-        let bip360_ok = match pqc::validate_mempool_transaction(
-            transaction,
-            tip_height,
-            Bip360Activation(self.bip360_activation_height),
-            parent_txs,
-        ) {
-            Ok(()) => true,
-            Err(err) => {
-                tracing::debug!(?err, "BIP 360 mempool validation failed");
-                false
+        {
+            // Always Local drivechain mempool ballot; remote AND if registered.
+            let drivechain_ok =
+                self.validate_tx_drivechain_on_child(&mut child_rwtxn, transaction, tip_height)?;
+            ballots
+                .push(rules::drivechain::DrivechainRule::ballot_from_validation_ok(drivechain_ok));
+        }
+
+        // Always Local bip360 mempool ballot — remote cannot sole-replace.
+        {
+            use crate::validator::pqc::{self, activation::Bip360Activation};
+            let bip360_result = pqc::validate_mempool_transaction(
+                transaction,
+                tip_height,
+                Bip360Activation(self.bip360_activation_height),
+                parent_txs,
+            );
+            ballots.push(rules::bip360::Bip360Rule::ballot_from_pqc_result(
+                bip360_result,
+            ));
+        }
+
+        if let Some(dc_state) = dc_state.as_ref() {
+            // Parents on the wire for remote bip360 spends (owned map for encode).
+            let owned_parents: HashMap<bitcoin::Txid, Transaction> = parent_txs
+                .iter()
+                .map(|(id, tx)| (*id, tx.borrow().clone()))
+                .collect();
+            let ctx = if owned_parents.is_empty() {
+                RuleTxContext::with_tx(tip_height, "mempool", transaction)
+            } else {
+                RuleTxContext::with_tx_and_parents(
+                    tip_height,
+                    "mempool",
+                    transaction,
+                    &owned_parents,
+                )
             }
-        };
-        Ok(drivechain_ok && bip360_ok)
+            .with_drivechain_state(dc_state);
+            ballots.extend(self.remote_rules.collect_tx_ballots(&ctx));
+        }
+
+        Ok(rules::RuleEngine::decide(&ballots).is_accept())
     }
 
-    #[cfg(all(feature = "drivechain", not(feature = "bip360")))]
-    fn validate_tx_drivechain(
+    /// Hub network threshold for Path A pending-M6 SoftForkRule.
+    /// Always from [`NetworkParams`] (not cfg-gated to 0) so slim-hub + remote
+    /// worker vote checks match the hub network (MAINNET/SHORT/DRYNET1).
+    fn withdrawal_bundle_inclusion_threshold_for_snapshot(&self) -> u16 {
+        self.params.thresholds.withdrawal_bundle_inclusion_threshold
+    }
+
+    /// Tip height/hash, active sidechain slots, **pre-mutation** current ctips,
+    /// and pending M6ids for rules.v1 `drivechain_state`. Callers must snapshot
+    /// before applying Local M5/M6 ctip diffs (mempool) or connect `tx_diffs` so
+    /// remotes see parent-tip treasuries/pending. `tip_hash` is prev tip for M8.
+    /// Not full historical `ctip_outpoint_to_value_seq` (unbounded residual).
+    fn drivechain_state_snapshot(
         &self,
-        parent_rwtxn: &mut RwTxn,
-        transaction: &Transaction,
-    ) -> Result<bool, error::ValidateTransaction> {
-        let dbs = self.dbs;
-        let mut child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
-        let tip_hash = dbs
-            .current_chain_tip
-            .try_get(&child_rwtxn, &())?
-            .ok_or(error::ValidateTransactionInner::NoChainTip)?;
-        let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
-        self.validate_tx_drivechain_on_child(&mut child_rwtxn, transaction, tip_height)
+        rotxn: &RoTxn,
+        tip_hash: BlockHash,
+        tip_height: u32,
+    ) -> Result<crate::validator::rules::DrivechainStateSnapshot, error::ValidateTransactionInner>
+    {
+        Self::drivechain_state_snapshot_from_dbs(
+            self.dbs,
+            rotxn,
+            tip_hash,
+            tip_height,
+            self.withdrawal_bundle_inclusion_threshold_for_snapshot(),
+        )
+        .map_err(|err| error::ValidateTransactionInner::Db(Box::new(err)))
+    }
+
+    /// Shared snapshot builder for mempool validate_tx and connect_block remotes.
+    /// Reads **current** LMDB ctips/active/pending at `rotxn` — caller must pass a
+    /// pre-mutation view (before Local apply / before connect tx_diffs).
+    fn drivechain_state_snapshot_from_dbs(
+        dbs: &Dbs,
+        rotxn: &RoTxn,
+        tip_hash: BlockHash,
+        tip_height: u32,
+        withdrawal_bundle_inclusion_threshold: u16,
+    ) -> Result<crate::validator::rules::DrivechainStateSnapshot, db::Error> {
+        use fallible_iterator::FallibleIterator as _;
+
+        use crate::validator::rules::{
+            DrivechainCtipSnapshot, DrivechainPendingM6idSnapshot, DrivechainStateSnapshot,
+        };
+
+        let numbers = dbs.active_sidechains.numbers(rotxn)?;
+        let mut ctips: Vec<DrivechainCtipSnapshot> = dbs
+            .active_sidechains
+            .ctip()
+            .iter(rotxn)?
+            .map(|(sidechain_number, ctip)| {
+                Ok(DrivechainCtipSnapshot {
+                    sidechain_number: sidechain_number.into(),
+                    outpoint_txid_hex: ctip.outpoint.txid.to_string(),
+                    outpoint_vout: ctip.outpoint.vout,
+                    value_sats: ctip.value.to_sat(),
+                })
+            })
+            .collect()?;
+        ctips.sort_by_key(|c| c.sidechain_number);
+
+        // Path A: pending M6ids (bounded by active proposals; not historical map).
+        let mut pending_m6ids: Vec<DrivechainPendingM6idSnapshot> = Vec::new();
+        for sc in &numbers {
+            let Some(pending) = dbs.active_sidechains.pending_m6ids().try_get(rotxn, sc)? else {
+                continue;
+            };
+            for (m6id, info) in pending {
+                pending_m6ids.push(DrivechainPendingM6idSnapshot {
+                    sidechain_number: (*sc).into(),
+                    m6id_hex: m6id.0.to_string(),
+                    vote_count: info.vote_count,
+                    proposal_height: info.proposal_height,
+                });
+            }
+        }
+        pending_m6ids.sort_by(|a, b| {
+            a.sidechain_number
+                .cmp(&b.sidechain_number)
+                .then_with(|| a.m6id_hex.cmp(&b.m6id_hex))
+        });
+
+        Ok(DrivechainStateSnapshot {
+            tip_height,
+            tip_hash_hex: tip_hash.to_string(),
+            active_sidechain_numbers: numbers.into_iter().map(u8::from).collect(),
+            ctips,
+            pending_m6ids,
+            withdrawal_bundle_inclusion_threshold,
+        })
     }
 
     #[cfg(feature = "drivechain")]
@@ -1132,16 +1307,75 @@ impl BlockHandler<'_> {
         use crate::validator::dbs::diff::{FailedM6ids, FailedProposals};
         #[cfg(feature = "bip360")]
         let p2mr_utxo_diff = {
-            use crate::validator::pqc::{self, activation::Bip360Activation};
+            use crate::validator::{
+                pqc::{self, activation::Bip360Activation},
+                rules::{self, AggregateDecision, RuleBlockContext, bip360::Bip360Rule},
+            };
             let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
-            let p2mr_utxo_diff = pqc::validate_and_diff_block_transactions(
+            // Always run local bip360 for UTXO diff; consent ballot may be remote.
+            let bip360_result = pqc::validate_and_diff_block_transactions(
                 block,
                 height,
                 Bip360Activation(self.bip360_activation_height),
                 &chain_utxos,
                 self.pqc_verify_budget_ms,
-            )
-            .map_err(|source| error::ConnectBlock::Bip360 { block_hash, source })?;
+            );
+            let mut ballots = Vec::new();
+            // Always Local bip360 connect ballot (AND with remote when registered).
+            let bip360_ballot = match &bip360_result {
+                Ok(_) => Bip360Rule::ballot_connect_ok(true, "ok"),
+                Err(err) => Bip360Rule::ballot_connect_ok(false, err.to_string()),
+            };
+            ballots.push(bip360_ballot);
+            if !self.remote_rules.is_empty() {
+                // Always send chain P2MR set when remotes are present (bip360 needs it).
+                // Hub still applies local UTXO diff after Accept (below).
+                // Drivechain state when available (tip = prev block for connect context).
+                let dc_state = Self::drivechain_state_snapshot_from_dbs(
+                    dbs,
+                    rwtxn,
+                    prev_mainchain_block_hash,
+                    height.saturating_sub(1),
+                    self.withdrawal_bundle_inclusion_threshold_for_snapshot(),
+                )
+                .map_err(|err| error::ConnectBlock::Db(Box::new(err)))?;
+                let ctx = RuleBlockContext::with_block_and_chain_utxos(
+                    height,
+                    "connect",
+                    block,
+                    &chain_utxos,
+                )
+                .with_drivechain_state(&dc_state);
+                ballots.extend(self.remote_rules.collect_block_ballots(&ctx));
+            }
+            match rules::RuleEngine::decide(&ballots) {
+                AggregateDecision::Accept => {}
+                AggregateDecision::Reject { rejections } => {
+                    if let Err(source) = bip360_result {
+                        return Err(error::ConnectBlock::Bip360 { block_hash, source });
+                    }
+                    let reason = rules::truncate_for_log(
+                        &rejections
+                            .first()
+                            .map(|b| b.source.as_reject_reason())
+                            .unwrap_or_else(|| "rule reject".into()),
+                    );
+                    tracing::error!(
+                        %block_hash,
+                        reason = %reason,
+                        "connect_block rule consent rejected (fail-closed)"
+                    );
+                    return Err(error::ConnectBlock::RulesReject { block_hash, reason });
+                }
+            }
+            let p2mr_utxo_diff = match bip360_result {
+                Ok(diff) => diff,
+                Err(source) => {
+                    // Local validation failed but remote replaced local ballot and
+                    // consented — still fail closed on apply (no silent soft-Accept).
+                    return Err(error::ConnectBlock::Bip360 { block_hash, source });
+                }
+            };
             p2mr_utxo_diff.apply(rwtxn, dbs, height)?;
             p2mr_utxo_diff
         };
@@ -1192,6 +1426,12 @@ impl BlockHandler<'_> {
     }
 
     /// Block header should be stored before calling this.
+    ///
+    /// Feature-gated connect validation produces rule ballots (drivechain /
+    /// bip360) composed with [`crate::validator::rules::RuleEngine::decide`]
+    /// (same fail-closed AND as mempool [`Self::validate_tx`]). SoftForkRule
+    /// Local shells remain fail-closed without DB; BlockHandler supplies the
+    /// authoritative ballots from existing validation results.
     #[tracing::instrument(skip_all)]
     #[expect(clippy::result_large_err)]
     #[cfg_attr(not(feature = "drivechain"), expect(clippy::needless_return))]
@@ -1431,6 +1671,24 @@ impl BlockHandler<'_> {
                 failed_proposals: failed_sidechain_proposals_diff,
                 failed_m6ids: failed_m6ids_diff,
             };
+            // Parent-tip / pre-tx ctips for remotes. Must be taken **before**
+            // `tx_diffs.apply` mutates current treasuries (post-tx snapshot would
+            // false old_ctip_unspent on valid M5 under dual-AND). tip_hash remains
+            // prev_mainchain for M8. After coinbase so newly activated slots appear.
+            let dc_state_for_remotes = if !self.remote_rules.is_empty() {
+                Some(
+                    Self::drivechain_state_snapshot_from_dbs(
+                        dbs,
+                        rwtxn,
+                        prev_mainchain_block_hash,
+                        height.saturating_sub(1),
+                        self.withdrawal_bundle_inclusion_threshold_for_snapshot(),
+                    )
+                    .map_err(|err| error::ConnectBlock::Db(Box::new(err)))?,
+                )
+            } else {
+                None
+            };
             tracing::trace!("Handled coinbase tx, handling other txs...");
             let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
             'connect_txs: for transaction in &block.txdata[1..] {
@@ -1464,21 +1722,112 @@ impl BlockHandler<'_> {
             // Tx diffs are already applied
             let tx_diffs = tx_diffs.diffs();
             tracing::trace!("Handled block txs");
+
+            // Drivechain connect path completed without fatal error → local Accept
+            // ballot always; remotes AND via RuleEngine::decide.
+            use crate::validator::rules::{
+                self, AggregateDecision, RuleBallot, RuleBlockContext, drivechain::DrivechainRule,
+            };
+            let mut ballots: Vec<RuleBallot> = Vec::new();
+            ballots.push(DrivechainRule::ballot_connect_ok(true, "ok"));
+
             #[cfg(feature = "bip360")]
             let p2mr_utxo_diff = {
-                use crate::validator::pqc::{self, activation::Bip360Activation};
+                use crate::validator::{
+                    pqc::{self, activation::Bip360Activation},
+                    rules::bip360::Bip360Rule,
+                };
                 let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
-                let p2mr_utxo_diff = pqc::validate_and_diff_block_transactions(
+                let bip360_result = pqc::validate_and_diff_block_transactions(
                     block,
                     height,
                     Bip360Activation(self.bip360_activation_height),
                     &chain_utxos,
                     self.pqc_verify_budget_ms,
-                )
-                .map_err(|source| error::ConnectBlock::Bip360 { block_hash, source })?;
+                );
+                // Always Local bip360 connect ballot; AND with remote when registered.
+                let bip360_ballot = match &bip360_result {
+                    Ok(_) => Bip360Rule::ballot_connect_ok(true, "ok"),
+                    Err(err) => Bip360Rule::ballot_connect_ok(false, err.to_string()),
+                };
+                ballots.push(bip360_ballot);
+                if let Some(dc_state) = dc_state_for_remotes.as_ref() {
+                    // Always send chain P2MR set; hub still applies local UTXO diff after Accept.
+                    // drivechain_state is pre-tx snapshot (above).
+                    let ctx = RuleBlockContext::with_block_and_chain_utxos(
+                        height,
+                        "connect",
+                        block,
+                        &chain_utxos,
+                    )
+                    .with_drivechain_state(dc_state);
+                    ballots.extend(self.remote_rules.collect_block_ballots(&ctx));
+                }
+                match rules::RuleEngine::decide(&ballots) {
+                    AggregateDecision::Accept => {}
+                    AggregateDecision::Reject { rejections } => {
+                        if let Err(source) = bip360_result {
+                            return Err(error::ConnectBlock::Bip360 { block_hash, source });
+                        }
+                        let reason = rules::truncate_for_log(
+                            &rejections
+                                .first()
+                                .map(|b| b.source.as_reject_reason())
+                                .unwrap_or_else(|| "rule reject".into()),
+                        );
+                        tracing::error!(
+                            %block_hash,
+                            reason = %reason,
+                            "connect_block rule consent rejected (fail-closed)"
+                        );
+                        return Err(error::ConnectBlock::RulesReject { block_hash, reason });
+                    }
+                }
+                let p2mr_utxo_diff = match bip360_result {
+                    Ok(diff) => diff,
+                    Err(source) => {
+                        return Err(error::ConnectBlock::Bip360 { block_hash, source });
+                    }
+                };
                 p2mr_utxo_diff.apply(rwtxn, dbs, height)?;
                 p2mr_utxo_diff
             };
+            #[cfg(not(feature = "bip360"))]
+            {
+                if let Some(dc_state) = dc_state_for_remotes.as_ref() {
+                    // Always send chain set (empty without bip360 DB) so bip360 remote
+                    // SoftForkRule gets the field (missing → Reject missing_chain_p2mr_utxos).
+                    // drivechain_state is pre-tx snapshot (above).
+                    let empty_chain = std::collections::HashMap::new();
+                    let ctx = RuleBlockContext::with_block_and_chain_utxos(
+                        height,
+                        "connect",
+                        block,
+                        &empty_chain,
+                    )
+                    .with_drivechain_state(dc_state);
+                    ballots.extend(self.remote_rules.collect_block_ballots(&ctx));
+                }
+                match rules::RuleEngine::decide(&ballots) {
+                    AggregateDecision::Accept => {
+                        tracing::trace!("drivechain connect ballots decided Accept");
+                    }
+                    AggregateDecision::Reject { rejections } => {
+                        let reason = rules::truncate_for_log(
+                            &rejections
+                                .first()
+                                .map(|b| b.source.as_reject_reason())
+                                .unwrap_or_else(|| "rule reject".into()),
+                        );
+                        tracing::error!(
+                            %block_hash,
+                            reason = %reason,
+                            "connect_block rule consent rejected (fail-closed)"
+                        );
+                        return Err(error::ConnectBlock::RulesReject { block_hash, reason });
+                    }
+                }
+            }
             let block_info = BlockInfo {
                 bmm_commitments: accepted_bmm_requests.into_iter().collect(),
                 coinbase_txid: coinbase.compute_txid(),
@@ -2127,6 +2476,7 @@ mod tests {
             0,
             #[cfg(feature = "bip360")]
             crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            Arc::new(crate::validator::rules::BackendEngine::new()),
         )
     }
 
@@ -2186,6 +2536,25 @@ mod tests {
                 ..TxIn::default()
             }],
             output: vec![treasury_output, address_output],
+        }
+    }
+
+    /// M6 withdrawal: spend current ctip, new treasury value **below** old (no address).
+    fn build_m6_withdrawal_tx(
+        sidechain_number: SidechainNumber,
+        old_ctip_outpoint: OutPoint,
+        new_treasury: Amount,
+    ) -> Transaction {
+        let treasury_output =
+            create_m5_deposit_output(sidechain_number, Amount::ZERO, new_treasury).unwrap();
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: old_ctip_outpoint,
+                ..TxIn::default()
+            }],
+            output: vec![treasury_output],
         }
     }
 
@@ -2691,6 +3060,702 @@ mod tests {
                 .is_none(),
             "inactive-slot OP_DRIVECHAIN output must be ignored, not treated as a CTIP",
         );
+        Ok(())
+    }
+
+    /// Regression (review Issue 1): hub must wire **pre-mutation** ctips to remotes.
+    /// After Local applies a valid M5 replace, LMDB would hold the *new* treasury;
+    /// if that post-state were snapshotted, independent SoftForkRule would
+    /// false-Reject `old_ctip_unspent` and dual-AND would brick the deposit.
+    #[test]
+    fn validate_tx_remote_receives_pre_mutation_ctip_for_valid_m5() -> Result<()> {
+        use std::sync::Mutex;
+
+        use crate::validator::rules::{
+            RuleBackend, SoftForkRule as _,
+            drivechain::DrivechainRule,
+            ipc::{
+                RemoteRuleClient, RuleTransport, RulesV1Request, RulesV1Response, TransportError,
+            },
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        // Tip at height 1 so validate_tx can resolve current_chain_tip + height.
+        let tip_header = test_block_header(BlockHash::all_zeros());
+        let tip_hash = tip_header.block_hash();
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(tip_header, 1)])
+            .into_diagnostic()?;
+        dbs.current_chain_tip
+            .put(&mut rwtxn, &(), &tip_hash)
+            .into_diagnostic()?;
+
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        // Non-palindromic old ctip txid (LE/Display mixup would fail match).
+        let mut old_txid_bytes = [0u8; 32];
+        old_txid_bytes[0] = 0xA1;
+        old_txid_bytes[1] = 0xB2;
+        old_txid_bytes[30] = 0xC3;
+        old_txid_bytes[31] = 0xD4;
+        let old_outpoint = OutPoint {
+            txid: Txid::from_byte_array(old_txid_bytes),
+            vout: 0,
+        };
+        let old_value = Amount::from_sat(5_000);
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_outpoint,
+                    value: old_value,
+                },
+            )
+            .into_diagnostic()?;
+        rwtxn.commit().into_diagnostic()?;
+
+        let old_txid_hex = old_outpoint.txid.to_string();
+        let deposit_amount = Amount::from_sat(3_000);
+        let tx = build_m5_deposit_tx(sc, old_outpoint, old_value, deposit_amount);
+
+        struct Capture {
+            last: Mutex<Option<RulesV1Request>>,
+        }
+        impl RuleTransport for Capture {
+            fn call(&self, request: RulesV1Request) -> Result<RulesV1Response, TransportError> {
+                *self.last.lock().unwrap() = Some(request);
+                // Accept on wire so dual-AND outcome hinges on Local + pre-state
+                // (SoftForkRule on pre-state also Accepts; post-state would Reject).
+                Ok(RulesV1Response::accept())
+            }
+        }
+        let cap = Arc::new(Capture {
+            last: Mutex::new(None),
+        });
+        let mut engine = crate::validator::rules::BackendEngine::new();
+        engine.register(RuleBackend::Remote(RemoteRuleClient::new(
+            "drivechain",
+            cap.clone(),
+        )));
+        let handler = BlockHandler::new(
+            &dbs,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            Arc::new(engine),
+        );
+
+        let mut parent = dbs.write_txn().into_diagnostic()?;
+        #[cfg(feature = "bip360")]
+        let parents: HashMap<Txid, Transaction> = HashMap::new();
+        #[cfg(feature = "bip360")]
+        let ok = handler
+            .validate_tx(&mut parent, &tx, &parents)
+            .into_diagnostic()?;
+        #[cfg(not(feature = "bip360"))]
+        let ok = handler.validate_tx(&mut parent, &tx).into_diagnostic()?;
+        assert!(
+            ok,
+            "valid M5 with remote must dual-AND Accept when wire carries pre-mutation ctip"
+        );
+
+        let captured = cap.last.lock().unwrap().clone();
+        match captured {
+            Some(RulesV1Request::ValidateTx {
+                drivechain_state: Some(s),
+                ..
+            }) => {
+                assert_eq!(
+                    s.tip_hash_hex,
+                    tip_hash.to_string(),
+                    "tip_hash must remain prev tip for M8"
+                );
+                assert!(
+                    s.active_sidechain_numbers.contains(&1),
+                    "active slots: {:?}",
+                    s.active_sidechain_numbers
+                );
+                let ctip = s
+                    .ctips
+                    .iter()
+                    .find(|c| c.sidechain_number == 1)
+                    .expect("wire must include sidechain 1 ctip");
+                assert_eq!(
+                    ctip.outpoint_txid_hex, old_txid_hex,
+                    "remote must see OLD ctip (pre-mutation), not post-M5 treasury"
+                );
+                assert_eq!(ctip.outpoint_vout, 0);
+                assert_eq!(ctip.value_sats, old_value.to_sat());
+
+                // SoftForkRule on the captured pre-state Accepts this M5.
+                let vote = DrivechainRule::new()
+                    .validate_tx(
+                        &crate::validator::rules::RuleTxContext::with_tx(1, "cap", &tx)
+                            .with_drivechain_state(&s),
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(vote, crate::validator::rules::RuleVote::Accept),
+                    "pre-mutation snapshot + valid M5 must SoftForkRule Accept, got {vote:?}"
+                );
+            }
+            other => panic!("expected ValidateTx with drivechain_state, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Path A: hub wires pending M6ids + inclusion threshold on `drivechain_state`
+    /// (pre-mutation; non-palindromic m6id display hex).
+    #[test]
+    fn validate_tx_remote_receives_pending_m6ids_on_wire() -> Result<()> {
+        use std::sync::Mutex;
+
+        use crate::validator::rules::{
+            RuleBackend,
+            ipc::{
+                RemoteRuleClient, RuleTransport, RulesV1Request, RulesV1Response, TransportError,
+            },
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        let tip_header = test_block_header(BlockHash::all_zeros());
+        let tip_hash = tip_header.block_hash();
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(tip_header, 1)])
+            .into_diagnostic()?;
+        dbs.current_chain_tip
+            .put(&mut rwtxn, &(), &tip_hash)
+            .into_diagnostic()?;
+
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        // Non-palindromic m6id bytes (endianness regression guard).
+        let mut m6_bytes = [0u8; 32];
+        m6_bytes[0] = 0x12;
+        m6_bytes[1] = 0x34;
+        m6_bytes[30] = 0xAB;
+        m6_bytes[31] = 0xCD;
+        let m6id = M6id(Txid::from_byte_array(m6_bytes));
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 7)
+            .into_diagnostic()?;
+        // Raise votes above SHORT threshold (5).
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 6);
+        rwtxn.commit().into_diagnostic()?;
+
+        struct Capture {
+            last: Mutex<Option<RulesV1Request>>,
+        }
+        impl RuleTransport for Capture {
+            fn call(&self, request: RulesV1Request) -> Result<RulesV1Response, TransportError> {
+                *self.last.lock().unwrap() = Some(request);
+                Ok(RulesV1Response::accept())
+            }
+        }
+        let cap = Arc::new(Capture {
+            last: Mutex::new(None),
+        });
+        let mut engine = crate::validator::rules::BackendEngine::new();
+        engine.register(RuleBackend::Remote(RemoteRuleClient::new(
+            "drivechain",
+            cap.clone(),
+        )));
+        let handler = BlockHandler::new(
+            &dbs,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            Arc::new(engine),
+        );
+
+        let mut parent = dbs.write_txn().into_diagnostic()?;
+        let plain = build_plain_tx();
+        #[cfg(feature = "bip360")]
+        let parents: HashMap<Txid, Transaction> = HashMap::new();
+        #[cfg(feature = "bip360")]
+        let _ = handler
+            .validate_tx(&mut parent, &plain, &parents)
+            .into_diagnostic()?;
+        #[cfg(not(feature = "bip360"))]
+        let _ = handler.validate_tx(&mut parent, &plain).into_diagnostic()?;
+
+        let captured = cap.last.lock().unwrap().clone();
+        match captured {
+            Some(RulesV1Request::ValidateTx {
+                drivechain_state: Some(s),
+                ..
+            }) => {
+                assert_eq!(
+                    s.withdrawal_bundle_inclusion_threshold,
+                    Thresholds::SHORT.withdrawal_bundle_inclusion_threshold
+                );
+                let pending = s
+                    .pending_m6ids
+                    .iter()
+                    .find(|p| p.sidechain_number == 1)
+                    .expect("wire must include pending m6id");
+                assert_eq!(pending.m6id_hex, m6id.0.to_string());
+                assert_eq!(pending.vote_count, 6);
+                assert_eq!(pending.proposal_height, 7);
+            }
+            other => panic!("expected ValidateTx with pending_m6ids, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Capture SoftForkRule M6: hub pre-mutation snapshot carries ctip + pending;
+    /// independent SoftForkRule Accepts sufficient votes; dual-AND Accepts with Local.
+    #[test]
+    fn validate_tx_remote_capture_softforkrule_m6_pending_accepts() -> Result<()> {
+        use std::sync::Mutex;
+
+        use crate::validator::rules::{
+            RuleBackend, SoftForkRule as _,
+            drivechain::DrivechainRule,
+            ipc::{
+                RemoteRuleClient, RuleTransport, RulesV1Request, RulesV1Response, TransportError,
+            },
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        let tip_header = test_block_header(BlockHash::all_zeros());
+        let tip_hash = tip_header.block_hash();
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(tip_header, 1)])
+            .into_diagnostic()?;
+        dbs.current_chain_tip
+            .put(&mut rwtxn, &(), &tip_hash)
+            .into_diagnostic()?;
+
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let mut old_txid_bytes = [0u8; 32];
+        old_txid_bytes[0] = 0x01;
+        old_txid_bytes[1] = 0x23;
+        old_txid_bytes[2] = 0x45;
+        old_txid_bytes[30] = 0xAB;
+        old_txid_bytes[31] = 0xCD;
+        let old_outpoint = OutPoint {
+            txid: Txid::from_byte_array(old_txid_bytes),
+            vout: 0,
+        };
+        let old_value = Amount::from_sat(1000);
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_outpoint,
+                    value: old_value,
+                },
+            )
+            .into_diagnostic()?;
+
+        let m6 = build_m6_withdrawal_tx(sc, old_outpoint, Amount::from_sat(400));
+        let (m6id, _) = compute_m6id(m6.clone(), old_value).expect("m6id");
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 1)
+            .into_diagnostic()?;
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 6);
+        rwtxn.commit().into_diagnostic()?;
+
+        struct Capture {
+            last: Mutex<Option<RulesV1Request>>,
+        }
+        impl RuleTransport for Capture {
+            fn call(&self, request: RulesV1Request) -> Result<RulesV1Response, TransportError> {
+                *self.last.lock().unwrap() = Some(request);
+                Ok(RulesV1Response::accept())
+            }
+        }
+        let cap = Arc::new(Capture {
+            last: Mutex::new(None),
+        });
+        let mut engine = crate::validator::rules::BackendEngine::new();
+        engine.register(RuleBackend::Remote(RemoteRuleClient::new(
+            "drivechain",
+            cap.clone(),
+        )));
+        let handler = BlockHandler::new(
+            &dbs,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            Arc::new(engine),
+        );
+
+        let mut parent = dbs.write_txn().into_diagnostic()?;
+        #[cfg(feature = "bip360")]
+        let parents: HashMap<Txid, Transaction> = HashMap::new();
+        #[cfg(feature = "bip360")]
+        let ok = handler
+            .validate_tx(&mut parent, &m6, &parents)
+            .into_diagnostic()?;
+        #[cfg(not(feature = "bip360"))]
+        let ok = handler.validate_tx(&mut parent, &m6).into_diagnostic()?;
+        assert!(ok, "valid M6 with pending votes must dual-AND Accept");
+
+        let captured = cap.last.lock().unwrap().clone();
+        match captured {
+            Some(RulesV1Request::ValidateTx {
+                drivechain_state: Some(s),
+                ..
+            }) => {
+                assert_eq!(
+                    s.withdrawal_bundle_inclusion_threshold,
+                    Thresholds::SHORT.withdrawal_bundle_inclusion_threshold
+                );
+                let pending = s
+                    .pending_m6ids
+                    .iter()
+                    .find(|p| p.sidechain_number == 1)
+                    .expect("wire must include pending m6id");
+                assert_eq!(pending.m6id_hex, m6id.0.to_string());
+                assert_eq!(pending.vote_count, 6);
+
+                let vote = DrivechainRule::new()
+                    .validate_tx(
+                        &crate::validator::rules::RuleTxContext::with_tx(1, "cap", &m6)
+                            .with_drivechain_state(&s),
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(vote, crate::validator::rules::RuleVote::Accept),
+                    "captured pre-mutation + pending votes must SoftForkRule Accept M6, got {vote:?}"
+                );
+
+                // Insufficient votes on same m6id → independent Reject (dual-AND guard).
+                let mut low = s.clone();
+                low.pending_m6ids[0].vote_count = 5;
+                let rej = DrivechainRule::new()
+                    .validate_tx(
+                        &crate::validator::rules::RuleTxContext::with_tx(1, "cap", &m6)
+                            .with_drivechain_state(&low),
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(
+                        &rej,
+                        crate::validator::rules::RuleVote::Reject { reason }
+                            if reason.contains("m6_insufficient_vote_count")
+                    ),
+                    "insufficient votes must SoftForkRule Reject, got {rej:?}"
+                );
+            }
+            other => panic!("expected ValidateTx with drivechain_state, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Connect-path Capture: hub wires **pre-block** parent-tip ctips (before
+    /// `tx_diffs.apply`). SoftForkRule then sequentially folds mid-block so
+    /// chained same-slot M5s Accept under dual-AND.
+    #[test]
+    fn connect_block_remote_receives_pre_block_ctip_and_sequential_fold_accepts() -> Result<()> {
+        use std::sync::Mutex;
+
+        use crate::validator::rules::{
+            RuleBackend, SoftForkRule as _,
+            drivechain::DrivechainRule,
+            ipc::{
+                RemoteRuleClient, RuleTransport, RulesV1Request, RulesV1Response, TransportError,
+            },
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        let prev_hash = BlockHash::all_zeros();
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let mut old_txid_bytes = [0u8; 32];
+        old_txid_bytes[0] = 0xA1;
+        old_txid_bytes[1] = 0xB2;
+        old_txid_bytes[30] = 0xC3;
+        old_txid_bytes[31] = 0xD4;
+        let old_outpoint = OutPoint {
+            txid: Txid::from_byte_array(old_txid_bytes),
+            vout: 0,
+        };
+        let old_value = Amount::from_sat(5_000);
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_outpoint,
+                    value: old_value,
+                },
+            )
+            .into_diagnostic()?;
+
+        let m5_ab = build_m5_deposit_tx(sc, old_outpoint, old_value, Amount::from_sat(1_000));
+        let mid_outpoint = OutPoint {
+            txid: m5_ab.compute_txid(),
+            vout: 0,
+        };
+        let mid_value = old_value + Amount::from_sat(1_000);
+        let m5_bc = build_m5_deposit_tx(sc, mid_outpoint, mid_value, Amount::from_sat(500));
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![m5_ab, m5_bc],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        struct Capture {
+            last: Mutex<Option<RulesV1Request>>,
+        }
+        impl RuleTransport for Capture {
+            fn call(&self, request: RulesV1Request) -> Result<RulesV1Response, TransportError> {
+                *self.last.lock().unwrap() = Some(request);
+                Ok(RulesV1Response::accept())
+            }
+        }
+        let cap = Arc::new(Capture {
+            last: Mutex::new(None),
+        });
+        let mut engine = crate::validator::rules::BackendEngine::new();
+        engine.register(RuleBackend::Remote(RemoteRuleClient::new(
+            "drivechain",
+            cap.clone(),
+        )));
+        let handler = BlockHandler::new(
+            &dbs,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            Arc::new(engine),
+        );
+
+        let old_txid_hex = old_outpoint.txid.to_string();
+        handler
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+
+        let captured = cap.last.lock().unwrap().clone();
+        match captured {
+            Some(RulesV1Request::ConnectBlock {
+                drivechain_state: Some(s),
+                block_hex: Some(_),
+                ..
+            }) => {
+                assert_eq!(
+                    s.tip_hash_hex,
+                    prev_hash.to_string(),
+                    "connect tip_hash must be prev_mainchain"
+                );
+                let ctip = s
+                    .ctips
+                    .iter()
+                    .find(|c| c.sidechain_number == 1)
+                    .expect("pre-block wire must include parent ctip A");
+                assert_eq!(
+                    ctip.outpoint_txid_hex, old_txid_hex,
+                    "connect remote must see pre-block ctip A, not post-block C"
+                );
+                assert_eq!(ctip.value_sats, old_value.to_sat());
+
+                // SoftForkRule sequential fold on parent-tip wire + full block Accepts.
+                let vote = DrivechainRule::new()
+                    .connect_block(
+                        &crate::validator::rules::RuleBlockContext::with_block(0, "cap", &block)
+                            .with_drivechain_state(&s),
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(vote, crate::validator::rules::RuleVote::Accept),
+                    "pre-block snapshot + sequential fold must Accept chained M5s, got {vote:?}"
+                );
+            }
+            other => panic!("expected ConnectBlock with drivechain_state, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Connect Capture + pending: parent-tip pending on wire; SoftForkRule folds
+    /// M6 then M5 (pending remove + ctip A→B→C). Control: M5 alone vs parent Rejects.
+    #[test]
+    fn connect_block_remote_capture_m6_then_m5_pending_fold_accepts() -> Result<()> {
+        use std::sync::Mutex;
+
+        use crate::validator::rules::{
+            RuleBackend, SoftForkRule as _,
+            drivechain::DrivechainRule,
+            ipc::{
+                RemoteRuleClient, RuleTransport, RulesV1Request, RulesV1Response, TransportError,
+            },
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+
+        let prev_hash = BlockHash::all_zeros();
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let mut old_txid_bytes = [0u8; 32];
+        old_txid_bytes[0] = 0x01;
+        old_txid_bytes[1] = 0x23;
+        old_txid_bytes[2] = 0x45;
+        old_txid_bytes[30] = 0xAB;
+        old_txid_bytes[31] = 0xCD;
+        let old_outpoint = OutPoint {
+            txid: Txid::from_byte_array(old_txid_bytes),
+            vout: 0,
+        };
+        let old_value = Amount::from_sat(1000);
+        dbs.active_sidechains
+            .put_ctip(
+                &mut rwtxn,
+                sc,
+                &Ctip {
+                    outpoint: old_outpoint,
+                    value: old_value,
+                },
+            )
+            .into_diagnostic()?;
+
+        let m6 = build_m6_withdrawal_tx(sc, old_outpoint, Amount::from_sat(400));
+        let (m6id, _) = compute_m6id(m6.clone(), old_value).expect("m6id");
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, m6id, 1)
+            .into_diagnostic()?;
+        set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 6);
+
+        let mid_outpoint = OutPoint {
+            txid: m6.compute_txid(),
+            vout: 0,
+        };
+        let mid_value = Amount::from_sat(400);
+        let m5 = build_m5_deposit_tx(sc, mid_outpoint, mid_value, Amount::from_sat(500));
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![m6.clone(), m5.clone()],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        struct Capture {
+            last: Mutex<Option<RulesV1Request>>,
+        }
+        impl RuleTransport for Capture {
+            fn call(&self, request: RulesV1Request) -> Result<RulesV1Response, TransportError> {
+                *self.last.lock().unwrap() = Some(request);
+                Ok(RulesV1Response::accept())
+            }
+        }
+        let cap = Arc::new(Capture {
+            last: Mutex::new(None),
+        });
+        let mut engine = crate::validator::rules::BackendEngine::new();
+        engine.register(RuleBackend::Remote(RemoteRuleClient::new(
+            "drivechain",
+            cap.clone(),
+        )));
+        let handler = BlockHandler::new(
+            &dbs,
+            bitcoin::Network::Regtest,
+            NetworkParams::for_network(bitcoin::Network::Regtest),
+            #[cfg(feature = "bip360")]
+            0,
+            #[cfg(feature = "bip360")]
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            Arc::new(engine),
+        );
+
+        let old_txid_hex = old_outpoint.txid.to_string();
+        handler
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+
+        let captured = cap.last.lock().unwrap().clone();
+        match captured {
+            Some(RulesV1Request::ConnectBlock {
+                drivechain_state: Some(s),
+                block_hex: Some(_),
+                ..
+            }) => {
+                let ctip = s
+                    .ctips
+                    .iter()
+                    .find(|c| c.sidechain_number == 1)
+                    .expect("pre-block wire must include parent ctip A");
+                assert_eq!(ctip.outpoint_txid_hex, old_txid_hex);
+                assert_eq!(ctip.value_sats, old_value.to_sat());
+                let pending = s
+                    .pending_m6ids
+                    .iter()
+                    .find(|p| p.sidechain_number == 1)
+                    .expect("pre-block wire must include pending m6id");
+                assert_eq!(pending.m6id_hex, m6id.0.to_string());
+                assert_eq!(pending.vote_count, 6);
+
+                // Control: M5 alone vs static parent → old_ctip_unspent
+                let m5_alone = DrivechainRule::new()
+                    .validate_tx(
+                        &crate::validator::rules::RuleTxContext::with_tx(0, "cap", &m5)
+                            .with_drivechain_state(&s),
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(
+                        &m5_alone,
+                        crate::validator::rules::RuleVote::Reject { reason }
+                            if reason.contains("old_ctip_unspent")
+                    ),
+                    "M5 alone vs parent without fold must old_ctip_unspent, got {m5_alone:?}"
+                );
+
+                let vote = DrivechainRule::new()
+                    .connect_block(
+                        &crate::validator::rules::RuleBlockContext::with_block(0, "cap", &block)
+                            .with_drivechain_state(&s),
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(vote, crate::validator::rules::RuleVote::Accept),
+                    "pre-block pending+ctip + M6 then M5 fold must Accept, got {vote:?}"
+                );
+            }
+            other => panic!("expected ConnectBlock with pending drivechain_state, got {other:?}"),
+        }
         Ok(())
     }
 
@@ -3735,6 +4800,7 @@ mod bip360_connect_disconnect_tests {
             NetworkParams::for_network(bitcoin::Network::Regtest),
             0,
             crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            std::sync::Arc::new(crate::validator::rules::BackendEngine::new()),
         )
     }
 

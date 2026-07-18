@@ -6,7 +6,7 @@
 mod tests {
     use std::collections::HashSet;
 
-    use bitcoin::{ScriptBuf as BitcoinScriptBuf, hashes::Hash};
+    use bitcoin::ScriptBuf as BitcoinScriptBuf;
     use bitcoin_p2mr_pqc::{
         TapScriptBuf,
         p2mr::{P2mrBuilder, P2mrControlBlock, P2mrError},

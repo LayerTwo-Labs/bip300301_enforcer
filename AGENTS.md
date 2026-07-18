@@ -68,14 +68,19 @@ Default `cargo build` and `just test-drivechain` use **drivechain only** (no
 `#[cfg(feature = "bip360")]` throughout `lib/validator/pqc/`, CLI flags,
 integration trials, and optional deps.
 
-| Build                | Command                                               |
-| -------------------- | ----------------------------------------------------- |
-| Drivechain (default) | `cargo build`                                         |
-| BIP 360 only         | `cargo build --no-default-features --features bip360` |
-| Both rule sets       | `cargo build --features "drivechain,bip360"`          |
+| Build | Command / recipe |
+| ----- | ---------------- |
+| Drivechain (default) | `cargo build -p bip300301_enforcer` → `bip300301_enforcer` |
+| BIP 360 only | `just build-enforcer-bip360` → `bip360_enforcer` |
+| Both rule sets (**AND**, one process) | `just build-enforcer-combined` / `just build` → `cusf_enforcer` |
+| Hub + rule workers | `just build-hub-workers` → hub + `cusf_rules_drivechain` + `cusf_rules_bip360` |
+| Rules engine tests | `just validate-rules-engine` / `./scripts/validate-rules-engine.sh` |
 
-When both features are enabled, **both** rule sets must pass for block/tx
-acceptance.
+**Target:** hub + feature-compiled rule workers over IPC — one Core I/O owner;
+workers register; **consent required**; no answer / failure = **no** (error log).
+Combined features = **AND** of drivechain and bip360 ballots (same as hub
+aggregation). See [`docs/MULTI_ENFORCER.md`](./docs/MULTI_ENFORCER.md). Do not
+attach two full enforcer binaries to one bitcoind.
 
 P2P E2E integration code uses `#[cfg(feature = "bip360")]` (same gating as
 existing `validator/pqc/` and integration trials).
@@ -98,9 +103,25 @@ Workflow commands live in [`Justfile`](./Justfile). Run from
 `bip300301_enforcer/` or from the workspace root (root `justfile` imports this
 file).
 
+**Technical debt (documented, not blocking):** the Justfile is oversized (~1k
+lines) — quality gate is small; most bulk is setup / regtest e2e / multiproc
+bash. Tracked in [`cusf/RESIDUAL.md`](../RESIDUAL.md) under optional engineering.
+Long-term direction: hermetic **Nix flakes** (idiomatic checks/packages/shells),
+not bash-in-Nix. Do not expand Just further for new long workflows when a
+`scripts/` or future flake check would do.
+
 | Recipe                            | Purpose                                                                                                                                                                                                                                    |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `just verify`                     | Full pre-submit check (matches CI `check-bip360` + drivechain tests + stable `fmt-check`)                                                                                                                                                  |
+| `just test`                       | **Primary local gate** — one sequential recipe (banners `[1/3]`…`[3/3]`): (1) nightly `fmt --check`, (2) workspace clippy **check** (`-D warnings`, **never** `--fix`), (3) `cargo nextest` workspace + bip360-only lib with `-E 'not kind(example)'` (excludes libtest-mimic bitcoind harness). Requires `cargo-nextest` + nightly rustfmt. Bitcoind trials: `just it` / `it-all`. Not `validate-rules-engine`. Pass-through: `just test -- <nextest args>`. |
+| `just fmt-check`                  | Nightly rustfmt `--check` only (prints a banner)                                                                                                                                                                                                            |
+| `just clippy`                     | `fmt-check` then `_clippy-check` (no `--fix`). Write path only: `just clippy-fix`.                                                                                                                                                                          |
+| `just verify`                     | Pre-submit subset: **fmt first**, then CI-style bip360/drivechain unit checks + `clippy-bip360`. Does **not** run full nextest or rules-engine — use `just test` / `just validate-rules-engine` as needed. |
+| `just build-hub-workers`          | Hub (combined features) + `cusf_rules_drivechain` + `cusf_rules_bip360`                                                                                                                                                                    |
+| `just validate-rules-engine`      | Rules engine unit tests + check hub/workers + UDS multiproc smoke (no `--all-features`). CI job `check-rules-engine` (**no** bitcoind/live tip). Capability policy + chain_p2mr_utxos + drivechain_state + Dynamic RuleId lock + **PR CI live tip residual honesty** locks (`pr_ci_live_tip_residual_honesty_score_lock`, `shutdown_residual_honesty_docs_inventory_lock`). Optional `--rules-worker RULE_ID=PATH` (`drivechain`/`bip360` only). |
+| `just smoke-rules-workers-tip`    | Multiproc UDS tip smoke (no bitcoind required); optional `BITCOIND=…` / `CUSF_LIVE_TIP_E2E=1`.                                                                 |
+| `just sigterm-rules-workers-e2e`  | Opt-in multiproc **worker** SIGTERM e2e (Health → `kill -TERM` → exit 0 + socket unlink). **Not** part of `validate-rules-engine` / SCORE. Hub process SIGTERM + mid-handler cancel remain residual. |
+| `just live-tip-rules-workers-e2e` | Opt-in live tip (**HITL** only — not PR CI green matrix). Env unset → skip 0. `CUSF_LIVE_TIP_E2E=1` + missing `BITCOIND`/hub fail → non-zero. Manual GH: `workflow_dispatch` input `run_live_tip_e2e`. SCORE lock tests pin this separation. |
+| `just build-enforcers`            | **Transitional** multi-feature artifacts; prefer `build-hub-workers` ([`docs/MULTI_ENFORCER.md`](./docs/MULTI_ENFORCER.md))                                                                                                                |
 | `just drivechain-smoke`           | Default build + drivechain unit tests (upstream regression, no bip360; **local-only** — CI wiring is HITL)                                                                                                                                 |
 | `just test-pqc`                   | PQC unit tests (`bip360` only; `pqc::` module)                                                                                                                                                                                             |
 | `just test-quantum`               | Alias for `just test-pqc` (backwards compatibility)                                                                                                                                                                                        |

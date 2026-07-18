@@ -1,3 +1,8 @@
+# Tooling debt: this file is large (~1k lines). Quality gate (fmt-check → clippy →
+# test) is intentional; setup/e2e/multiproc bulk is residual — see
+# cusf/RESIDUAL.md ("Justfile sprawl → hermetic Nix"). Desired end state: idiomatic
+# hermetic Nix flakes, not bash wrapped by Nix. Prefer scripts/ or flake checks
+# over growing new long recipes here.
 import? 'local.just'
 
 env_file := env_var_or_default('BIP300301_ENFORCER_INTEGRATION_TEST_ENV', 'integrationtests.env')
@@ -96,15 +101,194 @@ lint-proto: _ensure_buf
         "${mode[@]}"
     echo "Consensus state written to $datadir/consensus-state.json"
 
-# Workspace clippy (avoid cargo --all-features: reserved shrincs)
-clippy:
-    cargo clippy --all-targets --features "drivechain,bip360,rustls" --fix --allow-dirty --allow-staged -- --deny warnings
+# --- Quality gate (fmt → clippy → tests; check-only, never --fix) ---
+# Feature matrices match CI (no --all-features / no reserved shrincs).
+
+# rustfmt --check via nightly (matches rustfmt.toml; no stable spam)
+fmt-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> fmt-check: cargo +nightly fmt --all -- --check"
+    cargo +nightly fmt --all -- --check
+
+# Clippy *check* only — never --fix / --allow-dirty / --allow-staged.
+# Combined product + bip360-only lib + bip360 integration_tests + nightly import lint.
+_clippy-check:
+    cargo clippy --all-targets --features "drivechain,bip360,rustls" -- --deny warnings
     cargo clippy -p bip300301_enforcer_lib --all-targets --no-default-features --features bip360 -- --deny warnings
     cargo clippy -p bip300301_enforcer_integration_tests --all-targets --features bip360 -- --deny warnings
     cargo +nightly clippy --features "drivechain,bip360,rustls" -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
 
+# Standalone lint: format first, then clippy check (no --fix)
+clippy: fmt-check _clippy-check
+
+# Optional auto-fix (writes the tree). Never used by `just test` / CI / clippy.
+clippy-fix:
+    cargo clippy --all-targets --features "drivechain,bip360,rustls" --fix --allow-dirty --allow-staged -- --deny warnings
+
+# Primary gate — single sequential body so order is undeniable and visible:
+#   1) fmt-check  2) clippy check (no --fix)  3) cargo-nextest (all cargo unit tests)
+# Requires cargo-nextest + nightly rustfmt.
+# Bitcoind libtest-mimic example (`integration_tests` harness) is excluded via
+# `-E 'not kind(example)'` — run those with `just it` / `it-all` (need Core env).
+# Pass-through nextest args: `just test -- --no-fail-fast`
+test *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root='{{ justfile_directory() }}'
+    cd "$root"
+    echo "==> [1/3] fmt-check (fail on incorrect formatting)"
+    cargo +nightly fmt --all -- --check
+    echo "==> [2/3] clippy (fail on warnings; check-only, never auto-fix)"
+    # Invoke check body only — not `just clippy` (avoids double fmt-check).
+    just _clippy-check
+    if ! cargo nextest --version >/dev/null 2>&1; then
+        echo "error: cargo-nextest required (cargo install cargo-nextest --locked)" >&2
+        exit 1
+    fi
+    echo "==> [3/3] cargo-nextest (every cargo unit test; not bitcoind trials)"
+    # Combined product features. Exclude kind(example): only the libtest-mimic
+    # bitcoind harness is registered as an example-as-test (needs BITCOIND_*).
+    cargo nextest run --workspace --all-targets --features "drivechain,bip360,rustls" \
+        -E 'not kind(example)' {{ args }}
+    # bip360-only lib matrix (drivechain off; catches cfg-gated paths).
+    cargo nextest run -p bip300301_enforcer_lib --all-targets --no-default-features --features bip360 \
+        -E 'not kind(example)' {{ args }}
+    echo "==> just test: all stages passed"
+
+# Default developer build: both rule sets in one binary (same as combined product).
 build *args='':
     cargo build --features "drivechain,bip360,rustls" {{ args }}
+
+# --- Hub + rule workers (docs/MULTI_ENFORCER.md) ---
+# Hub: bip300301_enforcer (Local feature ballots + optional --rules-worker UDS remotes on hot path).
+# Workers: cusf_rules_drivechain / cusf_rules_bip360 (--health, --once, --uds RUL1).
+
+# Unit + check for rules engine and worker crates (no --all-features).
+validate-rules-engine:
+    ./scripts/validate-rules-engine.sh
+
+# Build hub (combined features) + both rule worker binaries.
+build-hub-workers profile='debug':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile='{{profile}}'
+    case "$profile" in debug|release) ;; *)
+        echo "error: profile must be debug or release (got $profile)" >&2; exit 1 ;;
+    esac
+    out="{{justfile_directory()}}/target/${profile}"
+    rel=()
+    if [ "$profile" = release ]; then rel=(--release); fi
+    cargo build -p bip300301_enforcer --no-default-features --features "drivechain,bip360,rustls" "${rel[@]}"
+    cargo build -p cusf_rules_drivechain "${rel[@]}"
+    cargo build -p cusf_rules_bip360 "${rel[@]}"
+    ls -la "${out}/bip300301_enforcer" "${out}/cusf_rules_drivechain" "${out}/cusf_rules_bip360"
+    echo "hub: bip300301_enforcer (Local always + remote AND when registered); workers: cusf_rules_drivechain, cusf_rules_bip360"
+    echo "CI: .github/workflows/check_lint_build_release.yaml job check-rules-engine runs ./scripts/validate-rules-engine.sh (same as just validate-rules-engine)"
+
+# Worker-only health smoke (no bitcoind).
+rules-drivechain-health:
+    cargo run -p cusf_rules_drivechain -- --health
+
+rules-bip360-health:
+    cargo run -p cusf_rules_bip360 -- --health
+
+# Multiproc UDS tip smoke (no bitcoind required). Optional BITCOIND=… / CUSF_LIVE_TIP_E2E=1.
+smoke-rules-workers-tip:
+    ./scripts/smoke-rules-workers-tip.sh
+
+# Opt-in live tip: bitcoind + hub --rules-worker bip360/drivechain.
+# Soft-skip exit 0 only when CUSF_LIVE_TIP_E2E unset. With CUSF_LIVE_TIP_E2E=1,
+# missing BITCOIND / hub failure → non-zero. Not part of validate-rules-engine
+# / check-rules-engine (PR CI residual honesty — HITL workflow_dispatch only).
+live-tip-rules-workers-e2e:
+    ./scripts/live-tip-rules-workers-e2e.sh
+
+# Process-level SIGTERM e2e: multiproc workers --uds → Health → kill -TERM →
+# clean exit + socket unlink. Not part of validate-rules-engine (SCORE).
+# Residual: accept-poll latency + mid-handler cancel (accept-loop only).
+# Hub process SIGTERM not covered (needs bitcoind).
+sigterm-rules-workers-e2e:
+    ./scripts/sigterm-rules-workers-e2e.sh
+
+# --- Transitional multi-feature artifacts (feature → named file) ---
+# Prefer build-hub-workers for new deploys. These recipes still bake today's
+# single-process feature variants (migration aid).
+# Cargo features are package-scoped: one cargo build = one feature set.
+
+# BIP 300/301 only (upstream default product name)
+build-enforcer-drivechain profile='debug':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile='{{profile}}'
+    case "$profile" in debug|release) ;; *)
+        echo "error: profile must be debug or release (got $profile)" >&2; exit 1 ;;
+    esac
+    out="{{justfile_directory()}}/target/${profile}"
+    flags=(--no-default-features --features "drivechain,rustls")
+    if [ "$profile" = release ]; then flags+=(--release); fi
+    cargo build -p bip300301_enforcer "${flags[@]}"
+    # Cargo output name is already bip300301_enforcer
+    echo "built ${out}/bip300301_enforcer (drivechain)"
+
+# BIP 360 only (P2MR / PQC) → bip360_enforcer
+build-enforcer-bip360 profile='debug':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile='{{profile}}'
+    case "$profile" in debug|release) ;; *)
+        echo "error: profile must be debug or release (got $profile)" >&2; exit 1 ;;
+    esac
+    out="{{justfile_directory()}}/target/${profile}"
+    flags=(--no-default-features --features "bip360,rustls")
+    if [ "$profile" = release ]; then flags+=(--release); fi
+    cargo build -p bip300301_enforcer "${flags[@]}"
+    cp -f "${out}/bip300301_enforcer" "${out}/bip360_enforcer"
+    echo "built ${out}/bip360_enforcer (bip360)"
+
+# Combined: drivechain + bip360 (AND of both rule sets) → cusf_enforcer
+build-enforcer-combined profile='debug':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile='{{profile}}'
+    case "$profile" in debug|release) ;; *)
+        echo "error: profile must be debug or release (got $profile)" >&2; exit 1 ;;
+    esac
+    out="{{justfile_directory()}}/target/${profile}"
+    flags=(--no-default-features --features "drivechain,bip360,rustls")
+    if [ "$profile" = release ]; then flags+=(--release); fi
+    cargo build -p bip300301_enforcer "${flags[@]}"
+    cp -f "${out}/bip300301_enforcer" "${out}/cusf_enforcer"
+    # After this recipe, cargo's bip300301_enforcer name is the combined binary.
+    echo "built ${out}/cusf_enforcer (drivechain+bip360); cargo name bip300301_enforcer matches combined"
+
+# All three product artifacts (sequential; bip360/drivechain copies may be
+# overwritten for the cargo name — named products bip360_enforcer + cusf_enforcer
+# keep their last successful feature builds).
+build-enforcers profile='debug':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile='{{profile}}'
+    out="{{justfile_directory()}}/target/${profile}"
+    # Build order: specialty products first, combined last so default cargo name
+    # is the dual-rules binary. Preserve drivechain-only under an explicit name.
+    flags_dc=(--no-default-features --features "drivechain,rustls")
+    flags_360=(--no-default-features --features "bip360,rustls")
+    flags_both=(--no-default-features --features "drivechain,bip360,rustls")
+    if [ "$profile" = release ]; then
+        flags_dc+=(--release); flags_360+=(--release); flags_both+=(--release)
+    fi
+    cargo build -p bip300301_enforcer "${flags_dc[@]}"
+    cp -f "${out}/bip300301_enforcer" "${out}/bip300301_enforcer-drivechain"
+    cargo build -p bip300301_enforcer "${flags_360[@]}"
+    cp -f "${out}/bip300301_enforcer" "${out}/bip360_enforcer"
+    cargo build -p bip300301_enforcer "${flags_both[@]}"
+    cp -f "${out}/bip300301_enforcer" "${out}/cusf_enforcer"
+    # Restore drivechain-only as the historical upstream binary name.
+    cp -f "${out}/bip300301_enforcer-drivechain" "${out}/bip300301_enforcer"
+    rm -f "${out}/bip300301_enforcer-drivechain"
+    ls -la "${out}/bip300301_enforcer" "${out}/bip360_enforcer" "${out}/cusf_enforcer"
+    echo "products: bip300301_enforcer (drivechain), bip360_enforcer, cusf_enforcer (both)"
 
 # Format Rust (nightly), optional prettier + buf
 fmt:
@@ -150,16 +334,10 @@ drivechain-smoke:
     cargo build -p bip300301_enforcer
     just test-drivechain
 
-# Clippy bip360 lib + integration tests
-clippy-bip360:
+# Clippy bip360 lib + integration tests (check-only; format first)
+clippy-bip360: fmt-check
     cargo clippy -p bip300301_enforcer_lib --no-default-features --features bip360 -- -D warnings
     cargo clippy -p bip300301_enforcer_integration_tests --features bip360 -- -D warnings
-
-# rustfmt --check via nightly (matches rustfmt.toml; no stable spam)
-fmt-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo +nightly fmt --all -- --check
 
 # cargo check bip360 all targets
 check-bip360:
@@ -178,8 +356,8 @@ p2mr-signer-smoke:
         --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111 \
         | grep -q signed_spend_tx_hex
 
-# Local CI: check + unit tests + clippy-bip360 + fmt-check + it build
-verify: check-bip360 test-pqc p2mr-signer-smoke test-drivechain clippy-bip360 fmt-check check-integration-build
+# Local CI subset: fmt first, then checks/tests/clippy-bip360 (no nextest full suite)
+verify: fmt-check check-bip360 test-pqc p2mr-signer-smoke test-drivechain clippy-bip360 check-integration-build
 
 # Build bip360 enforcer + integration example
 build-bip360:

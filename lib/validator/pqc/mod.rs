@@ -339,7 +339,7 @@ mod tests {
             taproot::{LeafVersion, TapLeafHash},
         };
         use bitcoin_p2mr_pqc::{
-    TapScriptBuf,
+            TapScriptBuf,
             p2mr::P2MR_LEAF_VERSION,
             taproot::{LeafVersion as P2mrLeafVersion, TapNodeHash, TapNodeHashExt as _},
         };

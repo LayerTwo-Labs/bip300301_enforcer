@@ -7,16 +7,23 @@
 | `rustls` / `openssl` | `rustls` | TLS backend                                    |
 | `shrincs`            | no       | Reserved placeholder — no implementation       |
 
-| Build                | Command                                               |
-| -------------------- | ----------------------------------------------------- |
-| Drivechain (default) | `cargo build`                                         |
-| BIP 360 CUSF only    | `cargo build --no-default-features --features bip360` |
-| Both rule sets       | `cargo build --features "drivechain,bip360"`          |
+| Build | Command / recipe | Artifact |
+| ----- | ---------------- | -------- |
+| Drivechain (default) | `cargo build -p bip300301_enforcer` | `bip300301_enforcer` |
+| BIP 360 only | `just build-enforcer-bip360` | `bip360_enforcer` |
+| Both (**AND**, one process) | `just build-enforcer-combined` / `just build` | `cusf_enforcer` |
+| Hub + workers | `just build-hub-workers` | hub + `cusf_rules_drivechain` + `cusf_rules_bip360` |
+| Rules engine check | `just validate-rules-engine` | unit tests + cargo check |
 
-Default `cargo build` and `just test-drivechain` / `just drivechain-smoke` pass
+Default package build and `just test-drivechain` / `just drivechain-smoke` pass
 **without** `bip360` — optional PQC deps (`bitcoin-p2mr-pqc`, `bitcoinpqc`) are
 not pulled in. `just drivechain-smoke` is **local-only** — CI wiring remains
 **HITL** (Phase D delivered local `bip360-verify-full`).
+
+**Target architecture:** one **hub** owns ZMQ/RPC/`invalidateblock`; separately
+feature-compiled **rule workers** register and vote Accept/Reject (AND;
+timeout/failure = no). See [docs/MULTI_ENFORCER.md](./docs/MULTI_ENFORCER.md).
+Multi-feature binaries above are a **transition**, not N competing tip enforcers.
 
 See [docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md) for BIP 360 activation height,
 signature duck typing, and module layout.

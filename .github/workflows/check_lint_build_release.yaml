@@ -6,6 +6,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      run_live_tip_e2e:
+        description: "HITL only — run live-tip-rules-workers-e2e (needs BITCOIND; does not gate PR CI)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -145,6 +151,54 @@ jobs:
 
       - name: Check integration_tests example (bip360)
         run: cargo check --example integration_tests --features bip360
+
+  check-rules-engine:
+    name: Validate rules engine + workers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup install
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu-rules
+
+      # Do NOT use cargo --all-features (reserved shrincs).
+      # Do NOT require bitcoind / live tip here (PR green matrix).
+      - name: validate-rules-engine
+        run: ./scripts/validate-rules-engine.sh
+
+  # HITL / manual only — never runs on pull_request.
+  # Fail-closed if BITCOIND unset/non-executable when dispatched with run_live_tip_e2e
+  # (script soft-skip applies only when CUSF_LIVE_TIP_E2E is unset; HITL always sets it).
+  live-tip-rules-workers-e2e-hitl:
+    name: Live tip rules workers e2e (HITL)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_tip_e2e == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup install
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu-rules-live-tip
+
+      - name: Opt-in live tip e2e
+        env:
+          CUSF_LIVE_TIP_E2E: "1"
+          BITCOIND: ${{ vars.BITCOIND || secrets.BITCOIND || '' }}
+        run: |
+          if [[ -z "${BITCOIND}" || ! -x "${BITCOIND}" ]]; then
+            echo "::error::HITL live tip requires BITCOIND (repo var/secret path to bitcoind binary)"
+            exit 1
+          fi
+          ./scripts/live-tip-rules-workers-e2e.sh
 
   check-clippy:
     name: Check, Lint

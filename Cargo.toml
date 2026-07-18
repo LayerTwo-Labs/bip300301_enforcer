@@ -2,7 +2,14 @@
 
 [workspace]
 resolver = "2"
-members = ["app", "lib", "integration_tests", "cusf_miner_sidecar"]
+members = [
+    "app",
+    "lib",
+    "integration_tests",
+    "cusf_miner_sidecar",
+    "cusf_rules_drivechain",
+    "cusf_rules_bip360",
+]
 
 [workspace.package]
 authors = [

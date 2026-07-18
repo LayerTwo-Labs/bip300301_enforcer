@@ -494,9 +494,38 @@ pub struct Config {
     #[cfg(feature = "bip360")]
     #[arg(long = "pqc-verify-budget-ms", default_value_t = 500)]
     pub pqc_verify_budget_ms: u64,
+
+    /// Register a remote rules worker over UDS: `RULE_ID=PATH` (repeatable).
+    /// Example: `--rules-worker bip360=/tmp/cusf-rules-bip360.sock`
+    /// Freeform RuleIds fail parse (static allowlist: `drivechain`, `bip360`).
+    /// Unreachable at boot → not registered (Local kept). After a real remote
+    /// registers, silence/timeout/failure → Reject (fail-closed). See
+    /// docs/MULTI_ENFORCER.md operator summary.
+    #[arg(long = "rules-worker", value_name = "RULE_ID=PATH", value_parser = parse_rules_worker)]
+    pub rules_workers: Vec<crate::validator::rules::ipc::RulesWorkerEndpoint>,
+
+    /// Timeout (ms) for each remote rules-worker call (UDS socket I/O + join
+    /// deadline). Default 5000 (`DEFAULT_REMOTE_TIMEOUT`). `0` is treated as
+    /// default (never infinite). Timeout → Reject (fail-closed).
+    #[arg(long = "rules-worker-timeout-ms", default_value_t = 5_000)]
+    pub rules_worker_timeout_ms: u64,
+}
+
+fn parse_rules_worker(
+    s: &str,
+) -> Result<crate::validator::rules::ipc::RulesWorkerEndpoint, String> {
+    crate::validator::rules::ipc::RulesWorkerEndpoint::parse(s)
 }
 
 impl Config {
+    /// Effective remote worker timeout (clamps zero to default).
+    pub fn rules_worker_timeout(&self) -> std::time::Duration {
+        use crate::validator::rules::ipc::normalize_remote_timeout;
+        normalize_remote_timeout(std::time::Duration::from_millis(
+            self.rules_worker_timeout_ms,
+        ))
+    }
+
     /// Returns the git hash that was set during build time
     pub fn git_hash(&self) -> &'static str {
         env!("GIT_HASH")

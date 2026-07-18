@@ -235,6 +235,7 @@ fn connect_block_no_commit<'validator>(
         validator.bip360_activation_height(),
         #[cfg(feature = "bip360")]
         validator.pqc_verify_budget_ms(),
+        validator.remote_rules_arc(),
     );
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
@@ -394,6 +395,7 @@ impl CusfEnforcer for Validator {
             self.bip360_activation_height(),
             #[cfg(feature = "bip360")]
             self.pqc_verify_budget_ms(),
+            self.remote_rules_arc(),
         );
         let sync_future = handler
             .sync_to_tip(
@@ -446,6 +448,7 @@ impl CusfEnforcer for Validator {
             self.bip360_activation_height(),
             #[cfg(feature = "bip360")]
             self.pqc_verify_budget_ms(),
+            self.remote_rules_arc(),
         );
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
@@ -475,6 +478,7 @@ impl CusfEnforcer for Validator {
             self.bip360_activation_height(),
             #[cfg(feature = "bip360")]
             self.pqc_verify_budget_ms(),
+            self.remote_rules_arc(),
         );
         let res = if {
             #[cfg(feature = "bip360")]
