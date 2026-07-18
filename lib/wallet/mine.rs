@@ -1,13 +1,13 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     num::NonZeroU32,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bitcoin::{
-    Amount, Block, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
-    Txid, Witness,
+    Amount, Block, BlockHash, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    Witness,
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
     consensus::Encodable as _,
@@ -30,9 +30,7 @@ use futures::{
 
 use crate::{
     bins::{self, CommandExt as _},
-    errors::ErrorChain,
-    messages::{CoinbaseBuilder, M4AckBundles},
-    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber},
+    messages::CoinbaseBuilder,
     wallet::{
         Wallet,
         error::{self, BitcoinCoreRPC},
@@ -67,222 +65,10 @@ fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Durat
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
 impl Wallet {
-    /// Extend coinbase txouts for a new block
-    pub(in crate::wallet) async fn extend_coinbase_txouts(
-        &self,
-        ack_all_proposals: bool,
-        mainchain_tip: BlockHash,
-        coinbase_txouts: &mut Vec<TxOut>,
-    ) -> Result<(), error::GenerateCoinbaseTxouts> {
-        let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
-        tracing::debug!(
-            ack_all_proposals,
-            %mainchain_tip,
-            "Extending coinbase txouts",
-        );
-
-        // This is a list of pending sidechain proposals from /our/ wallet, fetched from
-        // the DB.
-        let sidechain_proposals = self
-            .get_our_sidechain_proposals()
-            .await
-            .inspect_err(|err| {
-                tracing::error!(
-                    "Failed to get sidechain proposals: {:#}",
-                    ErrorChain::new(err)
-                );
-            })?;
-
-        if !sidechain_proposals.is_empty() {
-            tracing::debug!(
-                "found {} sidechain proposal(s) in our SQLite DB",
-                sidechain_proposals.len()
-            );
-        }
-
-        // Sidechain proposals that already exist in the chain,
-        // or will already be proposed in coinbase txouts
-        let proposed_sidechains = self
-            .validator()
-            .get_sidechains()?
-            .into_iter()
-            .map(|(sidechain_proposal_id, _)| sidechain_proposal_id)
-            .chain(coinbase_builder.messages().m1_sidechain_proposal_ids())
-            .collect::<HashSet<_>>();
-
-        for sidechain_proposal in sidechain_proposals {
-            if !proposed_sidechains.contains(&sidechain_proposal.compute_id()) {
-                coinbase_builder.propose_sidechain(sidechain_proposal)?;
-            }
-        }
-
-        let mut sidechain_acks = self.get_sidechain_acks().await?;
-
-        // This is a map of pending sidechain proposals from the /validator/, i.e.
-        // proposals broadcasted by (potentially) someone else, and already active.
-        let active_sidechain_proposals = self.get_active_sidechain_proposals()?;
-
-        if ack_all_proposals && !active_sidechain_proposals.is_empty() {
-            tracing::info!(
-                "Handle sidechain ACK: acking all sidechains regardless of what DB says"
-            );
-
-            for (sidechain_number, sidechain_proposal) in &active_sidechain_proposals {
-                let sidechain_number = *sidechain_number;
-
-                if !sidechain_acks
-                    .iter()
-                    .any(|ack| ack.sidechain_number == sidechain_number)
-                {
-                    tracing::debug!(
-                        "Handle sidechain ACK: adding 'fake' ACK for {}",
-                        sidechain_number
-                    );
-                    self.ack_sidechain(
-                        sidechain_number,
-                        sidechain_proposal.description.sha256d_hash(),
-                    )
-                    .await?;
-                    sidechain_acks.push(SidechainAck {
-                        sidechain_number,
-                        description_hash: sidechain_proposal.description.sha256d_hash(),
-                    });
-                }
-            }
-        }
-
-        for sidechain_ack in sidechain_acks {
-            if !self.validate_sidechain_ack(&sidechain_ack, &active_sidechain_proposals) {
-                self.delete_sidechain_ack(&sidechain_ack).await?;
-                tracing::info!(
-                    "Unable to handle sidechain ack, deleted: {}",
-                    sidechain_ack.sidechain_number
-                );
-                continue;
-            }
-            if coinbase_builder
-                .messages()
-                .m2_ack_slot_vout(&sidechain_ack.sidechain_number)
-                .is_some()
-            {
-                continue;
-            }
-
-            tracing::debug!(
-                "Adding ACK for sidechain {}",
-                sidechain_ack.sidechain_number
-            );
-
-            coinbase_builder.ack_sidechain(
-                sidechain_ack.sidechain_number,
-                sidechain_ack.description_hash,
-            )?;
-        }
-
-        let bmm_hashes = self.get_bmm_requests(&mainchain_tip).await?;
-        for (sidechain_number, bmm_hash) in bmm_hashes {
-            if coinbase_builder
-                .messages()
-                .m7_bmm_accept_slot_vout(&sidechain_number)
-                .is_some()
-            {
-                continue;
-            }
-            tracing::info!(
-                "Adding BMM accept for SC {} with hash: {}",
-                sidechain_number,
-                bmm_hash
-            );
-            coinbase_builder.bmm_accept(sidechain_number, bmm_hash)?;
-        }
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
-            for (m6id, _blinded_m6, m6id_info) in m6ids {
-                if m6id_info.is_none() {
-                    coinbase_builder.propose_bundle(sidechain_id, m6id)?;
-                }
-            }
-        }
-        // Ack bundles
-        // TODO: Exclusively ack bundles that are known to the wallet
-        // TODO: ack bundles when M2 messages are present
-        if ack_all_proposals && coinbase_builder.messages().m2_ack_slots().is_empty() {
-            let active_sidechains = self.inner.validator.get_active_sidechains()?;
-            let upvotes = active_sidechains
-                .into_iter()
-                .map(|sidechain| {
-                    if self
-                        .inner
-                        .validator
-                        .get_pending_withdrawals(&sidechain.proposal.sidechain_number)?
-                        .is_empty()
-                    {
-                        Ok(M4AckBundles::ABSTAIN_ONE_BYTE)
-                    } else {
-                        Ok(0)
-                    }
-                })
-                .collect::<Result<_, crate::validator::GetPendingWithdrawalsError>>()?;
-            coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
-        }
-        let () = coinbase_builder.build()?;
-        Ok(())
-    }
-
-    /// Treasury value remaining after a withdrawal bundle spends `fee` and
-    /// `payout`, returning an error instead of underflowing when their sum
-    /// exceeds the current treasury. Mirrors the checked subtraction in
-    /// `BlindedM6::into_m6`.
-    fn new_treasury_value(
-        value: Amount,
-        fee: Amount,
-        payout: Amount,
-    ) -> Result<Amount, AmountUnderflowError> {
-        value
-            .checked_sub(fee)
-            .and_then(|value| value.checked_sub(payout))
-            .ok_or(AmountUnderflowError)
-    }
-
-    /// Generate suffix txs for a new block
-    pub(in crate::wallet) async fn generate_suffix_txs(
-        &self,
-        ctips: &HashMap<SidechainNumber, crate::types::Ctip>,
-    ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
-        let thresholds = self.inner.validator.network_params().thresholds;
-        let mut res = Vec::new();
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
-            let mut ctip = None;
-            for (_m6id, blinded_m6, m6id_info) in m6ids {
-                let Some(m6id_info) = m6id_info else { continue };
-                if m6id_info.vote_count > thresholds.withdrawal_bundle_inclusion_threshold {
-                    let Ctip { outpoint, value } = if let Some(ctip) = ctip {
-                        ctip
-                    } else {
-                        *ctips
-                            .get(&sidechain_id)
-                            .ok_or_else(|| error::GenerateSuffixTxs::MissingCtip { sidechain_id })?
-                    };
-                    let new_value =
-                        Self::new_treasury_value(value, *blinded_m6.fee(), *blinded_m6.payout())?;
-                    let m6 = blinded_m6.into_m6(sidechain_id, outpoint, value)?;
-                    ctip = Some(Ctip {
-                        outpoint: OutPoint {
-                            txid: m6.compute_txid(),
-                            vout: (m6.output.len() - 1) as u32,
-                        },
-                        value: new_value,
-                    });
-                    res.push(m6);
-                }
-            }
-        }
-        Ok(res)
-    }
-
     /// select non-coinbase txs for a new block
     async fn select_block_txs(&self) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
-        let ctips = self.inner.validator.get_ctips()?;
-        let mut res = self.generate_suffix_txs(&ctips).await?;
+        let ctips = self.inner.validator().get_ctips()?;
+        let mut res = self.inner.producer.generate_suffix_txs(&ctips).await?;
 
         // We want to include all transactions from the mempool into our newly generated block.
         // This approach is perhaps a bit naive, and could fail if there are conflicting TXs
@@ -315,8 +101,12 @@ impl Wallet {
         best_block_height: u32,
         coinbase_outputs: &[TxOut],
     ) -> Result<Transaction, error::GetNewAddress> {
-        let coinbase_addr = self.get_new_address().await?;
-        tracing::trace!(%coinbase_addr, "Fetched address");
+        // Pay the reward to `--coinbase-recipient` when set, matching signet and
+        // served templates; otherwise fall back to a fresh wallet address.
+        let coinbase_addr = match self.inner.coinbase_recipient.clone() {
+            Some(addr) => addr,
+            None => self.get_new_address().await?,
+        };
         let coinbase_spk = coinbase_addr.script_pubkey();
 
         let script_sig = bitcoin::blockdata::script::Builder::new()
@@ -723,7 +513,7 @@ impl Wallet {
             // from `bitcoin-cli getblocktemplate`. The underlying template
             // error is recorded by the block producer hooks.
             let mut stderr = stderr;
-            if let Some(template_err) = self.inner.last_gbt_error.read().as_deref() {
+            if let Some(template_err) = self.inner.producer.last_gbt_error().as_deref() {
                 stderr.push_str("\nblock template error: ");
                 stderr.push_str(template_err);
             }
@@ -755,17 +545,20 @@ impl Wallet {
         &self,
         ack_all_proposals: bool,
     ) -> Result<BlockHash, error::GenerateBlock> {
-        let Some(mainchain_tip) = self.inner.validator.try_get_mainchain_tip()? else {
+        let Some(mainchain_tip) = self.inner.validator().try_get_mainchain_tip()? else {
             return Err(error::GenerateBlock::ValidatorNotSynced);
         };
-        if self.inner.validator.network() == Network::Signet {
+        if self.inner.validator().network() == Network::Signet {
             return self
-                .generate_signet_block(self.inner.config.mining_opts.coinbase_recipient.clone())
+                .generate_signet_block(self.inner.coinbase_recipient.clone())
                 .await
                 .map_err(error::GenerateBlock::GenerateSignetBlock);
         }
+        // `GenerateBlocks` carries its own ACK-all flag, so the persisted policy
+        // (which governs block templates) is deliberately not consulted here.
         let mut coinbase_outputs = Vec::new();
         let () = self
+            .producer()
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
         let transactions = self.select_block_txs().await?;
@@ -792,7 +585,10 @@ impl Wallet {
         );
 
         let block_hash = self.mine(&coinbase_outputs, transactions).await?;
-        self.delete_bmm_requests(&mainchain_tip, &block_hash)
+        self.inner
+            .producer
+            .db()
+            .delete_bmm_requests(&mainchain_tip, &block_hash)
             .await
             .map_err(error::GenerateBlock::DeleteBmmRequests)?;
         Ok(block_hash)
@@ -821,36 +617,5 @@ impl Wallet {
             }
         })
         .fuse()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use bitcoin::Amount;
-
-    use crate::{types::AmountUnderflowError, wallet::Wallet};
-
-    #[test]
-    fn new_treasury_value_rejects_bundle_exceeding_treasury() {
-        // A withdrawal bundle whose payout plus fee is larger than the current
-        // treasury must error rather than underflow the treasury subtraction.
-        let value = Amount::from_sat(100_000);
-        let fee = Amount::from_sat(1_000);
-        let payout = Amount::from_sat(200_000);
-        assert!(matches!(
-            Wallet::new_treasury_value(value, fee, payout),
-            Err(AmountUnderflowError)
-        ));
-    }
-
-    #[test]
-    fn new_treasury_value_subtracts_fee_and_payout() {
-        let value = Amount::from_sat(100_000);
-        let fee = Amount::from_sat(1_000);
-        let payout = Amount::from_sat(60_000);
-        assert_eq!(
-            Wallet::new_treasury_value(value, fee, payout).unwrap(),
-            Amount::from_sat(39_000)
-        );
     }
 }

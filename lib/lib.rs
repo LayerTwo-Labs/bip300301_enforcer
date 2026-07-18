@@ -1,4 +1,5 @@
 pub mod bins;
+pub mod block_producer;
 pub mod cli;
 mod convert;
 pub mod display;

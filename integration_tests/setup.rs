@@ -16,7 +16,9 @@ use bip300301_enforcer_lib::{
     proto::{
         self,
         mainchain::{BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse},
-        mainchain_service::{ValidatorServiceClient, WalletServiceClient},
+        mainchain_service::{
+            BlockProducerServiceClient, ValidatorServiceClient, WalletServiceClient,
+        },
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
@@ -433,6 +435,15 @@ fn bitcoind_path(
     }
 }
 
+/// Whether the enforcer runs with a wallet. Is an enum instead of a
+/// bool to make `Default` derivable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EnforcerWallet {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
 #[derive(Default)]
 pub struct SetupOpts<
     BitcoindArg = String,
@@ -448,6 +459,7 @@ pub struct SetupOpts<
     pub bitcoind_args: BitcoindArgs,
     pub bitcoind_kind: BitcoindKind,
     pub enforcer_args: EnforcerArgs,
+    pub enforcer_wallet: EnforcerWallet,
 }
 
 type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
@@ -465,6 +477,7 @@ pub struct PostSetup {
     pub gbt_client: jsonrpsee::http_client::HttpClient,
     pub validator_service_client: ValidatorServiceClient<Transport>,
     pub wallet_service_client: WalletServiceClient<Transport>,
+    pub block_producer_service_client: BlockProducerServiceClient<Transport>,
     pub mining_address: Address,
     pub receive_address: Address,
     // MUST occur after tasks in order to ensure that tasks are dropped
@@ -502,14 +515,23 @@ impl PostSetup {
             None
         };
 
+        let enable_wallet = opts.enforcer_wallet == EnforcerWallet::Enabled;
+        // The block producer serves block templates, which needs a mempool.
+        anyhow::ensure!(
+            enable_wallet || mode.enable_mempool(),
+            "a wallet-less enforcer serves block templates via the mempool, \
+             but mode `{mode}` runs without one"
+        );
+
         tracing::debug!("Starting bitcoin node");
-        let bitcoind = new_bitcoind(
+        let mut bitcoind = new_bitcoind(
             bitcoind_path(bin_paths, opts.bitcoind_kind)?.clone(),
             dirs.bitcoin_dir.clone(),
             &reserved_ports,
             network,
             signet_setup.as_ref(),
         );
+        bitcoind.txindex = enable_wallet;
         let bitcoind_task =
             bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, {
                 let res_tx = res_tx.clone();
@@ -626,7 +648,9 @@ impl PostSetup {
             path: bin_paths.bip300301_enforcer()?.clone(),
             data_dir: dirs.enforcer_dir.clone(),
             enable_mempool: mode.enable_mempool(),
-            enable_wallet: true,
+            enable_wallet,
+            enable_block_template_server: matches!(mode, Mode::GetBlockTemplate),
+            coinbase_recipient: (!enable_wallet).then(|| mining_address.to_string()),
             node_blocks_dir: None,
             node_rpc_user: bitcoind.rpc_user,
             node_rpc_pass: bitcoind.rpc_pass,
@@ -669,6 +693,8 @@ impl PostSetup {
         }
         let (http, config) = make_client(enforcer.serve_grpc_port)?;
         let validator_service_client = ValidatorServiceClient::new(http.clone(), config.clone());
+        let block_producer_service_client =
+            BlockProducerServiceClient::new(http.clone(), config.clone());
         let wallet_service_client = WalletServiceClient::new(http, config);
         let bitcoin_util = {
             let path = match bin_paths.bitcoin_util() {
@@ -689,6 +715,7 @@ impl PostSetup {
             gbt_client,
             validator_service_client,
             wallet_service_client,
+            block_producer_service_client,
             mining_address,
             receive_address,
             directories: dirs.clone(),

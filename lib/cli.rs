@@ -4,6 +4,7 @@ use std::{
     num::NonZeroU64,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 
 use clap::{Args, Parser, ValueEnum};
@@ -239,14 +240,12 @@ pub struct LoggerConfig {
     pub rotation: LogRotation,
 }
 
-fn parse_bitcoin_address(s: &str) -> Result<bitcoin::Address, String> {
-    let unchecked =
-        bitcoin::Address::from_str(s).map_err(|_| "invalid bitcoin address".to_string())?;
-
-    let checked_addr = unchecked
-        .require_network(bitcoin::Network::Signet)
-        .map_err(|_| "bitcoin address is not for signet".to_string())?;
-    Ok(checked_addr)
+/// Parse an address without committing to a network. The network is only known
+/// once we've asked the node, so the check happens at startup instead.
+fn parse_bitcoin_address_unchecked(
+    s: &str,
+) -> Result<bitcoin::Address<bitcoin::address::NetworkUnchecked>, String> {
+    bitcoin::Address::from_str(s).map_err(|err| format!("invalid bitcoin address: {err}"))
 }
 
 #[derive(Clone, Args)]
@@ -267,9 +266,6 @@ pub struct MiningConfig {
     /// Path to the Bitcoin Core `bitcoin-cli` binary. Defaults to `bitcoin-cli`.
     #[arg(long = "signet-miner-bitcoin-cli-path", default_value = "bitcoin-cli")]
     pub bitcoin_cli_path: PathBuf,
-    /// Address for block reward payment
-    #[arg(long = "signet-miner-coinbase-recipient", value_parser = parse_bitcoin_address)]
-    pub coinbase_recipient: Option<bitcoin::Address>,
 }
 
 #[derive(Args, Clone)]
@@ -419,10 +415,26 @@ pub struct Config {
     pub data_dir: PathBuf,
     #[arg(long, default_value_t = false)]
     pub enable_wallet: bool,
-    /// If enabled, maintains a mempool. If the wallet is enabled, serves
-    /// getblocktemplate.
+    /// If enabled, maintains a mempool. Required for serving block templates and
+    /// for the wallet to track unconfirmed transactions.
     #[arg(long, default_value_t = false)]
     pub enable_mempool: bool,
+    /// Serve `getblocktemplate` to miners. Requires `--enable-mempool`.
+    ///
+    /// Works without a wallet.
+    ///
+    /// Without a wallet, `--coinbase-recipient` is required.
+    #[arg(long, default_value_t = false, requires = "enable_mempool")]
+    pub enable_block_template_server: bool,
+    /// Address that receives the block reward.
+    ///
+    /// Applies to every path that mines or builds a template: served
+    /// `getblocktemplate`, the signet mining script, and the wallet's
+    /// `GenerateBlocks`. Validated against the node's network at startup. If the
+    /// wallet is enabled and this is unset, the reward goes to a fresh address
+    /// from the wallet.
+    #[arg(long, value_parser = parse_bitcoin_address_unchecked)]
+    pub coinbase_recipient: Option<bitcoin::Address<bitcoin::address::NetworkUnchecked>>,
     #[command(flatten)]
     pub logger_opts: LoggerConfig,
     /// GBT cache lifetime, in seconds
@@ -511,6 +523,13 @@ impl Config {
 
     pub fn log_formatter(&self) -> LogFormatter {
         self.logger_opts.format.into()
+    }
+
+    /// How long the GBT server may serve a cached template before rebuilding,
+    /// or `None` to never cache.
+    pub fn gbt_cache_lifetime(&self) -> Option<Duration> {
+        self.gbt_cache_lifetime_s
+            .map(|secs| Duration::from_secs(secs.get()))
     }
 
     fn log_filename_suffix(&self) -> Option<&'static str> {

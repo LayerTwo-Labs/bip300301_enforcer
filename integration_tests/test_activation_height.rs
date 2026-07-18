@@ -92,7 +92,7 @@ pub async fn test_activation_height(mut post_setup: PostSetup) -> anyhow::Result
         }
     };
     let _resp_stream = post_setup
-        .wallet_service_client
+        .block_producer_service_client
         .create_sidechain_proposal(create_sidechain_proposal_request)
         .await?;
     sleep(std::time::Duration::from_secs(1)).await;

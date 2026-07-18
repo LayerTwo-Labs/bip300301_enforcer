@@ -7,12 +7,14 @@ use std::{
 
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
+    block_producer::BlockProducer,
     cli::{self, WalletSyncSource},
     errors::ErrorChain,
     p2p::compute_signet_magic,
     proto::{
         crypto_service::{CRYPTO_SERVICE_SERVICE_NAME, CryptoServiceExt},
         mainchain_service::{
+            BLOCK_PRODUCER_SERVICE_SERVICE_NAME, BlockProducerServiceExt,
             VALIDATOR_SERVICE_SERVICE_NAME, ValidatorServiceExt, WALLET_SERVICE_SERVICE_NAME,
             WalletServiceExt,
         },
@@ -32,6 +34,7 @@ use clap::Parser;
 use connectrpc::Router;
 use connectrpc_health::{HealthExt, HealthService, StaticChecker};
 use connectrpc_reflection::Reflector;
+use cusf_enforcer_mempool::cusf_block_producer::CusfBlockProducer;
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
@@ -51,6 +54,32 @@ use wallet::Wallet;
 mod error;
 mod file_descriptors;
 mod logging;
+
+/// The enforcer, in one of its three modes:
+///
+/// * validator only — consensus, no templates,
+/// * block producer — consensus + drivechain policy + block templates, no keys,
+/// * wallet — a block producer that also holds keys.
+///
+/// Nested `Either` rather than a bespoke enum so that the blanket `CusfEnforcer`
+/// impls from `cusf_enforcer_mempool` apply: `run_no_mempool_task` drives this
+/// type through `cusf_enforcer::task` directly.
+type Enforcer = Either<Validator, Either<BlockProducer, Wallet>>;
+
+fn enforcer_validator(enforcer: &Enforcer) -> &Validator {
+    match enforcer {
+        Either::Left(validator) => validator,
+        Either::Right(Either::Left(producer)) => producer.validator(),
+        Either::Right(Either::Right(wallet)) => wallet.validator(),
+    }
+}
+
+fn enforcer_wallet(enforcer: &Enforcer) -> Option<&Wallet> {
+    match enforcer {
+        Either::Right(Either::Right(wallet)) => Some(wallet),
+        Either::Left(_) | Either::Right(Either::Left(_)) => None,
+    }
+}
 
 async fn get_block_template<RpcClient>(
     rpc_client: &RpcClient,
@@ -341,14 +370,11 @@ async fn fill_connect_get_defaults(
 }
 
 async fn run_connect_server(
-    validator: Either<Validator, Wallet>,
+    enforcer: Enforcer,
     cancel: CancellationToken,
     addr: SocketAddr,
 ) -> Result<(), error::ConnectServer> {
-    let (inner_validator, wallet) = match validator {
-        Either::Left(v) => (v, None),
-        Either::Right(w) => (w.validator().clone(), Some(w)),
-    };
+    let inner_validator = enforcer_validator(&enforcer).clone();
     let router = Router::new();
     let router = Arc::new(server::crypto::CryptoServiceServer).register(router);
     let router = Arc::new(server::validator::Server::new(
@@ -359,11 +385,19 @@ async fn run_connect_server(
 
     let mut services: Vec<&'static str> =
         vec![CRYPTO_SERVICE_SERVICE_NAME, VALIDATOR_SERVICE_SERVICE_NAME];
-    let router = if let Some(wallet) = wallet {
-        services.push(WALLET_SERVICE_SERVICE_NAME);
-        Arc::new(wallet).register(router)
-    } else {
-        router
+    let router = match enforcer {
+        Either::Left(_validator) => router,
+        Either::Right(Either::Left(producer)) => {
+            services.push(BLOCK_PRODUCER_SERVICE_SERVICE_NAME);
+            Arc::new(producer).register(router)
+        }
+        Either::Right(Either::Right(wallet)) => {
+            services.push(BLOCK_PRODUCER_SERVICE_SERVICE_NAME);
+            services.push(WALLET_SERVICE_SERVICE_NAME);
+            let wallet = Arc::new(wallet);
+            let router = BlockProducerServiceExt::register(Arc::clone(&wallet), router);
+            WalletServiceExt::register(wallet, router)
+        }
     };
 
     let health_checker = Arc::new(StaticChecker::with_services(services));
@@ -408,11 +442,12 @@ async fn run_connect_server(
     res
 }
 
-async fn spawn_gbt_server<RpcClient>(
-    server: cusf_enforcer_mempool::server::Server<Wallet, RpcClient>,
+async fn spawn_gbt_server<BP, RpcClient>(
+    server: cusf_enforcer_mempool::server::Server<BP, RpcClient>,
     serve_addr: SocketAddr,
 ) -> miette::Result<jsonrpsee::server::ServerHandle>
 where
+    BP: CusfBlockProducer + Send + Sync + 'static,
     RpcClient: bitcoin_jsonrpsee::MainClient + Send + Sync + 'static,
 {
     let rpc_server = server.into_rpc();
@@ -575,7 +610,7 @@ async fn get_zmq_addr_sequence(
 }
 
 async fn run_no_mempool_task(
-    mut enforcer: Either<Validator, Wallet>,
+    mut enforcer: Enforcer,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     zmq_addr_sequence: String,
     cancel: CancellationToken,
@@ -610,46 +645,36 @@ async fn run_validator_mempool_task(
     wait_for_error_or_shutdown(cancel, err_rx).await
 }
 
-async fn run_wallet_mempool_task(
-    wallet: Wallet,
+/// Everything the block template server needs, beyond the producer itself and
+/// the connection to the node.
+struct GbtConfig {
+    /// Recipient of the block reward in served templates.
+    mining_reward_address: bitcoin::Address,
     network: bitcoin::Network,
-    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-    zmq_addr_sequence: String,
-    cli: cli::Config,
-    cancel: CancellationToken,
-) -> Result<(), miette::Report> {
-    // A pre-requisite for the mempool sync task is that the wallet is
-    // initialized and unlocked. Give a nice error message if this is not
-    // the case!
-    if !wallet.is_initialized().await {
-        #[derive(Debug, Diagnostic, Error)]
-        #[error(
-            "Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."
-        )]
-        #[diagnostic(code(wallet_not_initialized))]
-        struct WalletNotInitialized;
-        return Err(WalletNotInitialized.into());
-    }
+    cache_lifetime: Option<Duration>,
+    serve_rpc_addr: SocketAddr,
+}
 
-    let mining_reward_address = match cli.mining_opts.coinbase_recipient.clone() {
-        Some(addr) => addr,
-        None => wallet.get_new_address().await.map_err(|err| {
-            miette::Report::from_err(err).wrap_err("failed to get mining reward address")
-        })?,
-    };
+/// Build the sample block template and bring up the `getblocktemplate` server.
+async fn spawn_block_template_server<BP>(
+    gbt: GbtConfig,
+    mempool: cusf_enforcer_mempool::mempool::MempoolSync<BP>,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+) -> Result<jsonrpsee::server::ServerHandle, miette::Report>
+where
+    BP: CusfBlockProducer + Send + Sync + 'static,
+{
+    let GbtConfig {
+        mining_reward_address,
+        network,
+        cache_lifetime,
+        serve_rpc_addr,
+    } = gbt;
+
     let network_info = mainchain_client
         .get_network_info()
         .await
         .map_err(|err| miette::Report::from_err(err).wrap_err("failed to get network info"))?;
-
-    let (mempool, err_rx) = sync_mempool(
-        wallet,
-        mainchain_client.clone(),
-        &zmq_addr_sequence,
-        cancel.clone(),
-    )
-    .await
-    .map_err(miette::Report::from_err)?;
 
     // Bitcoin Core refuses to service block templates until IBD is finished. We should
     // therefore run this check AFTER the mempool sync task has finished, and then
@@ -695,31 +720,109 @@ async fn run_wallet_mempool_task(
         }
     };
 
-    let gbt_cache_lifetime = cli
-        .gbt_cache_lifetime_s
-        .map(|secs| Duration::from_secs(secs.get()));
     let gbt_server = cusf_enforcer_mempool::server::Server::new(
         mining_reward_address.script_pubkey(),
         mempool,
         network,
         network_info,
         mainchain_client,
-        gbt_cache_lifetime,
+        cache_lifetime,
         sample_block_template,
     )
     .into_diagnostic()?;
-    let server_handle = spawn_gbt_server(gbt_server, cli.serve_rpc_addr).await?;
+    spawn_gbt_server(gbt_server, serve_rpc_addr).await
+}
+
+/// Sync the mempool for any block producer, and, when `gbt` is `Some`, serve
+/// `getblocktemplate` from it.
+///
+/// Serving templates is a niche miner feature, so it is optional: a wallet may
+/// sync the mempool purely to track unconfirmed transactions.
+async fn run_block_producer_mempool_task<BP>(
+    producer: BP,
+    gbt: Option<GbtConfig>,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    zmq_addr_sequence: String,
+    cancel: CancellationToken,
+) -> Result<(), miette::Report>
+where
+    BP: CusfBlockProducer + Send + Sync + 'static,
+    error::MempoolTask<BP>: Into<miette::Report>,
+{
+    let (mempool, err_rx) = sync_mempool(
+        producer,
+        mainchain_client.clone(),
+        &zmq_addr_sequence,
+        cancel.clone(),
+    )
+    .await
+    .map_err(miette::Report::from_err)?;
+
+    let (server_handle, _mempool) = match gbt {
+        Some(gbt) => {
+            let handle =
+                spawn_block_template_server(gbt, mempool, mainchain_client.clone()).await?;
+            (Some(handle), None)
+        }
+        None => (None, Some(mempool)),
+    };
 
     let result = wait_for_error_or_shutdown(cancel, err_rx).await;
 
-    tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
+    if let Some(server_handle) = server_handle {
+        tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
 
-    // This should never fail. The only failure mode is the server
-    // already being stopped, and we have full control over that.
-    if let Err(err) = server_handle.stop() {
-        tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
+        // This should never fail. The only failure mode is the server
+        // already being stopped, and we have full control over that.
+        if let Err(err) = server_handle.stop() {
+            tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
+        }
     }
     result
+}
+
+async fn run_wallet_mempool_task(
+    wallet: Wallet,
+    network: bitcoin::Network,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    zmq_addr_sequence: String,
+    coinbase_recipient: Option<bitcoin::Address>,
+    cli: cli::Config,
+    cancel: CancellationToken,
+) -> Result<(), miette::Report> {
+    // The wallet applies every connected block to its BDK store, which requires
+    // an initialized, unlocked wallet regardless of whether templates are
+    // served. Give a nice error message if that is not the case.
+    if !wallet.is_initialized().await {
+        #[derive(Debug, Diagnostic, Error)]
+        #[error(
+            "Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."
+        )]
+        #[diagnostic(code(wallet_not_initialized))]
+        struct WalletNotInitialized;
+        return Err(WalletNotInitialized.into());
+    }
+
+    let gbt = if cli.enable_block_template_server {
+        // The block reward goes to `--coinbase-recipient`, or a fresh wallet
+        // address when it is unset.
+        let mining_reward_address = match coinbase_recipient {
+            Some(addr) => addr,
+            None => wallet.get_new_address().await.map_err(|err| {
+                miette::Report::from_err(err).wrap_err("failed to get mining reward address")
+            })?,
+        };
+        Some(GbtConfig {
+            mining_reward_address,
+            network,
+            cache_lifetime: cli.gbt_cache_lifetime(),
+            serve_rpc_addr: cli.serve_rpc_addr,
+        })
+    } else {
+        None
+    };
+
+    run_block_producer_mempool_task(wallet, gbt, mainchain_client, zmq_addr_sequence, cancel).await
 }
 
 fn report_sync_state(validator: &Validator, state_file: &Path) -> Result<SyncStateSummary> {
@@ -1189,7 +1292,24 @@ async fn main() -> Result<()> {
         None
     };
 
-    let enforcer: Either<Validator, Wallet> = if cli.enable_wallet {
+    // The block reward recipient for served templates. Parsed network-agnostically
+    // by clap, so check it against the network the node actually reports.
+    let coinbase_recipient = cli
+        .coinbase_recipient
+        .clone()
+        .map(|addr| {
+            addr.require_network(info.chain).map_err(|_| {
+                miette!(
+                    "`--coinbase-recipient` is not a valid address for the node's network ({})",
+                    info.chain
+                )
+            })
+        })
+        .transpose()?;
+
+    let producer = BlockProducer::new(&wallet_data_dir, validator.clone())?;
+
+    let enforcer: Enforcer = if cli.enable_wallet {
         // The wallet needs the txindex in order to operate. Will lead to obscure errors later
         // if we fail RPC requests due to the index not being there.
         //
@@ -1218,7 +1338,8 @@ async fn main() -> Result<()> {
             &wallet_data_dir,
             &cli,
             mainchain_client.clone(),
-            validator,
+            producer,
+            coinbase_recipient.clone(),
             magic,
             signet_challenge,
         )
@@ -1254,7 +1375,9 @@ async fn main() -> Result<()> {
             wallet.create_wallet(mnemonic, None).await?;
         }
 
-        Either::Right(wallet)
+        Either::Right(Either::Right(wallet))
+    } else if cli.enable_block_template_server {
+        Either::Right(Either::Left(producer))
     } else {
         Either::Left(validator)
     };
@@ -1269,7 +1392,7 @@ async fn main() -> Result<()> {
     // Spawn the wallet's full scan before pushing anything into the
     // JoinSet. It is blocking on the wallet's behalf and any error should
     // short-circuit startup
-    if let Either::Right(wallet) = &enforcer
+    if let Some(wallet) = enforcer_wallet(&enforcer)
         && cli.wallet_opts.full_scan
     {
         wallet.full_scan().await?;
@@ -1324,14 +1447,42 @@ async fn main() -> Result<()> {
                     ("validator mempool task", res)
                 });
             }
-            (true, Either::Right(wallet)) => {
+            (true, Either::Right(Either::Left(producer))) => {
+                // The block producer has no wallet to derive a payout address
+                // from, so `--coinbase-recipient` is mandatory here.
+                let mining_reward_address = coinbase_recipient.clone().ok_or_else(|| {
+                    miette!(
+                        "serving block templates without a wallet requires `--coinbase-recipient`"
+                    )
+                })?;
+                let gbt = GbtConfig {
+                    mining_reward_address,
+                    network,
+                    cache_lifetime: cli.gbt_cache_lifetime(),
+                    serve_rpc_addr: cli.serve_rpc_addr,
+                };
+                tasks.spawn(async move {
+                    let res = run_block_producer_mempool_task(
+                        producer,
+                        Some(gbt),
+                        mainchain_client,
+                        zmq,
+                        cancel,
+                    )
+                    .await;
+                    ("block producer mempool task", res)
+                });
+            }
+            (true, Either::Right(Either::Right(wallet))) => {
                 let cli = cli.clone();
+                let coinbase_recipient = coinbase_recipient.clone();
                 tasks.spawn(async move {
                     let res = run_wallet_mempool_task(
                         wallet,
                         network,
                         mainchain_client,
                         zmq,
+                        coinbase_recipient,
                         cli,
                         cancel,
                     )
@@ -1354,7 +1505,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    if let Either::Right(wallet) = enforcer.clone() {
+    if let Some(wallet) = enforcer_wallet(&enforcer).cloned() {
         // Big wallets (thousands of UTXOs) can get really bad performance for the
         // periodic sync. Therefore we expose a knob to disable it.
         let sync_source_disabled = cli.wallet_opts.sync_source == WalletSyncSource::Disabled;
@@ -1369,10 +1520,7 @@ async fn main() -> Result<()> {
     }
 
     if exit_after_sync_mode {
-        let validator = match &enforcer {
-            Either::Left(validator) => validator.clone(),
-            Either::Right(wallet) => wallet.validator().clone(),
-        };
+        let validator = enforcer_validator(&enforcer).clone();
 
         // The reference (if any) was loaded + validated at startup.
         let (goal_height, reference) = match verify_reference {
@@ -1406,10 +1554,7 @@ async fn main() -> Result<()> {
     }
 
     if let Some(goal_height) = cli.freeze_at_height {
-        let validator = match &enforcer {
-            Either::Left(validator) => validator.clone(),
-            Either::Right(wallet) => wallet.validator().clone(),
-        };
+        let validator = enforcer_validator(&enforcer).clone();
         let mainchain_client = mainchain_client.clone();
         let cancel = cancel.clone();
         tasks.spawn(async move {

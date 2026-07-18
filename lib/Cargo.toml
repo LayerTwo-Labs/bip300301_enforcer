@@ -33,7 +33,7 @@ futures = { workspace = true }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
 heed-types = { workspace = true }
-hex = { workspace = true }
+hex = { workspace = true, features = ["serde"] }
 jiff = { workspace = true }
 jsonrpsee = { workspace = true, features = ["client"] }
 miette = { workspace = true, features = ["derive"] }

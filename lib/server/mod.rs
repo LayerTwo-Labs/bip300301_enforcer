@@ -4,6 +4,7 @@ use connectrpc::ConnectError;
 
 use crate::types::SidechainNumber;
 
+pub mod block_producer;
 pub mod crypto;
 pub mod validator;
 pub mod wallet;
