@@ -39,7 +39,9 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [features]
-default = ["rustls"]
+default = ["drivechain", "rustls"]
+drivechain = ["bip300301_enforcer_lib/drivechain"]
+bip360 = ["bip300301_enforcer_lib/bip360"]
 openssl = ["bip300301_enforcer_lib/openssl"]
 rustls = ["bip300301_enforcer_lib/rustls"]
 rustls-ring = ["bip300301_enforcer_lib/rustls-ring"]

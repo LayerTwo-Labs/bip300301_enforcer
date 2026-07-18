@@ -6,6 +6,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      run_live_tip_e2e:
+        description: "HITL only — run live-tip-rules-workers-e2e (needs BITCOIND; does not gate PR CI)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -95,8 +101,104 @@ jobs:
         # Nightly introduces a bunch of new errors - we therefore run clippy in
         # two stages: one regular, and one on nightly with specifically only
         # checking for unqualified local imports.
-        # prettier-ignore
-        run: cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
+        run: >-
+          cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports
+          -Zcrate-attr="feature(unqualified_local_imports)"
+
+  check-bip360:
+    name: Check BIP 360 feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          rustup install
+          rustup component add clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu-bip360
+
+      - name: Cargo check (bip360 only)
+        run: cargo check --no-default-features --features bip360 --all-targets
+
+      - name: Test PQC module
+        # Quote: unquoted `::` is invalid YAML (prettier/GitHub parsers reject it).
+        run:
+          "cargo test -p bip300301_enforcer_lib --no-default-features --features
+          bip360 pqc::"
+
+      - name: P2MR signer smoke test
+        run: |
+          cargo build --example p2mr_signer --no-default-features --features bip360
+          cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 p2mr_signer_roundtrip -- --nocapture
+          cargo run --example p2mr_signer --no-default-features --features bip360 -- \
+            --algorithm schnorr \
+            --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111 \
+            | grep -q signed_spend_tx_hex
+
+      - name: Clippy (bip360)
+        run:
+          cargo clippy -p bip300301_enforcer_lib --no-default-features
+          --features bip360 -- -D warnings
+
+      - name: Clippy (integration_tests bip360)
+        run:
+          cargo clippy -p bip300301_enforcer_integration_tests --features bip360
+          -- -D warnings
+
+      - name: Check integration_tests example (bip360)
+        run: cargo check --example integration_tests --features bip360
+
+  check-rules-engine:
+    name: Validate rules engine + workers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup install
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu-rules
+
+      # Do NOT use cargo --all-features (reserved shrincs).
+      # Do NOT require bitcoind / live tip here (PR green matrix).
+      - name: validate-rules-engine
+        run: ./scripts/validate-rules-engine.sh
+
+  # HITL / manual only — never runs on pull_request.
+  # Fail-closed if BITCOIND unset/non-executable when dispatched with run_live_tip_e2e
+  # (script soft-skip applies only when CUSF_LIVE_TIP_E2E is unset; HITL always sets it).
+  live-tip-rules-workers-e2e-hitl:
+    name: Live tip rules workers e2e (HITL)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_tip_e2e == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup install
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu-rules-live-tip
+
+      - name: Opt-in live tip e2e
+        env:
+          CUSF_LIVE_TIP_E2E: "1"
+          BITCOIND: ${{ vars.BITCOIND || secrets.BITCOIND || '' }}
+        run: |
+          if [[ -z "${BITCOIND}" || ! -x "${BITCOIND}" ]]; then
+            echo "::error::HITL live tip requires BITCOIND (repo var/secret path to bitcoind binary)"
+            exit 1
+          fi
+          ./scripts/live-tip-rules-workers-e2e.sh
 
   check-clippy:
     name: Check, Lint
@@ -309,13 +411,17 @@ jobs:
           wget -q "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz"
           tar -xzf "grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" -C ~/grpcurl-bin grpcurl
 
+      - name: Install just
+        if: matrix.flavor == 'patched'
+        uses: extractions/setup-just@v3
+
       - name: Verify gRPC reflection (grpcurl + buf curl)
         if: matrix.flavor == 'patched'
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
           export BITCOIND='../bitcoin-bins/bitcoind'
           export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
-          ./scripts/verify_reflection.sh
+          just verify-reflection
 
       - name: Run integration tests
         # Stock Bitcoin Core rejects drivechain deposit transactions with

@@ -16,6 +16,7 @@ buffa-types = { workspace = true }
 cfg-if = { workspace = true }
 connectrpc = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
+cusf_miner_sidecar = { path = "../cusf_miner_sidecar" }
 dotenvy = { workspace = true }
 either = { workspace = true }
 futures = { workspace = true }
@@ -39,7 +40,9 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-default = ["rustls"]
+default = ["drivechain", "rustls"]
+drivechain = ["bip300301_enforcer_lib/drivechain"]
+bip360 = ["bip300301_enforcer_lib/bip360"]
 openssl = ["bip300301_enforcer_lib/openssl"]
 rustls = ["bip300301_enforcer_lib/rustls"]
 rustls-ring = ["bip300301_enforcer_lib/rustls-ring"]

@@ -63,9 +63,15 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 transitive = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+bitcoin-p2mr-pqc = { workspace = true, optional = true }
+bitcoinpqc = { workspace = true, optional = true }
 
 [features]
-default = ["rustls"]
+default = ["drivechain", "rustls"]
+drivechain = []
+bip360 = ["dep:bitcoin-p2mr-pqc", "dep:bitcoinpqc"]
+# Reserved for future SHRINCs backup-signature paths (no implementation yet).
+shrincs = []
 openssl = ["bdk_electrum/use-openssl"]
 rustls = ["bdk_electrum/use-rustls"]
 rustls-ring = ["bdk_electrum/use-rustls-ring"]
@@ -75,6 +81,11 @@ temp-dir = { workspace = true }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "p2mr_signer"
+path = "examples/p2mr_signer.rs"
+required-features = ["bip360"]
 
 [lib]
 name = "bip300301_enforcer_lib"

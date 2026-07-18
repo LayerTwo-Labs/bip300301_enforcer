@@ -227,7 +227,16 @@ fn connect_block_no_commit<'validator>(
         child_builder: |parent: &mut RwTxn| validator.dbs.nested_write_txn(parent),
     }
     .try_build()?;
-    let handler = BlockHandler::new(&validator.dbs, validator.network, validator.network_params);
+    let handler = BlockHandler::new(
+        &validator.dbs,
+        validator.network,
+        validator.network_params(),
+        #[cfg(feature = "bip360")]
+        validator.bip360_activation_height(),
+        #[cfg(feature = "bip360")]
+        validator.pqc_verify_budget_ms(),
+        validator.remote_rules_arc(),
+    );
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
         .into_nested()?
@@ -378,7 +387,16 @@ impl CusfEnforcer for Validator {
         };
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
-        let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
+        let handler = BlockHandler::new(
+            &self.dbs,
+            self.network,
+            self.network_params(),
+            #[cfg(feature = "bip360")]
+            self.bip360_activation_height(),
+            #[cfg(feature = "bip360")]
+            self.pqc_verify_budget_ms(),
+            self.remote_rules_arc(),
+        );
         let sync_future = handler
             .sync_to_tip(
                 &self.mainchain_client,
@@ -422,7 +440,16 @@ impl CusfEnforcer for Validator {
         block_hash: BlockHash,
     ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
-        let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
+        let handler = BlockHandler::new(
+            &self.dbs,
+            self.network,
+            self.network_params(),
+            #[cfg(feature = "bip360")]
+            self.bip360_activation_height(),
+            #[cfg(feature = "bip360")]
+            self.pqc_verify_budget_ms(),
+            self.remote_rules_arc(),
+        );
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
         Ok(DisconnectBlockAction::default())
@@ -433,7 +460,8 @@ impl CusfEnforcer for Validator {
     fn accept_tx<TxRef>(
         &mut self,
         tx: &Transaction,
-        _tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
+        #[cfg(feature = "bip360")] tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
+        #[cfg(not(feature = "bip360"))] _tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
     ) -> Result<TxAcceptAction, Self::AcceptTxError>
     where
         TxRef: Borrow<Transaction>,
@@ -442,8 +470,26 @@ impl CusfEnforcer for Validator {
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
-        let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
-        let res = if handler.validate_tx(&mut rwtxn, tx)? {
+        let handler = BlockHandler::new(
+            &self.dbs,
+            self.network,
+            self.network_params(),
+            #[cfg(feature = "bip360")]
+            self.bip360_activation_height(),
+            #[cfg(feature = "bip360")]
+            self.pqc_verify_budget_ms(),
+            self.remote_rules_arc(),
+        );
+        let res = if {
+            #[cfg(feature = "bip360")]
+            {
+                handler.validate_tx(&mut rwtxn, tx, tx_inputs)?
+            }
+            #[cfg(not(feature = "bip360"))]
+            {
+                handler.validate_tx(&mut rwtxn, tx)?
+            }
+        } {
             let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
                 let txid = tx.compute_txid();
                 let conflicts_with = {

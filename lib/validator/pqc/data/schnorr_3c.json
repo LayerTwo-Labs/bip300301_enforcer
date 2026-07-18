@@ -1,0 +1,26 @@
+{
+  "control_block_hex": "c1",
+  "entropy_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "goldens": {
+    "control_block_hex": "c1",
+    "leaf_script_hex": "204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac",
+    "merkle_root_hex": "54461f083426f688bb72aed949de73395b4a89f2f05b438ec4401443002eeb70",
+    "public_key_hex": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "script_pubkey_hex": "522054461f083426f688bb72aed949de73395b4a89f2f05b438ec4401443002eeb70",
+    "sighash_hex": "1f761a93e11d9032101a1a7af6a4ba77053941bb043c854e93b8506076404720",
+    "signature_hex": "a2cd0d4e6950a5d71369f5c91816ed4ba99a90a6e719496fd25356a76b68b44b18de938404e4614771c0d549bd92a57c7400329b7ff25c429500193b62091c70"
+  },
+  "id": "schnorr_3c",
+  "lane": "3C",
+  "leaf_script_hex": "204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac",
+  "leaf_script_len": 34,
+  "merkle_root_hex": "54461f083426f688bb72aed949de73395b4a89f2f05b438ec4401443002eeb70",
+  "note": "TB-sendraw shape 1 green gate; TapSighash Default bare 64 B; control c1",
+  "public_key_hex": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+  "script_pubkey_hex": "522054461f083426f688bb72aed949de73395b4a89f2f05b438ec4401443002eeb70",
+  "shape": 1,
+  "sighash_hex": "1f761a93e11d9032101a1a7af6a4ba77053941bb043c854e93b8506076404720",
+  "sighash_type": "Default",
+  "signature_hex": "a2cd0d4e6950a5d71369f5c91816ed4ba99a90a6e719496fd25356a76b68b44b18de938404e4614771c0d549bd92a57c7400329b7ff25c429500193b62091c70",
+  "signature_len": 64
+}

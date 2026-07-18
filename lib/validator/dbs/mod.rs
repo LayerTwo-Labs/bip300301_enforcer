@@ -13,6 +13,8 @@ use crate::types::{
 
 mod block_hashes;
 pub(in crate::validator) mod diff;
+#[cfg(feature = "bip360")]
+mod p2mr_utxos;
 
 pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 
@@ -325,6 +327,8 @@ pub(super) struct Dbs {
     env: Env,
     pub active_sidechains: ActiveSidechainDbs,
     pub block_hashes: BlockHashDbs,
+    #[cfg(feature = "bip360")]
+    pub p2mr_utxos: p2mr_utxos::P2mrUtxoDbs,
     /// Tip that the enforcer is synced to
     pub current_chain_tip: DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
     pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
@@ -333,6 +337,9 @@ pub(super) struct Dbs {
 }
 
 impl Dbs {
+    #[cfg(feature = "bip360")]
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4 + 1;
+    #[cfg(not(feature = "bip360"))]
     const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
@@ -361,6 +368,8 @@ impl Dbs {
         let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
         let proposal_id_to_sidechain =
             DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
+        #[cfg(feature = "bip360")]
+        let p2mr_utxos = p2mr_utxos::P2mrUtxoDbs::new(&env, &mut rwtxn)?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -368,6 +377,8 @@ impl Dbs {
             env,
             active_sidechains,
             block_hashes,
+            #[cfg(feature = "bip360")]
+            p2mr_utxos,
             current_chain_tip,
             _leading_by_50: leading_by_50,
             _previous_votes: previous_votes,

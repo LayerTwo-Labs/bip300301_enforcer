@@ -1,0 +1,23 @@
+[package]
+name = "cusf_rules_drivechain"
+authors.workspace = true
+edition.workspace = true
+publish.workspace = true
+version.workspace = true
+description = "CUSF drivechain (BIP 300/301) rule worker — pure policy; hub owns Core I/O"
+
+[dependencies]
+bip300301_enforcer_lib = { path = "../lib", default-features = false, features = ["drivechain"] }
+clap = { workspace = true, features = ["derive", "std", "help", "usage", "error-context"] }
+# termination = SIGTERM + SIGHUP (default feature is SIGINT only)
+ctrlc = { version = "3", features = ["termination"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cusf_rules_drivechain"
+path = "src/main.rs"

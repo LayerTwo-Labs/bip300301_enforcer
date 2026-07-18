@@ -949,8 +949,15 @@ async fn main() -> Result<()> {
         log_dir = %cli.log_dir().display(),
         git_hash = cli.git_hash(),
         build = if cfg!(debug_assertions) { "debug" } else { "release" },
+        drivechain = cfg!(feature = "drivechain"),
+        bip360 = cfg!(feature = "bip360"),
+        rules_workers = cli.rules_workers.len(),
         "Starting up bip300301_enforcer",
     );
+
+    // Remote rule workers (UDS) are built after Validator::new and installed via
+    // set_remote_rules so BlockHandler mempool/connect AND remote ballots
+    // (fail-closed Timeout/Failure/Reject). See docs/MULTI_ENFORCER.md.
 
     // Validate the verification reference early, before creating node connections etc.
     let verify_reference = cli
@@ -1142,15 +1149,34 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let validator = Validator::new(
+    let mut validator = Validator::new(
         mainchain_client.clone(),
         mainchain_rest_client,
         cli.node_blocks_dir_opts.dir.clone(),
         &validator_data_dir,
         info.chain,
         network_params,
+        #[cfg(feature = "bip360")]
+        cli.activation_height,
+        #[cfg(feature = "bip360")]
+        cli.pqc_verify_budget_ms,
     )
     .into_diagnostic()?;
+
+    // Wire `--rules-worker` remotes into hot-path consent (mempool + connect).
+    {
+        use bip300301_enforcer_lib::validator::rules::ipc::build_remote_backend_engine;
+        let timeout = cli.rules_worker_timeout();
+        let engine = build_remote_backend_engine(&cli.rules_workers, timeout);
+        if !cli.rules_workers.is_empty() {
+            tracing::info!(
+                registered = ?engine.registered_ids(),
+                timeout_ms = timeout.as_millis() as u64,
+                "remote rules workers on hot path (UDS; timeout/failure = Reject)"
+            );
+        }
+        validator.set_remote_rules(engine);
+    }
 
     let signet_challenge = if info.chain == bitcoin::Network::Signet {
         let block_template = get_block_template(&mainchain_client, info.chain).await?;

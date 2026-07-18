@@ -397,6 +397,22 @@ pub(in crate::validator) enum ConnectBlock {
         #[source]
         source: HandleTransaction,
     },
+    #[cfg(feature = "bip360")]
+    #[error("BIP 360 validation failed for block `{block_hash}`")]
+    #[fatal(false)]
+    Bip360 {
+        block_hash: bitcoin::BlockHash,
+        #[source]
+        source: crate::validator::pqc::PqcValidationError,
+    },
+    /// Aggregate rule consent rejected (remote Timeout/Failure/Reject, or
+    /// composition Reject when local validation succeeded).
+    #[error("rule consent rejected for block `{block_hash}`: {reason}")]
+    #[fatal(false)]
+    RulesReject {
+        block_hash: bitcoin::BlockHash,
+        reason: String,
+    },
 }
 
 impl From<db::Error> for ConnectBlock {

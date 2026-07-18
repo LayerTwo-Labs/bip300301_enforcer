@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "model": "overload_checksig",
+  "given_script_encoding": "ref_impl_op_substr_tags",
+  "expected_script_encoding": "converted_op_checksig_at_test_load",
+  "encoding_note": "given.scriptTree retains ref-impl trailing OP_SUBSTR (0x7f) where present; overload_vectors tests convert to OP_CHECKSIG (0xac) before merkle build. intermediary/expected reflect converted scripts.",
+  "test_vectors": [
+    {
+      "id": "overload_missing_leaf_script_tree_error",
+      "ref_impl_id": "p2mr_missing_leaf_script_tree_error",
+      "objective": "P2MR requires a script tree with at least one leaf",
+      "given": {},
+      "intermediary": {},
+      "expected": {
+        "error": "P2MR requires a script tree with at least one leaf"
+      }
+    },
+    {
+      "id": "overload_single_slh_leaf",
+      "ref_impl_id": "p2mr_single_leaf_script_tree",
+      "objective": "Single SLH-DSA leaf: PUSH32 pk OP_CHECKSIG (converted from OP_SUBSTR tag)",
+      "given": {
+        "scriptTree": {
+          "id": 0,
+          "script": "201f4b1febdc7dfa77c1efacc875b43317b46155e5a564decf475fc369124c5f247f",
+          "leafVersion": 192,
+          "priv_key": "3f0213a51771f25c906cd82c656175e4b2a10e85958039d6e358352a2eb62b791f4b1febdc7dfa77c1efacc875b43317b46155e5a564decf475fc369124c5f24"
+        }
+      },
+      "intermediary": {
+        "leafHashes": [
+          "def4f5feef4977e12577d7eda4e936abe29cff71dd2488ae8717bb23d7039bec"
+        ],
+        "merkleRoot": "def4f5feef4977e12577d7eda4e936abe29cff71dd2488ae8717bb23d7039bec"
+      },
+      "expected": {
+        "scriptPubKey": "5220def4f5feef4977e12577d7eda4e936abe29cff71dd2488ae8717bb23d7039bec",
+        "scriptPathControlBlocks": ["c1"]
+      }
+    },
+    {
+      "id": "overload_two_leaf_same_version",
+      "ref_impl_id": "p2mr_two_leaf_same_version",
+      "objective": "Two leaves same version: SLH-DSA + plain push (Taproot string)",
+      "given": {
+        "scriptTree": [
+          {
+            "id": 0,
+            "script": "20e6b3dad32fc04095a021f5356163cfc14e15f703831e332c56f6b499801f53447f",
+            "leafVersion": 192
+          },
+          {
+            "id": 1,
+            "script": "07546170726f6f74",
+            "leafVersion": 192
+          }
+        ]
+      },
+      "intermediary": {
+        "leafHashes": [
+          "2cb2b90daa543b544161530c925f285b06196940d6085ca9474d41dc3822c5cb",
+          "f77690ae9d2a5d6db4627dd0d91c24de13fccdccc76f3438b53242c8464f29c3"
+        ],
+        "merkleRoot": "27ab774592fb9fcd17a28e95a38f561165638fdd35c35f8c7e3afeaf4c2e295b"
+      },
+      "expected": {
+        "scriptPubKey": "522027ab774592fb9fcd17a28e95a38f561165638fdd35c35f8c7e3afeaf4c2e295b",
+        "scriptPathControlBlocks": [
+          "c1f77690ae9d2a5d6db4627dd0d91c24de13fccdccc76f3438b53242c8464f29c3",
+          "c12cb2b90daa543b544161530c925f285b06196940d6085ca9474d41dc3822c5cb"
+        ]
+      }
+    },
+    {
+      "id": "overload_three_leaf_complex",
+      "ref_impl_id": "p2mr_three_leaf_complex",
+      "objective": "Nested three-leaf tree (SLH leaves converted to OP_CHECKSIG)",
+      "given": {
+        "scriptTree": [
+          {
+            "id": 0,
+            "script": "201d58016252d5a941f84574c4821b5f87e56778b2bbc3b610dfd801fc0250f6cc7f",
+            "leafVersion": 192
+          },
+          [
+            {
+              "id": 1,
+              "script": "20a3b0dcac08f86306ba04f5fe2a3243ef3a0347c0e2a4529720a18d3cfdce90ad7f",
+              "leafVersion": 192
+            },
+            {
+              "id": 2,
+              "script": "20e6ccf03593dbd07eba10403e33586c130889de6e8219da0a9ccbdd46a56a5f367f",
+              "leafVersion": 192
+            }
+          ]
+        ]
+      },
+      "intermediary": {
+        "leafHashes": [
+          "521aa2ea67bfdc99a7e228f85ddac34a81671d61567649cb8b069e97126a6da7",
+          "06dcf361f76c6d05f2bbf222481fd01ca7d91dbb35c1e8ddbc81782fa29f4732",
+          "ec0c80df41de2fd5c29262686d2dd9aeaa5ebb311f2b443fb3597f6610ec900d"
+        ],
+        "merkleRoot": "8b8691e5d831aa53d196726d3e23397064f802a1fd40b356f690e7294195455f"
+      },
+      "expected": {
+        "scriptPubKey": "52208b8691e5d831aa53d196726d3e23397064f802a1fd40b356f690e7294195455f",
+        "scriptPathControlBlocks": [
+          "c1e1972d56c0e4f5f2bcea2836f028f37699dfd1c7c75771df21e20648aea32bc0",
+          "c1ec0c80df41de2fd5c29262686d2dd9aeaa5ebb311f2b443fb3597f6610ec900d521aa2ea67bfdc99a7e228f85ddac34a81671d61567649cb8b069e97126a6da7",
+          "c106dcf361f76c6d05f2bbf222481fd01ca7d91dbb35c1e8ddbc81782fa29f4732521aa2ea67bfdc99a7e228f85ddac34a81671d61567649cb8b069e97126a6da7"
+        ]
+      }
+    },
+    {
+      "id": "overload_simple_lightning_contract",
+      "ref_impl_id": "p2mr_simple_lightning_contract",
+      "objective": "Lightning-style two-leaf contract; tree shape preserved, trailing OP_SUBSTR converted to OP_CHECKSIG",
+      "given": {
+        "scriptTree": [
+          {
+            "id": 0,
+            "script": "029000b275201f4b1febdc7dfa77c1efacc875b43317b46155e5a564decf475fc369124c5f247f",
+            "leafVersion": 192,
+            "priv_key": "3f0213a51771f25c906cd82c656175e4b2a10e85958039d6e358352a2eb62b791f4b1febdc7dfa77c1efacc875b43317b46155e5a564decf475fc369124c5f24"
+          },
+          {
+            "id": 1,
+            "script": "a8206c60f404f8167a38fc70eaf8aa17ac351023bef86bcb9d1086a19afe95bd533388204c7f98ab73cc36abeb76d6eace6a9d8b0ff69dfe0f4a17e4f94f0898ecacac",
+            "leafVersion": 192,
+            "priv_key": "49a4214f386240d97ea68efb4268043fd5a55208dcdac18ce5bd3332b8e488944c7f98ab73cc36abeb76d6eace6a9d8b0ff69dfe0f4a17e4f94f0898ec52fadd"
+          }
+        ]
+      },
+      "intermediary": {
+        "leafHashes": [
+          "52166733aafa33c7d5e8c765582f7dacdce48075da67464a01814286a3af9baf",
+          "8a9c5e8367568e6e9171deb25aa49dec7befbc941590b7d3dd5b58dca06fe25b"
+        ],
+        "merkleRoot": "53baab0dadf066155c7d77bb7849f34eccfbf83e280b8b9febd9850491d55a56"
+      },
+      "expected": {
+        "scriptPubKey": "522053baab0dadf066155c7d77bb7849f34eccfbf83e280b8b9febd9850491d55a56",
+        "scriptPathControlBlocks": [
+          "c18a9c5e8367568e6e9171deb25aa49dec7befbc941590b7d3dd5b58dca06fe25b",
+          "c152166733aafa33c7d5e8c765582f7dacdce48075da67464a01814286a3af9baf"
+        ]
+      }
+    },
+    {
+      "id": "overload_single_mldsa_leaf",
+      "ref_impl_id": null,
+      "objective": "Single ML-DSA-44 leaf: PUSHDATA2(1312) pk OP_CHECKSIG (CUSF-native; entropy 0x42×128)",
+      "given": {
+        "scriptTree": {
+          "id": 0,
+          "script": "4d2005dfab4158c8952a54f8bd019ae3ccba701bd8f0baf78e308d71c2b6a7f95a70668d291af8c54de4c8707b0068be72e4da2d0e319d82fc23c1025858645449a927bf52cdf81fa06dc8c0791ba1ed14201d30670b539ddcd31d501b7b618db72039b4bf911245f76d0b41bcd4389f06a2fd6d312d644b27939034580c0ee3f1bd14528fefb59219d45fbe15371e509fd2784b4324e9a3d234fcf351254b571889713744f926df76b778cd3d6824f9442acf0c42d0c71797f2d59bf156f43348336faaca71819386d5983ff340499189dfaede03e29778908eadcc9390b85ac9a7b4900b5a7c5cd58d06423cd5cd666b77351008def98a1426b73179c50882b5318b21f9ff8235cc5a61f135a88e0a98d19e68b6405ef78a48eb50a2c3b772c03aa9c5f332efff9e93c79328ccfbf7353fba7c124023742799e4f424926d743cda109be5716951942395a51fc36b66dddd9afb45feca30adcd6809f484608db8f9b05820dec3a5fe076c8ba456c33755ea4f6cc69cb9a27d3e985ea4753815c3efc1decedaf4e488a91bb8216629d621860b75ea027d9b47843da4ee031b3a4aa3b1d1da2cc70a0d9d29eaa11e721991bed9204123464b2a823f85a01304097114ae9f66e5560db7830a6191380943d7dc4547b9980d74a9333408afff51816611ad1962641f9cb3e4cc5d5db896e11cdb15219bf88cc8dc3a97f8414c884824b2d9763930a10aeb5e4dc637a8bfce19e3a4b112a2d67d13e6e0ad1888dd89a828d3871376b740db3fef153f6656b4df6ce5602e6902382a6f5ada047a80e80077032cee6870eca2159363c8d57168a3f7766f32a5e59a6559a7609a5452194a3d292cf8c28466c6de926cc8e8bbbafde77c60be7becb75b86fe68707ef2cf4410fd725234bcf0869b35bf10ce1c9f5ea36461d1032181fd8871807179ab2e9bd7e24b53693dffb8753eca17ced2a675b174772a74a7fe5dc80ad10e66c98b9d7031334ce3168c96c3bf56c63b20dc4478a07daf394a5b68a929fdeb1e91b127464a765bfc0e9334e72be72d4c7236fb42b84822bc45249a5845494a4b5be3927561762ef9e3a39aa31c2765a4d217f9649017de1ab834bc31ad58dff16877c607283983fb29692e457ce5711827073578555b3612b46ddc2e92a308029540d354513231fb4f94a3c4f1e42956bd91e9d4c4d75725ba0542dc678cedb6de812c713015d67abd8a03f0bc03d894efdce2f326634d3e2c422b92890ca3eb7228920e2a485deadc60b92d9fbd5a82a8f1f012ef852049aa40413b4fa5d0e4ca2464978fbe56c5211c4e59998c048d689121cba0c011c783462452b1a183448d18a13c013184080e766afba778de67c12da98a6072a524bc2242d93bc6d9c0842c0bdf992a06c2e202588beed1adc7f03b21d50f7745869adfdfc9b33003fccf54180f6248f8726e4496d13e42e4dfb61b511d2cee098d783a85482bd600ce7204f052b5bdf786933c7fb8448b5809d1884335405c2c1b70053985aae87b655a01a25caf98c64620fdf2aca55c9c5d064674fa4f281a17172e1bbb6f804a5fa7850f8a457a8eebceedd9ec2c6d4a056f7a18b6e14b46dc1dd2bccfca8c755c635c8c59a95e52dbd53ad4483ad27bdb0bdd6198d076cc69e14375181c33d5ac7d8debb5f6de8901a8976fe3b919d0ac8564d213e71650cbc05ec8ab39a21039d2f33c3113ccff090e45031bc426915a43d4860d5623d685e6940340260febd35c06427d806cfa93b6e2df43ba7d1ffe60f3d63b5ed4e30386def7e7b94ee13ab21ac6eace87f7b286913d0e0e44b73827519cad3c5dd2d459e3a2cf952bedf59d8256f296ac",
+          "leafVersion": 192
+        }
+      },
+      "intermediary": {
+        "leafHashes": [
+          "57ecae33457dc5c9edf3d24c3fd87ffa025d8922f6b4457bd200a0aa2a035af8"
+        ],
+        "merkleRoot": "57ecae33457dc5c9edf3d24c3fd87ffa025d8922f6b4457bd200a0aa2a035af8"
+      },
+      "expected": {
+        "scriptPubKey": "522057ecae33457dc5c9edf3d24c3fd87ffa025d8922f6b4457bd200a0aa2a035af8",
+        "scriptPathControlBlocks": ["c1"]
+      }
+    }
+  ]
+}

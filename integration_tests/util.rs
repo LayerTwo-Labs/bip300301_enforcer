@@ -211,6 +211,7 @@ impl<T> OnceLockExt for OnceLock<T> {
 pub struct BinPaths {
     bitcoind: OnceLock<PathBuf>,
     bitcoind_unpatched: OnceLock<PathBuf>,
+    bitcoind_p2mr: OnceLock<PathBuf>,
     bitcoin_cli: OnceLock<PathBuf>,
     bitcoin_util: OnceLock<PathBuf>,
     bip300301_enforcer: OnceLock<PathBuf>,
@@ -230,6 +231,11 @@ impl BinPaths {
     pub fn bitcoind_unpatched(&self) -> Result<&PathBuf, VarError> {
         self.bitcoind_unpatched
             .get_or_try_init_from_env("BITCOIND_UNPATCHED")
+    }
+
+    /// P2MR-capable Core (jbride/bitcoin#2 head = `cryptoquick:p2mr`).
+    pub fn bitcoind_p2mr(&self) -> Result<&PathBuf, VarError> {
+        self.bitcoind_p2mr.get_or_try_init_from_env("BITCOIND_P2MR")
     }
 
     pub fn bitcoin_cli(&self) -> Result<&PathBuf, VarError> {

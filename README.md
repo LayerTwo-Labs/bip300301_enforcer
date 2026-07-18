@@ -1,3 +1,73 @@
+# Feature matrix
+
+| Feature              | Default  | Scope                                          |
+| -------------------- | -------- | ---------------------------------------------- |
+| `drivechain`         | yes      | BIP 300/301 sidechain rules (upstream default) |
+| `bip360`             | no       | P2MR + PQC validation in `lib/validator/pqc/`  |
+| `rustls` / `openssl` | `rustls` | TLS backend                                    |
+| `shrincs`            | no       | Reserved placeholder — no implementation       |
+
+| Build | Command / recipe | Artifact |
+| ----- | ---------------- | -------- |
+| Drivechain (default) | `cargo build -p bip300301_enforcer` | `bip300301_enforcer` |
+| BIP 360 only | `just build-enforcer-bip360` | `bip360_enforcer` |
+| Both (**AND**, one process) | `just build-enforcer-combined` / `just build` | `cusf_enforcer` |
+| Hub + workers | `just build-hub-workers` | hub + `cusf_rules_drivechain` + `cusf_rules_bip360` |
+| Rules engine check | `just validate-rules-engine` | unit tests + cargo check |
+
+Default package build and `just test-drivechain` / `just drivechain-smoke` pass
+**without** `bip360` — optional PQC deps (`bitcoin-p2mr-pqc`, `bitcoinpqc`) are
+not pulled in. `just drivechain-smoke` is **local-only** — CI wiring remains
+**HITL** (Phase D delivered local `bip360-verify-full`).
+
+**Target architecture:** one **hub** owns ZMQ/RPC/`invalidateblock`; separately
+feature-compiled **rule workers** register and vote Accept/Reject (AND;
+timeout/failure = no). See [docs/MULTI_ENFORCER.md](./docs/MULTI_ENFORCER.md).
+Multi-feature binaries above are a **transition**, not N competing tip enforcers.
+
+See [docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md) for BIP 360 activation height,
+signature duck typing, and module layout.
+
+Tier B CUSF mining: [docs/TIER_B_CUSF_MINER.md](./docs/TIER_B_CUSF_MINER.md)
+(`just bip360-tier-b-cusf`). Optional inventory miner helper (TB-sidecar, not
+stock mempool): crate `cusf_miner_sidecar` +
+[docs/TIER_B_CUSF_SIDECAR.md](./docs/TIER_B_CUSF_SIDECAR.md)
+(`just bip360-tier-b-cusf-sidecar`; not in the green 34-trial matrix).
+
+**Bob mempool interop (opt-in):**
+[docs/TIER_B_P2MR_MEMPOOL.md](./docs/TIER_B_P2MR_MEMPOOL.md)
+(`just bip360-tier-b-mempool` — shapes 1 Schnorr + 2 Core hybrid + 3
+kitchen-sink).
+
+**On-disk block fidelity e2es (opt-in):**
+
+| Recipe                        | What it checks                                                              |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `just drivechain-blk-dat-e2e` | Dual stock: Miner block == Alice `blk*.dat` (drivechain enforcer keeps tip) |
+| `just bip360-blk-dat-e2e`     | Bob P2MR mines spend; Alice disk matches; bip360 enforcer keeps tip         |
+
+**Architecture claim pins:** `just cusf-claims` (`testmempoolaccept` no-insert;
+stock rejects P2MR spends).
+
+Workspace research / residual (outside this git repo root when forked):  
+[`cusf/FINAL_REPORT.md`](../FINAL_REPORT.md), [`cusf/FINISHED.md`](../FINISHED.md)
+(closed residual archive), [`cusf/RESIDUAL.md`](../RESIDUAL.md) (open only),
+[`cusf/STATUS.md`](../STATUS.md), [`cusf/HUMAN_REVIEW.md`](../HUMAN_REVIEW.md).
+
+Contributors and agents: read [AGENTS.md](./AGENTS.md) for fork context, TDD
+expectations, **workspace boundary** (stay within the opened workspace root;
+external paths need permission and read-only access), integration-test
+prerequisites, git signing policy, and **HITL guardrails** (human-only upstream
+PR, live integration, Kellnr publish).
+
+Day-to-day commands live in [Justfile](./Justfile) — run `just` from this
+directory (or from the workspace root). Quick start: `just drivechain-smoke`
+(upstream default), `just verify` (BIP 360 pre-submit), `just setup-core`,
+`just demo-a`, `just demo-b`.
+
+Requirements traceability: [`cusf/CRITERIA_AUDIT.md`](../CRITERIA_AUDIT.md);
+canonical status: [`cusf/STATUS.md`](../STATUS.md).
+
 # Requirements
 
 1. Bitcoin Core, with ZMQ support. For information on running this on the global
@@ -156,30 +226,41 @@ need to ensure you have a nightly version of Rust installed on your system. To
 format the project files from the command line:
 
 ```bash
-$ cargo +nightly fmt --all
+$ just fmt          # preferred: nightly rustfmt + prettier (npx/bunx) + buf if present
+$ just fmt-check    # nightly rustfmt --check (no stable “unstable option” spam)
 ```
 
-Markdown and YAML files are formatted with [Prettier](https://prettier.io/). The
-easiest way to run it is to install the
-[Prettier VSCode extension](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode).
+`rustfmt.toml` uses nightly-only options (`group_imports`,
+`imports_granularity`). Always use **`cargo +nightly fmt`** (as `just fmt` /
+`just fmt-check` do), not stable `cargo fmt`, if you want a clean check.
 
-To run it from the command line, install the
-[Prettier CLI](https://prettier.io/docs/en/cli.html) and run it from the root of
-the repo:
-
-```bash
-$ prettier --write .
-```
+Markdown/YAML: `just fmt` runs Prettier via `bunx` or `npx` when available.
+`buf format` is optional (skipped with a note if `buf` is not on `PATH`).
 
 # Linting Rust code
 
-Rust code is linted with Clippy. We use a specific Clippy lint that's only
-available on the nightly release channel. Running Clippy therefore looks like
-this:
+Rust code is linted with Clippy. Prefer **`just clippy`** (real feature sets).
+
+**Do not** pass Cargo `--all-features`: that enables the reserved `shrincs`
+feature, which intentionally fails to compile (see
+[docs/SHRINCS_DEFERRED.md](./docs/SHRINCS_DEFERRED.md)).
 
 ```bash
-$ cargo clippy --all-targets
-$ cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
+$ just clippy
+# equivalent core sets:
+$ cargo clippy --all-targets --features "drivechain,bip360,rustls" -- -D warnings
+$ cargo clippy -p bip300301_enforcer_lib --all-targets --no-default-features --features bip360 -- -D warnings
+$ cargo +nightly clippy --features "drivechain,bip360,rustls" -- \
+    -A clippy::all -D unqualified_local_imports \
+    -Zcrate-attr="feature(unqualified_local_imports)"
+```
+
+# Unit tests
+
+```bash
+$ cargo test -p bip300301_enforcer_lib --features "drivechain,bip360,rustls" --all-targets
+$ cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 --all-targets
+$ cargo test -p cusf_miner_sidecar --all-targets
 ```
 
 # Integration tests
@@ -187,8 +268,13 @@ $ cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-a
 Integration tests can be run using
 
 ```bash
-$ cargo run --example integration_tests -- <TEST ARGS>
+$ cargo run --example integration_tests --features bip360 -- <TEST ARGS>
+# or: just it <trial_name>
+# green matrix: just it-all
 ```
+
+Requires `integrationtests.env` (see `just setup-core` / `just setup` /
+`just setup-p2mr`).
 
 # Profiling
 
@@ -204,5 +290,5 @@ $ cargo flamegraph --  --data-dir ./datadir \
           --enable-mempool --exit-after-sync 100000
 
 # macOS only
-$ ./scripts/trace_enforcer_macos.sh
+$ just trace-macos
 ```

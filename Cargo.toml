@@ -2,7 +2,14 @@
 
 [workspace]
 resolver = "2"
-members = ["app", "lib", "integration_tests"]
+members = [
+    "app",
+    "lib",
+    "integration_tests",
+    "cusf_miner_sidecar",
+    "cusf_rules_drivechain",
+    "cusf_rules_bip360",
+]
 
 [workspace.package]
 authors = [
@@ -25,6 +32,7 @@ bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
+# Crates.io bitcoin 0.32 for BDK / wallet stack. P2MR helpers: `bitcoin-p2mr-pqc` below.
 bitcoin = "0.32.100"
 bitcoin-send-tx-p2p = "0.3.0"
 buffa = { version = "0.8", features = ["json"] }
@@ -86,6 +94,24 @@ tracing-subscriber = "0.3.23"
 transitive = "1.2.0"
 url = "2.5.8"
 uuid = "1.23.3"
+
+# P2MR types/merkle (cryptoquick rust-bitcoin fork, branch `p2mr`).
+# Tip has native `P2MR_CONTROL_BASE_SIZE = 1` (was broken at rev 9093253).
+# Package `bitcoin-p2mr-pqc`; rustc crate name in code: `bitcoin_p2mr_pqc`.
+#
+# Dual-crate on purpose — do NOT collapse to:
+#   bitcoin = { package = "bitcoin-p2mr-pqc", git = "...", branch = "p2mr" }
+# That form pulls 0.33-beta for the whole workspace and breaks BDK 3.x
+# (still on crates.io bitcoin 0.32). Keep workspace `bitcoin = "0.32.100"`
+# for wallet/BDK; use this package only behind feature `bip360`.
+[workspace.dependencies.bitcoin-p2mr-pqc]
+package = "bitcoin-p2mr-pqc"
+git = "https://github.com/cryptoquick/rust-bitcoin"
+branch = "p2mr"
+
+[workspace.dependencies.bitcoinpqc]
+git = "https://github.com/cryptoquick/libbitcoinpqc-bindings.git"
+rev = "5ef70672649fe21937318652e7ee7ad78f8e9405" # PR #1 wasm-tests + libbitcoinpqc @ b309f44 (PR #29)
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
