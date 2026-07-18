@@ -4,7 +4,6 @@ syntax = "proto3";
 package cusf.mainchain.v1;
 
 import "cusf/common/v1/common.proto";
-import "cusf/mainchain/v1/common.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
@@ -32,17 +31,6 @@ service WalletService {
   rpc CreateBmmCriticalDataTransaction(CreateBmmCriticalDataTransactionRequest) returns (CreateBmmCriticalDataTransactionResponse);
   rpc CreateDepositTransaction(CreateDepositTransactionRequest) returns (CreateDepositTransactionResponse);
   rpc CreateNewAddress(CreateNewAddressRequest) returns (CreateNewAddressResponse);
-  // Create a new sidechain proposal (M1 in BIP300) and persist to the local
-  // database for further processing.
-  // Sidechain proposals must be included in the coinbase transaction of a
-  // newly mined block, so this proposal is not active until the wallet has
-  // been able to generate a new block.
-  // Returns a stream of (non-)confirmation events for the sidechain proposal.
-  rpc CreateSidechainProposal(CreateSidechainProposalRequest) returns (stream CreateSidechainProposalResponse);
-  // Unary variant of `CreateSidechainProposal`. Creates a new sidechain
-  // proposal (M1 in BIP300) and persists it to the local database for further
-  // processing, returning immediately once the proposal has been created.
-  rpc SubmitSidechainProposal(SubmitSidechainProposalRequest) returns (SubmitSidechainProposalResponse);
   rpc CreateWallet(CreateWalletRequest) returns (CreateWalletResponse);
   rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
@@ -108,36 +96,6 @@ message CreateNewAddressRequest {}
 message CreateNewAddressResponse {
   string address = 1;
 }
-
-message CreateSidechainProposalRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
-  SidechainDeclaration declaration = 2;
-}
-
-message CreateSidechainProposalResponse {
-  message Confirmed {
-    cusf.common.v1.ReverseHex block_hash = 1;
-    google.protobuf.UInt32Value confirmations = 2;
-    google.protobuf.UInt32Value height = 3;
-    OutPoint outpoint = 4;
-    cusf.common.v1.ReverseHex prev_block_hash = 5;
-  }
-  message NotConfirmed {
-    cusf.common.v1.ReverseHex block_hash = 1;
-    google.protobuf.UInt32Value height = 2;
-    cusf.common.v1.ReverseHex prev_block_hash = 3;
-  }
-  oneof event {
-    Confirmed confirmed = 1;
-    NotConfirmed not_confirmed = 2;
-  }
-}
-
-message SubmitSidechainProposalRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
-  SidechainDeclaration declaration = 2;
-}
-message SubmitSidechainProposalResponse {}
 
 message CreateWalletRequest {
   // BIP39 mnemonic. 12 or 24 words.

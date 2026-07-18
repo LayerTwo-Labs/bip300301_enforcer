@@ -1,0 +1,115 @@
+/* CUSF mainchain block producer service */
+
+syntax = "proto3";
+
+package cusf.mainchain.v1;
+
+import "cusf/common/v1/common.proto";
+import "cusf/mainchain/v1/common.proto";
+import "google/protobuf/wrappers.proto";
+
+message CreateSidechainProposalRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  SidechainDeclaration declaration = 2;
+}
+
+message CreateSidechainProposalResponse {
+  message Confirmed {
+    cusf.common.v1.ReverseHex block_hash = 1;
+    google.protobuf.UInt32Value confirmations = 2;
+    google.protobuf.UInt32Value height = 3;
+    OutPoint outpoint = 4;
+    cusf.common.v1.ReverseHex prev_block_hash = 5;
+  }
+  message NotConfirmed {
+    cusf.common.v1.ReverseHex block_hash = 1;
+    google.protobuf.UInt32Value height = 2;
+    cusf.common.v1.ReverseHex prev_block_hash = 3;
+  }
+  oneof event {
+    Confirmed confirmed = 1;
+    NotConfirmed not_confirmed = 2;
+  }
+}
+
+message SubmitSidechainProposalRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  SidechainDeclaration declaration = 2;
+}
+
+message SubmitSidechainProposalResponse {}
+
+message SidechainAck {
+  google.protobuf.UInt32Value sidechain_number = 1;
+  cusf.common.v1.ReverseHex description_sha256d_hash = 2;
+}
+
+message SetSidechainAckRequest {
+  google.protobuf.UInt32Value sidechain_number = 1;
+  cusf.common.v1.ReverseHex description_sha256d_hash = 2;
+  // ACK the proposal if true, withdraw the ACK (NACK) if false.
+  bool ack = 3;
+}
+message SetSidechainAckResponse {}
+
+message SetAckAllProposalsRequest {
+  bool ack_all = 1;
+}
+message SetAckAllProposalsResponse {}
+
+message GetBlockProducerStateRequest {}
+
+// A sidechain proposal authored on this node that is not yet on-chain: it
+// becomes an M1 in the next coinbase this producer builds, so it is not yet
+// votable and does not appear in ValidatorService.GetSidechainProposals.
+message PendingSidechainProposal {
+  google.protobuf.UInt32Value sidechain_number = 1;
+  // sha256d of the M1 description.
+  cusf.common.v1.ReverseHex description_sha256d_hash = 2;
+  // Parsed M1 declaration. Unset if the stored description can't be decoded.
+  SidechainDeclaration declaration = 3;
+  // Raw M1 description bytes (present even if `declaration` is unset).
+  cusf.common.v1.Hex description = 4;
+}
+
+message GetBlockProducerStateResponse {
+  // Sidechain proposals authored here but not yet mined into a coinbase.
+  repeated PendingSidechainProposal pending_proposals = 1;
+  // When set, every active sidechain proposal is ACKed regardless of the
+  // explicit ACKs below.
+  bool ack_all_proposals = 2;
+  // Proposals explicitly ACKed via `SetSidechainAck`.
+  repeated SidechainAck explicit_acks = 3;
+}
+
+// Manages drivechain policies for voting on sidechain proposals and withdrawal
+// bundles.
+service BlockProducerService {
+  // Create a new sidechain proposal (M1 in BIP300) and persist to the local
+  // database for further processing.
+  // Sidechain proposals must be included in the coinbase transaction of a
+  // newly mined block, so this proposal is not active until a new block has
+  // been generated.
+  // Returns a stream of (non-)confirmation events for the sidechain proposal.
+  rpc CreateSidechainProposal(CreateSidechainProposalRequest) returns (stream CreateSidechainProposalResponse);
+
+  // Unary variant of `CreateSidechainProposal`. Creates a new sidechain
+  // proposal (M1 in BIP300) and persists it to the local database for further
+  // processing, returning immediately once the proposal has been created.
+  rpc SubmitSidechainProposal(SubmitSidechainProposalRequest) returns (SubmitSidechainProposalResponse);
+
+  // Toggle ACK or NACK policy for a specific sidechain proposal. Has no effect
+  // while `SetAckAllProposals` is on.
+  rpc SetSidechainAck(SetSidechainAckRequest) returns (SetSidechainAckResponse);
+
+  // Toggle ACK of every active sidechain proposal.
+  rpc SetAckAllProposals(SetAckAllProposalsRequest) returns (SetAckAllProposalsResponse);
+
+  // Block-producer / operator state that is not (yet) reflected on-chain:
+  // sidechain proposals authored here but not yet mined into a coinbase, plus
+  // the ACK policy. Complements ValidatorService.GetSidechainProposals, which
+  // only reports proposals already on the chain.
+  rpc GetBlockProducerState(GetBlockProducerStateRequest) returns (GetBlockProducerStateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
