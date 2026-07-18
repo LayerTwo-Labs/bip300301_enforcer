@@ -77,6 +77,8 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         data_dir: setup.directories.enforcer_dir.clone(),
         enable_mempool: false,
         enable_wallet: false,
+        enable_block_template_server: false,
+        coinbase_recipient: None,
         node_blocks_dir: Some(
             setup
                 .directories

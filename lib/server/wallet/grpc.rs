@@ -1,16 +1,12 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr};
 
 use bdk_wallet::bip39::Mnemonic;
-use bitcoin::{Address, Amount, BlockHash, hashes::Hash as _};
+use bitcoin::{Address, Amount, hashes::Hash as _};
 use buffa::MessageField;
-use buffa_types::google::protobuf::UInt32Value;
 use connectrpc::{
     ConnectError, RequestContext, Response, ServiceRequest, ServiceResult, ServiceStream,
 };
-use futures::{
-    StreamExt as _,
-    stream::{BoxStream, FusedStream},
-};
+use futures::{StreamExt as _, stream::BoxStream};
 
 use crate::{
     convert,
@@ -22,16 +18,13 @@ use crate::{
             BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
             CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, CreateNewAddressResponse, CreateSidechainProposalRequest,
-            CreateSidechainProposalResponse, CreateWalletRequest, CreateWalletResponse,
-            GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest, GetBalanceResponse,
-            GetInfoRequest, GetInfoResponse, ListSidechainDepositTransactionsRequest,
-            ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
-            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
-            SendTransactionRequest, SendTransactionResponse, SidechainDeclaration,
-            SubmitSidechainProposalRequest, SubmitSidechainProposalResponse, UnlockWalletRequest,
-            UnlockWalletResponse, WalletTransaction, create_sidechain_proposal_response,
-            get_info_response,
+            CreateNewAddressRequest, CreateNewAddressResponse, CreateWalletRequest,
+            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
+            GetBalanceResponse, GetInfoRequest, GetInfoResponse,
+            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
+            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
+            ListUnspentOutputsResponse, SendTransactionRequest, SendTransactionResponse,
+            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction, get_info_response,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
         },
@@ -39,137 +32,9 @@ use crate::{
         unwrap_string, unwrap_u32, unwrap_u64, wrap_timestamp, wrap_u32,
     },
     server::{internal_err, invalid_field_value, missing_field, parse_sidechain_id},
-    types::{BlindedM6, Event},
+    types::BlindedM6,
     wallet::{CreateTransactionParams, error::WalletInitialization},
 };
-
-/// Stream (non-)confirmations for a sidechain proposal
-fn stream_proposal_confirmations(
-    validator: &crate::validator::Validator,
-    sidechain_proposal: crate::types::SidechainProposal,
-) -> impl FusedStream<Item = Result<CreateSidechainProposalResponse, ConnectError>> + use<> {
-    fn connect_block_event(
-        sidechain_proposal: &crate::types::SidechainProposal,
-        confirmations: &mut HashMap<BlockHash, (u32, Arc<bitcoin::OutPoint>)>,
-        header_info: crate::types::HeaderInfo,
-        block_info: crate::types::BlockInfo,
-    ) -> CreateSidechainProposalResponse {
-        let (confirms, outpoint) = {
-            if let Some(vout) = block_info
-                .sidechain_proposals()
-                .find_map(|(vout, proposal)| {
-                    if *proposal == *sidechain_proposal {
-                        Some(vout)
-                    } else {
-                        None
-                    }
-                })
-            {
-                let outpoint = bitcoin::OutPoint {
-                    txid: block_info.coinbase_txid,
-                    vout,
-                };
-                (1, Arc::new(outpoint))
-            } else if let Some((prev_confirms, outpoint)) =
-                confirmations.get(&header_info.prev_block_hash).cloned()
-            {
-                (prev_confirms, outpoint)
-            } else {
-                let notconfirmed = create_sidechain_proposal_response::NotConfirmed {
-                    block_hash: MessageField::some(ReverseHex::encode(&header_info.block_hash)),
-                    height: wrap_u32(header_info.height),
-                    prev_block_hash: MessageField::some(ReverseHex::encode(
-                        &header_info.prev_block_hash,
-                    )),
-                };
-                return CreateSidechainProposalResponse {
-                    event: Some(create_sidechain_proposal_response::Event::NotConfirmed(
-                        Box::new(notconfirmed),
-                    )),
-                };
-            }
-        };
-        let confirmed = create_sidechain_proposal_response::Confirmed {
-            block_hash: MessageField::some(ReverseHex::encode(&header_info.block_hash)),
-            confirmations: wrap_u32(confirms),
-            height: wrap_u32(header_info.height),
-            outpoint: MessageField::some((&*outpoint).into()),
-            prev_block_hash: MessageField::some(ReverseHex::encode(&header_info.prev_block_hash)),
-        };
-        confirmations.insert(header_info.block_hash, (confirms, outpoint));
-        CreateSidechainProposalResponse {
-            event: Some(create_sidechain_proposal_response::Event::Confirmed(
-                Box::new(confirmed),
-            )),
-        }
-    }
-
-    let mut confirmations = HashMap::<BlockHash, (u32, Arc<bitcoin::OutPoint>)>::new();
-    validator.subscribe_events().filter_map(move |res| {
-        let resp = match res {
-            Ok(event) => match event {
-                Event::ConnectBlock {
-                    header_info,
-                    block_info,
-                } => {
-                    let resp = connect_block_event(
-                        &sidechain_proposal,
-                        &mut confirmations,
-                        header_info,
-                        block_info,
-                    );
-                    Some(Ok(resp))
-                }
-                Event::DisconnectBlock { .. } => None,
-            },
-            Err(err) => Some(Err(err.builder().to_connect_error())),
-        };
-        futures::future::ready(resp)
-    })
-}
-
-/// Shared implementation for `CreateSidechainProposal` and
-/// `SubmitSidechainProposal`: validates the request fields, creates a
-/// sidechain proposal (BIP300 M1), and persists it to the local database.
-/// Generic over the request message type so that field errors are attributed
-/// to the RPC that was actually called.
-async fn create_and_persist_sidechain_proposal<Request>(
-    wallet: &crate::wallet::Wallet,
-    sidechain_id: MessageField<UInt32Value>,
-    declaration: MessageField<SidechainDeclaration>,
-) -> Result<crate::types::SidechainProposal, ConnectError>
-where
-    Request: buffa::MessageName,
-{
-    let sidechain_id = parse_sidechain_id::<Request>(sidechain_id, "sidechain_id")?;
-    let declaration: crate::types::SidechainDeclaration = declaration
-        .into_option()
-        .ok_or_else(|| missing_field::<Request>("declaration"))?
-        .try_into()?;
-    let (proposal_txout, description) =
-        crate::messages::create_sidechain_proposal(sidechain_id, &declaration).map_err(
-            |err: bitcoin::script::PushBytesError| ConnectError::unknown(format!("{err:#}")),
-        )?;
-    tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
-    let sidechain_proposal = crate::types::SidechainProposal {
-        sidechain_number: sidechain_id,
-        description,
-    };
-    wallet
-        .propose_sidechain(&sidechain_proposal)
-        .await
-        .map_err(|err| {
-            if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
-                tracing::error!("SQLite error: {:#}", ErrorChain::new(&sqlite_err));
-                if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
-                    return ConnectError::already_exists("Sidechain proposal already exists");
-                }
-            }
-            ConnectError::internal(err.to_string())
-        })?;
-    tracing::info!("Persisted sidechain proposal into DB");
-    Ok(sidechain_proposal)
-}
 
 #[expect(refining_impl_trait_reachable)]
 impl WalletService for crate::wallet::Wallet {
@@ -204,44 +69,6 @@ impl WalletService for crate::wallet::Wallet {
                 hash: MessageField::some(ReverseHex::encode(&info.tip.0)),
             }),
         }))
-    }
-
-    async fn create_sidechain_proposal(
-        &self,
-        _ctx: RequestContext,
-        request: ServiceRequest<'_, CreateSidechainProposalRequest>,
-    ) -> ServiceResult<ServiceStream<CreateSidechainProposalResponse>> {
-        use crate::proto::mainchain::CreateSidechainProposalRequest;
-        let CreateSidechainProposalRequest {
-            sidechain_id,
-            declaration,
-            ..
-        } = request.to_owned_message();
-        let sidechain_proposal = create_and_persist_sidechain_proposal::<
-            CreateSidechainProposalRequest,
-        >(self, sidechain_id, declaration)
-        .await?;
-        let stream: BoxStream<'static, _> =
-            stream_proposal_confirmations(self.validator(), sidechain_proposal).boxed();
-        Ok(Response::new(Box::pin(stream)))
-    }
-
-    async fn submit_sidechain_proposal(
-        &self,
-        _ctx: RequestContext,
-        request: ServiceRequest<'_, SubmitSidechainProposalRequest>,
-    ) -> ServiceResult<SubmitSidechainProposalResponse> {
-        use crate::proto::mainchain::SubmitSidechainProposalRequest;
-        let SubmitSidechainProposalRequest {
-            sidechain_id,
-            declaration,
-            ..
-        } = request.to_owned_message();
-        let _sidechain_proposal = create_and_persist_sidechain_proposal::<
-            SubmitSidechainProposalRequest,
-        >(self, sidechain_id, declaration)
-        .await?;
-        Ok(Response::new(SubmitSidechainProposalResponse::default()))
     }
 
     async fn create_new_address(

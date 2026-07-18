@@ -170,7 +170,7 @@ where
         }
     };
     let mut create_sidechain_proposal_resp = post_setup
-        .wallet_service_client
+        .block_producer_service_client
         .create_sidechain_proposal(create_sidechain_proposal_request)
         .await?;
     // Wait before mining
@@ -821,6 +821,45 @@ pub fn tests(
         },
         crate::test_file_based_block_parser::test_file_based_block_parser,
     )]);
+    // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
+    // `SetupOpts` to start the enforcer without a wallet.
+    async_trials.push(new_trial(
+        "wallet_less_block_template".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_wallet_less_block_template::test_wallet_less_block_template,
+    ));
+    // Uses `new_trial`: it pre-populates the data dir with a pre-split
+    // wallet DB before starting the enforcer.
+    async_trials.push(new_trial(
+        "seed_migration".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_seed_migration::test_seed_migration,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "sidechain_ack_policy".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            // Block templates are what read the persisted ACK policy;
+            // `GenerateBlocks` carries its own ACK-all flag instead.
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_sidechain_ack_policy::test_sidechain_ack_policy,
+    ));
     async_trials.push(new_trial_with_setup(
         "invalid_block".to_string(),
         TestSetupComponents {

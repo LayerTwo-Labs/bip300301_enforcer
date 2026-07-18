@@ -788,6 +788,10 @@ pub struct Enforcer {
     pub data_dir: PathBuf,
     pub enable_mempool: bool,
     pub enable_wallet: bool,
+    /// Serve `getblocktemplate` without a wallet. Requires `coinbase_recipient`.
+    pub enable_block_template_server: bool,
+    /// Recipient of the block reward in served block templates.
+    pub coinbase_recipient: Option<String>,
     pub node_blocks_dir: Option<PathBuf>,
     pub node_rpc_user: String,
     pub node_rpc_pass: String,
@@ -845,6 +849,15 @@ impl Enforcer {
         if self.enable_mempool {
             default_args.push("--enable-mempool".to_owned());
         }
+
+        if self.enable_block_template_server {
+            default_args.push("--enable-block-template-server".to_owned());
+        }
+
+        if let Some(coinbase_recipient) = &self.coinbase_recipient {
+            default_args.push(format!("--coinbase-recipient={coinbase_recipient}"));
+        }
+
         let args = default_args
             .into_iter()
             .map(OsString::from)

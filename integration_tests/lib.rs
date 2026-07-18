@@ -9,5 +9,8 @@ mod test_file_based_block_parser;
 mod test_inactive_drivechain_output;
 mod test_invalid_block;
 mod test_peer_bmm_request;
+mod test_seed_migration;
+mod test_sidechain_ack_policy;
 mod test_unconfirmed_transactions;
+mod test_wallet_less_block_template;
 pub mod util;

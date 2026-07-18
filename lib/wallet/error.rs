@@ -7,11 +7,14 @@ use miette::Diagnostic;
 use serde::Deserialize;
 use thiserror::Error;
 
+pub use crate::block_producer::error::{
+    FinalizeBlockTemplate, GenerateCoinbaseTxouts, GenerateSuffixTxs, GetBundleProposals,
+    InitDbConnection, InitialBlockTemplate,
+};
 use crate::{
     errors::ErrorChain,
     messages::CoinbaseMessagesError,
     proto::{StatusBuilder, ToStatus},
-    types::SidechainNumber,
     validator::{self, Validator},
 };
 
@@ -185,62 +188,105 @@ impl ToStatus for ParseMnemonic {
     }
 }
 
+/// Opening the wallet's seed store (`seed.json`), including the automatic
+/// migration of a legacy seed out of the pre-split `db.sqlite`.
 #[derive(Debug, Diagnostic, Error)]
-pub(crate) enum ReadDbMnemonicInner {
+pub enum InitSeedStore {
     #[error(
-        "invalid mnemonic DB state (plaintext_mnemonic=`{}`, iv=`{}`, ciphertext=`{}`, key_salt=`{}`)",
+        "invalid legacy wallet seed in `wallet_seeds` (plaintext_mnemonic=`{}`, iv=`{}`, ciphertext=`{}`, key_salt=`{}`)",
         Self::display_is_some(*.plaintext_mnemonic_is_some),
         Self::display_is_some(*.iv_is_some),
         Self::display_is_some(*.ciphertext_is_some),
         Self::display_is_some(*.key_salt_is_some),
     )]
-    InvalidDbState {
+    InvalidLegacySeed {
         plaintext_mnemonic_is_some: bool,
         iv_is_some: bool,
         ciphertext_is_some: bool,
         key_salt_is_some: bool,
     },
+    #[error(
+        "the wallet seed in the legacy `wallet_seeds` table of {} does not match the seed in {}",
+        legacy_db.display(),
+        seed_file.display(),
+    )]
+    #[diagnostic(help(
+        "the wallet cannot tell which seed is the right one, \
+         resolve manually before starting again"
+    ))]
+    LegacySeedMismatch {
+        legacy_db: std::path::PathBuf,
+        seed_file: std::path::PathBuf,
+    },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     #[error(transparent)]
     ParseMnemonic(#[from] ParseMnemonic),
-    #[error("failed to read mnemonic from DB")]
-    ReadMnemonic(#[source] rusqlite::Error),
-    #[error("rusqlite error")]
-    Rusqlite(#[source] rusqlite::Error),
+    #[error("failed to read seed file {}", seed_file.display())]
+    ReadSeedFile {
+        seed_file: std::path::PathBuf,
+        #[source]
+        source: ReadSeed,
+    },
+    #[error(transparent)]
+    Rusqlite(#[from] rusqlite::Error),
+    #[error(
+        "the seed file {} does not read back as written",
+        seed_file.display()
+    )]
+    VerifySeedFile { seed_file: std::path::PathBuf },
 }
 
-impl ReadDbMnemonicInner {
+impl InitSeedStore {
     /// Display a bool that indicates if an `Option<_>` is `Some` or `None`.
     fn display_is_some(is_some: bool) -> &'static str {
         if is_some { "Some" } else { "None" }
     }
 }
 
-impl ToStatus for ReadDbMnemonicInner {
+/// Persisting the seed of a newly created wallet.
+#[derive(Debug, Diagnostic, Error)]
+pub enum InsertSeed {
+    #[error("a wallet seed already exists")]
+    AlreadyExists,
+    #[error("failed to write the seed file")]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub(crate) enum ReadSeedInner {
+    #[error("failed to read the seed file")]
+    Io(#[source] std::io::Error),
+    #[error("failed to parse the seed file")]
+    Json(#[source] serde_json::Error),
+    #[error(transparent)]
+    ParseMnemonic(#[from] ParseMnemonic),
+}
+
+impl ToStatus for ReadSeedInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ParseMnemonic(err) => err.builder(),
-            Self::InvalidDbState { .. } | Self::ReadMnemonic(_) | Self::Rusqlite(_) => {
-                StatusBuilder::new(self)
-            }
+            Self::Io(_) | Self::Json(_) => StatusBuilder::new(self),
         }
     }
 }
 
 #[derive(Debug, Diagnostic, Error)]
-#[error("failed to read mnemonic seed phrase from DB")]
+#[error("failed to read wallet seed")]
 #[repr(transparent)]
-pub struct ReadDbMnemonic(#[source] ReadDbMnemonicInner);
+pub struct ReadSeed(#[source] ReadSeedInner);
 
-impl<T> From<T> for ReadDbMnemonic
+impl<T> From<T> for ReadSeed
 where
-    ReadDbMnemonicInner: From<T>,
+    ReadSeedInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
     }
 }
 
-impl ToStatus for ReadDbMnemonic {
+impl ToStatus for ReadSeed {
     fn builder(&self) -> StatusBuilder<'_> {
         StatusBuilder::with_code(self, self.0.builder())
     }
@@ -295,7 +341,7 @@ pub enum UnlockExistingWallet {
     #[error("wallet is not encrypted")]
     NotEncrypted,
     #[error(transparent)]
-    ReadDbMnemonic(#[from] ReadDbMnemonic),
+    ReadSeed(#[from] ReadSeed),
     #[error(transparent)]
     WalletInitialization(#[from] WalletInitialization),
 }
@@ -311,7 +357,7 @@ impl ToStatus for UnlockExistingWallet {
         match self {
             Self::InitWalletFromMnemonic(err) => err.builder(),
             Self::NotEncrypted => StatusBuilder::new(self),
-            Self::ReadDbMnemonic(err) => err.builder(),
+            Self::ReadSeed(err) => err.builder(),
             Self::WalletInitialization(err) => err.builder(),
         }
     }
@@ -389,14 +435,6 @@ impl InitChainSourceClient {
     }
 }
 
-#[derive(Debug, Diagnostic, Error)]
-pub enum InitDbConnection {
-    #[error(transparent)]
-    Migration(#[from] rusqlite_migration::Error),
-    #[error(transparent)]
-    Rusqlite(#[from] rusqlite::Error),
-}
-
 type Persistence = <crate::wallet::Persistence as bdk_wallet::AsyncWalletPersister>::Error;
 
 #[derive(Debug, Diagnostic, Error)]
@@ -450,12 +488,28 @@ pub enum CreateNewWallet {
     GenerateMnemonic(#[from] bdk_wallet::bip39::Error),
     #[error(transparent)]
     InitFromMnemonic(Box<InitWalletFromMnemonic>),
+    #[error("failed to persist wallet seed")]
+    InsertSeed(#[source] InsertSeed),
     #[error(transparent)]
-    ReadDbMnemonic(#[from] ReadDbMnemonic),
+    ReadSeed(#[from] ReadSeed),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     WalletInitialization(#[from] WalletInitialization),
+}
+
+impl From<InsertSeed> for CreateNewWallet {
+    fn from(err: InsertSeed) -> Self {
+        // Preserve the `AlreadyExists` gRPC status: a second CreateWallet call
+        // must still report that a wallet is already there, not an opaque
+        // DB error.
+        match err {
+            InsertSeed::AlreadyExists => {
+                Self::WalletInitialization(WalletInitialization::AlreadyExists)
+            }
+            err => Self::InsertSeed(err),
+        }
+    }
 }
 
 impl From<InitWalletFromMnemonic> for CreateNewWallet {
@@ -470,7 +524,10 @@ impl ToStatus for CreateNewWallet {
             Self::EncryptMnemonic(err) => err.builder(),
             Self::GenerateMnemonic(_) => StatusBuilder::new(self),
             Self::InitFromMnemonic(err) => err.builder(),
-            Self::ReadDbMnemonic(err) => err.builder(),
+            // `AlreadyExists` never lands here: `From<InsertSeed>` maps it to
+            // `WalletInitialization`, keeping its status code.
+            Self::InsertSeed(_) => StatusBuilder::new(self),
+            Self::ReadSeed(err) => err.builder(),
             Self::Rusqlite(_) => StatusBuilder::new(self),
             Self::WalletInitialization(err) => err.builder(),
         }
@@ -479,8 +536,8 @@ impl ToStatus for CreateNewWallet {
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitWallet {
-    #[error("failed to initialize DB connection")]
-    InitDbConnection(#[from] InitDbConnection),
+    #[error("failed to initialize the wallet seed store")]
+    InitSeedStore(#[from] InitSeedStore),
     #[error(transparent)]
     InitChainSourceClient(#[from] InitChainSourceClient),
     #[error("failed to initialize wallet from mnemonic")]
@@ -492,7 +549,7 @@ pub enum InitWallet {
     #[error(transparent)]
     ParseNetwork(#[from] bitcoin::network::ParseNetworkError),
     #[error(transparent)]
-    ReadDbMnemonic(#[from] ReadDbMnemonic),
+    ReadSeed(#[from] ReadSeed),
 }
 
 impl From<InitWalletFromMnemonic> for InitWallet {
@@ -607,49 +664,6 @@ impl ToStatus for EncodeBlock {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-enum GetBundleProposalsInner {
-    #[error(transparent)]
-    DecodeBlindedM6(#[from] crate::types::BlindedM6DecodeError),
-    #[error(transparent)]
-    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
-    #[error(transparent)]
-    GetSidechains(#[from] crate::validator::GetSidechainsError),
-    #[error("rusqlite error")]
-    Rusqlite(#[from] rusqlite::Error),
-}
-
-impl ToStatus for GetBundleProposalsInner {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DecodeBlindedM6(err) => err.builder(),
-            Self::GetPendingWithdrawals(err) => err.builder(),
-            Self::GetSidechains(err) => err.builder(),
-            Self::Rusqlite(_) => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-#[error("failed to get bundle proposals")]
-#[repr(transparent)]
-pub struct GetBundleProposals(#[source] GetBundleProposalsInner);
-
-impl<T> From<T> for GetBundleProposals
-where
-    GetBundleProposalsInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-impl ToStatus for GetBundleProposals {
-    fn builder(&self) -> StatusBuilder<'_> {
-        StatusBuilder::with_code(self, self.0.builder())
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
 pub enum FetchTransaction {
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
@@ -742,55 +756,6 @@ impl ToStatus for CreateDeposit {
             Self::SignTransaction(err) => err.builder(),
             Self::TryGetCtip(err) => err.builder(),
             Self::TryGetMainchainTipHeight(err) => err.builder(),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GenerateCoinbaseTxouts {
-    #[error(transparent)]
-    CoinbaseMessages(#[from] crate::messages::CoinbaseMessagesError),
-    #[error("transparent")]
-    GetBundleProposals(#[from] crate::wallet::error::GetBundleProposals),
-    #[error(transparent)]
-    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
-    #[error(transparent)]
-    GetSidechains(#[from] crate::validator::GetSidechainsError),
-    #[error(transparent)]
-    PushBytes(#[from] bitcoin::script::PushBytesError),
-    #[error("rusqlite error")]
-    Rusqlite(#[from] rusqlite::Error),
-}
-
-impl ToStatus for GenerateCoinbaseTxouts {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::CoinbaseMessages(err) => err.builder(),
-            Self::GetBundleProposals(err) => err.builder(),
-            Self::GetPendingWithdrawals(err) => err.builder(),
-            Self::GetSidechains(err) => err.builder(),
-            Self::PushBytes(err) => StatusBuilder::new(err),
-            Self::Rusqlite(_) => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GenerateSuffixTxs {
-    #[error(transparent)]
-    GetBundleProposals(#[from] crate::wallet::error::GetBundleProposals),
-    #[error(transparent)]
-    M6(#[from] crate::types::AmountUnderflowError),
-    #[error("Missing ctip for sidechain {sidechain_id}")]
-    MissingCtip { sidechain_id: SidechainNumber },
-}
-
-impl ToStatus for GenerateSuffixTxs {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::GetBundleProposals(err) => err.builder(),
-            Self::M6(err) => err.builder(),
-            Self::MissingCtip { .. } => StatusBuilder::new(self),
         }
     }
 }
@@ -943,68 +908,6 @@ pub enum ConnectBlock {
     Validator(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
     SyncWalletToTip(#[from] SyncWalletToTip),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub(in crate::wallet) enum InitialBlockTemplateInner {
-    #[error(transparent)]
-    CoinbaseMessages(#[from] CoinbaseMessagesError),
-    #[error(transparent)]
-    GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
-    #[error(transparent)]
-    GetSeenBmmRequestsForParentBlock(
-        #[from] crate::validator::GetSeenBmmRequestsForParentBlockError,
-    ),
-    #[error(transparent)]
-    GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
-    #[error(transparent)]
-    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct InitialBlockTemplate(InitialBlockTemplateInner);
-
-impl<Err> From<Err> for InitialBlockTemplate
-where
-    InitialBlockTemplateInner: From<Err>,
-{
-    fn from(err: Err) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
-pub(in crate::wallet) enum FinalizeBlockTemplateInner {
-    #[error(transparent)]
-    CoinbaseMessages(#[from] CoinbaseMessagesError),
-    #[error("Failed to apply initial block template: {reason}")]
-    InitialBlockTemplate { reason: String },
-    #[error("Failed to generate coinbase txouts suffix")]
-    GenerateSuffixCoinbaseTxouts(#[source] bitcoin::script::PushBytesError),
-    #[error(transparent)]
-    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
-    #[error(transparent)]
-    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
-    #[error(transparent)]
-    TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct FinalizeBlockTemplate(FinalizeBlockTemplateInner);
-
-impl<Err> From<Err> for FinalizeBlockTemplate
-where
-    FinalizeBlockTemplateInner: From<Err>,
-{
-    fn from(err: Err) -> Self {
-        Self(err.into())
-    }
 }
 
 #[derive(Debug, Diagnostic, Error)]

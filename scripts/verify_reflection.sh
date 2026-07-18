@@ -97,6 +97,7 @@ fail() {
 
 echo "==> grpcurl: ListServices via reflection"
 EXPECTED_SERVICES='cusf.crypto.v1.CryptoService
+cusf.mainchain.v1.BlockProducerService
 cusf.mainchain.v1.ValidatorService
 cusf.mainchain.v1.WalletService
 grpc.reflection.v1.ServerReflection

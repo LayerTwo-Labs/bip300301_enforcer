@@ -12,7 +12,6 @@ use tracing::instrument;
 
 use crate::{
     cli::WalletSyncSource,
-    types::WithdrawalBundleEventKind,
     wallet::{
         BdkWallet, ChainSourceClient, Persistence, WalletInner, error,
         util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
@@ -64,25 +63,9 @@ impl WalletInner {
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
         let mut wallet_write = self.write_wallet().await?;
-        let finalized_withdrawal_bundles =
-            block_info
-                .withdrawal_bundle_events()
-                .filter_map(|event| match event.kind {
-                    WithdrawalBundleEventKind::Failed
-                    | WithdrawalBundleEventKind::Succeeded {
-                        sequence_number: _,
-                        transaction: _,
-                    } => Some((event.sidechain_id, event.m6id)),
-                    WithdrawalBundleEventKind::Submitted => None,
-                });
         let () = self
-            .delete_bundle_proposals(finalized_withdrawal_bundles)
-            .await?;
-        let sidechain_proposal_ids = block_info
-            .sidechain_proposals()
-            .map(|(_vout, proposal)| proposal.compute_id());
-        let () = self
-            .delete_pending_sidechain_proposals(sidechain_proposal_ids)
+            .producer
+            .apply_connected_block_policy(block_info)
             .await?;
         let mut database = self.bdk_db.lock().await;
         tracing::trace!("applying block to BDK wallet");
@@ -234,7 +217,7 @@ impl WalletInner {
     ) -> miette::Result<bdk_chain::CheckPoint, error::FullScan> {
         let start = Instant::now();
         let headers = self
-            .validator
+            .validator()
             .list_headers(local_chain.tip().height())
             .map_err(error::FullScan::ListHeaders)?;
 
