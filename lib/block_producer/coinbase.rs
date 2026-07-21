@@ -260,6 +260,18 @@ impl BlockProducer {
             .ok_or(AmountUnderflowError)
     }
 
+    /// Return the CTIP created by a successful M6. BIP300 fixes the treasury
+    /// output at index zero; payout outputs always follow it.
+    fn successor_ctip(m6: &Transaction, value: Amount) -> Ctip {
+        Ctip {
+            outpoint: OutPoint {
+                txid: m6.compute_txid(),
+                vout: 0,
+            },
+            value,
+        }
+    }
+
     /// Generate the M6 suffix txs for a new block. These are fully determined by
     /// the approved bundle and the CTIP: treasury outputs are anyone-can-spend
     /// and consensus-gated, so an M6 is constructed, never signed.
@@ -284,13 +296,7 @@ impl BlockProducer {
                     let new_value =
                         Self::new_treasury_value(value, *blinded_m6.fee(), *blinded_m6.payout())?;
                     let m6 = blinded_m6.into_m6(sidechain_id, outpoint, value)?;
-                    ctip = Some(Ctip {
-                        outpoint: OutPoint {
-                            txid: m6.compute_txid(),
-                            vout: (m6.output.len() - 1) as u32,
-                        },
-                        value: new_value,
-                    });
+                    ctip = Some(Self::successor_ctip(&m6, new_value));
                     res.push(m6);
                 }
             }
@@ -301,7 +307,10 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::Amount;
+    use bitcoin::{
+        Amount, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, absolute::LockTime,
+        transaction::Version,
+    };
 
     use crate::{block_producer::BlockProducer, types::AmountUnderflowError};
 
@@ -327,5 +336,33 @@ mod tests {
             BlockProducer::new_treasury_value(value, fee, payout).unwrap(),
             Amount::from_sat(39_000)
         );
+    }
+
+    #[test]
+    fn successor_ctip_is_always_m6_output_zero() {
+        let m6 = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                ..Default::default()
+            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(90_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+                TxOut {
+                    value: Amount::from_sat(9_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+            ],
+        };
+
+        let successor = BlockProducer::successor_ctip(&m6, Amount::from_sat(90_000));
+
+        assert_eq!(successor.outpoint.txid, m6.compute_txid());
+        assert_eq!(successor.outpoint.vout, 0);
+        assert_eq!(successor.value, Amount::from_sat(90_000));
     }
 }
