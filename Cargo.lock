@@ -463,7 +463,7 @@ dependencies = [
  "bip300301_enforcer_lib",
  "bitcoin",
  "bitcoin-jsonrpsee",
- "buffa",
+ "buffa 0.8.1",
  "clap",
  "connectrpc",
  "connectrpc-health",
@@ -499,7 +499,7 @@ dependencies = [
  "bip300301_enforcer_lib",
  "bitcoin",
  "bitcoin-jsonrpsee",
- "buffa",
+ "buffa 0.8.1",
  "buffa-types",
  "cfg-if",
  "clap",
@@ -540,8 +540,8 @@ dependencies = [
  "bitcoin",
  "bitcoin-jsonrpsee",
  "bitcoin-send-tx-p2p",
- "buffa",
- "buffa-descriptor",
+ "buffa 0.8.1",
+ "buffa-descriptor 0.9.0",
  "buffa-types",
  "byteorder",
  "clap",
@@ -743,7 +743,24 @@ dependencies = [
  "rustversion",
  "serde",
  "serde_json",
- "smoothutf8",
+ "smoothutf8 0.1.1",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "buffa"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97ce1f34252b8e2516042e1002d56c160908a7ff8a1c9d47e97836558d1c83a"
+dependencies = [
+ "bytes",
+ "foldhash 0.1.5",
+ "hashbrown 0.15.5",
+ "once_cell",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "smoothutf8 0.2.3",
  "thiserror 2.0.18",
 ]
 
@@ -753,7 +770,19 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57ed423c4ecec86d1500879ce42e7e5f6def01bc632985ac756c1fd723fa21fc"
 dependencies = [
- "buffa",
+ "buffa 0.8.1",
+ "rustversion",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "buffa-descriptor"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3865eb96d1d2fe968f077752c47fb192cb2ce02262dcb90b37948ea93f673f2"
+dependencies = [
+ "buffa 0.9.0",
  "rustversion",
  "serde",
  "serde_json",
@@ -765,7 +794,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cb54bcbf6946c58e550eeaf6209047146363dbc7cbdc87e49e67089ed2ff5f"
 dependencies = [
- "buffa",
+ "buffa 0.8.1",
  "bytes",
  "serde",
  "serde_json",
@@ -967,7 +996,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "buffa",
+ "buffa 0.8.1",
  "bytes",
  "flate2",
  "futures",
@@ -997,7 +1026,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f2e1465af10410a742a0cd398ad0ade118b15aee9ff0561bc81bcf25cc544b0"
 dependencies = [
- "buffa",
+ "buffa 0.8.1",
  "connectrpc",
  "futures",
  "http-body",
@@ -1013,8 +1042,8 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a63da01ba84368dcc8acbfc4675ca1977af47c4e4c85c3e281f49a071169beeb"
 dependencies = [
- "buffa",
- "buffa-descriptor",
+ "buffa 0.8.1",
+ "buffa-descriptor 0.8.1",
  "connectrpc",
  "futures",
  "http-body",
@@ -3895,6 +3924,15 @@ name = "smoothutf8"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36358427d32ecdb1624616deed99eccfef0a167fe5bf40ddb51efe6980bc1ec8"
+dependencies = [
+ "simdutf8",
+]
+
+[[package]]
+name = "smoothutf8"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4ec95892483d6d94284caccfddb9b77111a4dcac33ed25d624248def0fa5f1"
 dependencies = [
  "simdutf8",
 ]
