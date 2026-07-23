@@ -138,6 +138,8 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     GenerateSuffixTxs(#[from] GenerateSuffixTxs),
     #[error("Failed to read the ACK-all-proposals setting")]
     GetAckAllProposals(#[source] rusqlite::Error),
+    #[error("the `coinbasetxn` GBT capability is required")]
+    NoCoinbaseTxn,
 }
 
 #[derive(Debug, Diagnostic, Error)]
