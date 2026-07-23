@@ -506,13 +506,10 @@ impl BlockHandler<'_> {
             match action {
                 diff::AckBundleAction::Upvote { m6id, .. } => {
                     let target = *m6id;
+                    // Spec: a repeated upvote for an M6ID that is no longer
+                    // pending casts no vote in that slot
                     let Some(info) = pending.get(&target) else {
-                        return Err(
-                            error::HandleM4AckBundles::RepeatPreviousUpvotesMissingBundle {
-                                sidechain_number: *sidechain_number,
-                                m6id: target,
-                            },
-                        );
+                        continue;
                     };
                     // Mirror `handle_m4_votes`: a saturated target silently
                     // yields no upvote rather than overflowing on apply.
@@ -3434,7 +3431,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_m4_repeat_previous_rejects_when_bundle_gone() -> Result<()> {
+    fn handle_m4_repeat_previous_skips_upvote_when_bundle_gone() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
@@ -3458,14 +3455,13 @@ mod tests {
         });
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
-        let err = test_handler(&dbs)
+        let diff = test_handler(&dbs)
             .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
-            .expect_err("missing bundle must error");
-        assert!(matches!(
-            err,
-            error::HandleM4AckBundles::RepeatPreviousUpvotesMissingBundle { .. }
-        ));
-        assert!(!err.is_fatal(),);
+            .into_diagnostic()?;
+        assert!(
+            diff.0.is_empty(),
+            "repeated upvote for a no-longer-pending bundle casts no vote"
+        );
         Ok(())
     }
 
