@@ -14,7 +14,7 @@ bitcoin = { workspace = true }
 buffa = { workspace = true }
 buffa-types = { workspace = true }
 cfg-if = { workspace = true }
-connectrpc = { workspace = true }
+connectrpc = { workspace = true, features = ["client"] }
 cusf-enforcer-mempool = { workspace = true }
 dotenvy = { workspace = true }
 either = { workspace = true }
