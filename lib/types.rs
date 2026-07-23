@@ -130,6 +130,14 @@ impl NetworkParams {
         }
     }
 
+    pub const fn drynet3() -> Self {
+        Self {
+            thresholds: Thresholds::DRYNET1,
+            bip300_activation_height: 957_600,
+            datadir_suffix: Some("drynet3"),
+        }
+    }
+
     /// Integration-test parameters: a tiny activation height on a fresh
     /// chain. See `NetworkPreset::TestActivation`.
     pub const fn test_activation() -> Self {
