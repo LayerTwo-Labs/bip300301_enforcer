@@ -267,82 +267,82 @@ impl BlockProducer {
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
-        if let BoolWit::True(wit) = coinbase_txn_wit {
-            tracing::debug!(
-                "CUSF block producer: extending initial block template with coinbase TX outputs"
-            );
+        let BoolWit::True(wit) = coinbase_txn_wit else {
+            return Err(error::InitialBlockTemplateInner::NoCoinbaseTxn.into());
+        };
+        tracing::debug!(
+            "CUSF block producer: extending initial block template with coinbase TX outputs"
+        );
 
-            tracing::debug!(
-                "Initial coinbase txouts pre-extension: {:?}",
-                template.coinbase_txouts
-            );
+        tracing::debug!(
+            "Initial coinbase txouts pre-extension: {:?}",
+            template.coinbase_txouts
+        );
 
-            let mainchain_tip = self.validator().get_mainchain_tip()?;
-            let wit = wit.map(CoinbaseTxouts);
-            let coinbase_txouts: &mut Vec<_> = wit.in_mut().to_right(&mut template.coinbase_txouts);
+        let mainchain_tip = self.validator().get_mainchain_tip()?;
+        let wit = wit.map(CoinbaseTxouts);
+        let coinbase_txouts: &mut Vec<_> = wit.in_mut().to_right(&mut template.coinbase_txouts);
 
-            tracing::debug!(
-                "Initial coinbase txouts post-type magic: {:?}",
-                coinbase_txouts
-            );
+        tracing::debug!(
+            "Initial coinbase txouts post-type magic: {:?}",
+            coinbase_txouts
+        );
 
-            let ack_all_proposals = self
-                .db()
-                .get_ack_all_proposals()
-                .await
-                .map_err(error::InitialBlockTemplateInner::GetAckAllProposals)?;
-            let () = self
-                .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, coinbase_txouts)
-                .await?;
-            tracing::debug!(
-                "Initial coinbase txouts post-extension: {:?}",
-                coinbase_txouts
-            );
-            // Exclude M8 txs with different h*
-            {
-                let coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
-                let coinbase_m7_accepts = coinbase_builder.messages().m7_bmm_accepts();
-                let seen_bmm_requests = self
-                    .validator()
-                    .get_seen_bmm_requests_for_parent_block(*parent_block_hash)?;
-                let exclude = {
-                    let mut exclude = seen_bmm_requests;
-                    exclude.retain(|sidechain_number, txids| {
-                        let Some(commitment) = coinbase_m7_accepts.get(sidechain_number) else {
-                            return false;
-                        };
-                        txids.remove(commitment);
-                        true
-                    });
-                    exclude
-                        .into_values()
-                        .flat_map(|txids| txids.into_values().flatten())
-                };
-                template.exclude_mempool_txs.extend(exclude);
-            }
-            // Reserve suffix txs
-            {
-                let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
-                    let fake_ctip = crate::types::Ctip {
-                        outpoint: bitcoin::OutPoint {
-                            txid: bitcoin::Txid::from_byte_array([slot_number; 32]),
-                            vout: 0,
-                        },
-                        value: bitcoin::Amount::MAX_MONEY,
+        let ack_all_proposals = self
+            .db()
+            .get_ack_all_proposals()
+            .await
+            .map_err(error::InitialBlockTemplateInner::GetAckAllProposals)?;
+        let () = self
+            .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, coinbase_txouts)
+            .await?;
+        tracing::debug!(
+            "Initial coinbase txouts post-extension: {:?}",
+            coinbase_txouts
+        );
+        // Exclude M8 txs with different h*
+        {
+            let coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
+            let coinbase_m7_accepts = coinbase_builder.messages().m7_bmm_accepts();
+            let seen_bmm_requests = self
+                .validator()
+                .get_seen_bmm_requests_for_parent_block(*parent_block_hash)?;
+            let exclude = {
+                let mut exclude = seen_bmm_requests;
+                exclude.retain(|sidechain_number, txids| {
+                    let Some(commitment) = coinbase_m7_accepts.get(sidechain_number) else {
+                        return false;
                     };
-                    (slot_number.into(), fake_ctip)
-                }));
-                let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
-                template
-                    .suffix_txs
-                    .extend(fake_suffix_txs.into_iter().map(|tx| {
-                        initial_block_template::SuffixTxsItem::Reserved {
-                            weight: tx.weight(),
-                        }
-                    }));
-            }
+                    txids.remove(commitment);
+                    true
+                });
+                exclude
+                    .into_values()
+                    .flat_map(|txids| txids.into_values().flatten())
+            };
+            template.exclude_mempool_txs.extend(exclude);
         }
-        // FIXME: set prefix txns and exclude mempool txs
+        // Reserve suffix txs
+        {
+            let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
+                let fake_ctip = crate::types::Ctip {
+                    outpoint: bitcoin::OutPoint {
+                        txid: bitcoin::Txid::from_byte_array([slot_number; 32]),
+                        vout: 0,
+                    },
+                    value: bitcoin::Amount::MAX_MONEY,
+                };
+                (slot_number.into(), fake_ctip)
+            }));
+            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
+            template
+                .suffix_txs
+                .extend(fake_suffix_txs.into_iter().map(|tx| {
+                    initial_block_template::SuffixTxsItem::Reserved {
+                        weight: tx.weight(),
+                    }
+                }));
+        }
         Ok(())
     }
 
