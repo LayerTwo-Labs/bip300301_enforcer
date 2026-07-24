@@ -351,6 +351,20 @@ impl BlockHandler<'_> {
                 m6id,
             });
         }
+        // BIP 300 M4 (Ack Bundle) upvotes address a pending bundle by its
+        // two-byte index into this order, reserving `0xFFFE` (Alarm) and
+        // `0xFFFF` (Abstain). A bundle whose index reaches `0xFFFE` can never be
+        // encoded by an M4 vote, so it could never be upvoted before it expires.
+        // Reject an M3 that would push the pending count past the addressable
+        // range instead of letting M3 spam silently make honest bundles
+        // unvoteable.
+        const MAX_PENDING_M6IDS: usize = M4AckBundles::ALARM_TWO_BYTES as usize;
+        if pending.len() >= MAX_PENDING_M6IDS {
+            return Err(error::HandleM3ProposeBundle::TooManyPending {
+                sidechain_number,
+                max: MAX_PENDING_M6IDS,
+            });
+        }
         Ok(diff::ProposeBundle {
             m6id,
             sidechain_number,
@@ -1125,6 +1139,14 @@ impl BlockHandler<'_> {
                     .or_insert(vout as u32);
             }
             coinbase_messages.push(message, vout)?;
+        }
+        // BIP 300: a block is invalid if "there is already an M1 in this
+        // block". Identical proposals are already rejected as a duplicate M1 by
+        // `CoinbaseMessages::push` above; reject here when the block carries more
+        // than one *distinct* M1 (`Propose Sidechain`), which is forbidden
+        // regardless of sidechain number or description.
+        if m1_sidechain_proposals.len() > 1 {
+            return Err(error::ConnectBlock::MultipleM1Proposals);
         }
         let mut accepted_bmm_requests = BmmCommitments::new();
         let mut events = Vec::<BlockEvent>::new();
@@ -2900,6 +2922,60 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 300 M1: a block is invalid if "there is already an M1 in this
+    /// block". Two *distinct* M1 proposals (different descriptions) hash to
+    /// different `SidechainProposalId`s, so per-proposal dedup alone would
+    /// accept both. `connect_block` must reject a block carrying more than one
+    /// M1, regardless of slot or description.
+    #[test]
+    fn connect_block_rejects_multiple_distinct_m1s() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let m1_a: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: SidechainNumber(7),
+            description: SidechainDescription(b"cc-alpha".to_vec()),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let m1_b: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: SidechainNumber(7),
+            description: SidechainDescription(b"cc-beta".to_vec()),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m1_a,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m1_b,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let err = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .expect_err("a block carrying two distinct M1 proposals must be rejected");
+        assert!(
+            matches!(err, error::ConnectBlock::MultipleM1Proposals),
+            "expected rejection due to multiple M1 proposals, got: {err:?}"
+        );
+        Ok(())
+    }
+
     /// BIP 300: a proposal must fail once it has accumulated enough non-ack
     /// blocks that it can no longer reach the activation threshold, even before
     /// its max age. Regtest uses max_age=10, threshold=5, so max_fails=5.
@@ -3006,6 +3082,57 @@ mod tests {
                 .is_ok(),
             "a not-yet-pending bundle should be accepted"
         );
+        Ok(())
+    }
+
+    /// BIP 300 M4 (Ack Bundle) upvotes address a pending bundle by its two-byte
+    /// index, reserving `0xFFFE` (Alarm) and `0xFFFF` (Abstain). Once a sidechain
+    /// holds `0xFFFE` pending bundles, a further M3 proposal would land at an
+    /// index no M4 vote can encode, so it must be rejected — otherwise M3 spam
+    /// could push honest bundles to unvoteable indices until they expire.
+    #[test]
+    fn handle_m3_rejects_bundle_past_addressable_index_space() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+
+        // Distinct M6ids keyed by index (`test_m6id` only yields 256 of them).
+        let m6id_at = |i: usize| -> M6id {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            M6id(Txid::from_byte_array(bytes))
+        };
+
+        let max = M4AckBundles::ALARM_TWO_BYTES as usize;
+        // Seed one below the limit in a single write: indices `0..=0xFFFC`.
+        dbs.active_sidechains
+            .with_pending_withdrawals(&mut rwtxn, &sc, |pending| {
+                for i in 0..max - 1 {
+                    pending.insert(m6id_at(i), PendingM6idInfo::new(0));
+                }
+            })
+            .into_diagnostic()?;
+
+        // The bundle at the last addressable index (`0xFFFD`) is still accepted.
+        let last = test_handler(&dbs)
+            .handle_m3_propose_bundle(&rwtxn, sc, m6id_at(max - 1))
+            .into_diagnostic()?;
+        last.apply(&mut rwtxn, &dbs.active_sidechains, 0)
+            .into_diagnostic()?;
+
+        // One more would land at `0xFFFE`, which no M4 vote can encode: reject.
+        let err = test_handler(&dbs)
+            .handle_m3_propose_bundle(&rwtxn, sc, m6id_at(max))
+            .expect_err("proposing past the addressable index space must be rejected");
+        assert!(matches!(
+            err,
+            error::HandleM3ProposeBundle::TooManyPending { sidechain_number, max: m }
+                if sidechain_number == sc && m == max
+        ));
+        assert!(!err.is_fatal());
         Ok(())
     }
 
