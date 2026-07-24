@@ -46,6 +46,31 @@ async fn sync_wallet_to_tip(
         wallet.inner.set_last_synced_now().await;
         return Ok(());
     }
+    // Blocks mined before the wallet's keys existed provably cannot contain
+    // wallet transactions, so the block-by-block replay below is pure waste
+    // below the wallet's birthday.
+    const BIRTHDAY_REORG_MARGIN: u32 = 100;
+    let wallet_tip = if let Some(birthday_height) = wallet.inner.birthday_height().await {
+        let skip_below = birthday_height
+            .saturating_sub(BIRTHDAY_REORG_MARGIN)
+            .min(new_tip_height);
+
+        if wallet_tip.height < skip_below {
+            tracing::info!(
+                wallet_tip_height = wallet_tip.height,
+                %birthday_height,
+                %skip_below,
+                %new_tip_height,
+                "fast-forwarding wallet chain to just below its birthday"
+            );
+            let () = wallet.inner.fast_forward_chain(Some(skip_below)).await?;
+            wallet.inner.get_tip().await?
+        } else {
+            wallet_tip
+        }
+    } else {
+        wallet_tip
+    };
     // If the wallet tip is higher than the block height we need to connect the missing blocks.
     // We have logic for that below. We therefore use max() here to ensure that the loop
     // will run at least once (thereby triggering the logic for missing blocks).
