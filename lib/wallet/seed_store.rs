@@ -49,6 +49,10 @@ struct SeedFile {
     version: u32,
     /// Informational only. Carried over from the legacy DB on migration.
     created_at: std::time::SystemTime,
+    /// The node's tip height when this seed was generated `None` for restored
+    /// seeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    birthday_height: Option<u32>,
     seed: StoredSeed,
 }
 
@@ -95,10 +99,19 @@ impl SeedStore {
         Ok(Some(seed))
     }
 
-    /// Persist the seed for a newly created wallet.
+    /// The wallet's birthday height, if one was recorded at creation.
+    pub(in crate::wallet) async fn read_birthday_height(
+        &self,
+    ) -> Result<Option<u32>, error::ReadSeed> {
+        Ok(read_seed_file(&self.path)?.and_then(|seed_file| seed_file.birthday_height))
+    }
+
+    /// Persist the seed for a newly created wallet. `birthday_height` must
+    /// only be `Some` for freshly GENERATED seeds (see [`SeedFile`]).
     pub(in crate::wallet) async fn insert_seed(
         &self,
         seed: Seed<'_>,
+        birthday_height: Option<u32>,
     ) -> Result<(), error::InsertSeed> {
         let _guard = self.insert_lock.lock().await;
         if self.path.exists() {
@@ -107,6 +120,7 @@ impl SeedStore {
         let seed_file = SeedFile {
             version: CURRENT_VERSION,
             created_at: std::time::SystemTime::now(),
+            birthday_height,
             seed: match seed {
                 Seed::Plaintext(mnemonic) => StoredSeed::Plaintext {
                     mnemonic: mnemonic.to_string(),
@@ -208,6 +222,8 @@ fn migrate_legacy_seed(path: &Path, data_dir: &Path) -> Result<(), error::InitSe
                 .unwrap_or_default();
             let seed_file = SeedFile {
                 version: CURRENT_VERSION,
+                // Legacy wallets have unknowable history: no birthday.
+                birthday_height: None,
                 created_at: created_at
                     .and_then(|secs| {
                         let secs = u64::try_from(secs).ok()?;
@@ -431,7 +447,10 @@ mod tests {
         let dir = temp_dir("migrate-mismatch");
         let store = SeedStore::new(&dir).unwrap();
         let mnemonic = Mnemonic::parse_in(Language::English, TEST_MNEMONIC).unwrap();
-        store.insert_seed(Seed::Plaintext(&mnemonic)).await.unwrap();
+        store
+            .insert_seed(Seed::Plaintext(&mnemonic), None)
+            .await
+            .unwrap();
         drop(store);
 
         // A different valid mnemonic in the legacy store.
@@ -515,12 +534,53 @@ mod tests {
         let store = SeedStore::new(&dir).unwrap();
         let mnemonic = Mnemonic::parse_in(Language::English, TEST_MNEMONIC).unwrap();
 
-        store.insert_seed(Seed::Plaintext(&mnemonic)).await.unwrap();
+        store
+            .insert_seed(Seed::Plaintext(&mnemonic), None)
+            .await
+            .unwrap();
         let err = store
-            .insert_seed(Seed::Plaintext(&mnemonic))
+            .insert_seed(Seed::Plaintext(&mnemonic), None)
             .await
             .expect_err("second insert must fail");
         assert!(matches!(err, error::InsertSeed::AlreadyExists));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A recorded birthday round-trips; absence stays absent; and a seed
+    /// file written before the field existed reads back as `None`.
+    #[tokio::test]
+    async fn birthday_height_roundtrip_and_backcompat() {
+        let dir = temp_dir("birthday");
+        let store = SeedStore::new(&dir).unwrap();
+        let mnemonic = Mnemonic::parse_in(Language::English, TEST_MNEMONIC).unwrap();
+        store
+            .insert_seed(Seed::Plaintext(&mnemonic), Some(958_537))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read_birthday_height().await.unwrap(),
+            Some(958_537),
+            "birthday must round-trip"
+        );
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Restored seed: no birthday.
+        let dir = temp_dir("birthday-none");
+        let store = SeedStore::new(&dir).unwrap();
+        store
+            .insert_seed(Seed::Plaintext(&mnemonic), None)
+            .await
+            .unwrap();
+        assert_eq!(store.read_birthday_height().await.unwrap(), None);
+
+        // Pre-birthday seed file (field absent entirely) must parse as None.
+        let raw = std::fs::read_to_string(dir.join("seed.json")).unwrap();
+        assert!(
+            !raw.contains("birthday_height"),
+            "None must not be serialized"
+        );
+        assert!(store.read_mnemonic().await.unwrap().is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -533,7 +593,10 @@ mod tests {
         let dir = temp_dir("permissions");
         let store = SeedStore::new(&dir).unwrap();
         let mnemonic = Mnemonic::parse_in(Language::English, TEST_MNEMONIC).unwrap();
-        store.insert_seed(Seed::Plaintext(&mnemonic)).await.unwrap();
+        store
+            .insert_seed(Seed::Plaintext(&mnemonic), None)
+            .await
+            .unwrap();
 
         let mode = std::fs::metadata(dir.join("seed.json"))
             .unwrap()

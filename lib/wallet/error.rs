@@ -484,6 +484,8 @@ impl ToStatus for InitWalletFromMnemonic {
 pub enum CreateNewWallet {
     #[error(transparent)]
     EncryptMnemonic(#[from] EncryptMnemonic),
+    #[error("failed to fetch the node tip for the wallet birthday")]
+    FetchBirthdayHeight(#[source] BitcoinCoreRPC),
     #[error("failed to generate mnemonic")]
     GenerateMnemonic(#[from] bdk_wallet::bip39::Error),
     #[error(transparent)]
@@ -522,6 +524,7 @@ impl ToStatus for CreateNewWallet {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::EncryptMnemonic(err) => err.builder(),
+            Self::FetchBirthdayHeight(err) => err.builder(),
             Self::GenerateMnemonic(_) => StatusBuilder::new(self),
             Self::InitFromMnemonic(err) => err.builder(),
             // `AlreadyExists` never lands here: `From<InsertSeed>` maps it to
@@ -863,6 +866,8 @@ where
 pub(in crate::wallet) enum SyncWalletToTipInner {
     #[error("failed to connect missing block to wallet")]
     ConnectMissingBlock(#[from] ConnectMissingBlock),
+    #[error("failed to fast-forward wallet chain to tip")]
+    FastForward(#[from] FullScan),
     #[error("unable to fetch block from mainchain")]
     #[diagnostic(code(fetch_block_error))]
     GetBlock(#[source] BitcoinCoreRPC),

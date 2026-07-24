@@ -22,7 +22,7 @@ use bitcoin::{
     script::PushBytesBuf,
 };
 use bitcoin_jsonrpsee::{
-    client::{GetRawTransactionClient, GetRawTransactionVerbose},
+    client::{GetRawTransactionClient, GetRawTransactionVerbose, MainClient as _},
     jsonrpsee::http_client::HttpClient,
 };
 use either::Either;
@@ -442,12 +442,28 @@ impl WalletInner {
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
     ) -> Result<(), error::CreateNewWallet> {
-        let mnemonic = match mnemonic {
-            Some(mnemonic) => mnemonic,
+        let (mnemonic, generated) = match mnemonic {
+            Some(mnemonic) => (mnemonic, false),
             None => {
                 tracing::info!("create new wallet: no mnemonic provided, generating fresh");
-                new_mnemonic()?
+                (new_mnemonic()?, true)
             }
+        };
+
+        let birthday_height = if generated {
+            let info = self
+                .main_client
+                .get_blockchain_info()
+                .await
+                .map_err(|err| {
+                    error::CreateNewWallet::FetchBirthdayHeight(error::BitcoinCoreRPC {
+                        method: "getblockchaininfo".to_owned(),
+                        error: err,
+                    })
+                })?;
+            Some(info.blocks)
+        } else {
+            None
         };
 
         match password {
@@ -455,7 +471,7 @@ impl WalletInner {
                 tracing::info!("create new wallet: persisting encrypted mnemonic");
                 let encrypted = EncryptedMnemonic::encrypt(&mnemonic, password)?;
                 self.seed_store
-                    .insert_seed(Seed::Encrypted(&encrypted))
+                    .insert_seed(Seed::Encrypted(&encrypted), birthday_height)
                     .await?;
             }
             None => {
@@ -463,7 +479,7 @@ impl WalletInner {
                     "create new wallet: no password provided, persisting plaintext mnemonic"
                 );
                 self.seed_store
-                    .insert_seed(Seed::Plaintext(&mnemonic))
+                    .insert_seed(Seed::Plaintext(&mnemonic), birthday_height)
                     .await?;
             }
         }

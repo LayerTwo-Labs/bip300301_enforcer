@@ -104,6 +104,61 @@ impl WalletInner {
         let mut last_sync_write = self.last_sync.write().await;
         *last_sync_write = Some(SystemTime::now());
     }
+
+    /// The wallet's recorded birthday height, if any. Read errors are
+    /// downgraded to `None`. The fallback is merely a slower (full) sync.
+    pub(in crate::wallet) async fn birthday_height(&self) -> Option<u32> {
+        match self.seed_store.read_birthday_height().await {
+            Ok(birthday_height) => birthday_height,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read wallet birthday; syncing from genesis: {:#}",
+                    crate::errors::ErrorChain::new(&err)
+                );
+                None
+            }
+        }
+    }
+
+    /// Fast-forward the wallet's local chain up to `up_to_height` (or the
+    /// validator tip) by applying one checkpoint update built from validator
+    /// headers, instead of connecting every missing block individually.
+    pub(in crate::wallet) async fn fast_forward_chain(
+        &self,
+        up_to_height: Option<u32>,
+    ) -> Result<(), error::FullScan> {
+        let start = Instant::now();
+        let mut wallet_write = self.write_wallet().await?;
+        let mut bdk_db = self.bdk_db.lock().await;
+
+        let checkpoint = {
+            let local_chain = wallet_write.local_chain();
+            self.get_chain_checkpoint(local_chain, up_to_height).await?
+        };
+        let tip_height = checkpoint.height();
+
+        let update = bdk_wallet::Update {
+            chain: Some(checkpoint),
+            ..Default::default()
+        };
+        wallet_write
+            .with_mut(|wallet| {
+                wallet
+                    .apply_update(update)
+                    .map(|()| wallet.persist_async(&mut bdk_db))
+            })
+            .map_err(error::FullScan::CannotConnect)?
+            .await
+            .map_err(|err| error::FullScan::PersistWallet(error::SqliteError::from(err)))?;
+
+        drop(wallet_write);
+        tracing::info!(
+            %tip_height,
+            "fast-forwarded wallet chain to tip in {:?}",
+            start.elapsed()
+        );
+        Ok(())
+    }
     /// Sync the wallet, returning a write guard on last_sync, wallet, and database
     /// if wallet was not locked.
     /// Does not commit changes.
@@ -214,12 +269,16 @@ impl WalletInner {
     async fn get_chain_checkpoint(
         &self,
         local_chain: &bdk_chain::local_chain::LocalChain,
+        up_to_height: Option<u32>,
     ) -> miette::Result<bdk_chain::CheckPoint, error::FullScan> {
         let start = Instant::now();
-        let headers = self
+        let mut headers = self
             .validator()
             .list_headers(local_chain.tip().height())
             .map_err(error::FullScan::ListHeaders)?;
+        if let Some(up_to_height) = up_to_height {
+            headers.retain(|(height, _)| *height <= up_to_height);
+        }
 
         tracing::debug!(
             "listed {} headers since height {} in {:?}: {} -> {}",
@@ -325,7 +384,7 @@ impl WalletInner {
         }
 
         let local_chain = wallet_write.local_chain();
-        let checkpoint = self.get_chain_checkpoint(local_chain).await?;
+        let checkpoint = self.get_chain_checkpoint(local_chain, None).await?;
         let request = wallet_write
             .start_sync_with_revealed_spks()
             .chain_tip(checkpoint);
