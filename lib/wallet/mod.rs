@@ -982,10 +982,10 @@ impl Wallet {
         Ok(psbt)
     }
 
-    fn p2p_broadcast_addrs(&self) -> Box<dyn Iterator<Item = std::net::SocketAddr> + '_> {
+    fn p2p_broadcast_addrs(&self) -> Box<dyn Iterator<Item = crate::p2p::BroadcastAddr> + '_> {
         let network = self.inner.validator().network();
         let magic = self.inner.magic;
-        let p2p_broadcast_addrs = self.inner.config.p2p_broadcast_addr.iter().copied();
+        let p2p_broadcast_addrs = self.inner.config.p2p_broadcast_addr.iter().cloned();
         match crate::p2p::default_p2p_broadcast_addr(network, magic.to_bytes()) {
             Some(default_addr) => {
                 if magic.to_bytes() == crate::p2p::SIGNET_MAGIC_BYTES {
@@ -1081,12 +1081,15 @@ impl Wallet {
             .p2p_broadcast_addrs()
             .map(|peer_addr| {
                 crate::p2p::broadcast_nonstandard_tx(
-                    peer_addr,
+                    peer_addr.clone(),
                     block_height as i32,
                     self.inner.magic,
                     tx.clone(),
                 )
-                .map_ok(move |result| (peer_addr, result))
+                .map_ok({
+                    let peer_addr = peer_addr.clone();
+                    move |result| (peer_addr, result)
+                })
                 .map_err(move |source| {
                     error::CreateDeposit::BroadcastNonstandardTx { peer_addr, source }
                 })
@@ -1692,7 +1695,8 @@ impl Wallet {
         Ok(psbt)
     }
 
-    /// Creates a BMM request transaction. Broadcasts via p2p whitelist only.
+    /// Creates a BMM request transaction. Broadcasts via the p2p whitelist,
+    /// and via RPC to our own node (tolerating rejection due to non-standardness).
     /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
     /// request was not stored due to pre-existing request with the same
     /// `sidechain_number` and `prev_mainchain_block_hash`.
@@ -1765,6 +1769,25 @@ impl Wallet {
                 return Err(err.into());
             }
             None => {}
+        }
+        // Submit to our own node via RPC as well. This must happen after the
+        // p2p broadcast: if a peer received the tx via relay from our node
+        // first, the p2p broadcast to it would time out. Unpatched nodes may
+        // reject the BMM request as non-standard. That is tolerated.
+        tracing::debug!(%txid, "Broadcasting BMM request transaction to own node via RPC...");
+        match crate::rpc_client::broadcast_transaction_tolerate_mempool_rejection(
+            &self.inner.main_client,
+            &tx,
+        )
+        .await
+        .map_err(error::CreateBmmRequestInner::BroadcastTxRpc)?
+        {
+            Some(_) => {
+                tracing::info!(%txid, "Broadcast BMM request transaction via RPC to own node");
+            }
+            None => {
+                tracing::info!(%txid, "Own node rejected BMM request transaction from its mempool");
+            }
         }
         if stored { Ok(Some(tx)) } else { Ok(None) }
     }
