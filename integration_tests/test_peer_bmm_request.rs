@@ -100,8 +100,10 @@ impl PreSetup {
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> anyhow::Result<PostSetup> {
         let sender = {
+            // Use a hostname rather than an IP to exercise DNS resolution of
+            // p2p broadcast addresses
             let enforcer_args = vec![format!(
-                "--p2p-broadcast-addr=127.0.0.1:{}",
+                "--p2p-broadcast-addr=localhost:{}",
                 self.miner.reserved_ports.bitcoind_listen.port()
             )];
             let setup_opts: SetupOpts = SetupOpts {
@@ -236,6 +238,16 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         anyhow::bail!("Failed to create BMM critical data tx")
     };
     tracing::info!(%bmm_request_txid, "Created BMM request tx successfully");
+    // In addition to the p2p broadcast, the enforcer submits the BMM request
+    // to its own node via `sendrawtransaction`, so it should be in the
+    // sender node's mempool immediately
+    let sender_mempool_entry = post_setup
+        .sender
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "getmempoolentry", [bmm_request_txid.clone()])
+        .run_utf8()
+        .await?;
+    tracing::debug!(%sender_mempool_entry);
     // Wait for mempool inclusion / p2p broadcast.
     // This can take >5s sometimes, for unknown reasons.
     sleep(std::time::Duration::from_secs(10)).await;
@@ -246,6 +258,19 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         .run_utf8()
         .await?;
     tracing::debug!(%mempool_entry);
+    // Check that the tx entered the sender node's mempool via RPC broadcast,
+    // rather than via p2p relay from the miner node
+    let sender_enforcer_stdout = std::fs::read_to_string(
+        post_setup
+            .sender
+            .directories
+            .enforcer_dir
+            .join("stdout.txt"),
+    )?;
+    anyhow::ensure!(
+        sender_enforcer_stdout.contains("Broadcast BMM request transaction via RPC to own node"),
+        "Expected sender enforcer to broadcast the BMM request tx via RPC to its own node"
+    );
     // Mine a block and check that the BMM request worked
     let () = mine::mine_check_block_events::<_, DummySidechain>(
         &mut post_setup.miner,

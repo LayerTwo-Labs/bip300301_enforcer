@@ -80,6 +80,53 @@ pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, Error> {
     Ok(client)
 }
 
+// Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
+// because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
+// perspective). To get around this we have to pass a `maxburnamount` parameter, and
+// that's not possible if going through the ElectrumBlockchain interface.
+//
+// For the interested reader, the flow of ElectrumBlockchain::broadcast is this:
+// 1. Send the raw TX from our Electrum client
+// 2. Electrum server implements this by sending it into Bitcoin Core
+// 3. Bitcoin Core responds with an error, because we're burning money.
+const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
+
+/// Broadcasts a transaction to the Bitcoin network via `sendrawtransaction`,
+/// tolerating call errors for which `tolerate_rejection` returns `true`.
+/// Returns `Some(txid)` if broadcast successfully, `None` if the tx was
+/// rejected but the rejection is tolerated. All other errors are returned
+/// as-is.
+async fn broadcast_transaction_with_tolerance<RpcClient>(
+    rpc_client: &RpcClient,
+    tx: &bdk_wallet::bitcoin::Transaction,
+    tolerate_rejection: impl FnOnce(i32, &str) -> bool,
+) -> Result<Option<bitcoin::Txid>, ClientError>
+where
+    RpcClient: MainClient + Sync,
+{
+    let encoded_tx = bitcoin::consensus::encode::serialize_hex(tx);
+    match rpc_client
+        .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
+        .await
+    {
+        Ok(txid) => {
+            tracing::debug!(%txid, "broadcast tx successfully");
+            Ok(Some(txid))
+        }
+        Err(ClientError::Call(err)) if tolerate_rejection(err.code(), err.message()) => {
+            tracing::warn!(
+                reason = %err.message(),
+                "node rejected tx, tolerated",
+            );
+            Ok(None)
+        }
+        Err(err) => {
+            tracing::error!("failed to broadcast tx: {:#}", ErrorChain::new(&err));
+            Err(err)
+        }
+    }
+}
+
 /// Broadcasts a transaction to the Bitcoin network.
 /// Returns `Some(txid)` if broadcast successfully, `None` if the tx failed to
 /// broadcast due to the node not supporting OP_DRIVECHAIN
@@ -90,46 +137,38 @@ pub async fn broadcast_transaction<RpcClient>(
 where
     RpcClient: MainClient + Sync,
 {
-    // Note: there's a `broadcast` method on `bitcoin_blockchain`. We're NOT using that,
-    // because we're broadcasting transactions that "burn" bitcoin (from a BIP-300/1 unaware
-    // perspective). To get around this we have to pass a `maxburnamount` parameter, and
-    // that's not possible if going through the ElectrumBlockchain interface.
-    //
-    // For the interested reader, the flow of ElectrumBlockchain::broadcast is this:
-    // 1. Send the raw TX from our Electrum client
-    // 2. Electrum server implements this by sending it into Bitcoin Core
-    // 3. Bitcoin Core responds with an error, because we're burning money.
-    const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
-    let encoded_tx = bitcoin::consensus::encode::serialize_hex(tx);
-    match rpc_client
-        .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
-        .await
-    {
-        Ok(txid) => {
-            tracing::debug!(%txid, "broadcast tx successfully");
-            Ok(Some(txid))
-        }
-        Err(err) => {
-            const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
-                "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
-            // Bitcoind v30.0 changed the error message
-            const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0: &str =
-                "mempool-script-verify-flag-failed (NOPx reserved for soft-fork upgrades)";
-            fn contains_op_drivechain_not_supported(msg: &str) -> bool {
-                msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG)
-                    || msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0)
-            }
-            match err {
-                // We used to check the exact error message. Looks like this slightly varies across versions. Therefore
-                // use a substring check.
-                ClientError::Call(err) if contains_op_drivechain_not_supported(err.message()) => {
-                    Ok(None)
-                }
-                err => {
-                    tracing::error!("failed to broadcast tx: {:#}", ErrorChain::new(&err));
-                    Err(err)
-                }
-            }
-        }
-    }
+    const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
+        "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
+    // Bitcoind v30.0 changed the error message
+    const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0: &str =
+        "mempool-script-verify-flag-failed (NOPx reserved for soft-fork upgrades)";
+    // We used to check the exact error message. Looks like this slightly
+    // varies across versions. Therefore use a substring check.
+    broadcast_transaction_with_tolerance(rpc_client, tx, |_code, msg| {
+        msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG)
+            || msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0)
+    })
+    .await
+}
+
+/// `RPC_VERIFY_REJECTED`: transaction was rejected by the node's mempool
+/// policy (e.g. non-standardness) or by network rules.
+const BITCOIN_CORE_RPC_TRANSACTION_REJECTED: i32 = -26;
+
+/// Broadcasts a transaction to the Bitcoin network, tolerating rejection from
+/// the node's mempool (Bitcoin Core RPC error -26, e.g. due to
+/// non-standardness).
+/// Returns `Some(txid)` if broadcast successfully, `None` if the node
+/// rejected the tx from its mempool. All other errors are returned as-is.
+pub async fn broadcast_transaction_tolerate_mempool_rejection<RpcClient>(
+    rpc_client: &RpcClient,
+    tx: &bdk_wallet::bitcoin::Transaction,
+) -> Result<Option<bitcoin::Txid>, ClientError>
+where
+    RpcClient: MainClient + Sync,
+{
+    broadcast_transaction_with_tolerance(rpc_client, tx, |code, _msg| {
+        code == BITCOIN_CORE_RPC_TRANSACTION_REJECTED
+    })
+    .await
 }

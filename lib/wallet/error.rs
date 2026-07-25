@@ -722,8 +722,8 @@ pub enum CreateDeposit {
     BroadcastTx(#[source] jsonrpsee::core::ClientError),
     #[error("failed to broadcast nonstandard tx to {peer_addr}")]
     BroadcastNonstandardTx {
-        peer_addr: std::net::SocketAddr,
-        source: bitcoin_send_tx_p2p::Error,
+        peer_addr: crate::p2p::BroadcastAddr,
+        source: crate::p2p::BroadcastNonstandardTxError,
     },
     #[error("broadcast deposit transaction failed: {txid}")]
     BroadcastUnsuccessful { txid: bitcoin::Txid },
@@ -1251,7 +1251,9 @@ pub(in crate::wallet) enum CreateBmmRequestInner {
     #[error("failed to build BMM tx")]
     BuildBmmTx(#[from] BuildBmmTx),
     #[error("failed to broadcast nonstandard tx")]
-    BroadcastNonstandardTx(#[source] bitcoin_send_tx_p2p::Error),
+    BroadcastNonstandardTx(#[source] crate::p2p::BroadcastNonstandardTxError),
+    #[error("failed to broadcast BMM request tx via RPC")]
+    BroadcastTxRpc(#[source] JsonRpcError),
     #[error("broadcast deposit transaction failed: {txid}")]
     BroadcastUnsuccessful { txid: bitcoin::Txid },
     #[error(transparent)]
@@ -1269,6 +1271,7 @@ impl ToStatus for CreateBmmRequestInner {
             Self::GetHeaderInfo(err) => err.builder(),
             Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::BroadcastNonstandardTx(_)
+            | Self::BroadcastTxRpc(_)
             | Self::BroadcastUnsuccessful { .. }
             | Self::Rusqlite(_) => StatusBuilder::new(self),
         }
