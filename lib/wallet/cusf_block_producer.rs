@@ -303,7 +303,8 @@ impl CusfEnforcer for Wallet {
                         // inputs survive a restart before the tx confirms. The
                         // locks are scoped so they are released before logging.
                         let persist_res = {
-                            let mut bdk_db_lock = inner.bdk_db.lock().await;
+                            // Lock order: wallet before `bdk_db`, see the
+                            // `bdk_db` field docs
                             let mut wallet_write = match inner.write_wallet().await {
                                 Ok(wallet_write) => wallet_write,
                                 Err(err) => {
@@ -311,6 +312,7 @@ impl CusfEnforcer for Wallet {
                                     return;
                                 }
                             };
+                            let mut bdk_db_lock = inner.bdk_db.lock().await;
                             let now = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()
