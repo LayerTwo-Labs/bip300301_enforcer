@@ -1155,6 +1155,18 @@ impl Wallet {
         Ok((balance, has_synced))
     }
 
+    /// Fee for a listed wallet transaction. An input we could not resolve
+    /// leaves the input total short, so the fee is unknown and reported as
+    /// zero rather than wrong.
+    fn wallet_tx_fee(input_value: Amount, output_value: Amount, inputs_resolved: bool) -> Amount {
+        if !inputs_resolved {
+            return Amount::ZERO;
+        }
+        input_value
+            .checked_sub(output_value)
+            .unwrap_or(Amount::ZERO)
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "false positive for `bitcoin_wallet`"
@@ -1201,6 +1213,7 @@ impl Wallet {
             let mut output_value = Amount::ZERO;
             let mut received = Amount::ZERO;
             let mut sent = Amount::ZERO;
+            let mut inputs_resolved = true;
 
             // Calculate output value and received amount
             for (value, is_mine) in output_ownership {
@@ -1217,7 +1230,7 @@ impl Wallet {
                     continue;
                 }
 
-                let transaction_hex = self
+                let transaction_hex = match self
                     .inner
                     .main_client
                     // TODO: get rid of this. It's kind of absurd that we're calling out to getrawtransaction for every input.
@@ -1229,13 +1242,21 @@ impl Wallet {
                         None,
                     )
                     .await
-                    .map_err(|err| error::ListWalletTransactions::FetchTransaction {
-                        txid: input.previous_output.txid,
-                        source: error::BitcoinCoreRPC {
-                            method: "getrawtransaction".to_string(),
-                            error: err,
-                        },
-                    })?;
+                {
+                    Ok(transaction_hex) => transaction_hex,
+                    // A reorg can drop a wallet tx's ancestor from the node
+                    // while the wallet still holds the tx. One input we cannot
+                    // resolve must not fail the whole listing.
+                    Err(err) => {
+                        tracing::warn!(
+                            txid = %input.previous_output.txid,
+                            "unable to fetch wallet transaction input: {:#}",
+                            ErrorChain::new(&err),
+                        );
+                        inputs_resolved = false;
+                        continue;
+                    }
+                };
 
                 let prev_output =
                     bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)?;
@@ -1251,9 +1272,7 @@ impl Wallet {
                 input_value += value;
             }
 
-            let fee = input_value
-                .checked_sub(output_value)
-                .unwrap_or(Amount::ZERO);
+            let fee = Self::wallet_tx_fee(input_value, output_value, inputs_resolved);
             // Calculate net wallet change (excluding fee)
             // We need to handle received and sent separately since Amount can't be negative
             let (final_received, final_sent) = if received >= sent {
