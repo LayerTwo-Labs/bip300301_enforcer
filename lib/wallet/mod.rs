@@ -1980,3 +1980,28 @@ impl Wallet {
         self.inner.create_new_wallet(mnemonic, password).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::Amount;
+
+    use super::Wallet;
+
+    #[test]
+    fn wallet_tx_fee_is_zero_when_an_input_is_unresolved() {
+        // Without the skipped input the totals imply a 4000 sat fee, which
+        // would be wrong.
+        assert_eq!(
+            Wallet::wallet_tx_fee(Amount::from_sat(5_000), Amount::from_sat(1_000), false),
+            Amount::ZERO
+        );
+    }
+
+    #[test]
+    fn wallet_tx_fee_is_the_difference_when_inputs_resolve() {
+        assert_eq!(
+            Wallet::wallet_tx_fee(Amount::from_sat(5_000), Amount::from_sat(1_000), true),
+            Amount::from_sat(4_000)
+        );
+    }
+}
