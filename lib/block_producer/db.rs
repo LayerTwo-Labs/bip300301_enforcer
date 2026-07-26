@@ -656,6 +656,69 @@ fn restore_bmm_requests_from_undo(
 }
 
 #[cfg(test)]
+mod sidechain_acks_undo_tests {
+    use bitcoin::{
+        BlockHash,
+        hashes::{Hash as _, sha256d},
+    };
+
+    use super::Db;
+    use crate::types::{SidechainAck, SidechainNumber};
+
+    /// An ACK dropped because its proposal left the validator's pending set is
+    /// restored when the block that settled it is disconnected, so the operator
+    /// keeps ACKing a re-pended slot.
+    #[tokio::test]
+    async fn sidechain_ack_restored_when_settling_block_disconnected() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db = Db::new(dir.path()).unwrap();
+        let slot = SidechainNumber(7);
+        let description_hash = sha256d::Hash::from_byte_array([0x33; 32]);
+        let block_hash = BlockHash::from_byte_array([0x44; 32]);
+        db.ack_sidechain(slot, description_hash).await.unwrap();
+
+        let ack = SidechainAck {
+            sidechain_number: slot,
+            description_hash,
+        };
+        db.delete_stale_sidechain_acks(&block_hash, &[ack])
+            .await
+            .unwrap();
+        assert!(db.get_sidechain_acks().await.unwrap().is_empty());
+
+        db.restore_sidechain_acks(&block_hash).await.unwrap();
+        let restored = db.get_sidechain_acks().await.unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].sidechain_number, slot);
+        assert_eq!(restored[0].description_hash, description_hash);
+    }
+
+    /// Restoring a block that deleted nothing is a no-op.
+    #[tokio::test]
+    async fn restoring_an_unrelated_block_restores_nothing() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db = Db::new(dir.path()).unwrap();
+        let slot = SidechainNumber(7);
+        let description_hash = sha256d::Hash::from_byte_array([0x33; 32]);
+        db.ack_sidechain(slot, description_hash).await.unwrap();
+        db.delete_stale_sidechain_acks(
+            &BlockHash::from_byte_array([0x44; 32]),
+            &[SidechainAck {
+                sidechain_number: slot,
+                description_hash,
+            }],
+        )
+        .await
+        .unwrap();
+
+        db.restore_sidechain_acks(&BlockHash::from_byte_array([0x55; 32]))
+            .await
+            .unwrap();
+        assert!(db.get_sidechain_acks().await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod bmm_requests_undo_tests {
     use bitcoin::hashes::Hash as _;
     use rusqlite::Connection;
