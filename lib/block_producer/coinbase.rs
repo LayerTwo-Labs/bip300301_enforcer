@@ -50,7 +50,7 @@ impl BlockProducer {
 
     /// Sidechain proposals from the *validator*: already included in a block, and
     /// therefore votable.
-    fn get_active_sidechain_proposals(
+    pub(super) fn get_active_sidechain_proposals(
         &self,
     ) -> Result<HashMap<SidechainNumber, SidechainProposal>, crate::validator::GetSidechainsError>
     {
@@ -63,7 +63,7 @@ impl BlockProducer {
         Ok(pending_proposals)
     }
 
-    fn validate_sidechain_ack(
+    pub(super) fn validate_sidechain_ack(
         &self,
         ack: &SidechainAck,
         pending_proposals: &HashMap<SidechainNumber, SidechainProposal>,
@@ -170,12 +170,10 @@ impl BlockProducer {
         }
 
         for sidechain_ack in sidechain_acks {
+            // Stale rows are pruned on block connect, not here: a template is
+            // built many times per block, and a proposal missing from the
+            // validator's pending set can come back on a reorg.
             if !self.validate_sidechain_ack(&sidechain_ack, &active_sidechain_proposals) {
-                self.db().delete_sidechain_ack(&sidechain_ack).await?;
-                tracing::info!(
-                    "Unable to handle sidechain ack, deleted: {}",
-                    sidechain_ack.sidechain_number
-                );
                 continue;
             }
             if coinbase_builder

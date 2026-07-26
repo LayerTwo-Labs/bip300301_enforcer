@@ -95,13 +95,41 @@ impl BlockProducer {
         self.inner.validator.clone().connect_block(block).await
     }
 
+    /// Drop the stored ACKs whose proposal is no longer pending at this block,
+    /// snapshotting them so a reorg of the block can restore the intent.
+    async fn prune_sidechain_acks(&self, block_hash: &BlockHash) -> Result<(), rusqlite::Error> {
+        let stored_acks = self.db().get_sidechain_acks().await?;
+        if stored_acks.is_empty() {
+            return Ok(());
+        }
+        let pending_proposals = match self.get_active_sidechain_proposals() {
+            Ok(pending_proposals) => pending_proposals,
+            Err(err) => {
+                tracing::error!(
+                    "failed to read pending sidechain proposals: {:#}",
+                    ErrorChain::new(&err)
+                );
+                return Ok(());
+            }
+        };
+        let stale: Vec<_> = stored_acks
+            .into_iter()
+            .filter(|ack| !self.validate_sidechain_ack(ack, &pending_proposals))
+            .collect();
+        self.db()
+            .delete_stale_sidechain_acks(block_hash, &stale)
+            .await
+    }
+
     /// Policy-table maintenance for a block the validator just accepted: drop the
     /// sidechain proposals and withdrawal bundles that this block settled, so we
     /// stop re-proposing them in later coinbases.
     pub(crate) async fn apply_connected_block_policy(
         &self,
+        block_hash: &BlockHash,
         block_info: &crate::types::BlockInfo,
     ) -> Result<(), rusqlite::Error> {
+        let () = self.prune_sidechain_acks(block_hash).await?;
         let finalized_withdrawal_bundles =
             block_info
                 .withdrawal_bundle_events()
@@ -160,7 +188,9 @@ impl CusfEnforcer for BlockProducer {
             let block_hash = block.block_hash();
             let block_infos = self.inner.validator.get_block_infos(&block_hash, 0)?;
             for (_header_info, block_info) in &block_infos {
-                let () = self.apply_connected_block_policy(block_info).await?;
+                let () = self
+                    .apply_connected_block_policy(&block_hash, block_info)
+                    .await?;
             }
         }
         Ok(res)
@@ -190,11 +220,19 @@ impl CusfEnforcer for BlockProducer {
                 ErrorChain::new(&err),
             );
         }
+        if let Err(err) = self.inner.db.restore_sidechain_acks(&block_hash).await {
+            tracing::error!(
+                %block_hash,
+                "failed to restore sidechain ACKs on block disconnect: {:#}",
+                ErrorChain::new(&err),
+            );
+        }
 
-        // Aside from `bmm_requests` (restored above), no disconnect logic is
-        // applied to the rest of the policy DB. Those tables are wiped upon
-        // generating a new block, so sidechain proposals etc. must be re-created
-        // if a block that brought one into existence is disconnected.
+        // Aside from `bmm_requests` and `sidechain_acks` (restored above), no
+        // disconnect logic is applied to the rest of the policy DB. Those tables
+        // are wiped upon generating a new block, so sidechain proposals etc.
+        // must be re-created if a block that brought one into existence is
+        // disconnected.
         Ok(res)
     }
 
