@@ -1,0 +1,35 @@
+/* CUSF mainchain mining service */
+
+syntax = "proto3";
+
+package cusf.mainchain.v1;
+
+import "cusf/common/v1/common.proto";
+import "google/protobuf/wrappers.proto";
+
+message GenerateToAddressRequest {
+  // Number of blocks to generate. Defaults to 1.
+  google.protobuf.UInt32Value blocks = 1;
+  // Address to send the newly generated bitcoin to.
+  string address = 2;
+}
+
+message GenerateToAddressResponse {
+  // Hashes of the mined blocks, in the order they were mined.
+  repeated cusf.common.v1.ReverseHex block_hashes = 1;
+}
+
+service MiningService {
+  // Mine blocks immediately to a specified address, returning the hashes of
+  // the mined blocks. Analogous to Bitcoin Core's `generatetoaddress` RPC.
+  //
+  // The ACK policy for sidechain proposals is the persisted block producer
+  // policy (see BlockProducerService.SetSidechainAck / SetAckAllProposals).
+  //
+  // On signet, blocks are produced by the signet miner, which sources its
+  // template from the enforcer's own block template server. Signet therefore
+  // requires the enforcer to run with `--enable-block-template-server`, and
+  // only one block can be generated per call. The Bitcoin Core node's wallet
+  // must also be able to solve the signet challenge.
+  rpc GenerateToAddress(GenerateToAddressRequest) returns (GenerateToAddressResponse);
+}

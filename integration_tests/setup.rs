@@ -17,7 +17,8 @@ use bip300301_enforcer_lib::{
         self,
         mainchain::{BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse},
         mainchain_service::{
-            BlockProducerServiceClient, ValidatorServiceClient, WalletServiceClient,
+            BlockProducerServiceClient, MiningServiceClient, ValidatorServiceClient,
+            WalletServiceClient,
         },
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
@@ -478,6 +479,7 @@ pub struct PostSetup {
     pub validator_service_client: ValidatorServiceClient<Transport>,
     pub wallet_service_client: WalletServiceClient<Transport>,
     pub block_producer_service_client: BlockProducerServiceClient<Transport>,
+    pub mining_service_client: MiningServiceClient<Transport>,
     pub mining_address: Address,
     pub receive_address: Address,
     // MUST occur after tasks in order to ensure that tasks are dropped
@@ -516,12 +518,9 @@ impl PostSetup {
         };
 
         let enable_wallet = opts.enforcer_wallet == EnforcerWallet::Enabled;
-        // The block producer serves block templates, which needs a mempool.
-        anyhow::ensure!(
-            enable_wallet || mode.enable_mempool(),
-            "a wallet-less enforcer serves block templates via the mempool, \
-             but mode `{mode}` runs without one"
-        );
+        // No wallet/mempool constraint to assert: `MiningService` is served on
+        // regtest and signet regardless of either, and the one mode that does
+        // need a mempool (`GetBlockTemplate`) enables it by construction.
 
         tracing::debug!("Starting bitcoin node");
         let mut bitcoind = new_bitcoind(
@@ -695,6 +694,7 @@ impl PostSetup {
         let validator_service_client = ValidatorServiceClient::new(http.clone(), config.clone());
         let block_producer_service_client =
             BlockProducerServiceClient::new(http.clone(), config.clone());
+        let mining_service_client = MiningServiceClient::new(http.clone(), config.clone());
         let wallet_service_client = WalletServiceClient::new(http, config);
         let bitcoin_util = {
             let path = match bin_paths.bitcoin_util() {
@@ -716,6 +716,7 @@ impl PostSetup {
             validator_service_client,
             wallet_service_client,
             block_producer_service_client,
+            mining_service_client,
             mining_address,
             receive_address,
             directories: dirs.clone(),

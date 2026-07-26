@@ -1153,6 +1153,457 @@ where
     }
 }
 
+///Shorthand for `OwnedView<GenerateToAddressRequestView<'static>>`.
+pub type OwnedGenerateToAddressRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GenerateToAddressResponseView<'static>>`.
+pub type OwnedGenerateToAddressResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressResponseView<
+        'static,
+    >,
+>;
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+/// Full service name for this service.
+pub const MINING_SERVICE_SERVICE_NAME: &str = "cusf.mainchain.v1.MiningService";
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `GenerateToAddress` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const MINING_SERVICE_GENERATE_TO_ADDRESS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.MiningService/GenerateToAddress",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Server trait for MiningService.
+///
+/// # Implementing handlers
+///
+/// Implement methods with plain `async fn`; the returned future satisfies
+/// the `Send` bound automatically.
+///
+/// **Unary and server-streaming requests** arrive as
+/// [`ServiceRequest<'_, Req>`](::connectrpc::ServiceRequest): a zero-copy
+/// view of the request plus its body, valid for the duration of the call.
+/// Fields are read directly (`request.name` is a `&str` into the decoded
+/// buffer) and the borrow may be held across `.await` points. Anything
+/// that must outlive the call — `tokio::spawn`, channels, server state,
+/// or data captured by a returned response stream — takes owned data:
+/// call `request.to_owned_message()` (or copy the specific fields)
+/// first.
+///
+/// **Client-streaming and bidi requests** arrive as
+/// `ServiceStream<`[`StreamMessage<Req>`](::connectrpc::StreamMessage)`>`.
+/// Each item owns its decoded buffer and is `Send + 'static`, so items
+/// can be buffered or moved into spawned tasks; read fields zero-copy
+/// through the generated accessor methods (`item.name()`) or `.view()`,
+/// convert with `.to_owned_message()`, or yield an item back unchanged —
+/// `StreamMessage<M>` implements `Encodable<M>`.
+///
+/// Request types resolved through `extern_path` (e.g. well-known types
+/// from another crate) use the same wrappers; the crate that owns the
+/// type must be generated with buffa ≥ 0.7.0 and views enabled so the
+/// backing `HasMessageView` impl exists.
+///
+/// The `impl Encodable<Out>` return bound accepts the owned `Out`, the
+/// generated `OutView<'_>` / `OwnedOutView`,
+/// [`MaybeBorrowed`](::connectrpc::MaybeBorrowed), or
+/// [`PreEncoded`](::connectrpc::PreEncoded) for handlers that encode a
+/// non-`'static` view internally and pass the bytes across the handler
+/// boundary. View bodies are not emitted for output types mapped via
+/// `extern_path` (the impl would be an orphan); return owned for
+/// WKT/extern outputs.
+///
+/// Server-streaming and bidi-streaming methods return
+/// `ServiceStream<impl Encodable<Out> + Send + use<Self>>`. The
+/// `use<Self>` precise-capturing clause excludes `&self`'s lifetime and
+/// the request's lifetime (unary methods use `use<'a, Self>` and may
+/// borrow from `&self`), so stream items must be `'static` and cannot
+/// borrow from the request. To stream view-encoded data, encode each
+/// item inside the stream body and yield
+/// [`PreEncoded`](::connectrpc::PreEncoded) — see its `# Streaming
+/// example` doc.
+#[allow(clippy::type_complexity)]
+pub trait MiningService: Send + Sync + 'static {
+    /// Mine blocks immediately to a specified address, returning the hashes of
+    /// the mined blocks. Analogous to Bitcoin Core's `generatetoaddress` RPC.
+    /// The ACK policy for sidechain proposals is the persisted block producer
+    /// policy (see BlockProducerService.SetSidechainAck / SetAckAllProposals).
+    /// On signet, blocks are produced by the signet miner, which sources its
+    /// template from the enforcer's own block template server. Signet therefore
+    /// requires the enforcer to run with `--enable-block-template-server`, and
+    /// only one block can be generated per call. The Bitcoin Core node's wallet
+    /// must also be able to solve the signet challenge.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn generate_to_address<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+}
+/// Extension trait for registering a service implementation with a Router.
+///
+/// This trait is automatically implemented for all types that implement the service trait.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+///
+/// let service = Arc::new(MyServiceImpl);
+/// let router = service.register(Router::new());
+/// ```
+pub trait MiningServiceExt: MiningService {
+    /// Register this service implementation with a Router.
+    ///
+    /// Takes ownership of the `Arc<Self>` and returns a new Router with
+    /// this service's methods registered.
+    fn register(
+        self: ::std::sync::Arc<Self>,
+        router: ::connectrpc::Router,
+    ) -> ::connectrpc::Router;
+}
+impl<S: MiningService> MiningServiceExt for S {
+    fn register(
+        self: ::std::sync::Arc<Self>,
+        router: ::connectrpc::Router,
+    ) -> ::connectrpc::Router {
+        router
+            .route_view(
+                MINING_SERVICE_SERVICE_NAME,
+                "GenerateToAddress",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.generate_to_address(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(MINING_SERVICE_GENERATE_TO_ADDRESS_SPEC)
+    }
+}
+/// Monomorphic dispatcher for `MiningService`.
+///
+/// Unlike `.register(Router)` which type-erases each method into an `Arc<dyn ErasedHandler>` stored in a `HashMap`, this struct dispatches via a compile-time `match` on method name: no vtable, no hash lookup.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use connectrpc::ConnectRpcService;
+///
+/// let server = MiningServiceServer::new(MyImpl);
+/// let service = ConnectRpcService::new(server);
+/// // hand `service` to axum/hyper as a fallback_service
+/// ```
+pub struct MiningServiceServer<T> {
+    inner: ::std::sync::Arc<T>,
+}
+impl<T: MiningService> MiningServiceServer<T> {
+    /// Wrap a service implementation in a monomorphic dispatcher.
+    pub fn new(service: T) -> Self {
+        Self {
+            inner: ::std::sync::Arc::new(service),
+        }
+    }
+    /// Wrap an already-`Arc`'d service implementation.
+    pub fn from_arc(inner: ::std::sync::Arc<T>) -> Self {
+        Self { inner }
+    }
+}
+impl<T> Clone for MiningServiceServer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: ::std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+impl<T: MiningService> ::connectrpc::Dispatcher for MiningServiceServer<T> {
+    #[inline]
+    fn lookup(
+        &self,
+        path: &str,
+    ) -> Option<::connectrpc::dispatcher::codegen::MethodDescriptor> {
+        let method = path.strip_prefix("cusf.mainchain.v1.MiningService/")?;
+        match method {
+            "GenerateToAddress" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(MINING_SERVICE_GENERATE_TO_ADDRESS_SPEC),
+                )
+            }
+            _ => None,
+        }
+    }
+    fn call_unary(
+        &self,
+        path: &str,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::Payload,
+        format: ::connectrpc::CodecFormat,
+    ) -> ::connectrpc::dispatcher::codegen::UnaryResult {
+        let Some(method) = path.strip_prefix("cusf.mainchain.v1.MiningService/") else {
+            return ::connectrpc::dispatcher::codegen::unimplemented_unary(path);
+        };
+        let _ = (&ctx, &request, &format);
+        match method {
+            "GenerateToAddress" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressRequest,
+                    >::from_parts(&req, &body);
+                    svc.generate_to_address(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressResponse,
+                        >(format)
+                })
+            }
+            _ => ::connectrpc::dispatcher::codegen::unimplemented_unary(path),
+        }
+    }
+    fn call_server_streaming(
+        &self,
+        path: &str,
+        ctx: ::connectrpc::RequestContext,
+        request: ::buffa::bytes::Bytes,
+        format: ::connectrpc::CodecFormat,
+    ) -> ::connectrpc::dispatcher::codegen::StreamingResult {
+        let Some(method) = path.strip_prefix("cusf.mainchain.v1.MiningService/") else {
+            return ::connectrpc::dispatcher::codegen::unimplemented_streaming(path);
+        };
+        let _ = (&ctx, &request, &format);
+        match method {
+            _ => ::connectrpc::dispatcher::codegen::unimplemented_streaming(path),
+        }
+    }
+    fn call_client_streaming(
+        &self,
+        path: &str,
+        ctx: ::connectrpc::RequestContext,
+        requests: ::connectrpc::dispatcher::codegen::RequestStream,
+        format: ::connectrpc::CodecFormat,
+    ) -> ::connectrpc::dispatcher::codegen::UnaryResult {
+        let Some(method) = path.strip_prefix("cusf.mainchain.v1.MiningService/") else {
+            return ::connectrpc::dispatcher::codegen::unimplemented_unary(path);
+        };
+        let _ = (&ctx, &requests, &format);
+        match method {
+            _ => ::connectrpc::dispatcher::codegen::unimplemented_unary(path),
+        }
+    }
+    fn call_bidi_streaming(
+        &self,
+        path: &str,
+        ctx: ::connectrpc::RequestContext,
+        requests: ::connectrpc::dispatcher::codegen::RequestStream,
+        format: ::connectrpc::CodecFormat,
+    ) -> ::connectrpc::dispatcher::codegen::StreamingResult {
+        let Some(method) = path.strip_prefix("cusf.mainchain.v1.MiningService/") else {
+            return ::connectrpc::dispatcher::codegen::unimplemented_streaming(path);
+        };
+        let _ = (&ctx, &requests, &format);
+        match method {
+            _ => ::connectrpc::dispatcher::codegen::unimplemented_streaming(path),
+        }
+    }
+}
+/// Client for this service.
+///
+/// Generic over `T: ClientTransport`. For **gRPC** (HTTP/2), use
+/// `Http2Connection` — it has honest `poll_ready` and composes with
+/// `tower::balance` for multi-connection load balancing. For **Connect
+/// over HTTP/1.1** (or unknown protocol), use `HttpClient`.
+///
+/// # Example (gRPC / HTTP/2)
+///
+/// ```rust,ignore
+/// use connectrpc::client::{Http2Connection, ClientConfig};
+/// use connectrpc::Protocol;
+///
+/// let uri: http::Uri = "http://localhost:8080".parse()?;
+/// let conn = Http2Connection::connect_plaintext(uri.clone()).await?.shared(1024);
+/// let config = ClientConfig::new(uri).with_protocol(Protocol::Grpc);
+///
+/// let client = MiningServiceClient::new(conn, config);
+/// let response = client.generate_to_address(request).await?;
+/// ```
+///
+/// # Example (Connect / HTTP/1.1 or ALPN)
+///
+/// ```rust,ignore
+/// use connectrpc::client::{HttpClient, ClientConfig};
+///
+/// let http = HttpClient::plaintext();  // cleartext http:// only
+/// let config = ClientConfig::new("http://localhost:8080".parse()?);
+///
+/// let client = MiningServiceClient::new(http, config);
+/// let response = client.generate_to_address(request).await?;
+/// ```
+///
+/// # Working with the response
+///
+/// Unary calls return [`UnaryResponse<OwnedView<FooView>>`](::connectrpc::client::UnaryResponse).
+/// [`view()`](::connectrpc::client::UnaryResponse::view) borrows the response
+/// message, so field access is zero-copy:
+///
+/// ```rust,ignore
+/// let resp = client.generate_to_address(request).await?;
+/// let name: &str = resp.view().name;  // borrow into the response buffer
+/// ```
+///
+/// If you need the owned struct (e.g. to store or pass by value), use
+/// [`into_owned()`](::connectrpc::client::UnaryResponse::into_owned):
+///
+/// ```rust,ignore
+/// let owned = client.generate_to_address(request).await?.into_owned();
+/// ```
+///
+/// [`into_view()`](::connectrpc::client::UnaryResponse::into_view) keeps the
+/// zero-copy decoded body (an `OwnedView`) without copying; field access on it
+/// goes through `.reborrow()`. Streaming responses yield one `OwnedView` per
+/// received message from `.message().await` — bind `msg.reborrow()` for field
+/// access, or convert with `.to_owned_message()`.
+#[derive(Clone)]
+pub struct MiningServiceClient<T> {
+    transport: T,
+    config: ::connectrpc::client::ClientConfig,
+}
+impl<T> MiningServiceClient<T>
+where
+    T: ::connectrpc::client::ClientTransport,
+    <T::ResponseBody as ::http_body::Body>::Error: ::std::fmt::Display,
+{
+    /// Create a new client with the given transport and configuration.
+    pub fn new(transport: T, config: ::connectrpc::client::ClientConfig) -> Self {
+        Self { transport, config }
+    }
+    /// Get the client configuration.
+    pub fn config(&self) -> &::connectrpc::client::ClientConfig {
+        &self.config
+    }
+    /// Get a mutable reference to the client configuration.
+    pub fn config_mut(&mut self) -> &mut ::connectrpc::client::ClientConfig {
+        &mut self.config
+    }
+    /// Call the GenerateToAddress RPC. Sends a request to /cusf.mainchain.v1.MiningService/GenerateToAddress.
+    pub async fn generate_to_address(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.generate_to_address_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GenerateToAddress RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn generate_to_address_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GenerateToAddressRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateToAddressResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                MINING_SERVICE_SERVICE_NAME,
+                "GenerateToAddress",
+                request,
+                options,
+            )
+            .await
+    }
+}
+
 ///Shorthand for `OwnedView<GetBlockHeaderInfoRequestView<'static>>`.
 pub type OwnedGetBlockHeaderInfoRequestView = ::buffa::view::OwnedView<
     crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBlockHeaderInfoRequestView<
@@ -3818,18 +4269,6 @@ pub type OwnedUnlockWalletResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
-///Shorthand for `OwnedView<GenerateBlocksRequestView<'static>>`.
-pub type OwnedGenerateBlocksRequestView = ::buffa::view::OwnedView<
-    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksRequestView<
-        'static,
-    >,
->;
-///Shorthand for `OwnedView<GenerateBlocksResponseView<'static>>`.
-pub type OwnedGenerateBlocksResponseView = ::buffa::view::OwnedView<
-    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksResponseView<
-        'static,
-    >,
->;
 impl ::connectrpc::Encodable<
     crate::proto::generated::buffa::cusf::mainchain::v1::BroadcastWithdrawalBundleResponse,
 >
@@ -4166,34 +4605,6 @@ for ::buffa::view::OwnedView<
         ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
     }
 }
-impl ::connectrpc::Encodable<
-    crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksResponse,
->
-for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksResponseView<
-    '_,
-> {
-    fn encode(
-        &self,
-        codec: ::connectrpc::CodecFormat,
-    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
-        ::connectrpc::__codegen::encode_view_body(self, codec)
-    }
-}
-impl ::connectrpc::Encodable<
-    crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksResponse,
->
-for ::buffa::view::OwnedView<
-    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksResponseView<
-        'static,
-    >,
-> {
-    fn encode(
-        &self,
-        codec: ::connectrpc::CodecFormat,
-    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
-        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
-    }
-}
 /// Full service name for this service.
 pub const WALLET_SERVICE_SERVICE_NAME: &str = "cusf.mainchain.v1.WalletService";
 /// Static [`Spec`](::connectrpc::Spec) for the server-side `BroadcastWithdrawalBundle` RPC.
@@ -4304,15 +4715,6 @@ pub const WALLET_SERVICE_UNLOCK_WALLET_SPEC: ::connectrpc::Spec = ::connectrpc::
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::Idempotent);
-/// Static [`Spec`](::connectrpc::Spec) for the server-side `GenerateBlocks` RPC.
-///
-/// The dispatcher surfaces this on
-/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
-pub const WALLET_SERVICE_GENERATE_BLOCKS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
-        "/cusf.mainchain.v1.WalletService/GenerateBlocks",
-        ::connectrpc::StreamType::ServerStream,
-    )
-    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
 /// Server trait for WalletService.
 ///
 /// # Implementing handlers
@@ -4637,29 +5039,6 @@ pub trait WalletService: Send + Sync + 'static {
             impl ::connectrpc::Encodable<
                 crate::proto::generated::buffa::cusf::mainchain::v1::UnlockWalletResponse,
             > + Send + use<'a, Self>,
-        >,
-    > + Send;
-    /// Available on regtest and signet only.
-    ///
-    /// `request` is borrowed from the request body and is valid for the
-    /// duration of the call (until the response stream is returned);
-    /// message fields are read directly on it (zero-copy). Data the
-    /// returned stream needs must be copied out or converted via
-    /// `.to_owned_message()`.
-    fn generate_blocks(
-        &self,
-        ctx: ::connectrpc::RequestContext,
-        request: ::connectrpc::ServiceRequest<
-            '_,
-            crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksRequest,
-        >,
-    ) -> impl ::std::future::Future<
-        Output = ::connectrpc::ServiceResult<
-            ::connectrpc::ServiceStream<
-                impl ::connectrpc::Encodable<
-                    crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksResponse,
-                > + Send + use<Self>,
-            >,
         >,
     > + Send;
 }
@@ -5039,34 +5418,6 @@ impl<S: WalletService> WalletServiceExt for S {
                 },
             )
             .with_spec(WALLET_SERVICE_UNLOCK_WALLET_SPEC)
-            .route_view_server_stream::<
-                _,
-                _,
-                crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksResponse,
-            >(
-                WALLET_SERVICE_SERVICE_NAME,
-                "GenerateBlocks",
-                ::connectrpc::view_streaming_handler_fn({
-                    let svc = ::std::sync::Arc::clone(&self);
-                    move |
-                        ctx,
-                        req: ::buffa::view::OwnedView<
-                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksRequestView<
-                                'static,
-                            >,
-                        >|
-                    {
-                        let svc = ::std::sync::Arc::clone(&svc);
-                        async move {
-                            let sreq = ::connectrpc::ServiceRequest::<
-                                crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksRequest,
-                            >::from_parts(req.reborrow(), req.bytes());
-                            svc.generate_blocks(ctx, sreq).await
-                        }
-                    }
-                }),
-            )
-            .with_spec(WALLET_SERVICE_GENERATE_BLOCKS_SPEC)
     }
 }
 /// Monomorphic dispatcher for `WalletService`.
@@ -5186,12 +5537,6 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
                         .with_spec(WALLET_SERVICE_UNLOCK_WALLET_SPEC),
-                )
-            }
-            "GenerateBlocks" => {
-                Some(
-                    ::connectrpc::dispatcher::codegen::MethodDescriptor::server_streaming()
-                        .with_spec(WALLET_SERVICE_GENERATE_BLOCKS_SPEC),
                 )
             }
             _ => None,
@@ -5476,31 +5821,6 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
         };
         let _ = (&ctx, &request, &format);
         match method {
-            "GenerateBlocks" => {
-                let svc = ::std::sync::Arc::clone(&self.inner);
-                Box::pin(async move {
-                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
-                        crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksRequest,
-                    >(request, format)?;
-                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksRequestView<
-                        '_,
-                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
-                        &body,
-                    )?;
-                    let req = ::connectrpc::ServiceRequest::<
-                        crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksRequest,
-                    >::from_parts(&req, &body);
-                    let resp = svc.generate_blocks(ctx, req).await?;
-                    Ok(
-                        resp
-                            .map_body(|s| ::connectrpc::dispatcher::codegen::encode_response_stream::<
-                                crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksResponse,
-                                _,
-                                _,
-                            >(s, format)),
-                    )
-                })
-            }
             _ => ::connectrpc::dispatcher::codegen::unimplemented_streaming(path),
         }
     }
@@ -6145,49 +6465,6 @@ where
                 &self.config,
                 WALLET_SERVICE_SERVICE_NAME,
                 "UnlockWallet",
-                request,
-                options,
-            )
-            .await
-    }
-    /// Call the GenerateBlocks RPC. Sends a request to /cusf.mainchain.v1.WalletService/GenerateBlocks.
-    pub async fn generate_blocks(
-        &self,
-        request: crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksRequest,
-    ) -> Result<
-        ::connectrpc::client::ServerStream<
-            T::ResponseBody,
-            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksResponseView<
-                'static,
-            >,
-        >,
-        ::connectrpc::ConnectError,
-    > {
-        self.generate_blocks_with_options(
-                request,
-                ::connectrpc::client::CallOptions::default(),
-            )
-            .await
-    }
-    /// Call the GenerateBlocks RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
-    pub async fn generate_blocks_with_options(
-        &self,
-        request: crate::proto::generated::buffa::cusf::mainchain::v1::GenerateBlocksRequest,
-        options: ::connectrpc::client::CallOptions,
-    ) -> Result<
-        ::connectrpc::client::ServerStream<
-            T::ResponseBody,
-            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GenerateBlocksResponseView<
-                'static,
-            >,
-        >,
-        ::connectrpc::ConnectError,
-    > {
-        ::connectrpc::client::call_server_stream(
-                &self.transport,
-                &self.config,
-                WALLET_SERVICE_SERVICE_NAME,
-                "GenerateBlocks",
                 request,
                 options,
             )

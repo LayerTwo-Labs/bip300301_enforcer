@@ -6,6 +6,7 @@ use crate::types::SidechainNumber;
 
 pub mod block_producer;
 pub mod crypto;
+pub mod mining;
 pub mod validator;
 pub mod wallet;
 

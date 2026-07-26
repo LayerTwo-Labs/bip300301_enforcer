@@ -593,7 +593,7 @@ where
 
     // The enforcer auto-proposes the stored bundle and, with `ack_all_proposals`,
     // upvotes it each block. Once `vote_count` crosses the inclusion threshold the
-    // next `generate_blocks` builds a block whose suffix txs run the treasury
+    // next `GenerateToAddress` builds a block whose suffix txs run the treasury
     // subtraction, which must fail with an amount-underflow rather than panicking.
     // After the crossing no block is produced, so the failure is sticky; cap the
     // loop generously above the regtest threshold.
@@ -615,7 +615,7 @@ where
     }
     let status = underflow_status.ok_or_else(|| {
         anyhow::anyhow!(
-            "expected `generate_blocks` to fail once the over-value bundle crossed the \
+            "expected `GenerateToAddress` to fail once the over-value bundle crossed the \
              withdrawal-bundle inclusion threshold, but mined {MAX_BLOCKS} blocks without error"
         )
     })?;
@@ -824,6 +824,19 @@ pub fn tests(
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
     async_trials.push(new_trial(
+        "generate_to_address".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_generate_to_address::test_generate_to_address,
+    ));
+    // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
+    // `SetupOpts` to start the enforcer without a wallet.
+    async_trials.push(new_trial(
         "wallet_less_block_template".to_string(),
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
@@ -852,8 +865,9 @@ pub fn tests(
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
             network: Network::Regtest,
-            // Block templates are what read the persisted ACK policy;
-            // `GenerateBlocks` carries its own ACK-all flag instead.
+            // Block templates read the persisted ACK policy directly; the
+            // GenerateToAddress mining path would overwrite it via the
+            // `mine` helper's ACK-all argument.
             mode: Mode::GetBlockTemplate,
             file_registry: file_registry.clone(),
             failure_collector: failure_collector.clone(),

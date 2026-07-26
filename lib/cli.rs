@@ -429,9 +429,8 @@ pub struct Config {
     pub enable_block_template_server: bool,
     /// Address that receives the block reward.
     ///
-    /// Applies to every path that mines or builds a template: served
-    /// `getblocktemplate`, the signet mining script, and the wallet's
-    /// `GenerateBlocks`. Validated against the node's network at startup. If the
+    /// Applies to served `getblocktemplate` and the signet mining script.
+    /// Validated against the node's network at startup. If the
     /// wallet is enabled and this is unset, the reward goes to a fresh address
     /// from the wallet.
     #[arg(long, value_parser = parse_bitcoin_address_unchecked)]

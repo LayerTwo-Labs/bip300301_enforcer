@@ -6,6 +6,7 @@ mod test_activation_height;
 mod test_blinded_m6_roundtrip;
 mod test_consecutive_deposits;
 mod test_file_based_block_parser;
+mod test_generate_to_address;
 mod test_inactive_drivechain_output;
 mod test_invalid_block;
 mod test_peer_bmm_request;

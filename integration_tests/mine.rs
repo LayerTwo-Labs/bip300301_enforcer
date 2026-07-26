@@ -7,9 +7,9 @@ use bip300301_enforcer_lib::{
     proto::{
         self, ToStatus,
         mainchain::{
-            BlockHeaderInfo, GenerateBlocksRequest, GenerateBlocksResponse, SubscribeEventsRequest,
-            SubscribeEventsResponse, subscribe_events_response,
-            subscribe_events_response::event::ConnectBlock,
+            BlockHeaderInfo, GenerateToAddressRequest, GenerateToAddressResponse,
+            SetAckAllProposalsRequest, SubscribeEventsRequest, SubscribeEventsResponse,
+            subscribe_events_response, subscribe_events_response::event::ConnectBlock,
         },
     },
 };
@@ -276,7 +276,9 @@ where
     Ok(())
 }
 
-// Mine blocks, running a check after each block
+// Mine blocks via `GenerateToAddress`, running a check after each block.
+// `GenerateToAddress` mines with the persisted ACK policy, so set it first to
+// mirror the requested per-call behavior.
 pub async fn mine_generateblocks_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
@@ -286,23 +288,27 @@ pub async fn mine_generateblocks_check<F, Err>(
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
 {
-    let request = GenerateBlocksRequest {
-        blocks: proto::wrap_u32(blocks),
-        ack_all_proposals: ack_all_proposals.unwrap_or(false),
-    };
-    let mut stream = post_setup
-        .wallet_service_client
-        .generate_blocks(request)
+    let () = post_setup
+        .block_producer_service_client
+        .set_ack_all_proposals(SetAckAllProposalsRequest {
+            ack_all: ack_all_proposals.unwrap_or(false),
+        })
         .await
+        .map(|_| ())
         .map_err(Either::Left)?;
-    while let Some(view) = stream.message().await.map_err(Either::Left)? {
-        let resp: GenerateBlocksResponse = view.to_owned_message();
-        let GenerateBlocksResponse { block_hash, .. } = resp;
+    let request = GenerateToAddressRequest {
+        blocks: proto::wrap_u32(blocks),
+        address: post_setup.mining_address.to_string(),
+    };
+    let resp: GenerateToAddressResponse = post_setup
+        .mining_service_client
+        .generate_to_address(request)
+        .await
+        .map_err(Either::Left)?
+        .into_owned();
+    for block_hash in resp.block_hashes {
         let block_hash = block_hash
-            .into_option()
-            .ok_or_else(|| proto::Error::missing_field::<GenerateBlocksResponse>("block_hash"))
-            .map_err(|err| Either::Left(proto_err_to_connect(err)))?
-            .decode_status::<GenerateBlocksResponse, _>("block_hash")
+            .decode_status::<GenerateToAddressResponse, _>("block_hashes")
             .map_err(Either::Left)?;
         let () = check(block_hash).map_err(Either::Right)?;
     }
@@ -312,12 +318,12 @@ where
 #[derive(Debug, Error)]
 pub enum MineError {
     #[error(transparent)]
-    GenerateBlocks(ConnectError),
+    GenerateToAddress(ConnectError),
     #[error(transparent)]
     Gbt(MineGbtError),
     #[error(transparent)]
     Signet(MineSignetError),
-    #[error("GenerateBlocks is not supported on Signet")]
+    #[error("the GenerateBlocks mining mode is not supported on Signet")]
     SignetGenerateBlocks,
 }
 
@@ -337,7 +343,7 @@ where
             })
             .await
             .map_err(|err| match err {
-                Either::Left(err) => MineError::GenerateBlocks(err),
+                Either::Left(err) => MineError::GenerateToAddress(err),
             })
         }
         (Network::Regtest, MiningMode::GetBlockTemplate) => {
