@@ -2275,6 +2275,75 @@ mod tests {
         Ok(())
     }
 
+    /// A batch that fails partway must not leave events behind for state the
+    /// aborted txn rolled back.
+    #[test]
+    fn failed_batch_broadcasts_no_events() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let sc = SidechainNumber(1);
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.active_sidechains
+                .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+                .into_diagnostic()?;
+            dbs.active_sidechains
+                .put_ctip(
+                    &mut rwtxn,
+                    sc,
+                    &Ctip {
+                        outpoint: OutPoint {
+                            txid: Txid::from_byte_array([0x11; 32]),
+                            vout: 0,
+                        },
+                        value: Amount::from_sat(5_000),
+                    },
+                )
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+
+        let block_a = build_test_block(BlockHash::all_zeros(), TestBlockParts::default());
+        // Spends an outpoint that is not the tracked CTIP, so this block fails
+        // with `OldCtipUnspent`.
+        let block_b = build_test_block(
+            block_a.header.block_hash(),
+            TestBlockParts {
+                extra_txs: vec![build_m5_deposit_tx(
+                    sc,
+                    OutPoint::default(),
+                    Amount::from_sat(5_000),
+                    Amount::from_sat(1_000),
+                )],
+                ..Default::default()
+            },
+        );
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(block_a.header, 0), (block_b.header, 1)])
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+
+        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let rwtxn = dbs.write_txn().into_diagnostic()?;
+        let res =
+            test_handler(&dbs).handle_block_batch_and_commit(rwtxn, &[block_a, block_b], &event_tx);
+        assert!(res.is_err(), "batch with an invalid block must fail");
+        assert!(
+            event_rx.try_recv().is_err(),
+            "no event may be delivered for a batch that never committed"
+        );
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        assert!(
+            dbs.current_chain_tip
+                .try_get(&rotxn, &())
+                .into_diagnostic()?
+                .is_none()
+        );
+        Ok(())
+    }
+
     #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
