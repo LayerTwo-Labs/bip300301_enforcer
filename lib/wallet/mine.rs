@@ -631,3 +631,57 @@ impl Wallet {
         .fuse()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{BlockHash, hashes::Hash as _};
+
+    use crate::{
+        block_producer::db::Db,
+        types::{BmmCommitment, SidechainNumber},
+        wallet::Wallet,
+    };
+
+    /// A mined block is irreversible, so a failing BMM request cleanup must not
+    /// be reported as a failure: the caller would retry and mine the same M7
+    /// twice.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_bmm_request_cleanup_is_not_propagated() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db = Db::new(dir.path()).unwrap();
+        let prev = BlockHash::from_byte_array([0x01; 32]);
+        let mined = BlockHash::from_byte_array([0x02; 32]);
+        assert!(
+            db.insert_new_bmm_request(SidechainNumber(1), prev, BmmCommitment([0x77; 32]),)
+                .await
+                .unwrap()
+        );
+
+        // A read-only data dir makes SQLite unable to write its journal, so the
+        // DELETE really fails.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o500);
+        std::fs::set_permissions(dir.path(), perms.clone()).unwrap();
+
+        let delete_failed = db.delete_bmm_requests(&prev, &mined).await.is_err();
+        if delete_failed {
+            let () = Wallet::consume_bmm_requests(&db, &prev, &mined).await;
+        }
+
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        // A user that can write to a read-only dir (root) cannot fail the
+        // DELETE, so there is nothing to assert.
+        if !delete_failed {
+            tracing::warn!("skipped: the DELETE could not be made to fail");
+            return;
+        }
+        assert_eq!(
+            db.get_bmm_requests(&prev).await.unwrap().len(),
+            1,
+            "the requests survive the failed cleanup"
+        );
+    }
+}
