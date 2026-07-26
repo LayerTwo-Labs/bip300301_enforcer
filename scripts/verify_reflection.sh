@@ -96,12 +96,14 @@ fail() {
 }
 
 echo "==> grpcurl: ListServices via reflection"
+# ListServices advertises what this process actually mounted, not everything in
+# the descriptor pool. The enforcer above runs on regtest with neither
+# --enable-wallet nor --enable-block-template-server, so BlockProducerService
+# and WalletService are absent while MiningService (regtest) is present. That
+# makes this list a check on the service gating, not just on reflection.
 EXPECTED_SERVICES='cusf.crypto.v1.CryptoService
-cusf.mainchain.v1.BlockProducerService
-cusf.mainchain.v1.ValidatorService
-cusf.mainchain.v1.WalletService
-grpc.reflection.v1.ServerReflection
-grpc.reflection.v1alpha.ServerReflection'
+cusf.mainchain.v1.MiningService
+cusf.mainchain.v1.ValidatorService'
 ACTUAL_SERVICES="$(grpcurl -plaintext "$GRPC_ADDR" list | sort)"
 if [ "$ACTUAL_SERVICES" != "$EXPECTED_SERVICES" ]; then
     echo "expected services:" >&2
@@ -115,6 +117,30 @@ echo "==> grpcurl: describe via reflection"
 grpcurl -plaintext "$GRPC_ADDR" describe cusf.mainchain.v1.ValidatorService \
     | grep -q GetBlockHeaderInfo \
     || fail "grpcurl describe is missing GetBlockHeaderInfo"
+
+# Narrowing ListServices must not narrow the descriptor set: a client should
+# still be able to resolve the schema of a service this process did not mount.
+echo "==> grpcurl: describe an unmounted service (still resolvable)"
+grpcurl -plaintext "$GRPC_ADDR" describe cusf.mainchain.v1.WalletService \
+    | grep -q GetBalance \
+    || fail "grpcurl describe cannot resolve the unmounted WalletService"
+
+# ...and the converse: an unadvertised service really is unreachable, so the
+# list above is not just cosmetic.
+echo "==> grpcurl: calling an unmounted service is Unimplemented"
+if grpcurl -plaintext -d '{}' \
+    "$GRPC_ADDR" cusf.mainchain.v1.WalletService/GetBalance \
+    > "$WORK_DIR/unmounted.out" 2>&1; then
+    echo "--- response ---" >&2
+    cat "$WORK_DIR/unmounted.out" >&2
+    fail "GetBalance succeeded on a wallet-less enforcer"
+fi
+grep -qi "Unimplemented" "$WORK_DIR/unmounted.out" \
+    || {
+        echo "--- response ---" >&2
+        cat "$WORK_DIR/unmounted.out" >&2
+        fail "expected Unimplemented calling the unmounted WalletService"
+    }
 
 # ripemd160("abc"), a fixed test vector
 RIPEMD_REQUEST='{"msg":{"hex":"616263"}}'

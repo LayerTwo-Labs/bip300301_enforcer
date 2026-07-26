@@ -15,8 +15,8 @@ use bip300301_enforcer_lib::{
         crypto_service::{CRYPTO_SERVICE_SERVICE_NAME, CryptoServiceExt},
         mainchain_service::{
             BLOCK_PRODUCER_SERVICE_SERVICE_NAME, BlockProducerServiceExt,
-            VALIDATOR_SERVICE_SERVICE_NAME, ValidatorServiceExt, WALLET_SERVICE_SERVICE_NAME,
-            WalletServiceExt,
+            MINING_SERVICE_SERVICE_NAME, MiningServiceExt, VALIDATOR_SERVICE_SERVICE_NAME,
+            ValidatorServiceExt, WALLET_SERVICE_SERVICE_NAME, WalletServiceExt,
         },
     },
     rpc_client, server,
@@ -57,9 +57,14 @@ mod logging;
 
 /// The enforcer, in one of its three modes:
 ///
-/// * validator only — consensus, no templates,
-/// * block producer — consensus + drivechain policy + block templates, no keys,
+/// * validator only — consensus, no drivechain policy,
+/// * block producer — consensus + drivechain policy, no keys,
 /// * wallet — a block producer that also holds keys.
+///
+/// This picks how blocks are applied, not which RPCs are served: producer mode
+/// is what keeps the policy tables in step with the chain, whether it was
+/// entered to serve block templates or just to mine. See [`ConnectServices`]
+/// for the service gating.
 ///
 /// Nested `Either` rather than a bespoke enum so that the blanket `CusfEnforcer`
 /// impls from `cusf_enforcer_mempool` apply: `run_no_mempool_task` drives this
@@ -369,39 +374,58 @@ async fn fill_connect_get_defaults(
         .await
 }
 
+/// Which of the optional Connect services to register, alongside the ones that
+/// are always served
+struct ConnectServices {
+    /// Backs both `BlockProducerService` and `MiningService`
+    producer: BlockProducer,
+
+    /// Register `BlockProducerService`
+    block_producer: bool,
+
+    /// Register `MiningService`
+    mining: bool,
+
+    /// Register `WalletService`.
+    wallet: Option<Wallet>,
+}
+
 async fn run_connect_server(
-    enforcer: Enforcer,
+    validator: Validator,
+    services: ConnectServices,
     cancel: CancellationToken,
     addr: SocketAddr,
 ) -> Result<(), error::ConnectServer> {
-    let inner_validator = enforcer_validator(&enforcer).clone();
     let router = Router::new();
     let router = Arc::new(server::crypto::CryptoServiceServer).register(router);
-    let router = Arc::new(server::validator::Server::new(
-        inner_validator,
-        cancel.clone(),
-    ))
-    .register(router);
+    let router =
+        Arc::new(server::validator::Server::new(validator, cancel.clone())).register(router);
 
-    let mut services: Vec<&'static str> =
+    let mut service_names: Vec<&'static str> =
         vec![CRYPTO_SERVICE_SERVICE_NAME, VALIDATOR_SERVICE_SERVICE_NAME];
-    let router = match enforcer {
-        Either::Left(_validator) => router,
-        Either::Right(Either::Left(producer)) => {
-            services.push(BLOCK_PRODUCER_SERVICE_SERVICE_NAME);
-            Arc::new(producer).register(router)
-        }
-        Either::Right(Either::Right(wallet)) => {
-            services.push(BLOCK_PRODUCER_SERVICE_SERVICE_NAME);
-            services.push(WALLET_SERVICE_SERVICE_NAME);
-            let wallet = Arc::new(wallet);
-            let router = BlockProducerServiceExt::register(Arc::clone(&wallet), router);
-            WalletServiceExt::register(wallet, router)
-        }
+
+    let producer = Arc::new(services.producer);
+    let router = if services.block_producer {
+        service_names.push(BLOCK_PRODUCER_SERVICE_SERVICE_NAME);
+        BlockProducerServiceExt::register(Arc::clone(&producer), router)
+    } else {
+        router
     };
 
-    let health_checker = Arc::new(StaticChecker::with_services(services));
-    let router = Arc::new(HealthService::from_arc(Arc::clone(&health_checker))).register(router);
+    let router = if services.mining {
+        service_names.push(MINING_SERVICE_SERVICE_NAME);
+        MiningServiceExt::register(producer, router)
+    } else {
+        router
+    };
+
+    let router = match services.wallet {
+        Some(wallet) => {
+            service_names.push(WALLET_SERVICE_SERVICE_NAME);
+            WalletServiceExt::register(Arc::new(wallet), router)
+        }
+        None => router,
+    };
 
     // gRPC server reflection (v1 + v1alpha), so tools like grpcurl/buf curl can
     // discover and call our services without local proto files. Backed by the
@@ -411,7 +435,11 @@ async fn run_connect_server(
     let reflector = Reflector::from_descriptor_pool(Arc::clone(
         bip300301_enforcer_lib::proto::mainchain::descriptor_pool(),
     ))
-    .map_err(error::ConnectServer::Reflection)?;
+    .map_err(error::ConnectServer::Reflection)?
+    .with_services(service_names.iter().copied());
+
+    let health_checker = Arc::new(StaticChecker::with_services(service_names));
+    let router = Arc::new(HealthService::from_arc(Arc::clone(&health_checker))).register(router);
     let router = connectrpc_reflection::install(router, reflector);
 
     let app = axum::Router::new()
@@ -1307,7 +1335,23 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
 
-    let producer = BlockProducer::new(&wallet_data_dir, validator.clone())?;
+    let producer = BlockProducer::new(
+        &wallet_data_dir,
+        validator.clone(),
+        mainchain_client.clone(),
+        cli.clone(),
+        signet_challenge.clone(),
+    )?;
+
+    let mining_enabled = matches!(
+        info.chain,
+        bitcoin::Network::Regtest | bitcoin::Network::Signet
+    );
+    let block_producer_enabled = cli.enable_wallet || cli.enable_block_template_server;
+
+    // Shares the `Arc` inner with the copy the wallet takes ownership of below,
+    // so the policy DB and the mining semaphore are the same either way.
+    let rpc_producer = producer.clone();
 
     let enforcer: Enforcer = if cli.enable_wallet {
         // The wallet needs the txindex in order to operate. Will lead to obscure errors later
@@ -1339,9 +1383,7 @@ async fn main() -> Result<()> {
             &cli,
             mainchain_client.clone(),
             producer,
-            coinbase_recipient.clone(),
             magic,
-            signet_challenge,
         )
         .await?;
 
@@ -1376,7 +1418,7 @@ async fn main() -> Result<()> {
         }
 
         Either::Right(Either::Right(wallet))
-    } else if cli.enable_block_template_server {
+    } else if cli.enable_block_template_server || mining_enabled {
         Either::Right(Either::Left(producer))
     } else {
         Either::Left(validator)
@@ -1448,23 +1490,27 @@ async fn main() -> Result<()> {
                 });
             }
             (true, Either::Right(Either::Left(producer))) => {
-                // The block producer has no wallet to derive a payout address
-                // from, so `--coinbase-recipient` is mandatory here.
-                let mining_reward_address = coinbase_recipient.clone().ok_or_else(|| {
-                    miette!(
-                        "serving block templates without a wallet requires `--coinbase-recipient`"
-                    )
-                })?;
-                let gbt = GbtConfig {
-                    mining_reward_address,
-                    network,
-                    cache_lifetime: cli.gbt_cache_lifetime(),
-                    serve_rpc_addr: cli.serve_rpc_addr,
+                let gbt = if cli.enable_block_template_server {
+                    // The block producer has no wallet to derive a payout address
+                    // from, so `--coinbase-recipient` is mandatory here.
+                    let mining_reward_address = coinbase_recipient.clone().ok_or_else(|| {
+                        miette!(
+                            "serving block templates without a wallet requires `--coinbase-recipient`"
+                        )
+                    })?;
+                    Some(GbtConfig {
+                        mining_reward_address,
+                        network,
+                        cache_lifetime: cli.gbt_cache_lifetime(),
+                        serve_rpc_addr: cli.serve_rpc_addr,
+                    })
+                } else {
+                    None
                 };
                 tasks.spawn(async move {
                     let res = run_block_producer_mempool_task(
                         producer,
-                        Some(gbt),
+                        gbt,
                         mainchain_client,
                         zmq,
                         cancel,
@@ -1495,10 +1541,16 @@ async fn main() -> Result<()> {
 
     {
         let cancel = cancel.clone();
-        let enforcer = enforcer.clone();
+        let validator = enforcer_validator(&enforcer).clone();
+        let services = ConnectServices {
+            producer: rpc_producer,
+            block_producer: block_producer_enabled,
+            mining: mining_enabled,
+            wallet: enforcer_wallet(&enforcer).cloned(),
+        };
         let addr = cli.serve_grpc_addr;
         tasks.spawn(async move {
-            let res = run_connect_server(enforcer, cancel, addr)
+            let res = run_connect_server(validator, services, cancel, addr)
                 .await
                 .map_err(miette::Report::from_err);
             ("Connect RPC server", res)

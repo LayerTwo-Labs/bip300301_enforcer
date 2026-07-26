@@ -1,3 +1,9 @@
+//! Mining blocks without a wallet, backing
+//! `BlockProducerService.GenerateToAddress`. The coinbase pays out to a
+//! caller-provided address. On regtest, blocks are constructed and their PoW
+//! ground locally; on signet, blocks are produced by the signet miner script,
+//! signed by the Bitcoin Core node's wallet.
+
 use std::{
     collections::HashSet,
     num::NonZeroU32,
@@ -21,21 +27,28 @@ use bitcoin::{
 };
 use bitcoin_jsonrpsee::{
     MainClient as _,
-    client::{BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _},
-};
-use futures::{
-    StreamExt as _,
-    stream::{self, FusedStream},
+    client::{
+        BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _, GetRawTransactionClient as _,
+        GetRawTransactionVerbose,
+    },
 };
 
 use crate::{
     bins::{self, CommandExt as _},
+    block_producer::{BlockProducer, error},
     messages::CoinbaseBuilder,
-    wallet::{
-        Wallet,
-        error::{self, BitcoinCoreRPC},
-    },
 };
+
+fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
+    const L2L_SIGNET_CHALLENGE: &[u8] = b"00141551188e5153533b4fdd555449e640d9cc129456";
+    const L2L_SIGNET_TARGET_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+    const DEFAULT_TARGET_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+    if signet_challenge.as_bytes() == L2L_SIGNET_CHALLENGE {
+        L2L_SIGNET_TARGET_INTERVAL
+    } else {
+        DEFAULT_TARGET_INTERVAL
+    }
+}
 
 fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
     let subsidy_sats = 50 * Amount::ONE_BTC.to_sat();
@@ -51,24 +64,27 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
     }
 }
 
-fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
-    const L2L_SIGNET_CHALLENGE: &[u8] = b"00141551188e5153533b4fdd555449e640d9cc129456";
-    const L2L_SIGNET_TARGET_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-    const DEFAULT_TARGET_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
-    if signet_challenge.as_bytes() == L2L_SIGNET_CHALLENGE {
-        L2L_SIGNET_TARGET_INTERVAL
-    } else {
-        DEFAULT_TARGET_INTERVAL
-    }
-}
-
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
-impl Wallet {
+impl BlockProducer {
+    async fn fetch_transaction(&self, txid: Txid) -> Result<Transaction, error::FetchTransaction> {
+        let block_hash = None;
+        let transaction_hex = self
+            .main_client()
+            .get_raw_transaction(txid, GetRawTransactionVerbose::<false>, block_hash)
+            .await
+            .map_err(|err| error::BitcoinCoreRPC {
+                method: "getrawtransaction".to_string(),
+                error: err,
+            })?;
+        let transaction = bitcoin::consensus::encode::deserialize_hex(&transaction_hex)?;
+        Ok(transaction)
+    }
+
     /// select non-coinbase txs for a new block
     async fn select_block_txs(&self) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
-        let ctips = self.inner.validator().get_ctips()?;
-        let mut res = self.inner.producer.generate_suffix_txs(&ctips).await?;
+        let ctips = self.validator().get_ctips()?;
+        let mut res = self.generate_suffix_txs(&ctips).await?;
 
         // We want to include all transactions from the mempool into our newly generated block.
         // This approach is perhaps a bit naive, and could fail if there are conflicting TXs
@@ -78,8 +94,7 @@ impl Wallet {
         // Including all the mempool transactions here ensure that pending sidechain deposit
         // transactions get included into a block.
         let raw_mempool = self
-            .inner
-            .main_client
+            .main_client()
             .get_raw_mempool(BoolWitness::<false>, BoolWitness::<false>)
             .await
             .map_err(|err| error::BitcoinCoreRPC {
@@ -88,27 +103,23 @@ impl Wallet {
             })?;
 
         for txid in raw_mempool {
-            let transaction = self.fetch_transaction(txid).await?;
+            let transaction = self
+                .fetch_transaction(txid)
+                .await
+                .map_err(|err| error::SelectBlockTxs::FetchTransaction { txid, source: err })?;
             res.push(transaction);
         }
 
         Ok(res)
     }
 
-    /// Construct a coinbase tx from txouts
-    async fn finalize_coinbase(
+    /// Construct a coinbase tx paying out to `coinbase_spk`
+    fn finalize_coinbase(
         &self,
         best_block_height: u32,
+        coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
-    ) -> Result<Transaction, error::GetNewAddress> {
-        // Pay the reward to `--coinbase-recipient` when set, matching signet and
-        // served templates; otherwise fall back to a fresh wallet address.
-        let coinbase_addr = match self.inner.coinbase_recipient.clone() {
-            Some(addr) => addr,
-            None => self.get_new_address().await?,
-        };
-        let coinbase_spk = coinbase_addr.script_pubkey();
-
+    ) -> Transaction {
         let script_sig = bitcoin::blockdata::script::Builder::new()
             .push_int((best_block_height + 1) as i64)
             .push_opcode(OP_0)
@@ -125,7 +136,7 @@ impl Wallet {
                 value: Amount::ZERO,
             }]
         };
-        Ok(Transaction {
+        Transaction {
             version: TxVersion::TWO,
             lock_time: LockTime::Blocks(Height::ZERO),
             input: vec![TxIn {
@@ -138,12 +149,13 @@ impl Wallet {
                 script_sig,
             }],
             output: [&output, coinbase_outputs].concat(),
-        })
+        }
     }
 
     /// Finalize a new block by constructing the coinbase tx
-    async fn finalize_block(
+    fn finalize_block(
         &self,
+        coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> Result<Block, error::FinalizeBlock> {
@@ -152,9 +164,7 @@ impl Wallet {
         let best_block_height = tip_header.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
 
-        let coinbase_tx = self
-            .finalize_coinbase(best_block_height, coinbase_outputs)
-            .await?;
+        let coinbase_tx = self.finalize_coinbase(best_block_height, coinbase_spk, coinbase_outputs);
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
         // Keep block times strictly increasing so blocks mined faster than once
         // per second are not rejected as `time-too-old` (timestamp must exceed
@@ -199,12 +209,13 @@ impl Wallet {
     /// Mine a block
     async fn mine(
         &self,
+        coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> Result<BlockHash, error::Mine> {
         let transaction_count = transactions.len();
 
-        let mut block = self.finalize_block(coinbase_outputs, transactions).await?;
+        let mut block = self.finalize_block(coinbase_spk, coinbase_outputs, transactions)?;
         loop {
             block.header.nonce += 1;
             if block.header.validate_pow(block.header.target()).is_ok() {
@@ -216,8 +227,7 @@ impl Wallet {
             .consensus_encode(&mut block_bytes)
             .map_err(error::EncodeBlock)?;
         if let Some(reason) = self
-            .inner
-            .main_client
+            .main_client()
             .submit_block(hex::encode(block_bytes))
             .await
             .map_err(|err| error::BitcoinCoreRPC {
@@ -273,19 +283,28 @@ impl Wallet {
             }
         }
 
+        // Signet blocks come out of the signet miner, which pulls its template
+        // from our own `getblocktemplate` server (see
+        // `generate_signet_block`). That is also the only place the drivechain
+        // coinbase messages get added on signet, so there is no serving this
+        // request without the template server running. Checked before the block
+        // count, as it is the more fundamental misconfiguration of the two.
+        if !self.config().enable_block_template_server {
+            return Err(error::VerifyCanMine::NoBlockTemplateServerOnSignet);
+        }
+
         if blocks.get() > 1 {
             return Err(error::VerifyCanMine::MultipleBlocksOnSignet);
         }
 
         let template = self
-            .inner
-            .main_client
+            .main_client()
             .get_block_template(BlockTemplateRequest {
                 rules: vec!["signet".to_string(), "segwit".to_string()],
                 capabilities: HashSet::new(),
             })
             .await
-            .map_err(|err| BitcoinCoreRPC {
+            .map_err(|err| error::BitcoinCoreRPC {
                 method: "getblocktemplate".to_string(),
                 error: err,
             })?;
@@ -298,8 +317,7 @@ impl Wallet {
             bitcoin::Address::from_script(&signet_challenge, bitcoin::params::Params::SIGNET)?;
 
         let address_info = self
-            .inner
-            .main_client
+            .main_client()
             .get_address_info(address.as_unchecked())
             .await
             .map_err(|err| error::BitcoinCoreRPC {
@@ -316,22 +334,18 @@ impl Wallet {
         let () = self.check_has_binary(&PathBuf::from("python3"))?;
         tracing::debug!("verified existence of `python3`");
 
-        let () = self.check_has_binary(&self.inner.config.mining_opts.bitcoin_cli_path)?;
+        let () = self.check_has_binary(&self.config().mining_opts.bitcoin_cli_path)?;
         tracing::debug!("verified existence of `bitcoin-cli`");
 
-        let () = self.check_has_binary(&self.inner.config.mining_opts.bitcoin_util_path)?;
+        let () = self.check_has_binary(&self.config().mining_opts.bitcoin_util_path)?;
         tracing::debug!("verified existence of `bitcoin-util`");
 
         Ok(())
     }
 
     async fn get_signet_miner_path(&self) -> Result<PathBuf, error::GetSignetMinerPath> {
-        if let Some(signet_mining_script_path) = self
-            .inner
-            .config
-            .mining_opts
-            .signet_mining_script_path
-            .clone()
+        if let Some(signet_mining_script_path) =
+            self.config().mining_opts.signet_mining_script_path.clone()
         {
             tracing::debug!(
                 "Using custom signet miner script path: {}",
@@ -401,26 +415,22 @@ impl Wallet {
 
         let getblocktemplate_command = Some(format!(
             "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
-            self.inner.config.serve_rpc_addr.ip(),
-            self.inner.config.serve_rpc_addr.port()
+            self.config().serve_rpc_addr.ip(),
+            self.config().serve_rpc_addr.port()
         ));
-        let target_block_interval = self
-            .inner
-            .signet_challenge
-            .as_deref()
-            .map(target_block_interval);
+        let target_block_interval = self.signet_challenge().map(target_block_interval);
 
         let mining_script_path = self.get_signet_miner_path().await?;
         let miner = bins::SignetMiner {
             path: mining_script_path,
-            bitcoin_cli: self.inner.config.bitcoin_cli(bitcoin::Network::Signet),
-            bitcoin_util: self.inner.config.mining_opts.bitcoin_util_path.clone(),
+            bitcoin_cli: self.config().bitcoin_cli(bitcoin::Network::Signet),
+            bitcoin_util: self.config().mining_opts.bitcoin_util_path.clone(),
             block_interval: target_block_interval,
             nbits: None,
             coinbase_recipient,
             getblocktemplate_command,
             coinbasetxn: true,
-            debug: self.inner.config.mining_opts.signet_mining_script_debug,
+            debug: self.config().mining_opts.signet_mining_script_debug,
         };
 
         let mut command_args = Vec::new();
@@ -513,7 +523,7 @@ impl Wallet {
             // from `bitcoin-cli getblocktemplate`. The underlying template
             // error is recorded by the block producer hooks.
             let mut stderr = stderr;
-            if let Some(template_err) = self.inner.producer.last_gbt_error().as_deref() {
+            if let Some(template_err) = self.last_gbt_error().as_deref() {
                 stderr.push_str("\nblock template error: ");
                 stderr.push_str(template_err);
             }
@@ -522,43 +532,39 @@ impl Wallet {
 
         // The output of the signet miner is unfortunately not very useful,
         // so we have to fetch the most recent block in order to get the hash.
-        let block_hash = self
-            .inner
-            .main_client
-            .getbestblockhash()
-            .await
-            .map_err(|err| {
-                let err = error::BitcoinCoreRPC {
-                    method: "getbestblockhash".to_owned(),
-                    error: err,
-                };
-                error::GenerateSignetBlock::FetchMostRecentBlockHash(err)
-            })?;
+        let block_hash = self.main_client().getbestblockhash().await.map_err(|err| {
+            let err = error::BitcoinCoreRPC {
+                method: "getbestblockhash".to_owned(),
+                error: err,
+            };
+            error::GenerateSignetBlock::FetchMostRecentBlockHash(err)
+        })?;
 
         tracing::info!("Generated signet block: {}", block_hash);
 
         Ok(block_hash)
     }
 
-    /// Build and mine a single block
-    async fn generate_block(
+    /// Build and mine a single block, paying the block reward to
+    /// `coinbase_addr`. The caller is responsible for verifying that mining is
+    /// possible (see [`Self::verify_can_mine`]).
+    pub async fn generate_block(
         &self,
+        coinbase_addr: bitcoin::Address,
         ack_all_proposals: bool,
     ) -> Result<BlockHash, error::GenerateBlock> {
-        let Some(mainchain_tip) = self.inner.validator().try_get_mainchain_tip()? else {
-            return Err(error::GenerateBlock::ValidatorNotSynced);
-        };
-        if self.inner.validator().network() == Network::Signet {
+        if self.validator().network() == Network::Signet {
             return self
-                .generate_signet_block(self.inner.coinbase_recipient.clone())
+                .generate_signet_block(Some(coinbase_addr))
                 .await
                 .map_err(error::GenerateBlock::GenerateSignetBlock);
         }
-        // `GenerateBlocks` carries its own ACK-all flag, so the persisted policy
-        // (which governs block templates) is deliberately not consulted here.
+        let coinbase_spk = coinbase_addr.script_pubkey();
+        let Some(mainchain_tip) = self.validator().try_get_mainchain_tip()? else {
+            return Err(error::GenerateBlock::ValidatorNotSynced);
+        };
         let mut coinbase_outputs = Vec::new();
         let () = self
-            .producer()
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
         let transactions = self.select_block_txs().await?;
@@ -584,38 +590,13 @@ impl Wallet {
             "Mining block",
         );
 
-        let block_hash = self.mine(&coinbase_outputs, transactions).await?;
-        self.inner
-            .producer
-            .db()
+        let block_hash = self
+            .mine(coinbase_spk, &coinbase_outputs, transactions)
+            .await?;
+        self.db()
             .delete_bmm_requests(&mainchain_tip, &block_hash)
             .await
             .map_err(error::GenerateBlock::DeleteBmmRequests)?;
         Ok(block_hash)
-    }
-
-    pub fn generate_blocks<Ref>(
-        this: Ref,
-        count: NonZeroU32,
-        ack_all_proposals: bool,
-    ) -> impl FusedStream<Item = Result<BlockHash, error::GenerateBlock>>
-    where
-        Ref: std::borrow::Borrow<Self>,
-    {
-        tracing::info!(count, "generating blocks");
-        stream::try_unfold((this, 0), move |(this, mut generated)| async move {
-            if generated == count.get() {
-                Ok(None)
-            } else {
-                let mut remaining = count.get() - generated;
-                tracing::trace!(generated, remaining, "generating block",);
-                let block_hash = this.borrow().generate_block(ack_all_proposals).await?;
-                generated += 1;
-                remaining -= 1;
-                tracing::trace!(generated, remaining, "generated block",);
-                Ok(Some((block_hash, (this, generated))))
-            }
-        })
-        .fuse()
     }
 }

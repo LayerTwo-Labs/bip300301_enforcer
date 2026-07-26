@@ -51,8 +51,6 @@ service WalletService {
   rpc UnlockWallet(UnlockWalletRequest) returns (UnlockWalletResponse) {
     option idempotency_level = IDEMPOTENT;
   }
-  // Available on regtest and signet only.
-  rpc GenerateBlocks(GenerateBlocksRequest) returns (stream GenerateBlocksResponse);
 }
 
 message BroadcastWithdrawalBundleRequest {
@@ -177,18 +175,6 @@ message UnlockWalletRequest {
   string password = 1;
 }
 message UnlockWalletResponse {}
-
-message GenerateBlocksRequest {
-  // Number of blocks to generate.
-  google.protobuf.UInt32Value blocks = 1;
-
-  // ACK all sidechain proposals, irregardless of if they are already
-  // in the wallet DB.
-  bool ack_all_proposals = 2;
-}
-message GenerateBlocksResponse {
-  cusf.common.v1.ReverseHex block_hash = 1;
-}
 
 message GetInfoRequest {}
 

@@ -55,7 +55,6 @@ use crate::{
 
 mod cusf_block_producer;
 pub mod error;
-mod mine;
 pub mod mnemonic;
 mod seed_store;
 mod sync;
@@ -100,8 +99,6 @@ struct WalletInner {
     main_client: HttpClient,
     producer: BlockProducer,
     magic: bitcoin::p2p::Magic,
-    // Always Some(_) on signets
-    signet_challenge: Option<bitcoin::ScriptBuf>,
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
     bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
@@ -111,14 +108,9 @@ struct WalletInner {
     /// `bdk_db`
     bdk_db: tokio::sync::Mutex<Persistence>,
     seed_store: SeedStore,
-    /// Where block rewards go. If unset, `generate_blocks` falls back to a fresh wallet
-    /// address.
-    coinbase_recipient: Option<bitcoin::Address>,
     chain_source_client: Option<ChainSourceClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
-    /// Limits GenerateBlocks to one concurrent call at a time.
-    generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl WalletInner {
@@ -291,15 +283,14 @@ impl WalletInner {
         config: &Config,
         main_client: HttpClient,
         producer: BlockProducer,
-        coinbase_recipient: Option<bitcoin::Address>,
         magic: bitcoin::p2p::Magic,
-        signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitWallet> {
         let network = {
             let validator_network = producer.validator().network();
             bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())?
         };
-        if network == bdk_wallet::bitcoin::Network::Signet && signet_challenge.is_none() {
+        if network == bdk_wallet::bitcoin::Network::Signet && producer.signet_challenge().is_none()
+        {
             return Err(error::InitWallet::NoSignetChallengeFound);
         }
 
@@ -351,14 +342,11 @@ impl WalletInner {
             main_client,
             producer,
             magic,
-            signet_challenge,
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             seed_store,
-            coinbase_recipient,
             chain_source_client,
             last_sync: async_lock::RwLock::new(None),
-            generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
@@ -595,22 +583,10 @@ impl Wallet {
         config: &Config,
         main_client: HttpClient,
         producer: BlockProducer,
-        coinbase_recipient: Option<bitcoin::Address>,
         magic: bitcoin::p2p::Magic,
-        signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitWallet> {
-        let inner = Arc::new(
-            WalletInner::new(
-                data_dir,
-                config,
-                main_client,
-                producer,
-                coinbase_recipient,
-                magic,
-                signet_challenge,
-            )
-            .await?,
-        );
+        let inner =
+            Arc::new(WalletInner::new(data_dir, config, main_client, producer, magic).await?);
         Ok(Self { inner })
     }
 
@@ -741,10 +717,6 @@ impl Wallet {
 
     pub fn validator(&self) -> &Validator {
         self.inner.validator()
-    }
-
-    pub fn generate_blocks_semaphore(&self) -> &Arc<tokio::sync::Semaphore> {
-        &self.inner.generate_blocks_semaphore
     }
 
     fn create_deposit_op_drivechain_output(

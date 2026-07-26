@@ -3,10 +3,7 @@ use std::{collections::HashMap, str::FromStr};
 use bdk_wallet::bip39::Mnemonic;
 use bitcoin::{Address, Amount, hashes::Hash as _};
 use buffa::MessageField;
-use connectrpc::{
-    ConnectError, RequestContext, Response, ServiceRequest, ServiceResult, ServiceStream,
-};
-use futures::{StreamExt as _, stream::BoxStream};
+use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 
 use crate::{
     convert,
@@ -19,12 +16,12 @@ use crate::{
             CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
             CreateNewAddressRequest, CreateNewAddressResponse, CreateWalletRequest,
-            CreateWalletResponse, GenerateBlocksRequest, GenerateBlocksResponse, GetBalanceRequest,
-            GetBalanceResponse, GetInfoRequest, GetInfoResponse,
-            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
-            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
-            ListUnspentOutputsResponse, SendTransactionRequest, SendTransactionResponse,
-            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction, get_info_response,
+            CreateWalletResponse, GetBalanceRequest, GetBalanceResponse, GetInfoRequest,
+            GetInfoResponse, ListSidechainDepositTransactionsRequest,
+            ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
+            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
+            SendTransactionRequest, SendTransactionResponse, UnlockWalletRequest,
+            UnlockWalletResponse, WalletTransaction, get_info_response,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
         },
@@ -83,60 +80,6 @@ impl WalletService for crate::wallet::Wallet {
         Ok(Response::new(CreateNewAddressResponse {
             address: address.to_string(),
         }))
-    }
-
-    async fn generate_blocks(
-        &self,
-        _ctx: RequestContext,
-        request: ServiceRequest<'_, GenerateBlocksRequest>,
-    ) -> ServiceResult<ServiceStream<GenerateBlocksResponse>> {
-        use crate::proto::mainchain::GenerateBlocksRequest;
-        let GenerateBlocksRequest {
-            blocks,
-            ack_all_proposals,
-            ..
-        } = request.to_owned_message();
-        let count =
-            std::num::NonZeroU32::new(unwrap_u32(blocks).unwrap_or(1)).ok_or_else(|| {
-                ConnectError::invalid_argument("must provide a positive number of blocks")
-            })?;
-
-        // Only allow one GenerateBlocks call at a time. Concurrent callers
-        // will get a rate-limited error instead of queuing up.
-        let permit = self
-            .generate_blocks_semaphore()
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                ConnectError::resource_exhausted("GenerateBlocks is already in progress")
-            })?;
-
-        self.verify_can_mine(count)
-            .await
-            .map_err(|err| err.builder().to_connect_error())?;
-
-        tracing::info!("generate blocks: verified ability to mine");
-
-        let stream: BoxStream<'static, _> =
-            crate::wallet::Wallet::generate_blocks(self.clone(), count, ack_all_proposals)
-                .map(|item| match item {
-                    Ok(block_hash) => Ok(GenerateBlocksResponse {
-                        block_hash: MessageField::some(ReverseHex::encode(&block_hash)),
-                    }),
-                    Err(err) => {
-                        tracing::error!("{:#}", ErrorChain::new(&err));
-                        Err(err.builder().to_connect_error())
-                    }
-                })
-                // Hold the permit for the lifetime of the stream, so that
-                // the semaphore is released when the stream completes or is
-                // dropped.
-                .map(move |item| {
-                    let _permit = &permit;
-                    item
-                })
-                .boxed();
-        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn broadcast_withdrawal_bundle(

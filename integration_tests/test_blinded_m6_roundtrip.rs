@@ -148,8 +148,8 @@ pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> 
         })
         .await?;
 
-    // Verify the *storage* round-trip: mining a block through the wallet's
-    // own `generate_blocks` makes the enforcer read the bundle back out of its DB
+    // Verify the *storage* round-trip: mining a block through the enforcer's
+    // own `GenerateToAddress` makes the enforcer read the bundle back out of its DB
     // (`get_bundle_proposals` -> `BlindedM6::deserialize`, the second site
     // that parses a stored bundle) and propose it as an M3 in the
     // coinbase. If read-back deserialization failed, block building would error.

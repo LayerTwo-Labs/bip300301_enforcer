@@ -21,6 +21,7 @@ use crate::{
 mod coinbase;
 pub mod db;
 pub mod error;
+mod mine;
 
 pub use self::db::Db;
 
@@ -31,12 +32,18 @@ pub(crate) type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM
 struct Inner {
     validator: Validator,
     db: Db,
+    main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    config: crate::cli::Config,
+    // Always Some(_) on signets
+    signet_challenge: Option<bitcoin::ScriptBuf>,
     /// Error from the most recent failed block template build, cleared on
     /// success. The GBT server reports template failures to its JSON-RPC client
     /// in a field that `bitcoin-cli` (and thus the signet miner's stderr) drops,
-    /// so GenerateBlocks attaches this to its own error to surface the root
-    /// cause.
+    /// so `GenerateToAddress` attaches this to its own error to surface the
+    /// root cause.
     last_gbt_error: parking_lot::RwLock<Option<String>>,
+    /// Limits `GenerateToAddress` to one concurrent call at a time.
+    generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -48,19 +55,43 @@ impl BlockProducer {
     pub fn new(
         data_dir: &std::path::Path,
         validator: Validator,
+        main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+        config: crate::cli::Config,
+        signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitDbConnection> {
         let db = Db::new(data_dir)?;
         Ok(Self {
             inner: Arc::new(Inner {
                 validator,
                 db,
+                main_client,
+                config,
+                signet_challenge,
                 last_gbt_error: parking_lot::RwLock::new(None),
+                generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             }),
         })
     }
 
     pub fn validator(&self) -> &Validator {
         &self.inner.validator
+    }
+
+    /// JSON-RPC client for the Bitcoin Core node.
+    pub(crate) fn main_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
+        &self.inner.main_client
+    }
+
+    pub(crate) fn config(&self) -> &crate::cli::Config {
+        &self.inner.config
+    }
+
+    pub(crate) fn signet_challenge(&self) -> Option<&bitcoin::Script> {
+        self.inner.signet_challenge.as_deref()
+    }
+
+    pub fn generate_blocks_semaphore(&self) -> &Arc<tokio::sync::Semaphore> {
+        &self.inner.generate_blocks_semaphore
     }
 
     /// The drivechain policy store. The producer reads and writes policy only:
