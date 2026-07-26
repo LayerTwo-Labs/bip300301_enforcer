@@ -1304,7 +1304,7 @@ impl BlockHandler<'_> {
     pub(in crate::validator) fn disconnect_block(
         &self,
         rwtxn: &mut RwTxn,
-        event_tx: &Sender<Event>,
+        events: &mut Vec<Event>,
         block_hash: BlockHash,
     ) -> Result<(), error::DisconnectBlock> {
         let dbs = self.dbs;
@@ -1333,9 +1333,15 @@ impl BlockHandler<'_> {
         } else {
             dbs.current_chain_tip.delete(rwtxn, &())?;
         }
-        let event = Event::DisconnectBlock { block_hash };
-        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+        events.push(Event::DisconnectBlock { block_hash });
         Ok(())
+    }
+}
+
+/// Deliver events that a committed DB tx has already made durable.
+pub(in crate::validator) fn broadcast_events(event_tx: &Sender<Event>, events: Vec<Event>) {
+    for event in events {
+        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
 }
 
@@ -1606,11 +1612,27 @@ where
 }
 
 impl BlockHandler<'_> {
-    pub(in crate::validator) fn handle_block_batch<'a>(
+    /// Handle a batch of blocks and commit, broadcasting the batch's events
+    /// only once the commit has succeeded. A later block in the batch can fail
+    /// and abort the txn, so events must not be sent from within the batch.
+    pub(in crate::validator) fn handle_block_batch_and_commit(
+        &self,
+        mut rwtxn: RwTxn<'_>,
+        blocks: &[Block],
+        event_tx: &Sender<Event>,
+    ) -> Result<(), error::Sync> {
+        let mut events = Vec::new();
+        let () = self.handle_block_batch(&mut rwtxn, blocks, &mut events)?;
+        let () = rwtxn.commit()?;
+        broadcast_events(event_tx, events);
+        Ok(())
+    }
+
+    fn handle_block_batch<'a>(
         &self,
         rwtxn: &mut RwTxn<'a>,
         blocks: &[Block],
-        event_tx: &Sender<Event>,
+        events: &mut Vec<Event>,
     ) -> Result<(), error::Sync> {
         let dbs = self.dbs;
         let start = Instant::now();
@@ -1687,7 +1709,7 @@ impl BlockHandler<'_> {
             }
             // Events should only ever be sent after committing DB txs, see
             // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-            let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+            events.push(event);
         }
 
         tracing::info!(
@@ -1737,15 +1759,17 @@ impl BlockHandler<'_> {
                     tracing::info!(
                         "Disconnecting tip {current_enforcer_tip} -> {last_common_ancestor}"
                     );
+                    let mut events = Vec::new();
                     while current_enforcer_tip != last_common_ancestor {
                         let () =
-                            self.disconnect_block(&mut rwtxn, event_tx, current_enforcer_tip)?;
+                            self.disconnect_block(&mut rwtxn, &mut events, current_enforcer_tip)?;
                         current_enforcer_tip = dbs
                             .current_chain_tip
                             .try_get(&rwtxn, &())?
                             .unwrap_or_else(BlockHash::all_zeros);
                     }
                     rwtxn.commit()?;
+                    broadcast_events(event_tx, events);
                 } else {
                     rwtxn.abort();
                 }
@@ -1814,9 +1838,8 @@ impl BlockHandler<'_> {
             let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
             total_blocks_fetched += blocks.len();
 
-            let mut rwtxn = dbs.write_txn()?;
-            self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
-            rwtxn.commit()?;
+            let rwtxn = dbs.write_txn()?;
+            self.handle_block_batch_and_commit(rwtxn, &blocks, event_tx)?;
         }
 
         tracing::info!(
@@ -2270,7 +2293,7 @@ mod tests {
                 .is_none()
         );
 
-        let (event_tx, _) = async_broadcast::broadcast(16);
+        let mut events = Vec::new();
         let handler = test_handler(&dbs);
         let _event = handler
             .connect_block(&mut rwtxn, &block)
@@ -2283,7 +2306,7 @@ mod tests {
         );
 
         handler
-            .disconnect_block(&mut rwtxn, &event_tx, block_hash)
+            .disconnect_block(&mut rwtxn, &mut events, block_hash)
             .into_diagnostic()?;
         assert!(
             dbs.current_chain_tip
