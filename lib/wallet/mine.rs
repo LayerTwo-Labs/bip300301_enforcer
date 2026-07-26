@@ -30,6 +30,8 @@ use futures::{
 
 use crate::{
     bins::{self, CommandExt as _},
+    block_producer::db::Db,
+    errors::ErrorChain,
     messages::CoinbaseBuilder,
     wallet::{
         Wallet,
@@ -540,6 +542,20 @@ impl Wallet {
         Ok(block_hash)
     }
 
+    /// Consume the BMM requests spent by a block that has already been
+    /// submitted. A failure is logged rather than returned: the block is
+    /// irreversible, so reporting the mine as failed makes the caller retry
+    /// and mine a second block carrying the same M7 BMM accept.
+    async fn consume_bmm_requests(db: &Db, mainchain_tip: &BlockHash, block_hash: &BlockHash) {
+        if let Err(err) = db.delete_bmm_requests(mainchain_tip, block_hash).await {
+            tracing::error!(
+                %block_hash,
+                "failed to delete BMM requests for mined block: {:#}",
+                ErrorChain::new(&err),
+            );
+        }
+    }
+
     /// Build and mine a single block
     async fn generate_block(
         &self,
@@ -585,12 +601,8 @@ impl Wallet {
         );
 
         let block_hash = self.mine(&coinbase_outputs, transactions).await?;
-        self.inner
-            .producer
-            .db()
-            .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await
-            .map_err(error::GenerateBlock::DeleteBmmRequests)?;
+        let () =
+            Self::consume_bmm_requests(self.inner.producer.db(), &mainchain_tip, &block_hash).await;
         Ok(block_hash)
     }
 
