@@ -392,9 +392,24 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use bitcoin::Amount;
 
-    use crate::{block_producer::BlockProducer, types::AmountUnderflowError};
+    use crate::{
+        block_producer::BlockProducer,
+        types::{
+            AmountUnderflowError, SidechainAck, SidechainDescription, SidechainNumber,
+            SidechainProposal,
+        },
+    };
+
+    fn test_proposal(sidechain_number: SidechainNumber, description: &[u8]) -> SidechainProposal {
+        SidechainProposal {
+            sidechain_number,
+            description: SidechainDescription(description.to_vec()),
+        }
+    }
 
     #[test]
     fn new_treasury_value_rejects_bundle_exceeding_treasury() {
@@ -418,5 +433,57 @@ mod tests {
             BlockProducer::new_treasury_value(value, fee, payout).unwrap(),
             Amount::from_sat(39_000)
         );
+    }
+
+    #[test]
+    fn stale_same_slot_ack_does_not_suppress_replacement_auto_ack() {
+        let slot = SidechainNumber(7);
+        let replacement = test_proposal(slot, b"new");
+        let replacement_hash = replacement.description.sha256d_hash();
+        let stale = SidechainAck {
+            sidechain_number: slot,
+            description_hash: test_proposal(slot, b"old").description.sha256d_hash(),
+        };
+        let pending = HashMap::from_iter([(slot, replacement)]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![stale], &pending, true);
+
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].sidechain_number, slot);
+        assert_eq!(acks[0].description_hash, replacement_hash);
+        assert_eq!(stale_acks.len(), 1);
+    }
+
+    #[test]
+    fn matching_stored_ack_is_kept_and_not_duplicated() {
+        let slot = SidechainNumber(7);
+        let proposal = test_proposal(slot, b"desc");
+        let description_hash = proposal.description.sha256d_hash();
+        let ack = SidechainAck {
+            sidechain_number: slot,
+            description_hash,
+        };
+        let pending = HashMap::from_iter([(slot, proposal)]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![ack], &pending, true);
+
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].description_hash, description_hash);
+        assert!(stale_acks.is_empty());
+    }
+
+    #[test]
+    fn stale_ack_is_deleted_without_auto_ack() {
+        let slot = SidechainNumber(7);
+        let stale = SidechainAck {
+            sidechain_number: slot,
+            description_hash: test_proposal(slot, b"old").description.sha256d_hash(),
+        };
+
+        let (acks, stale_acks) =
+            BlockProducer::select_sidechain_acks(vec![stale], &HashMap::new(), false);
+
+        assert!(acks.is_empty());
+        assert_eq!(stale_acks.len(), 1);
     }
 }
