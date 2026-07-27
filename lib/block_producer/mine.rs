@@ -302,6 +302,7 @@ impl BlockProducer {
             .get_block_template(BlockTemplateRequest {
                 rules: vec!["signet".to_string(), "segwit".to_string()],
                 capabilities: HashSet::new(),
+                long_poll_id: None,
             })
             .await
             .map_err(|err| error::BitcoinCoreRPC {
