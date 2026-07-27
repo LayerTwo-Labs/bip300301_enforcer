@@ -1,0 +1,16 @@
+[
+  {
+    "majors": [29],
+    "blocks": "blocks-v29.hex",
+    "base_height": 299,
+    "base_blockhash": "3bb7ce5eba0be48939b7a521ac1ba9316afee2c7bada3a0cca24188e6d7d96c0",
+    "txoutset_hash": "a4bf3407ccb2cc0145c49ebba8fa91199f8a3903daf0883875941497d2493c27"
+  },
+  {
+    "majors": [30, 31],
+    "blocks": "blocks-v30-v31.hex",
+    "base_height": 299,
+    "base_blockhash": "7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2",
+    "txoutset_hash": "d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2"
+  }
+]

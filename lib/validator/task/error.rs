@@ -501,6 +501,9 @@ pub(in crate::validator) enum Sync {
     LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
     #[error(transparent)]
     #[fatal(true)]
+    MissingBackgroundChainstate(#[from] super::chainstates::MissingBackgroundChainstate),
+    #[error(transparent)]
+    #[fatal(true)]
     ParseBlockFiles(#[from] parse_block_files::ParseBlockFileError),
     #[error(transparent)]
     #[fatal(true)]
@@ -508,6 +511,14 @@ pub(in crate::validator) enum Sync {
     #[error("Shutdown signal received")]
     #[fatal(true)]
     Shutdown,
+    #[error(
+        "the node is background-validating an assumeutxo snapshot with base block \
+         `{snapshot_blockhash}`, but that header is not in the enforcer's database"
+    )]
+    #[fatal(true)]
+    SnapshotBaseHeaderUnknown {
+        snapshot_blockhash: bitcoin::BlockHash,
+    },
 }
 
 impl From<ConnectBlock> for Sync {

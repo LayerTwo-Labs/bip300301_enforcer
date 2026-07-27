@@ -18,6 +18,7 @@ mod test_invalid_block;
 mod test_invalid_block_during_sync;
 mod test_mempool_dat_sync;
 mod test_no_secrets_in_logs;
+mod test_node_requirements;
 mod test_peer_bmm_request;
 mod test_rest_disabled;
 mod test_seed_migration;

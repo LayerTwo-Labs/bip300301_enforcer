@@ -5,6 +5,7 @@ mod convert;
 pub mod display;
 pub mod errors;
 pub mod messages;
+pub mod node_checks;
 pub mod p2p;
 pub mod proto;
 pub mod rpc_client;

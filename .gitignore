@@ -6,3 +6,6 @@ datadir-sync-benchmark*
 sync_analysis
 integrationtests*.env
 local.just
+
+# Snapshot cache derived from integration_tests/testdata/assumeutxo/blocks.hex
+integration_tests/testdata/assumeutxo/.cache/

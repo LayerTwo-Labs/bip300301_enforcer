@@ -10,6 +10,7 @@ use bip300301_enforcer_lib::{
     block_producer::BlockProducer,
     cli::{self, WalletSyncSource},
     errors::ErrorChain,
+    node_checks,
     p2p::compute_signet_magic,
     proto::{
         crypto_service::{CRYPTO_SERVICE_SERVICE_NAME, CryptoServiceExt},
@@ -1588,6 +1589,12 @@ async fn main() -> Result<()> {
             "Bitcoin Core version accepted"
         );
     }
+
+    // The enforcer syncs full block data from its last processed block
+    // (genesis, on a first run), so a pruned node can never reliably serve
+    // it. Refuse up front with a clear error, instead of dying mid-sync on
+    // `getblock` failures once the fetch reaches pruned heights.
+    let () = node_checks::check_node_not_pruned(&mainchain_client).await?;
 
     let signet_challenge = if info.chain == bitcoin::Network::Signet {
         let block_template = get_block_template(&mainchain_client, info.chain).await?;
