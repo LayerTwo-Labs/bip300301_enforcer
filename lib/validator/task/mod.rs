@@ -43,6 +43,7 @@ use crate::{
 };
 
 mod block_files;
+mod chainstates;
 pub mod error;
 
 /// A block that the mainchain node accepted, but that the validator rejected
@@ -1766,6 +1767,59 @@ where
     Ok(blocks)
 }
 
+/// The range of heights the node has no block data for while it is
+/// background-validating an assumeutxo snapshot, see
+/// [`chainstates::BackgroundSync`].
+#[derive(Clone, Copy, Debug)]
+struct BlockDataGap {
+    /// Block data is available at and below this height.
+    background_height: u32,
+    /// Block data is available above this height. The base block itself is
+    /// part of the gap.
+    snapshot_base_height: u32,
+}
+
+impl BlockDataGap {
+    fn contains(&self, height: u32) -> bool {
+        self.background_height < height && height <= self.snapshot_base_height
+    }
+}
+
+/// The heights the node cannot serve `getblock` for, or `None` if every
+/// block on the active chain is available. Only limited while the node is
+/// background-validating an assumeutxo snapshot. The snapshot base height
+/// comes from the enforcer's own header db, which `sync_headers` has already
+/// brought up to the node's tip.
+async fn block_data_gap<MainRpcClient>(
+    dbs: &Dbs,
+    main_rpc_client: &MainRpcClient,
+) -> Result<Option<BlockDataGap>, error::Sync>
+where
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+{
+    let chainstates = chainstates::get_chainstates(main_rpc_client)
+        .await
+        .map_err(|err| error::Sync::JsonRpc {
+            method: "getchainstates".to_owned(),
+            source: err,
+        })?;
+    let Some(background_sync) = chainstates.background_sync()? else {
+        return Ok(None);
+    };
+    let rotxn = dbs.read_txn()?;
+    let snapshot_base_height = dbs
+        .block_hashes
+        .height()
+        .try_get(&rotxn, &background_sync.snapshot_blockhash)?
+        .ok_or(error::Sync::SnapshotBaseHeaderUnknown {
+            snapshot_blockhash: background_sync.snapshot_blockhash,
+        })?;
+    Ok(Some(BlockDataGap {
+        background_height: background_sync.background_height,
+        snapshot_base_height,
+    }))
+}
+
 impl BlockHandler<'_> {
     /// Handle and commit a block batch, then broadcast events for the committed
     /// prefix. A non-fatal rejected block commits the preceding valid blocks;
@@ -2011,7 +2065,7 @@ impl BlockHandler<'_> {
 
         let dbs = self.dbs;
         let start = Instant::now();
-        let mut missing_blocks = tokio::task::block_in_place(|| {
+        let (mut missing_blocks, main_tip_height) = tokio::task::block_in_place(|| {
             let current_enforcer_tip = {
                 let mut rwtxn = dbs.write_txn()?;
                 let mut current_enforcer_tip = dbs
@@ -2051,7 +2105,8 @@ impl BlockHandler<'_> {
                 .take_while(|block_hash| Ok(*block_hash != current_enforcer_tip))
                 .collect::<Vec<_>>()
                 .map_err(error::Sync::from)?;
-            Ok::<_, error::Sync>(missing_blocks)
+            let main_tip_height = dbs.block_hashes.height().get(&rotxn, &main_tip)?;
+            Ok::<_, error::Sync>((missing_blocks, main_tip_height))
         })?;
 
         if missing_blocks.is_empty() {
@@ -2110,15 +2165,75 @@ impl BlockHandler<'_> {
             }
         }
 
+        // While the node is background-validating an assumeutxo snapshot
+        // (`loadtxoutset`), it has no block data for the heights above the
+        // background chainstate's tip up to and including the snapshot
+        // base. Everything else (below the background tip, and above the
+        // base) it serves right away. Follow the node's background sync
+        // instead of failing. Fetch what is available, and poll
+        // `getchainstates` while waiting for blocks inside the gap.
+        const BACKGROUND_SYNC_POLL_INTERVAL: std::time::Duration =
+            std::time::Duration::from_secs(1);
+
+        const WAIT_LOG_EVERY: u32 = 30;
+
+        let mut block_data_gap = block_data_gap(dbs, main_rpc_client).await?;
+
         // Process blocks in batches for better network efficiency
         let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
-        for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
+        // `missing_blocks_rev` is the contiguous range of heights ending at
+        // `main_tip_height`
+        let first_missing_height = (main_tip_height + 1) - missing_blocks_rev.len() as u32;
+        let mut next_idx: usize = 0;
+        let mut wait_polls: u32 = 0;
+        while next_idx < missing_blocks_rev.len() {
             if cancel.is_cancelled() {
                 tracing::warn!("Block sync interrupted");
                 return Err(error::Sync::Shutdown);
             }
 
-            let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
+            let next_height = first_missing_height + next_idx as u32;
+            let batch_size = match block_data_gap {
+                Some(gap) if gap.contains(next_height) => {
+                    let wait_msg = format!(
+                        "waiting for the node's background sync: block data is available \
+                         up to height {} and above the snapshot base at height {}, next \
+                         needed block is at height {next_height}",
+                        gap.background_height, gap.snapshot_base_height,
+                    );
+                    if wait_polls.is_multiple_of(WAIT_LOG_EVERY) {
+                        tracing::info!("{wait_msg}");
+                    } else {
+                        tracing::debug!("{wait_msg}");
+                    }
+                    wait_polls += 1;
+                    tokio::select! {
+                        () = cancel.cancelled() => {
+                            tracing::warn!("Block sync interrupted");
+                            return Err(error::Sync::Shutdown);
+                        }
+                        () = tokio::time::sleep(BACKGROUND_SYNC_POLL_INTERVAL) => {}
+                    }
+                    block_data_gap = self::block_data_gap(dbs, main_rpc_client).await?;
+                    continue;
+                }
+                // Below the gap: don't let the batch run into it.
+                Some(gap) if next_height <= gap.background_height => {
+                    wait_polls = 0;
+                    BLOCK_FETCH_BATCH_SIZE.min((gap.background_height - next_height + 1) as usize)
+                }
+                // Above the snapshot base, or no background sync: every
+                // remaining block is available.
+                _ => {
+                    wait_polls = 0;
+                    BLOCK_FETCH_BATCH_SIZE
+                }
+            };
+            let batch_end = (next_idx + batch_size).min(missing_blocks_rev.len());
+
+            let blocks =
+                fetch_blocks_batch(main_rpc_client, &missing_blocks_rev[next_idx..batch_end])
+                    .await?;
             total_blocks_synced += blocks.len();
 
             let rwtxn = dbs.write_txn()?;
@@ -2130,6 +2245,7 @@ impl BlockHandler<'_> {
                 );
                 return Ok(Some(invalid_block));
             }
+            next_idx = batch_end;
         }
 
         tracing::info!(
