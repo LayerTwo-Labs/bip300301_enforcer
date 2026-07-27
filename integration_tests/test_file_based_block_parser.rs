@@ -1,18 +1,15 @@
 use std::time::Duration;
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{mainchain::GetChainTipRequest, mainchain_service::ValidatorServiceClient},
+    bins::CommandExt as _, proto::mainchain_service::ValidatorServiceClient,
 };
-use connectrpc::{
-    client::{ClientConfig, HttpClient},
-    error::ErrorCode,
-};
+use connectrpc::client::{ClientConfig, HttpClient};
 use futures::channel::mpsc;
-use tokio::time::sleep;
 
 use crate::{
-    setup::{PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port},
+    setup::{
+        PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port, wait_for_validator_synced,
+    },
     util::Enforcer,
 };
 
@@ -125,24 +122,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     let config = ClientConfig::new(uri);
     let client = ValidatorServiceClient::new(http, config);
 
-    let header_info = loop {
-        match client.get_chain_tip(GetChainTipRequest::default()).await {
-            Ok(enforcer_tip) => {
-                break enforcer_tip
-                    .into_owned()
-                    .block_header_info
-                    .into_option()
-                    .expect("no block header info");
-            }
-            // validator is not synced
-            Err(err) if err.code == ErrorCode::Unavailable => {
-                tracing::debug!("Validator is not synced yet, retrying...");
-                sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-            Err(err) => return Err(anyhow::anyhow!("Error getting enforcer tip: {err}")),
-        };
-    };
+    let header_info = wait_for_validator_synced(&client).await?;
 
     // Verify we were able to sync to the correct height
     assert_eq!(header_info.height, 100);

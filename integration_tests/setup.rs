@@ -15,7 +15,9 @@ use bip300301_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
         self,
-        mainchain::{BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse},
+        mainchain::{
+            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse, GetChainTipRequest,
+        },
         mainchain_service::{
             BlockProducerServiceClient, MiningServiceClient, ValidatorServiceClient,
             WalletServiceClient,
@@ -27,6 +29,7 @@ use bitcoin::{Address, Txid};
 use connectrpc::{
     ConnectError,
     client::{ClientConfig, HttpClient},
+    error::ErrorCode,
 };
 use futures::{channel::mpsc, future};
 use reserve_port::ReservedPort;
@@ -364,6 +367,40 @@ pub async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::
         .map_err(|_| anyhow!("Timeout waiting for bitcoind to become ready after {TIMEOUT:?}"))
 }
 
+/// Polls the validator via `get_chain_tip` until it reports a tip, and returns
+/// it. The enforcer starts serving gRPC before the validator has finished its
+/// initial sync, and RPCs that need the mainchain tip fail with `Unavailable`
+/// (or `ValidatorNotSynced`) until then, so waiting for the port alone is not
+/// enough.
+pub async fn wait_for_validator_synced(
+    client: &ValidatorServiceClient<Transport>,
+) -> anyhow::Result<proto::mainchain::BlockHeaderInfo> {
+    const TIMEOUT: Duration = Duration::from_secs(120);
+    const CHECK_INTERVAL: Duration = Duration::from_millis(100);
+    let task = async {
+        loop {
+            match client.get_chain_tip(GetChainTipRequest::default()).await {
+                Ok(resp) => {
+                    return resp
+                        .into_owned()
+                        .block_header_info
+                        .into_option()
+                        .ok_or_else(|| anyhow!("no block header info in chain tip"));
+                }
+                // Validator is not synced yet
+                Err(err) if err.code == ErrorCode::Unavailable => {
+                    tracing::trace!("Validator is not synced yet, waiting...");
+                    sleep(CHECK_INTERVAL).await;
+                }
+                Err(err) => return Err(anyhow!("Error getting enforcer tip: {err}")),
+            }
+        }
+    };
+    timeout(TIMEOUT, task)
+        .await
+        .map_err(|_| anyhow!("Timeout waiting for validator to sync after {TIMEOUT:?}"))?
+}
+
 /// Running tasks, aborted on drop
 pub struct Tasks {
     // MUST be dropped before electrs and bitcoind
@@ -696,6 +733,10 @@ impl PostSetup {
             BlockProducerServiceClient::new(http.clone(), config.clone());
         let mining_service_client = MiningServiceClient::new(http.clone(), config.clone());
         let wallet_service_client = WalletServiceClient::new(http, config);
+        // The gRPC port opens before the validator has synced the blocks that
+        // this setup generated. Wait for it, so that tests don't race the
+        // initial sync.
+        let _chain_tip = wait_for_validator_synced(&validator_service_client).await?;
         let bitcoin_util = {
             let path = match bin_paths.bitcoin_util() {
                 Ok(path) => Ok(path.clone()),
