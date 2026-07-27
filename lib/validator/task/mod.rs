@@ -43,6 +43,7 @@ use crate::{
 };
 
 mod block_files;
+mod chainstates;
 pub mod error;
 
 /// Bundles the consensus inputs that every BIP 300/301 handler needs: a
@@ -1605,6 +1606,25 @@ where
     Ok(blocks)
 }
 
+/// The highest block height the node guarantees `getblock` data for, or
+/// `None` if every block on the active chain is available. Only limited
+/// while the node is background-validating an assumeutxo snapshot; see
+/// [`chainstates::Chainstates::block_data_available_height`].
+async fn block_data_available_height<MainRpcClient>(
+    main_rpc_client: &MainRpcClient,
+) -> Result<Option<u32>, error::Sync>
+where
+    MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+{
+    let chainstates = chainstates::get_chainstates(main_rpc_client)
+        .await
+        .map_err(|err| error::Sync::JsonRpc {
+            method: "getchainstates".to_owned(),
+            source: err,
+        })?;
+    Ok(chainstates.block_data_available_height())
+}
+
 impl BlockHandler<'_> {
     pub(in crate::validator) fn handle_block_batch<'a>(
         &self,
@@ -1721,7 +1741,7 @@ impl BlockHandler<'_> {
 
         let dbs = self.dbs;
         let start = Instant::now();
-        let mut missing_blocks = tokio::task::block_in_place(|| {
+        let (mut missing_blocks, main_tip_height) = tokio::task::block_in_place(|| {
             let current_enforcer_tip = {
                 let mut rwtxn = dbs.write_txn()?;
                 let mut current_enforcer_tip = dbs
@@ -1759,7 +1779,8 @@ impl BlockHandler<'_> {
                 .take_while(|block_hash| Ok(*block_hash != current_enforcer_tip))
                 .collect::<Vec<_>>()
                 .map_err(error::Sync::from)?;
-            Ok::<_, error::Sync>(missing_blocks)
+            let main_tip_height = dbs.block_hashes.height().get(&rotxn, &main_tip)?;
+            Ok::<_, error::Sync>((missing_blocks, main_tip_height))
         })?;
 
         if missing_blocks.is_empty() {
@@ -1803,20 +1824,72 @@ impl BlockHandler<'_> {
             }
         }
 
+        // While the node is background-validating an assumeutxo snapshot
+        // (`loadtxoutset`), its active tip is above the blocks it can
+        // actually serve. Follow the node's background sync instead of
+        // failing. Fetch what is available, and poll `getchainstates`
+        // while waiting for more.
+        const BACKGROUND_SYNC_POLL_INTERVAL: std::time::Duration =
+            std::time::Duration::from_secs(1);
+
+        const WAIT_LOG_EVERY: u32 = 30;
+
+        let mut available_height = block_data_available_height(main_rpc_client).await?;
+
         // Process blocks in batches for better network efficiency
         let missing_blocks_rev: Vec<_> = missing_blocks.into_iter().rev().collect();
-        for chunk in missing_blocks_rev.chunks(BLOCK_FETCH_BATCH_SIZE) {
+        // `missing_blocks_rev` is the contiguous range of heights ending at
+        // `main_tip_height`
+        let first_missing_height = (main_tip_height + 1) - missing_blocks_rev.len() as u32;
+        let mut next_idx: usize = 0;
+        let mut wait_polls: u32 = 0;
+        while next_idx < missing_blocks_rev.len() {
             if cancel.is_cancelled() {
                 tracing::warn!("Block sync interrupted");
                 return Err(error::Sync::Shutdown);
             }
 
-            let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
+            let next_height = first_missing_height + next_idx as u32;
+            let batch_size = match available_height {
+                Some(available) if available < next_height => {
+                    let wait_msg = format!(
+                        "waiting for the node's background sync: block data is available \
+                         up to height {available}, next needed block is at height \
+                         {next_height}"
+                    );
+                    if wait_polls.is_multiple_of(WAIT_LOG_EVERY) {
+                        tracing::info!("{wait_msg}");
+                    } else {
+                        tracing::debug!("{wait_msg}");
+                    }
+                    wait_polls += 1;
+                    tokio::select! {
+                        () = cancel.cancelled() => {
+                            tracing::warn!("Block sync interrupted");
+                            return Err(error::Sync::Shutdown);
+                        }
+                        () = tokio::time::sleep(BACKGROUND_SYNC_POLL_INTERVAL) => {}
+                    }
+                    available_height = block_data_available_height(main_rpc_client).await?;
+                    continue;
+                }
+                Some(available) => {
+                    wait_polls = 0;
+                    BLOCK_FETCH_BATCH_SIZE.min((available - next_height + 1) as usize)
+                }
+                None => BLOCK_FETCH_BATCH_SIZE,
+            };
+            let batch_end = (next_idx + batch_size).min(missing_blocks_rev.len());
+
+            let blocks =
+                fetch_blocks_batch(main_rpc_client, &missing_blocks_rev[next_idx..batch_end])
+                    .await?;
             total_blocks_fetched += blocks.len();
 
             let mut rwtxn = dbs.write_txn()?;
             self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
             rwtxn.commit()?;
+            next_idx = batch_end;
         }
 
         tracing::info!(

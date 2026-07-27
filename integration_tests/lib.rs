@@ -8,6 +8,7 @@ mod test_consecutive_deposits;
 mod test_file_based_block_parser;
 mod test_inactive_drivechain_output;
 mod test_invalid_block;
+mod test_node_requirements;
 mod test_peer_bmm_request;
 mod test_seed_migration;
 mod test_sidechain_ack_policy;

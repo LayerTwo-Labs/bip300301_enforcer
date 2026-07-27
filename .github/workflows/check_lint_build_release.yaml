@@ -268,6 +268,20 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # The assumeutxo integration test derives a `loadtxoutset` snapshot
+      # from the committed blocks fixture on first run and caches it (see
+      # `integration_tests/test_node_requirements.rs`). Persist that cache
+      # across CI runs; the manifest hash invalidates it when the fixture
+      # is regenerated. Must come /after/ the checkout step, since the
+      # path is inside the workspace.
+      - name: Cache derived assumeutxo snapshot
+        uses: actions/cache@v6
+        with:
+          path: integration_tests/testdata/assumeutxo/.cache
+          key:
+            assumeutxo-snapshot-${{ matrix.version || matrix.flavor }}-${{
+            hashFiles('integration_tests/testdata/assumeutxo/fixtures.json') }}
+
       # `rustup` is already installed on GitHub Actions runners, so
       # this reads the content from our `rust-toolchain.toml` file.
       # Must happen /after/ the checkout step.
