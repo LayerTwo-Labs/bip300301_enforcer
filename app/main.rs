@@ -22,12 +22,8 @@ use bip300301_enforcer_lib::{
     },
     rpc_client, server,
     types::NetworkParams,
-    validator::{
-        SyncStateSummary, Validator,
-        main_rest_client::{MainRestClient, MainRestClientError},
-    },
-    version,
-    wallet::{self, error::BitcoinCoreRPC},
+    validator::{SyncStateSummary, Validator, main_rest_client::MainRestClient},
+    version, wallet,
 };
 use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
@@ -737,42 +733,6 @@ where
     }
 }
 
-async fn get_zmq_addr_sequence(
-    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-) -> Result<String> {
-    let notifications = mainchain_client
-        .get_zmq_notifications()
-        .await
-        .map_err(|err| BitcoinCoreRPC {
-            method: "getzmqnotifications".to_string(),
-            error: err,
-        })?;
-
-    let Some(address) = notifications
-        .iter()
-        .find(|n| n.notification_type == "pubsequence")
-        .map(|n| n.address.clone())
-    else {
-        #[derive(Debug, Diagnostic, Error)]
-        #[error(
-            "unable to find ZMQ notification for `pubsequence` in `getzmqnotifications` response"
-        )]
-        #[diagnostic(
-            help(
-                "Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"
-            ),
-            code(bip300301_enforcer::zmq_pubsequence_notification_missing),
-            url(
-                "https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements"
-            )
-        )]
-        struct ZmqNotificationMissing;
-
-        return Err(ZmqNotificationMissing.into());
-    };
-    Ok(address)
-}
-
 async fn run_no_mempool_task(
     enforcer: Enforcer,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
@@ -1447,57 +1407,13 @@ async fn main() -> Result<()> {
             .map_err(|err| miette!("invalid mainchain REST URL `{raw_url}`: {err:#}"))?,
     );
 
-    let ts = tokio::time::Instant::now();
-    let mut retries = 0;
-    let mainchain_rest_client = loop {
-        // A Bitcoin Core node with a large datadir takes tens of seconds to
-        // open its REST interface
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
-        const MAX_RETRIES: u32 = 180;
-
-        match mainchain_rest_client.get_chain_info().await {
-            Ok(_) => {
-                tracing::info!(
-                    "verified mainchain REST server is enabled in {:?}",
-                    ts.elapsed()
-                );
-                break Some(mainchain_rest_client);
-            }
-            Err(MainRestClientError::RestServerNotEnabled) => {
-                tracing::warn!(
-                    "Bitcoin Core REST server is disabled; falling back to JSON-RPC header sync"
-                );
-                break None;
-            }
-            // Bitcoin Core responds 503 on the REST interface while warming
-            // up. Tolerate this, the same way we tolerate RPC_IN_WARMUP on
-            // the JSON-RPC interface below.
-            Err(MainRestClientError::Http(err))
-                if err.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE) =>
-            {
-                if retries >= MAX_RETRIES {
-                    return Err(miette::Report::from_err(err).wrap_err(format!(
-                        "mainchain REST server still unavailable after {MAX_RETRIES} retries"
-                    )));
-                }
-                retries += 1;
-                tracing::info!(
-                    err = %err,
-                    "Mainchain REST server not ready yet, retrying ({retries}/{MAX_RETRIES})...",
-                );
-                tokio::time::sleep(RETRY_DELAY).await;
-            }
-            Err(err) => {
-                let wrapped = miette::Report::from_err(err)
-                    .wrap_err("unable to check availability of mainchain REST server");
-
-                return Err(wrapped);
-            }
-        }
-    };
-    if mainchain_rest_client.is_some() {
-        tracing::info!("verified mainchain REST server at `{raw_url}` is available");
-    }
+    let mainchain_rest_client =
+        if node_checks::check_rest_server_available(&mainchain_rest_client).await? {
+            tracing::info!("verified mainchain REST server at `{raw_url}` is available");
+            Some(mainchain_rest_client)
+        } else {
+            None
+        };
 
     let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
     tracing::info!(
@@ -1750,25 +1666,10 @@ async fn main() -> Result<()> {
     let mut chain_source_init: Option<wallet::ChainSourceInitTask> = None;
 
     let enforcer: Enforcer = if cli.enable_wallet {
-        // The wallet needs the txindex in order to operate. Will lead to obscure errors later
-        // if we fail RPC requests due to the index not being there.
+        // The wallet needs the txindex in order to operate.
         //
-        // TODO: should actually move away from needed txindex, but that's for another day.
-        // TODO: we could check if the index is synced here. not necessary?
-        let index_info = mainchain_client.get_index_info().await.map_err(|err| {
-            wallet::error::BitcoinCoreRPC {
-                method: "getindexinfo".to_string(),
-                error: err,
-            }
-        })?;
-        if !index_info.contains_key("txindex") {
-            #[derive(Debug, Diagnostic, Error)]
-            #[error("`txindex` is not enabled on the mainchain client")]
-            #[diagnostic(code(bip300301_enforcer::txindex_not_enabled))]
-            struct TxindexNotEnabled;
-
-            return Err(TxindexNotEnabled.into());
-        }
+        // TODO: should actually move away from needing txindex, but that's for another day.
+        let () = node_checks::check_txindex(&mainchain_client).await?;
 
         let magic = signet_challenge
             .as_deref()
@@ -1825,7 +1726,7 @@ async fn main() -> Result<()> {
 
     let node_zmq_addr_sequence = match cli.node_zmq_addr_sequence.clone() {
         Some(addr) => addr,
-        None => get_zmq_addr_sequence(mainchain_client.clone()).await?,
+        None => node_checks::zmq_sequence_address(&mainchain_client).await?,
     };
 
     // Task name -> task result
