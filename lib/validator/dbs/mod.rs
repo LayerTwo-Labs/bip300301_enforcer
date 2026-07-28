@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+};
 
 use bitcoin::{Amount, OutPoint};
 use fallible_iterator::FallibleIterator;
@@ -32,7 +35,8 @@ pub(super) struct ActiveSidechainDbs {
     sidechain: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
     slot_sequence_to_treasury_utxo:
         DatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
-    pub treasury_utxo_count: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<u64>>,
+    pub treasury_utxo_count:
+        DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<NonZeroU64>>,
 }
 
 impl ActiveSidechainDbs {
@@ -109,10 +113,11 @@ impl ActiveSidechainDbs {
         sidechain_number: SidechainNumber,
         ctip: &Ctip,
     ) -> Result<u64, db::Error> {
-        let treasury_utxo_count = self
-            .treasury_utxo_count
-            .try_get(rwtxn, &sidechain_number)?
-            .unwrap_or(0);
+        let treasury_utxo_count: u64 =
+            match self.treasury_utxo_count.try_get(rwtxn, &sidechain_number)? {
+                Some(treasury_utxo_count) => treasury_utxo_count.get(),
+                None => 0,
+            };
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
         let sequence_number = treasury_utxo_count;
@@ -132,7 +137,7 @@ impl ActiveSidechainDbs {
             &(sidechain_number, sequence_number),
             &treasury_utxo,
         )?;
-        let new_treasury_utxo_count = treasury_utxo_count + 1;
+        let new_treasury_utxo_count = NonZeroU64::MIN.checked_add(treasury_utxo_count).unwrap();
         self.treasury_utxo_count
             .put(rwtxn, &sidechain_number, &new_treasury_utxo_count)?;
         self.ctip.put(rwtxn, &sidechain_number, ctip)?;
@@ -155,17 +160,12 @@ impl ActiveSidechainDbs {
             .ctip_outpoint_to_value_seq
             .delete(rwtxn, &ctip.outpoint)?;
         let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
-        let sequence_number = treasury_utxo_count - 1;
-        // When the last treasury UTXO for this slot is disconnected the count
-        // drops to 0. Delete the key rather than storing `0`, so that "no
-        // treasury UTXO" is always represented by an absent key (symmetric with
-        // the `ctip` deletion below). Storing `Some(0)` would later make
-        // `get_ctip_sequence_number` compute `0 - 1` and underflow.
-        if sequence_number == 0 {
-            let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
-        } else {
+        let sequence_number = treasury_utxo_count.get() - 1;
+        if let Some(sequence_number) = NonZeroU64::new(sequence_number) {
             self.treasury_utxo_count
                 .put(rwtxn, &sidechain_number, &sequence_number)?;
+        } else {
+            let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
         }
         let _ = self
             .slot_sequence_to_treasury_utxo
