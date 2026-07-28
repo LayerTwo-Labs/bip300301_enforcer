@@ -423,8 +423,10 @@ impl CusfEnforcer for Validator {
     ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
-        let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
+        let mut events = Vec::new();
+        let () = handler.disconnect_block(&mut rwtxn, &mut events, block_hash)?;
         rwtxn.commit()?;
+        crate::validator::task::broadcast_events(&self.events_tx, events);
         Ok(DisconnectBlockAction::default())
     }
 
