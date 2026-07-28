@@ -199,7 +199,7 @@ impl BlockHandler<'_> {
         height: u32,
         sidechain_number: SidechainNumber,
         description_hash: sha256d::Hash,
-    ) -> Result<Option<diff::AckSidechain>, error::HandleM2AckSidechain> {
+    ) -> Result<Option<diff::AckSidechainProposal>, error::HandleM2AckSidechain> {
         let dbs = self.dbs;
         let thresholds = self.thresholds;
         let proposal_id = SidechainProposalId {
@@ -231,14 +231,11 @@ impl BlockHandler<'_> {
         }
         sidechain.status.vote_count += 1;
         tracing::debug!(
-        %sidechain_number,
-        %description_hash,
-        vote_count = %sidechain.status.vote_count,
-        "ACK'd sidechain proposal");
-        let mut diff = diff::AckSidechain {
-            id: proposal_id,
-            activated: false,
-        };
+            %sidechain_number,
+            %description_hash,
+            vote_count = %sidechain.status.vote_count,
+            "ACK'd sidechain proposal",
+        );
 
         // `height - proposal_height` can underflow if the enforcer holds a
         // proposal from a previous sync that is not on the active chain (the
@@ -248,11 +245,14 @@ impl BlockHandler<'_> {
         // huge age in release (so the sidechain silently fails to activate).
         let sidechain_proposal_age = height.saturating_sub(sidechain.status.proposal_height);
 
-        let sidechain_slot_is_used = dbs
+        // The active sidechain currently occupying this slot, if any. If this
+        // ack activates the proposal, `apply` overwrites it, so the diff must
+        // remember it for `undo` to restore on a reorg.
+        let existing_active_sidechain = dbs
             .active_sidechains
             .sidechain()
-            .try_get(rotxn, &sidechain_number)?
-            .is_some();
+            .try_get(rotxn, &sidechain_number)?;
+        let sidechain_slot_is_used = existing_active_sidechain.is_some();
 
         let new_sidechain_activated = {
             sidechain_slot_is_used
@@ -266,9 +266,19 @@ impl BlockHandler<'_> {
                     <= thresholds.unused_sidechain_slot_proposal_max_age as u32
         };
 
-        if new_sidechain_activated {
-            diff.activated = true;
-        }
+        let effect = if new_sidechain_activated {
+            if let Some(replaced) = existing_active_sidechain {
+                diff::ack_sidechain_proposal::Effect::ReplaceActive(replaced)
+            } else {
+                diff::ack_sidechain_proposal::Effect::SlotActivation
+            }
+        } else {
+            diff::ack_sidechain_proposal::Effect::NoActivation
+        };
+        let diff = diff::AckSidechainProposal {
+            id: proposal_id,
+            effect,
+        };
         Ok(Some(diff))
     }
 
@@ -913,7 +923,7 @@ impl BlockHandler<'_> {
                 );
                 let diff = self
                     .handle_m2_ack_sidechain(rotxn, height, sidechain_number, description_hash)?
-                    .map(diff::CoinbaseMsg::AckSidechain);
+                    .map(diff::CoinbaseMsg::AckSidechainProposal);
                 Ok((None, diff))
             }
             CoinbaseMessage::M3ProposeBundle(M3ProposeBundle {
@@ -2694,6 +2704,85 @@ mod tests {
 
     // ── handle_m2 ──
 
+    /// Regression: activating a proposal into an already-used slot overwrites
+    /// the active sidechain. A disconnect (reorg) must restore the overwritten
+    /// sidechain, not delete the slot — otherwise the reorg permanently deletes
+    /// a previously-active sidechain (and orphans any treasury it held).
+    #[test]
+    fn ack_sidechain_undo_restores_overwritten_active_sidechain() -> Result<()> {
+        use crate::{
+            types::{Sidechain, SidechainProposalStatus},
+            validator::dbs::diff::Diff as _,
+        };
+
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let handler = test_handler(&dbs);
+        let slot = SidechainNumber(1);
+
+        // Active sidechain A occupies slot 1.
+        let sidechain_a = test_sidechain(1, 0);
+        let desc_a = sidechain_a.proposal.description.clone();
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &slot, &sidechain_a)
+            .into_diagnostic()?;
+
+        // Competing proposal B for slot 1, one vote short of the used-slot
+        // activation threshold so the next ack activates it.
+        let threshold = handler.thresholds.used_sidechain_slot_activation_threshold;
+        let proposal_b = SidechainProposal {
+            sidechain_number: slot,
+            description: SidechainDescription(vec![0x00, 0x01, 0xBB]),
+        };
+        let id_b = proposal_b.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(
+                &mut rwtxn,
+                &id_b,
+                &Sidechain {
+                    proposal: proposal_b,
+                    status: SidechainProposalStatus {
+                        vote_count: threshold,
+                        proposal_height: 0,
+                        activation_height: None,
+                    },
+                },
+            )
+            .into_diagnostic()?;
+
+        // Ack B -> activates over the used slot, overwriting A.
+        let diff = handler
+            .handle_m2_ack_sidechain(&rwtxn, 1, slot, id_b.description_hash)
+            .into_diagnostic()?
+            .expect("ack should produce a diff");
+        assert!(diff.activated(), "B should activate over the used slot");
+        diff.apply(&mut rwtxn, &dbs, 1).into_diagnostic()?;
+        assert_eq!(
+            dbs.active_sidechains
+                .sidechain()
+                .get(&rwtxn, &slot)
+                .into_diagnostic()?
+                .proposal
+                .description,
+            SidechainDescription(vec![0x00, 0x01, 0xBB]),
+            "slot should now hold B"
+        );
+
+        // Disconnect: A must be restored, not deleted.
+        diff.undo(&mut rwtxn, &dbs).into_diagnostic()?;
+        let restored = dbs
+            .active_sidechains
+            .sidechain()
+            .try_get(&rwtxn, &slot)
+            .into_diagnostic()?
+            .expect("slot must still be active after undo (A restored)");
+        assert_eq!(
+            restored.proposal.description, desc_a,
+            "previously-active sidechain A must be restored on disconnect"
+        );
+        Ok(())
+    }
+
     /// Regression: an M2 ack processed at a height below the stored proposal
     /// height (e.g. a proposal from a previous sync that is not on the active
     /// chain) must not underflow `height - proposal_height`. The sibling
@@ -2819,7 +2908,7 @@ mod tests {
             )
             .into_diagnostic()?
             .expect("M2 for known proposal must produce a diff");
-        assert!(!diff.activated, "1 vote should not activate");
+        assert!(!diff.activated(), "1 vote should not activate");
 
         sidechain.status.vote_count = activation_threshold;
         dbs.proposal_id_to_sidechain
@@ -2835,7 +2924,7 @@ mod tests {
             .into_diagnostic()?
             .expect("M2 for known proposal must produce a diff");
         assert!(
-            diff.activated,
+            diff.activated(),
             "vote_count > threshold within max age should activate"
         );
 
@@ -2852,7 +2941,7 @@ mod tests {
             .into_diagnostic()?
             .expect("M2 for known proposal must produce a diff");
         assert!(
-            !diff.activated,
+            !diff.activated(),
             "proposal exceeding max age should not activate"
         );
         Ok(())
