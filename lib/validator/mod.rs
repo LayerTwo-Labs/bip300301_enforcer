@@ -526,11 +526,8 @@ impl Validator {
         // Sequence numbers begin at 0, so the total number of treasury utxos in the database
         // gives us the *next* sequence number.
         // In order to get the current sequence number we decrement it by one.
-        // A count of `Some(0)` is not supposed to happen. We guard against this
-        // when inserting data. But just for good measure, do a checked_sub instead
-        // of underflowing/panicking.
         let sequence_number =
-            treasury_utxo_count.and_then(|treasury_utxo_count| treasury_utxo_count.checked_sub(1));
+            treasury_utxo_count.map(|treasury_utxo_count| treasury_utxo_count.get() - 1);
         Ok(sequence_number)
     }
 

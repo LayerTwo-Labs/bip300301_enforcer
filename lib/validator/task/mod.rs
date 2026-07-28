@@ -787,7 +787,7 @@ impl BlockHandler<'_> {
                     let sequence_number = dbs
                         .treasury_utxo_count
                         .try_get(rotxn, &sidechain_number)?
-                        .unwrap_or(0);
+                        .map_or(0, |count| count.get());
                     let diff = diff::M6 {
                         sidechain_number,
                         new_ctip,
@@ -832,7 +832,7 @@ impl BlockHandler<'_> {
                     let sequence_number = dbs
                         .treasury_utxo_count
                         .try_get(rotxn, &sidechain_number)?
-                        .unwrap_or(0);
+                        .map_or(0, |count| count.get());
                     let deposit = Deposit {
                         sequence_number,
                         outpoint: new_ctip.outpoint,
@@ -1871,7 +1871,7 @@ impl BlockHandler<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
+    use std::{borrow::Cow, num::NonZeroU64};
 
     use bitcoin::{
         Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, hashes::Hash as _,
@@ -2541,7 +2541,7 @@ mod tests {
                 .treasury_utxo_count
                 .try_get(&rwtxn, &sc)
                 .into_diagnostic()?,
-            Some(1)
+            Some(NonZeroU64::MIN)
         );
 
         // Disconnect that only treasury UTXO.
