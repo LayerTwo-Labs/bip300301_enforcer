@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map};
 
 use bitcoin::{Amount, BlockHash, OutPoint, Transaction, TxOut};
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
@@ -6,7 +6,10 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
     messages::{CoinbaseBuilder, M4AckBundles},
-    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    types::{
+        AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, SidechainProposal,
+        SidechainProposalId,
+    },
 };
 
 impl BlockProducer {
@@ -124,18 +127,59 @@ impl BlockProducer {
         }
 
         // Sidechain proposals that already exist in the chain,
-        // or will already be proposed in coinbase txouts
-        let proposed_sidechains = self
+        // or will already be proposed in coinbase txouts, and their vote
+        // counts AFTER processing M2 messages
+        let mut proposed_sidechains =
+            {
+                let mut proposed_sidechains =
+                    HashMap::<_, _>::from_iter(self.validator().get_sidechains()?.into_iter().map(
+                        |(proposal_id, sidechain)| (proposal_id, sidechain.status.vote_count),
+                    ));
+                for (sidechain_number, description_hash) in coinbase_builder.messages().m2_acks() {
+                    let proposal_id = SidechainProposalId {
+                        sidechain_number,
+                        description_hash,
+                    };
+                    if let Some(vote_count) = proposed_sidechains.get_mut(&proposal_id) {
+                        *vote_count = vote_count.saturating_add(1);
+                    }
+                }
+                proposed_sidechains.extend(
+                    coinbase_builder
+                        .messages()
+                        .m1_sidechain_proposal_ids()
+                        .into_iter()
+                        .map(|proposal_id| (proposal_id, 0)),
+                );
+                proposed_sidechains
+            };
+
+        let unused_sidechain_slot_activation_threshold = self
             .validator()
-            .get_sidechains()?
-            .into_iter()
-            .map(|(sidechain_proposal_id, _)| sidechain_proposal_id)
-            .chain(coinbase_builder.messages().m1_sidechain_proposal_ids())
-            .collect::<HashSet<_>>();
+            .network_params()
+            .thresholds
+            .unused_sidechain_slot_activation_threshold;
+
+        // Sidechain slots that are active or will be after applying
+        // M2 (ACK Proposal) messages
+        let mut active_sidechain_slots: HashSet<_> = proposed_sidechains
+            .iter()
+            .filter_map(|(proposal_id, vote_count)| {
+                if *vote_count >= unused_sidechain_slot_activation_threshold {
+                    Some(proposal_id.sidechain_number)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         for sidechain_proposal in sidechain_proposals {
-            if !proposed_sidechains.contains(&sidechain_proposal.compute_id()) {
-                coinbase_builder.propose_sidechain(sidechain_proposal)?;
+            match proposed_sidechains.entry(sidechain_proposal.compute_id()) {
+                hash_map::Entry::Occupied(_) => (),
+                hash_map::Entry::Vacant(entry) => {
+                    coinbase_builder.propose_sidechain(sidechain_proposal)?;
+                    entry.insert(0);
+                }
             }
         }
 
@@ -195,6 +239,16 @@ impl BlockProducer {
                 sidechain_ack.sidechain_number,
                 sidechain_ack.description_hash,
             )?;
+            let proposal_id = SidechainProposalId {
+                sidechain_number: sidechain_ack.sidechain_number,
+                description_hash: sidechain_ack.description_hash,
+            };
+            if let Some(vote_count) = proposed_sidechains.get_mut(&proposal_id) {
+                *vote_count = vote_count.saturating_add(1);
+                if *vote_count >= unused_sidechain_slot_activation_threshold {
+                    active_sidechain_slots.insert(proposal_id.sidechain_number);
+                }
+            }
         }
 
         let bmm_hashes = self.db().get_bmm_requests(&mainchain_tip).await?;
@@ -203,9 +257,11 @@ impl BlockProducer {
                 .messages()
                 .m7_bmm_accept_slot_vout(&sidechain_number)
                 .is_some()
+                || !active_sidechain_slots.contains(&sidechain_number)
             {
                 continue;
             }
+
             tracing::info!(
                 "Adding BMM accept for SC {} with hash: {}",
                 sidechain_number,

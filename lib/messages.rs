@@ -454,7 +454,8 @@ pub struct CoinbaseMessages {
     /// Coinbase messages, with vout index
     messages: Vec<(CoinbaseMessage, usize)>,
     m1_sidechain_proposal_id_to_index: HashMap<SidechainProposalId, usize>,
-    m2_ack_slot_to_index: HashMap<SidechainNumber, usize>,
+    /// Maps M2 ack slots to description hash and index
+    m2_ack_slot_to_description_hash_index: HashMap<SidechainNumber, (sha256d::Hash, usize)>,
     m4_index: Option<usize>,
     /// Maps M7 slots to commitment and index
     m7_slot_to_commitment_index: HashMap<SidechainNumber, (BmmCommitment, usize)>,
@@ -469,11 +470,26 @@ impl CoinbaseMessages {
     }
 
     pub fn m2_ack_slot_vout(&self, slot: &SidechainNumber) -> Option<usize> {
-        self.m2_ack_slot_to_index.get(slot).copied()
+        self.m2_ack_slot_to_description_hash_index
+            .get(slot)
+            .map(|(_description_hash, idx)| *idx)
     }
 
     pub fn m2_ack_slots(&self) -> HashSet<SidechainNumber> {
-        self.m2_ack_slot_to_index.keys().copied().collect()
+        self.m2_ack_slot_to_description_hash_index
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// Returns a map of sidechain numbers to ACK'd description hashes
+    pub fn m2_acks(&self) -> HashMap<SidechainNumber, sha256d::Hash> {
+        self.m2_ack_slot_to_description_hash_index
+            .iter()
+            .map(|(sidechain_number, (description_hash, _idx))| {
+                (*sidechain_number, *description_hash)
+            })
+            .collect()
     }
 
     pub fn m4_exists(&self) -> bool {
@@ -518,13 +534,23 @@ impl CoinbaseMessages {
                 }
             }
             CoinbaseMessage::M2AckSidechain(m2) => {
-                match self.m2_ack_slot_to_index.entry(m2.sidechain_number) {
-                    hash_map::Entry::Occupied(entry) => Err(CoinbaseMessagesError::DuplicateM2 {
-                        index: *entry.get(),
-                        slot: m2.sidechain_number,
-                    }),
+                let M2AckSidechain {
+                    sidechain_number,
+                    description_hash,
+                } = m2;
+                match self
+                    .m2_ack_slot_to_description_hash_index
+                    .entry(*sidechain_number)
+                {
+                    hash_map::Entry::Occupied(entry) => {
+                        let (_description_hash, index) = entry.get();
+                        Err(CoinbaseMessagesError::DuplicateM2 {
+                            index: *index,
+                            slot: *sidechain_number,
+                        })
+                    }
                     hash_map::Entry::Vacant(entry) => {
-                        entry.insert(vout);
+                        entry.insert((*description_hash, vout));
                         self.messages.push((msg, vout));
                         Ok(())
                     }
