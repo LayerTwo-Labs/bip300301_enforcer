@@ -469,7 +469,7 @@ dependencies = [
  "bip300301_enforcer_lib",
  "bitcoin",
  "bitcoin-jsonrpsee",
- "buffa",
+ "buffa 0.8.1",
  "clap",
  "connectrpc",
  "connectrpc-health",
@@ -505,7 +505,7 @@ dependencies = [
  "bip300301_enforcer_lib",
  "bitcoin",
  "bitcoin-jsonrpsee",
- "buffa",
+ "buffa 0.8.1",
  "buffa-types",
  "cfg-if",
  "clap",
@@ -546,7 +546,7 @@ dependencies = [
  "bitcoin",
  "bitcoin-jsonrpsee",
  "bitcoin-send-tx-p2p",
- "buffa",
+ "buffa 0.8.1",
  "buffa-descriptor",
  "buffa-types",
  "byteorder",
@@ -764,7 +764,25 @@ dependencies = [
  "rustversion",
  "serde",
  "serde_json",
- "smoothutf8",
+ "smoothutf8 0.1.1",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "buffa"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf9e6224bc4ee1f189ad257120c156fb05f95b826f5369d620b24984476c200a"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "foldhash 0.1.5",
+ "hashbrown 0.15.5",
+ "once_cell",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "smoothutf8 0.2.3",
  "thiserror 2.0.19",
 ]
 
@@ -774,7 +792,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57ed423c4ecec86d1500879ce42e7e5f6def01bc632985ac756c1fd723fa21fc"
 dependencies = [
- "buffa",
+ "buffa 0.8.1",
  "rustversion",
  "serde",
  "serde_json",
@@ -782,12 +800,13 @@ dependencies = [
 
 [[package]]
 name = "buffa-types"
-version = "0.8.1"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cb54bcbf6946c58e550eeaf6209047146363dbc7cbdc87e49e67089ed2ff5f"
+checksum = "1c7d518783cc611d9f144a71cf7dbc7b5588c5d16ff96ca43e74ac105ea3cb05"
 dependencies = [
- "buffa",
+ "buffa 0.9.1",
  "bytes",
+ "jiff",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -988,7 +1007,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "buffa",
+ "buffa 0.8.1",
  "bytes",
  "flate2",
  "futures",
@@ -1018,7 +1037,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f2e1465af10410a742a0cd398ad0ade118b15aee9ff0561bc81bcf25cc544b0"
 dependencies = [
- "buffa",
+ "buffa 0.8.1",
  "connectrpc",
  "futures",
  "http-body",
@@ -1034,7 +1053,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a63da01ba84368dcc8acbfc4675ca1977af47c4e4c85c3e281f49a071169beeb"
 dependencies = [
- "buffa",
+ "buffa 0.8.1",
  "buffa-descriptor",
  "connectrpc",
  "futures",
@@ -1411,7 +1430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2336,10 +2355,13 @@ version = "0.2.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e184d09547b80eb7e20d141ba2fb1fbac843ca53f4cf1b31210adc4c1adc6e16"
 dependencies = [
+ "defmt",
  "jiff-core",
  "jiff-static",
+ "log",
  "portable-atomic",
  "portable-atomic-util",
+ "serde_core",
 ]
 
 [[package]]
@@ -3295,7 +3317,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3595,7 +3617,7 @@ dependencies = [
  "errno 0.3.14",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3931,7 +3953,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.2.8",
+ "errno 0.3.14",
  "libc",
 ]
 
@@ -3970,6 +3992,15 @@ name = "smoothutf8"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36358427d32ecdb1624616deed99eccfef0a167fe5bf40ddb51efe6980bc1ec8"
+dependencies = [
+ "simdutf8",
+]
+
+[[package]]
+name = "smoothutf8"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4ec95892483d6d94284caccfddb9b77111a4dcac33ed25d624248def0fa5f1"
 dependencies = [
  "simdutf8",
 ]
@@ -4959,7 +4990,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
