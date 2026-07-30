@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bitcoin::{BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::{
@@ -131,8 +134,31 @@ impl BlockProducer {
     /// stop re-proposing them in later coinbases.
     pub(crate) async fn apply_connected_block_policy(
         &self,
+        block: &bitcoin::Block,
         block_info: &crate::types::BlockInfo,
     ) -> Result<(), rusqlite::Error> {
+        // Stop tracking the bids this block confirmed. Skipped when nothing
+        // is tracked, so a non-bidding node does no per-tx hashing.
+        let tracked_bmm_txids = self.inner.db.tracked_bmm_txids().await?;
+        if !tracked_bmm_txids.is_empty() {
+            let block_txids: HashSet<Txid> =
+                block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+            let won: Vec<Txid> = tracked_bmm_txids
+                .into_iter()
+                .filter(|txid| block_txids.contains(txid))
+                .collect();
+            let deleted = self
+                .inner
+                .db
+                .delete_won_bmm_requests(&block.block_hash(), &won)
+                .await?;
+            if deleted > 0 {
+                tracing::debug!(
+                    block_hash = %block.block_hash(),
+                    "settled {deleted} BMM request(s) confirmed by this block",
+                );
+            }
+        }
         let finalized_withdrawal_bundles =
             block_info
                 .withdrawal_bundle_events()
@@ -191,7 +217,7 @@ impl CusfEnforcer for BlockProducer {
             let block_hash = block.block_hash();
             let block_infos = self.inner.validator.get_block_infos(&block_hash, 0)?;
             for (_header_info, block_info) in &block_infos {
-                let () = self.apply_connected_block_policy(block_info).await?;
+                let () = self.apply_connected_block_policy(block, block_info).await?;
             }
         }
         Ok(res)

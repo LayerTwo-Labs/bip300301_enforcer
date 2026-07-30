@@ -96,9 +96,14 @@ const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
 /// Returns `Some(txid)` if broadcast successfully, `None` if the tx was
 /// rejected but the rejection is tolerated. All other errors are returned
 /// as-is.
+///
+/// `max_fee_rate` is forwarded to `sendrawtransaction`'s `maxfeerate`
+/// parameter (BTC/kvB). Pass `Some(0.0)` to disable bitcoind's
+/// "absurdly-high-fee" ceiling entirely .
 async fn broadcast_transaction_with_tolerance<RpcClient>(
     rpc_client: &RpcClient,
     tx: &bdk_wallet::bitcoin::Transaction,
+    max_fee_rate: Option<f64>,
     tolerate_rejection: impl FnOnce(i32, &str) -> bool,
 ) -> Result<Option<bitcoin::Txid>, ClientError>
 where
@@ -106,7 +111,7 @@ where
 {
     let encoded_tx = bitcoin::consensus::encode::serialize_hex(tx);
     match rpc_client
-        .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
+        .send_raw_transaction(encoded_tx, max_fee_rate, Some(MAX_BURN_AMOUNT))
         .await
     {
         Ok(txid) => {
@@ -127,12 +132,38 @@ where
     }
 }
 
+pub fn contains_fee_rejection(msg: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        // RPC/wallet-side `-maxtxfee`/`maxfeerate` guard.
+        "absurdly-high-fee",
+        // Mempool min fee / relay fee not met.
+        "min relay fee not met",
+        "insufficient fee",
+        // BIP125 RBF replacement rules not satisfied.
+        "insufficient fee, rejecting replacement",
+        "insufficient fee, not enough additional fees",
+    ];
+    let msg = msg.to_ascii_lowercase();
+    NEEDLES.iter().any(|needle| msg.contains(needle))
+}
+
+pub fn contains_missing_or_spent_inputs(msg: &str) -> bool {
+    const NEEDLES: &[&str] = &["missingorspent", "missing-inputs"];
+    let msg = msg.to_ascii_lowercase();
+    NEEDLES.iter().any(|needle| msg.contains(needle))
+}
+
 /// Broadcasts a transaction to the Bitcoin network.
 /// Returns `Some(txid)` if broadcast successfully, `None` if the tx failed to
 /// broadcast due to the node not supporting OP_DRIVECHAIN
+///
+/// `max_fee_rate` is forwarded to `sendrawtransaction`'s `maxfeerate`
+/// parameter (BTC/kvB). Pass `Some(0.0)` to disable bitcoind's
+/// "absurdly-high-fee" ceiling entirely.
 pub async fn broadcast_transaction<RpcClient>(
     rpc_client: &RpcClient,
     tx: &bdk_wallet::bitcoin::Transaction,
+    max_fee_rate: Option<f64>,
 ) -> Result<Option<bitcoin::Txid>, ClientError>
 where
     RpcClient: MainClient + Sync,
@@ -144,31 +175,9 @@ where
         "mempool-script-verify-flag-failed (NOPx reserved for soft-fork upgrades)";
     // We used to check the exact error message. Looks like this slightly
     // varies across versions. Therefore use a substring check.
-    broadcast_transaction_with_tolerance(rpc_client, tx, |_code, msg| {
+    broadcast_transaction_with_tolerance(rpc_client, tx, max_fee_rate, |_code, msg| {
         msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG)
             || msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0)
-    })
-    .await
-}
-
-/// `RPC_VERIFY_REJECTED`: transaction was rejected by the node's mempool
-/// policy (e.g. non-standardness) or by network rules.
-const BITCOIN_CORE_RPC_TRANSACTION_REJECTED: i32 = -26;
-
-/// Broadcasts a transaction to the Bitcoin network, tolerating rejection from
-/// the node's mempool (Bitcoin Core RPC error -26, e.g. due to
-/// non-standardness).
-/// Returns `Some(txid)` if broadcast successfully, `None` if the node
-/// rejected the tx from its mempool. All other errors are returned as-is.
-pub async fn broadcast_transaction_tolerate_mempool_rejection<RpcClient>(
-    rpc_client: &RpcClient,
-    tx: &bdk_wallet::bitcoin::Transaction,
-) -> Result<Option<bitcoin::Txid>, ClientError>
-where
-    RpcClient: MainClient + Sync,
-{
-    broadcast_transaction_with_tolerance(rpc_client, tx, |code, _msg| {
-        code == BITCOIN_CORE_RPC_TRANSACTION_REJECTED
     })
     .await
 }

@@ -238,16 +238,18 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         anyhow::bail!("Failed to create BMM critical data tx")
     };
     tracing::info!(%bmm_request_txid, "Created BMM request tx successfully");
-    // In addition to the p2p broadcast, the enforcer submits the BMM request
-    // to its own node via `sendrawtransaction`, so it should be in the
-    // sender node's mempool immediately
+    // The bid is now a real transaction fee, not a burned OP_RETURN value, so
+    // the tx is standard: it must be accepted by the *sender's own*
+    // (unpatched, stock) bitcoind via ordinary `sendrawtransaction`,
+    // synchronously as part of creating the request -- no need to wait for
+    // P2P propagation to observe this half of it.
     let sender_mempool_entry = post_setup
         .sender
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "getmempoolentry", [bmm_request_txid.clone()])
         .run_utf8()
         .await?;
-    tracing::debug!(%sender_mempool_entry);
+    tracing::debug!(%sender_mempool_entry, "BMM request accepted into sender's own mempool");
     // Wait for mempool inclusion / p2p broadcast.
     // This can take >5s sometimes, for unknown reasons.
     sleep(std::time::Duration::from_secs(10)).await;
@@ -268,7 +270,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
             .join("stdout.txt"),
     )?;
     anyhow::ensure!(
-        sender_enforcer_stdout.contains("Broadcast BMM request transaction via RPC to own node"),
+        sender_enforcer_stdout.contains("create_bmm_request: broadcast successfully"),
         "Expected sender enforcer to broadcast the BMM request tx via RPC to its own node"
     );
     // Mine a block and check that the BMM request worked

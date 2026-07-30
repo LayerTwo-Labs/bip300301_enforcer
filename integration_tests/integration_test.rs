@@ -25,7 +25,8 @@ use crate::{
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
     },
-    test_peer_bmm_request, test_unconfirmed_transactions,
+    test_bmm_bid_lifecycle, test_bmm_cross_bidder_competition, test_bmm_multi_sidechain,
+    test_bmm_stale_bid_rejected, test_peer_bmm_request, test_unconfirmed_transactions,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
 
@@ -187,8 +188,22 @@ where
         .get_sidechain_proposals(GetSidechainProposalsRequest::default())
         .await?
         .into_owned();
-    if sidechain_proposals_resp.sidechain_proposals.len() != 1 {
-        anyhow::bail!("Expected 1 sidechain proposal")
+    // Asserted as "this proposal landed", not "there is exactly one": a test
+    // driving several sidechains proposes each in turn, so earlier proposals
+    // are still pending here.
+    if !sidechain_proposals_resp
+        .sidechain_proposals
+        .iter()
+        .any(|proposal| {
+            proto::unwrap_u32(proposal.sidechain_number.clone())
+                == Some(S::SIDECHAIN_NUMBER.0.into())
+        })
+    {
+        anyhow::bail!(
+            "proposal for sidechain {} not found among {:?}",
+            S::SIDECHAIN_NUMBER.0,
+            sidechain_proposals_resp.sidechain_proposals
+        )
     }
     Ok(())
 }
@@ -197,7 +212,24 @@ pub async fn activate_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result
 where
     S: Sidechain,
 {
-    tracing::info!("Activating sidechain");
+    activate_sidechains::<S>(post_setup, 1).await
+}
+
+/// Activate every sidechain proposed so far, in one go.
+///
+/// Activation is driven by mining with `ack_all_proposals` on, which acks
+/// every pending proposal in the same coinbase -- so proposing N sidechains
+/// and then calling this once activates all N together. `expected_active` is
+/// asserted afterwards so a proposal that silently failed to take is caught
+/// here rather than as a confusing failure much later.
+pub async fn activate_sidechains<S>(
+    post_setup: &mut PostSetup,
+    expected_active: usize,
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
+    tracing::info!(%expected_active, "Activating sidechain(s)");
     tracing::debug!("Checking that 0 sidechains are active");
     let sidechains_resp = post_setup
         .validator_service_client
@@ -211,14 +243,17 @@ where
     tracing::debug!("Mining {blocks_to_mine} blocks");
     let _ = mine_check_block_events::<_, S>(post_setup, blocks_to_mine, Some(true), |_, _| Ok(()))
         .await?;
-    tracing::debug!("Checking that exactly 1 sidechain is active");
+    tracing::debug!(%expected_active, "Checking active sidechain count");
     let sidechains_resp = post_setup
         .validator_service_client
         .get_sidechains(GetSidechainsRequest::default())
         .await?
         .into_owned();
-    if sidechains_resp.sidechains.len() != 1 {
-        anyhow::bail!("Expected 1 active sidechain")
+    if sidechains_resp.sidechains.len() != expected_active {
+        anyhow::bail!(
+            "Expected {expected_active} active sidechain(s), got {}: {sidechains_resp:?}",
+            sidechains_resp.sidechains.len()
+        )
     }
     Ok(())
 }
@@ -296,6 +331,51 @@ where
     tracing::debug!("Waiting for wallet sync...");
     let () = wait_for_wallet_sync(post_setup).await?;
     Ok(())
+}
+
+/// Fund the enforcer so that at least `spendable` mature coinbase outputs are
+/// available to coin selection.
+///
+/// [`fund_enforcer`] mines exactly the 100 blocks a coinbase needs to mature,
+/// which leaves the wallet with a single spendable output — enough for tests
+/// where every transaction is expected to replace the last, but it removes all
+/// choice from coin selection. Several sidechains bidding at once need genuinely
+/// independent inputs, otherwise every bid is forced into being an RBF of
+/// whatever came before it and input-selection bugs cannot surface.
+pub async fn fund_enforcer_with_utxos<S>(
+    post_setup: &mut PostSetup,
+    spendable: u32,
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
+    use std::convert::Infallible;
+    const COINBASE_MATURITY: u32 = 100;
+    let blocks = COINBASE_MATURITY + spendable;
+    tracing::info!(%spendable, %blocks, "Funding enforcer with several UTXOs");
+    match post_setup.network {
+        Network::Regtest => {
+            let address = post_setup
+                .wallet_service_client
+                .create_new_address(CreateNewAddressRequest::default())
+                .await?
+                .into_owned()
+                .address;
+            post_setup
+                .bitcoin_cli
+                .command::<String, _, _, _, _>(
+                    [],
+                    "generatetoaddress",
+                    [blocks.to_string(), address],
+                )
+                .run_utf8()
+                .await?;
+        }
+        Network::Signet => {
+            mine_signet_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(())).await?;
+        }
+    }
+    wait_for_wallet_sync(post_setup).await
 }
 
 const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
@@ -790,11 +870,98 @@ pub fn tests(
             failure_collector.clone(),
         )
     };
+    let bmm_bid_lifecycle_trial: TestTrial = {
+        let name = test_bmm_bid_lifecycle::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future =
+                        test_bmm_bid_lifecycle::test_bmm_bid_lifecycle(bin_paths, file_registry)
+                            .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    };
+
+    let bmm_cross_bidder_competition_trial: TestTrial = {
+        let name = test_bmm_cross_bidder_competition::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future =
+                        test_bmm_cross_bidder_competition::test_bmm_cross_bidder_competition(
+                            bin_paths,
+                            file_registry,
+                        )
+                        .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    };
+
+    let bmm_stale_bid_rejected_trial: TestTrial = {
+        let name = test_bmm_stale_bid_rejected::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future = test_bmm_stale_bid_rejected::test_bmm_stale_bid_rejected(
+                        bin_paths,
+                        file_registry,
+                    )
+                    .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    };
+
+    let bmm_multi_sidechain_trial: TestTrial = {
+        let name = test_bmm_multi_sidechain::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future = test_bmm_multi_sidechain::test_bmm_multi_sidechain(
+                        bin_paths,
+                        file_registry,
+                    )
+                    .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    };
+
     let mut async_trials = vec![];
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
     async_trials.push(peer_bmm_request_trial);
+    async_trials.push(bmm_bid_lifecycle_trial);
+    async_trials.push(bmm_cross_bidder_competition_trial);
+    async_trials.push(bmm_stale_bid_rejected_trial);
+    async_trials.push(bmm_multi_sidechain_trial);
     async_trials.push(new_trial_with_setup_opts(
         "activation_height".to_string(),
         TestSetupComponents {

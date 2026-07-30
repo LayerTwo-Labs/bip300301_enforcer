@@ -875,8 +875,11 @@ impl From<proto::Error> for DummySidechainError {
     }
 }
 
-/// Dummy implementation of `Sidechain`
-pub struct DummySidechain {
+/// Dummy implementation of `Sidechain`, parameterised by the slot it
+/// occupies. Nothing about the behaviour differs per slot -- the parameter
+/// exists so a test can drive several sidechains at once, which the trait's
+/// `SIDECHAIN_NUMBER` associated const otherwise makes impossible.
+pub struct DummySidechainImpl<const SLOT: u8> {
     /// If a withdrawal fails, add the value here until another withdrawal
     /// is created
     pending_withdrawal_value: bitcoin::Amount,
@@ -895,7 +898,10 @@ pub struct DummySidechain {
     >,
 }
 
-impl DummySidechain {
+/// The single-sidechain case every pre-existing test uses.
+pub type DummySidechain = DummySidechainImpl<0>;
+
+impl<const SLOT: u8> DummySidechainImpl<SLOT> {
     /// Construct a blinded M6 tx
     fn blinded_m6<Payouts>(
         fee_sats: u64,
@@ -1026,8 +1032,8 @@ impl DummySidechain {
     }
 }
 
-impl Sidechain for DummySidechain {
-    const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(0);
+impl<const SLOT: u8> Sidechain for DummySidechainImpl<SLOT> {
+    const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(SLOT);
 
     type Init = ();
 

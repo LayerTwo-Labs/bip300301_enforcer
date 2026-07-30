@@ -737,14 +737,14 @@ pub struct M8BmmRequest {
 impl M8BmmRequest {
     pub const TAG: [u8; 3] = [0x00, 0xBF, 0x00];
 
-    /// Build the OP_RETURN script for an M8 BMM request.
+    /// Build the OP_RETURN data for an M8 BMM request.
     /// Argument order matches the on-wire layout:
     /// `TAG sidechain_number sidechain_block_hash prev_mainchain_block_hash`.
-    pub fn script_pubkey(
+    pub fn build(
         sidechain_number: SidechainNumber,
         sidechain_block_hash: BmmCommitment,
         prev_mainchain_block_hash: BlockHash,
-    ) -> Result<ScriptBuf, bitcoin::script::PushBytesError> {
+    ) -> Result<PushBytesBuf, bitcoin::script::PushBytesError> {
         let message = [
             &Self::TAG[..],
             &[sidechain_number.into()],
@@ -752,8 +752,7 @@ impl M8BmmRequest {
             &prev_mainchain_block_hash.to_byte_array(),
         ]
         .concat();
-        let bytes = PushBytesBuf::try_from(message)?;
-        Ok(ScriptBuf::new_op_return(&bytes))
+        PushBytesBuf::try_from(message)
     }
 
     pub fn parse(input: &[u8]) -> IResult<&[u8], Self> {
@@ -1067,8 +1066,9 @@ mod tests {
             let sc_block_hash = BmmCommitment([n; 32]);
             let prev_hash = BlockHash::from_byte_array([n.wrapping_add(1); 32]);
 
-            let script =
-                M8BmmRequest::script_pubkey(sc, sc_block_hash, prev_hash).into_diagnostic()?;
+            let script = ScriptBuf::new_op_return(
+                &M8BmmRequest::build(sc, sc_block_hash, prev_hash).into_diagnostic()?,
+            );
             let bytes = script.to_bytes();
             let (rest, parsed) = M8BmmRequest::parse(&bytes)
                 .map_err(|err| miette::miette!("parse failed for sc {n}: {err}"))?;
@@ -1134,12 +1134,14 @@ mod tests {
 
         // M8: full script is `OP_RETURN <len> [tag] <S> <H> <P>`. Build a
         // canonical one, then append a trailing byte.
-        let canonical = M8BmmRequest::script_pubkey(
-            SidechainNumber(0),
-            BmmCommitment([0; 32]),
-            BlockHash::from_byte_array([0; 32]),
-        )
-        .into_diagnostic()?;
+        let canonical = ScriptBuf::new_op_return(
+            &M8BmmRequest::build(
+                SidechainNumber(0),
+                BmmCommitment([0; 32]),
+                BlockHash::from_byte_array([0; 32]),
+            )
+            .into_diagnostic()?,
+        );
         let mut bytes = canonical.to_bytes();
         assert!(M8BmmRequest::parse(&bytes).is_ok());
         bytes.push(0x00);

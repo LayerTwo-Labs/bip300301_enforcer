@@ -594,10 +594,10 @@ impl BlockProducer {
         let block_hash = self
             .mine(coinbase_spk, &coinbase_outputs, transactions)
             .await?;
-        self.db()
-            .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await
-            .map_err(error::GenerateBlock::DeleteBmmRequests)?;
+        // BMM rows are not consumed here: producing a block ends the slot's
+        // auction but does not settle the bids that lost it, and deleting
+        // their rows stranded them untracked. `apply_connected_block_policy`
+        // drops exactly the bids a block confirmed, for any miner's block.
         Ok(block_hash)
     }
 }
