@@ -16,7 +16,8 @@ use bip300301_enforcer_lib::{
     proto::{
         self,
         mainchain::{
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse, GetChainTipRequest,
+            BlockHeaderInfo, BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
+            GetChainTipRequest, GetChainTipResponse,
         },
         mainchain_service::{
             BlockProducerServiceClient, MiningServiceClient, ValidatorServiceClient,
@@ -25,7 +26,7 @@ use bip300301_enforcer_lib::{
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
-use bitcoin::{Address, Txid};
+use bitcoin::{Address, BlockHash, Txid};
 use connectrpc::{
     ConnectError,
     client::{ClientConfig, HttpClient},
@@ -1062,6 +1063,8 @@ pub enum DummySidechainError {
     EventStreamCancelled,
     #[error("Event stream was closed unexpectedly")]
     EventStreamClosed,
+    #[error("Timed out waiting for the event stream to catch up to chain tip {tip}")]
+    EventStreamLagged { tip: BlockHash },
 }
 
 impl From<ConnectError> for DummySidechainError {
@@ -1085,6 +1088,11 @@ pub struct DummySidechain {
     /// is created
     pending_withdrawal_fee: bitcoin::Amount,
     withdrawal_bundles: HashMap<M6id, BlindedM6<'static>>,
+    /// Hash of the block whose `ConnectBlock` event was most recently
+    /// processed from the event stream. `None` until the first connect event
+    /// is processed, and after a disconnect event (which does not carry the
+    /// new tip hash).
+    last_connected_block: Option<BlockHash>,
     /// Receiver for SubscribeEvents stream items. The producer is a
     /// background task spawned in `setup` that pumps a connectrpc
     /// `ServerStream` into this channel. `None` after the stream errors or
@@ -1097,6 +1105,10 @@ pub struct DummySidechain {
 }
 
 impl DummySidechain {
+    /// Timeout for the event stream to catch up to the enforcer's chain tip
+    /// in `sync_events_to_tip`.
+    const EVENT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// Construct a blinded M6 tx
     fn blinded_m6<Payouts>(
         fee_sats: u64,
@@ -1140,90 +1152,138 @@ impl DummySidechain {
         }
     }
 
-    /// Drain any currently-ready events from the channel (non-blocking).
-    fn update_from_events(&mut self) -> Result<(), DummySidechainError> {
-        use bip300301_enforcer_lib::proto::{
-            self,
-            mainchain::{
-                SubscribeEventsResponse, WithdrawalBundleEvent,
-                subscribe_events_response::{
-                    self,
-                    event::{ConnectBlock, Event},
-                },
-                withdrawal_bundle_event,
+    /// Process a single event from the event stream, recording the connected
+    /// block and restoring the value and fee of failed withdrawal bundles.
+    fn process_event(
+        &mut self,
+        resp: proto::mainchain::SubscribeEventsResponse,
+    ) -> Result<(), DummySidechainError> {
+        use bip300301_enforcer_lib::proto::mainchain::{
+            SubscribeEventsResponse, WithdrawalBundleEvent,
+            subscribe_events_response::{
+                self,
+                event::{ConnectBlock, Event},
             },
+            withdrawal_bundle_event,
         };
-        use tokio::sync::mpsc::error::TryRecvError;
-        let Some(rx) = self.event_rx.as_mut() else {
-            return Err(DummySidechainError::EventStreamCancelled);
-        };
-        loop {
-            let item = match rx.try_recv() {
-                Ok(item) => item,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.event_rx = None;
-                    return Err(DummySidechainError::EventStreamClosed);
+        let SubscribeEventsResponse { event, .. } = resp;
+        let subscribe_events_response::Event { event, .. } = event
+            .into_option()
+            .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))?;
+        let event: subscribe_events_response::event::Event = event.ok_or_else(|| {
+            proto::Error::missing_field::<subscribe_events_response::Event>("event")
+        })?;
+        match event {
+            Event::ConnectBlock(connect_block_event) => {
+                let block_hash = connect_block_event
+                    .header_info
+                    .into_option()
+                    .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))?
+                    .block_hash
+                    .into_option()
+                    .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))?
+                    .decode::<BlockHeaderInfo, BlockHash>("block_hash")?;
+                let block_info = connect_block_event
+                    .block_info
+                    .into_option()
+                    .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("block_info"))?;
+                for event in block_info.events {
+                    let Some(wbe) = Self::extract_withdrawal_bundle_event(event)? else {
+                        continue;
+                    };
+                    let m6id = wbe
+                        .m6id
+                        .into_option()
+                        .ok_or_else(|| {
+                            proto::Error::missing_field::<WithdrawalBundleEvent>("m6id")
+                        })?
+                        .decode::<WithdrawalBundleEvent, Txid>("m6id")
+                        .map(M6id)?;
+                    let wbe_inner = wbe
+                        .event
+                        .into_option()
+                        .ok_or_else(|| {
+                            proto::Error::missing_field::<WithdrawalBundleEvent>("event")
+                        })?
+                        .event
+                        .ok_or_else(|| {
+                            proto::Error::missing_field::<withdrawal_bundle_event::Event>("event")
+                        })?;
+                    match wbe_inner {
+                        withdrawal_bundle_event::event::Event::Failed(_) => {
+                            let failed_withdrawal = &self.withdrawal_bundles[&m6id];
+                            self.pending_withdrawal_fee += *failed_withdrawal.fee();
+                            self.pending_withdrawal_value += *failed_withdrawal.payout();
+                        }
+                        withdrawal_bundle_event::event::Event::Submitted(_)
+                        | withdrawal_bundle_event::event::Event::Succeeded(_) => (),
+                    }
                 }
+                self.last_connected_block = Some(block_hash);
+            }
+            Event::DisconnectBlock(_) => {
+                // The disconnect event carries only the disconnected block's
+                // hash, not the new tip; the next connect event will set it.
+                self.last_connected_block = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Await and process events until the `ConnectBlock` event for `tip` has
+    /// been processed.
+    async fn process_events_until(&mut self, tip: BlockHash) -> Result<(), DummySidechainError> {
+        while self.last_connected_block != Some(tip) {
+            let Some(rx) = self.event_rx.as_mut() else {
+                return Err(DummySidechainError::EventStreamCancelled);
             };
-            let SubscribeEventsResponse { event, .. } = match item {
-                Ok(event) => event,
+            let Some(item) = rx.recv().await else {
+                self.event_rx = None;
+                return Err(DummySidechainError::EventStreamClosed);
+            };
+            let resp = match item {
+                Ok(resp) => resp,
                 Err(err) => {
                     self.event_rx = None;
                     return Err(err.into());
                 }
             };
-            let subscribe_events_response::Event { event, .. } = event
-                .into_option()
-                .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))?;
-            let event: subscribe_events_response::event::Event = event.ok_or_else(|| {
-                proto::Error::missing_field::<subscribe_events_response::Event>("event")
-            })?;
-            match event {
-                Event::ConnectBlock(connect_block_event) => {
-                    let block_info = connect_block_event
-                        .block_info
-                        .into_option()
-                        .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("block_info"))?;
-                    'inner: for event in block_info.events {
-                        let Some(wbe) = Self::extract_withdrawal_bundle_event(event)? else {
-                            continue 'inner;
-                        };
-                        let m6id = wbe
-                            .m6id
-                            .into_option()
-                            .ok_or_else(|| {
-                                proto::Error::missing_field::<WithdrawalBundleEvent>("m6id")
-                            })?
-                            .decode::<WithdrawalBundleEvent, Txid>("m6id")
-                            .map(M6id)?;
-                        let wbe_inner = wbe
-                            .event
-                            .into_option()
-                            .ok_or_else(|| {
-                                proto::Error::missing_field::<WithdrawalBundleEvent>("event")
-                            })?
-                            .event
-                            .ok_or_else(|| {
-                                proto::Error::missing_field::<withdrawal_bundle_event::Event>(
-                                    "event",
-                                )
-                            })?;
-                        match wbe_inner {
-                            withdrawal_bundle_event::event::Event::Failed(_) => {
-                                let failed_withdrawal = &self.withdrawal_bundles[&m6id];
-                                self.pending_withdrawal_fee += *failed_withdrawal.fee();
-                                self.pending_withdrawal_value += *failed_withdrawal.payout();
-                            }
-                            withdrawal_bundle_event::event::Event::Submitted(_)
-                            | withdrawal_bundle_event::event::Event::Succeeded(_) => (),
-                        }
-                    }
-                }
-                Event::DisconnectBlock(_) => (),
-            }
+            let () = self.process_event(resp)?;
         }
         Ok(())
+    }
+
+    /// Await and process events until this sidechain has seen the
+    /// `ConnectBlock` event for the enforcer's current chain tip.
+    ///
+    /// The test harness observes events on its own `SubscribeEvents`
+    /// subscription (e.g. in `mine_check_block_events`) and continues as soon
+    /// as an event arrives there. This sidechain receives the same events on
+    /// a separate subscription, which may still be in flight at that point,
+    /// so draining only already-delivered events can miss events the harness
+    /// has already acted on — e.g. a withdrawal bundle failure whose value
+    /// must roll over into the next bundle. Syncing to the chain tip removes
+    /// the race between the two subscriptions.
+    async fn sync_events_to_tip(
+        &mut self,
+        post_setup: &PostSetup,
+    ) -> Result<(), DummySidechainError> {
+        let tip = post_setup
+            .validator_service_client
+            .get_chain_tip(GetChainTipRequest::default())
+            .await?
+            .into_owned()
+            .block_header_info
+            .into_option()
+            .ok_or_else(|| proto::Error::missing_field::<GetChainTipResponse>("block_header_info"))?
+            .block_hash
+            .into_option()
+            .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))?
+            .decode::<BlockHeaderInfo, BlockHash>("block_hash")?;
+        match timeout(Self::EVENT_SYNC_TIMEOUT, self.process_events_until(tip)).await {
+            Ok(res) => res,
+            Err(_) => Err(DummySidechainError::EventStreamLagged { tip }),
+        }
     }
 }
 
@@ -1247,8 +1307,9 @@ impl Sidechain for DummySidechain {
             .validator_service_client
             .subscribe_events(subscribe_events_request)
             .await?;
-        // Pump the connect-rust ServerStream into a tokio mpsc so the
-        // existing non-blocking `try_recv`-based event drain works as before.
+        // Pump the connect-rust ServerStream into a tokio mpsc, so that
+        // `sync_events_to_tip` can both drain ready events and await delivery
+        // of pending ones.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             loop {
@@ -1270,6 +1331,7 @@ impl Sidechain for DummySidechain {
             pending_withdrawal_fee: bitcoin::Amount::ZERO,
             pending_withdrawal_value: bitcoin::Amount::ZERO,
             withdrawal_bundles: HashMap::new(),
+            last_connected_block: None,
             event_rx: Some(rx),
         })
     }
@@ -1303,7 +1365,7 @@ impl Sidechain for DummySidechain {
         mut value: bitcoin::Amount,
         mut fee: bitcoin::Amount,
     ) -> Result<M6id, Self::CreateWithdrawalError> {
-        let () = self.update_from_events()?;
+        let () = self.sync_events_to_tip(post_setup).await?;
         value += self.pending_withdrawal_value;
         self.pending_withdrawal_value = bitcoin::Amount::ZERO;
         fee += self.pending_withdrawal_fee;
