@@ -3,6 +3,9 @@
 1. Bitcoin Core, with ZMQ support. For information on running this on the global
    signet, see [drivechain.info/dev.txt](https://drivechain.info/dev.txt)
 
+   The node must **not** be pruned. The enforcer checks this at startup and
+   refuses to run against a node with pruning enabled.
+
 1. Rustc & Cargo, version 1.88.0 or higher. Installing via Rustup is
    recommended.
 

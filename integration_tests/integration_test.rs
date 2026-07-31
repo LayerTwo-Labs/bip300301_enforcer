@@ -908,6 +908,31 @@ pub fn tests(
         crate::test_consecutive_deposits::test_consecutive_deposits,
     ));
 
+    // Use `new_trial`: they arrange special node states (assumeutxo snapshot
+    // load, pruning) before starting the enforcer by hand.
+    async_trials.push(new_trial(
+        "assumeutxo_node".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_node_requirements::test_assumeutxo_node,
+    ));
+    async_trials.push(new_trial(
+        "pruned_node".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_node_requirements::test_pruned_node,
+    ));
+
     async_trials.push(new_trial_with_setup(
         "blinded_m6_roundtrip".to_string(),
         TestSetupComponents {
