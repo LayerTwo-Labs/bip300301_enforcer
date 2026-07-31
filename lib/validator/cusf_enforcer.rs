@@ -8,12 +8,13 @@ use std::{
 
 use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
+use bitcoin_jsonrpsee::client::MainClient as _;
 use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
 };
 use error_fatality::{Nested as _, Split};
 use fallible_iterator::FallibleIterator;
-use futures::TryFutureExt as _;
+use futures::{FutureExt as _, TryFutureExt as _};
 use miette::Diagnostic;
 use ouroboros::self_referencing;
 use sneed::{RoTxn, RwTxn, db, env, rwtxn};
@@ -351,14 +352,13 @@ where
     }
 }
 
-impl CusfEnforcer for Validator {
-    type SyncError = SyncError;
-
-    async fn sync_to_tip<Signal>(
-        &mut self,
+impl Validator {
+    /// Sync to the specified tip, without handling consensus-invalid blocks.
+    async fn sync_to_tip_once<Signal>(
+        &self,
         shutdown_signal: Signal,
         tip: BlockHash,
-    ) -> Result<(), Self::SyncError>
+    ) -> Result<(), SyncError>
     where
         Signal: Future<Output = ()> + Send,
     {
@@ -402,6 +402,68 @@ impl CusfEnforcer for Validator {
                 cancel.cancel();
                 *self.header_sync_progress_rx.write() = None;
                 Err(SyncError(crate::validator::task::error::Sync::Shutdown))
+            }
+        }
+    }
+}
+
+impl CusfEnforcer for Validator {
+    type SyncError = SyncError;
+
+    async fn sync_to_tip<Signal>(
+        &mut self,
+        shutdown_signal: Signal,
+        mut tip: BlockHash,
+    ) -> Result<(), Self::SyncError>
+    where
+        Signal: Future<Output = ()> + Send,
+    {
+        let shutdown_signal = shutdown_signal.shared();
+        let mut invalidated = HashSet::new();
+        loop {
+            match self.sync_to_tip_once(shutdown_signal.clone(), tip).await {
+                Ok(()) => return Ok(()),
+                Err(SyncError(task::error::Sync::BlockRejected { block_hash, source })) => {
+                    // The mainchain node accepted a block that violates BIP300/301.
+                    // Invalidate it so that the node reorgs away from it, and sync to
+                    // the resulting tip. This mirrors the live
+                    // `ConnectBlockAction::Reject` path, which the
+                    // cusf-enforcer-mempool crate does not apply during sync.
+                    // Halting here would leave a bootstrapping or catching-up
+                    // enforcer stuck forever on such a block.
+                    if !invalidated.insert(block_hash) {
+                        return Err(SyncError(task::error::Sync::BlockRejected {
+                            block_hash,
+                            source,
+                        }));
+                    }
+                    tracing::warn!(
+                        %block_hash,
+                        "invalidating consensus-invalid block: {:#}",
+                        ErrorChain::new(source.as_ref())
+                    );
+                    let () = self
+                        .mainchain_client
+                        .invalidate_block(block_hash)
+                        .await
+                        .map_err(|err| {
+                            SyncError(task::error::Sync::JsonRpc {
+                                method: "invalidateblock".to_owned(),
+                                source: err,
+                            })
+                        })?;
+                    tip = self
+                        .mainchain_client
+                        .getbestblockhash()
+                        .await
+                        .map_err(|err| {
+                            SyncError(task::error::Sync::JsonRpc {
+                                method: "getbestblockhash".to_owned(),
+                                source: err,
+                            })
+                        })?;
+                }
+                Err(err) => return Err(err),
             }
         }
     }

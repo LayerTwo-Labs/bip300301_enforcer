@@ -11,7 +11,7 @@ use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use error_fatality::Split as _;
+use error_fatality::{Fatality as _, Split as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
@@ -1640,10 +1640,22 @@ impl BlockHandler<'_> {
             });
 
             let start_block = Instant::now();
-            // We should not call out to `invalidateblock` in case of failures here,
-            // as that is handled by the cusf-enforcer-mempool crate.
             // FIXME: handle disconnects
-            let event = self.connect_block(rwtxn, block)?;
+            //
+            // Unlike the live path, the cusf-enforcer-mempool crate does not call
+            // `invalidateblock` during sync, it just propagates the error. Report a
+            // consensus rejection with the offending block hash, so that the caller
+            // can invalidate it. Fatal (infra/DB) errors are propagated as-is.
+            let event = match self.connect_block(rwtxn, block) {
+                Ok(event) => event,
+                Err(err) if !err.is_fatal() => {
+                    return Err(error::Sync::BlockRejected {
+                        block_hash,
+                        source: Box::new(err),
+                    });
+                }
+                Err(err) => return Err(err.into()),
+            };
 
             let connect_block_duration =
                 jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
@@ -1825,6 +1837,9 @@ impl BlockHandler<'_> {
             total_blocks_fetched += blocks.len();
 
             let mut rwtxn = dbs.write_txn()?;
+            // A `Sync::BlockRejected` error here aborts the write txn, discarding
+            // the partial batch. It is handled by the caller, which invalidates the
+            // block on the node and retries the sync.
             self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
             rwtxn.commit()?;
         }
@@ -2158,6 +2173,50 @@ mod tests {
                 .is_err(),
             "connect_block should not succeed due to non-fatal M8 error"
         );
+        Ok(())
+    }
+
+    // Regression test for the sync-path DoS: a block that the mainchain node
+    // accepts, but that is consensus-invalid per BIP300/301, must be reported as a
+    // recoverable `Sync::BlockRejected` carrying the offending block hash, so that
+    // the caller can invalidate it, rather than as a fatal error that halts a
+    // bootstrapping or catching-up enforcer.
+    #[test]
+    fn handle_block_batch_rejects_consensus_invalid_block_without_halting() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let m8_tx = build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash);
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![m8_tx],
+                ..Default::default()
+            },
+        );
+        let block_hash = block.block_hash();
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let (event_tx, _event_rx) = async_broadcast::broadcast(16);
+        let err = test_handler(&dbs)
+            .handle_block_batch(&mut rwtxn, std::slice::from_ref(&block), &event_tx)
+            .expect_err("consensus-invalid block must be rejected");
+
+        assert!(!err.is_fatal(), "a consensus rejection must not be fatal");
+        match err {
+            error::Sync::BlockRejected {
+                block_hash: rejected,
+                ..
+            } => assert_eq!(
+                rejected, block_hash,
+                "BlockRejected must carry the offending block hash for invalidateblock"
+            ),
+            other => panic!("expected Sync::BlockRejected, got: {other:?}"),
+        }
         Ok(())
     }
 
