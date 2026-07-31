@@ -1841,7 +1841,7 @@ impl Wallet {
                     let block_hash = self
                         .inner
                         .main_client
-                        .getblockhash(try_include_height as usize)
+                        .getblockhash(*block_height as usize)
                         .await
                         .map_err(|err| {
                             error::ConnectMissingBlockInner::GetBlockHash(error::BitcoinCoreRPC {
@@ -1893,12 +1893,16 @@ impl Wallet {
                     err @ bdk_wallet::chain::local_chain::CannotConnectError { try_include_height },
                 ) => {
                     if try_include_height < *block_height {
-                        tracing::debug!(
-                            "adding missing block at height {} to stack",
-                            try_include_height
-                        );
+                        // BDK's `try_include_height` can skip past the block's
+                        // immediate parent, and retrying at the skipped-to height
+                        // connects as a no-op without fixing anything, looping
+                        // forever. Step down one height at a time instead. The
+                        // reported height is only used (above) to check that we're
+                        // still making downward progress.
+                        let next_height = *block_height - 1;
+                        tracing::debug!("adding missing block at height {} to stack", next_height);
                         try_includes.push(TryInclude {
-                            block_height: try_include_height,
+                            block_height: next_height,
                             block: None,
                         });
                     } else {

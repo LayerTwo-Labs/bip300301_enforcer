@@ -14,4 +14,5 @@ mod test_seed_migration;
 mod test_sidechain_ack_policy;
 mod test_unconfirmed_transactions;
 mod test_wallet_less_block_template;
+mod test_wallet_reorg_multi_block;
 pub mod util;
