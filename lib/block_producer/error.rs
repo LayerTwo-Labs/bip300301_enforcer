@@ -224,8 +224,37 @@ impl ToStatus for FinalizeBlock {
     }
 }
 
+/// Waiting for the validator's connect-block pipeline to process a block
+/// that was just submitted to Bitcoin Core.
+#[derive(Debug, Diagnostic, Error)]
+pub enum AwaitBlockConnection {
+    #[error(
+        "timed out waiting for validator to connect block `{block_hash}` after {timeout:?}: \
+         the enforcer has fallen behind Bitcoin Core, or rejected the block"
+    )]
+    Timeout {
+        block_hash: bitcoin::BlockHash,
+        timeout: std::time::Duration,
+    },
+    #[error(transparent)]
+    TryGetBlockInfos(#[from] crate::validator::TryGetBlockInfosError),
+}
+
+impl ToStatus for AwaitBlockConnection {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            err @ Self::Timeout { .. } => {
+                StatusBuilder::new(err).code(connectrpc::ErrorCode::DeadlineExceeded)
+            }
+            Self::TryGetBlockInfos(_) => StatusBuilder::new(self),
+        }
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum Mine {
+    #[error(transparent)]
+    AwaitBlockConnection(#[from] AwaitBlockConnection),
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
     #[error(transparent)]
@@ -240,6 +269,7 @@ pub enum Mine {
 impl ToStatus for Mine {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            Self::AwaitBlockConnection(err) => err.builder(),
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::EncodeBlock(err) => err.builder(),
             Self::FinalizeBlock(err) => err.builder(),
@@ -331,6 +361,8 @@ impl ToStatus for GetSignetMinerPath {
 
 #[derive(Diagnostic, Debug, Error)]
 pub enum GenerateSignetBlock {
+    #[error(transparent)]
+    AwaitBlockConnection(#[from] AwaitBlockConnection),
     #[error("failed to fetch most recent block hash")]
     FetchMostRecentBlockHash(#[source] BitcoinCoreRPC),
     #[error(transparent)]
@@ -348,6 +380,7 @@ pub enum GenerateSignetBlock {
 impl ToStatus for GenerateSignetBlock {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            Self::AwaitBlockConnection(err) => err.builder(),
             Self::FetchMostRecentBlockHash(err) => StatusBuilder::with_code(self, err.builder()),
             Self::GetHeaderInfo(err) => err.builder(),
             Self::GetMainchainTip(err) => err.builder(),

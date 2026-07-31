@@ -239,8 +239,43 @@ impl BlockProducer {
         }
         let block_hash = block.header.block_hash();
         tracing::info!(%block_hash, %transaction_count, "Submitted block");
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let () = self.await_block_connection(block_hash).await?;
         Ok(block_hash)
+    }
+
+    /// Wait until the validator has processed `block_hash`. A successful
+    /// `submitblock` only means Bitcoin Core accepted the block. The
+    /// enforcer syncs it asynchronously, so returning before the validator
+    /// has caught up would let the next block template build on a stale
+    /// tip, which again would lead to Bitcoin Core rejecting blocks as duplicate.
+    async fn await_block_connection(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<(), error::AwaitBlockConnection> {
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        const POLL_INTERVAL: Duration = Duration::from_millis(25);
+        let poll = async {
+            loop {
+                // Block info is written in the same DB transaction that
+                // advances the validator tip, so once it is present the
+                // validator's view includes `block_hash`, even if the tip
+                // has since moved past it.
+                if self
+                    .validator()
+                    .try_get_block_infos(&block_hash, 0)?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        };
+        tokio::time::timeout(TIMEOUT, poll)
+            .await
+            .map_err(|_elapsed| error::AwaitBlockConnection::Timeout {
+                block_hash,
+                timeout: TIMEOUT,
+            })?
     }
 
     fn check_has_binary(&self, binary: &Path) -> Result<(), error::MissingBinary> {
@@ -542,6 +577,8 @@ impl BlockProducer {
         })?;
 
         tracing::info!("Generated signet block: {}", block_hash);
+
+        let () = self.await_block_connection(block_hash).await?;
 
         Ok(block_hash)
     }
