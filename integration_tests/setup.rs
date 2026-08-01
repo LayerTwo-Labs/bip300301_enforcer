@@ -146,32 +146,6 @@ impl SignetSetup {
         Ok(())
     }
 
-    async fn calibrate_signet(&self, signet_miner: &mut bins::SignetMiner) -> anyhow::Result<()> {
-        let calibrate_output = signet_miner
-            .command("calibrate", vec!["--seconds=1"])
-            .run_utf8()
-            .await?;
-        let nbits_hex = {
-            calibrate_output
-                .strip_prefix("nbits=")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Missing nbits prefix from calibration output: `{calibrate_output}`",
-                    )
-                })?
-                .split_once(" ")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Missing nbits suffix from calibration output: `{calibrate_output}`",
-                    )
-                })?
-                .0
-                .to_owned()
-        };
-        signet_miner.nbits = Some(hex::FromHex::from_hex(&nbits_hex)?);
-        Ok(())
-    }
-
     /// Configure signet miner to use enforcer's GBT server
     fn configure_miner(
         signet_miner: &mut bins::SignetMiner,
@@ -578,20 +552,22 @@ impl PostSetup {
                 .parse::<Address<_>>()?
                 .require_network(bitcoind.network)?
         };
-        let mut signet_miner = if let Some(signet_setup) = signet_setup.as_ref() {
-            let mut signet_miner = bins::SignetMiner {
+        let mut signet_miner = if signet_setup.is_some() {
+            Some(bins::SignetMiner {
                 path: bin_paths.signet_miner()?.clone(),
                 bitcoin_cli: bitcoin_cli.clone(),
                 bitcoin_util: bin_paths.bitcoin_util()?.clone(),
                 block_interval: None,
                 coinbase_recipient: Some(mining_address.clone()),
                 debug: false,
+                // `None` makes the miner pass `--min-nbits`, grinding at
+                // signet's floor difficulty. Calibrating for ~1s/block here
+                // instead adds ~1s of pure grinding per mined block, which
+                // dominates signet test runtime.
                 nbits: None,
                 getblocktemplate_command: None,
                 coinbasetxn: false,
-            };
-            let () = signet_setup.calibrate_signet(&mut signet_miner).await?;
-            Some(signet_miner)
+            })
         } else {
             None
         };

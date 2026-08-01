@@ -694,6 +694,10 @@ impl Bitcoind {
     {
         let mut default_args = vec![
             "-acceptnonstdtxn".to_owned(),
+            // Skip wallet sqlite fsyncs; they otherwise dominate wallet-heavy
+            // test runtime. Only unsafe on OS crash/power loss, which never
+            // matters for throwaway test datadirs.
+            "-unsafesqlitesync=1".to_owned(),
             format!("-chain={}", self.network.to_core_arg()),
             format!("-datadir={}", self.data_dir.display()),
             format!("-bind=127.0.0.1:{}", self.listen_port),
