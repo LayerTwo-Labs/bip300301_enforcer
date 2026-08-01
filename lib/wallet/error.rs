@@ -827,6 +827,8 @@ where
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitialSync {
+    #[error(transparent)]
+    GetMainchainTip(#[from] validator::GetMainchainTipError),
     #[error("received shutdown signal")]
     Shutdown,
     #[error(transparent)]

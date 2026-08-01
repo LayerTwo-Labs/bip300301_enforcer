@@ -205,9 +205,13 @@ impl CusfEnforcer for Wallet {
                     shutdown_signal
                 }
             };
-        tracing::debug!(%tip_hash, "Synced validator");
+        // The validator may have stopped short of `tip_hash`. It
+        // stops early the moment it hits a block it rejects Ask it
+        // what it actually reached.
+        let synced_tip_hash = self.inner.validator().get_mainchain_tip()?;
+        tracing::debug!(%tip_hash, %synced_tip_hash, "Synced validator");
 
-        let sync_wallet_to_tip = sync_wallet_to_tip(self, tip_hash, None);
+        let sync_wallet_to_tip = sync_wallet_to_tip(self, synced_tip_hash, None);
         tokio::pin!(sync_wallet_to_tip);
         match futures::future::select(shutdown_signal, sync_wallet_to_tip).await {
             futures::future::Either::Left(((), _sync_wallet_to_tip)) => {
@@ -215,7 +219,7 @@ impl CusfEnforcer for Wallet {
             }
             futures::future::Either::Right((res, _)) => {
                 let () = res?;
-                tracing::debug!(%tip_hash, "Synced wallet");
+                tracing::debug!(%synced_tip_hash, "Synced wallet");
                 Ok(())
             }
         }

@@ -11,7 +11,7 @@ use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use error_fatality::Split as _;
+use error_fatality::{Fatality as _, Split as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
@@ -1616,12 +1616,14 @@ where
 }
 
 impl BlockHandler<'_> {
+    /// Returns `Some(block_hash)` if a rejected block was encountered.
+    //  Returns `None` if every block in the batch connected successfully.
     pub(in crate::validator) fn handle_block_batch<'a>(
         &self,
         rwtxn: &mut RwTxn<'a>,
         blocks: &[Block],
         event_tx: &Sender<Event>,
-    ) -> Result<(), error::Sync> {
+    ) -> Result<Option<BlockHash>, error::Sync> {
         let dbs = self.dbs;
         let start = Instant::now();
 
@@ -1643,7 +1645,18 @@ impl BlockHandler<'_> {
             // We should not call out to `invalidateblock` in case of failures here,
             // as that is handled by the cusf-enforcer-mempool crate.
             // FIXME: handle disconnects
-            let event = self.connect_block(rwtxn, block)?;
+            let event = match self.connect_block(rwtxn, block) {
+                Ok(event) => event,
+                Err(err) if !err.is_fatal() => {
+                    tracing::info!(
+                        %block_hash,
+                        "encountered invalid block during batch sync: {:#}",
+                        crate::errors::ErrorChain::new(&err),
+                    );
+                    return Ok(Some(block_hash));
+                }
+                Err(err) => return Err(err.into()),
+            };
 
             let connect_block_duration =
                 jiff::SignedDuration::try_from(start_block.elapsed()).unwrap_or_default();
@@ -1708,7 +1721,7 @@ impl BlockHandler<'_> {
             blocks.len(),
             jiff::SignedDuration::try_from(start.elapsed()).unwrap_or_default(),
         );
-        Ok(())
+        Ok(None)
     }
 
     // MUST be called after `sync_headers`.
@@ -1825,8 +1838,15 @@ impl BlockHandler<'_> {
             total_blocks_fetched += blocks.len();
 
             let mut rwtxn = dbs.write_txn()?;
-            self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
+            let rejected_block = self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
             rwtxn.commit()?;
+            if let Some(rejected_block) = rejected_block {
+                tracing::warn!(
+                    %rejected_block,
+                    "stopping batch sync early: a rejected block was encountered"
+                );
+                return Ok(());
+            }
         }
 
         tracing::info!(

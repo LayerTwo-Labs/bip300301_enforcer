@@ -920,8 +920,8 @@ pub fn tests(
         crate::test_blinded_m6_roundtrip::test_blinded_m6_zero_input_roundtrip,
     ));
 
-    // These two need direct `bin_paths` (to respawn the enforcer/electrs mid-test),
-    // so they use a bespoke trial rather than `new_trial_with_setup`.
+    // Needs direct `bin_paths` (to respawn the enforcer/electrs mid-test),
+    // so it uses a bespoke trial rather than `new_trial_with_setup`.
     async_trials.push({
         let name = crate::test_wallet_reorg_multi_block::TEST_NAME;
         AsyncTrial::new(
