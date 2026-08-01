@@ -77,9 +77,43 @@ const MAX_BLOCK_CACHE_SIZE: usize = 5000;
 const MAX_ITERATIONS_WITHOUT_MATCH: usize = 5000;
 const BLOCKS_DIR_CONNECT_BATCH_SIZE: usize = 2000;
 
+/// Connect a batch of pending blocks. Returns `true` if the whole batch
+/// connected and file sync may continue.
+fn connect_pending_blocks(
+    handler: &BlockHandler<'_>,
+    event_tx: &async_broadcast::Sender<Event>,
+    missing_blocks: &mut Vec<BlockHash>,
+    pending_blocks: &mut Vec<Block>,
+    total_handled_blocks: &mut usize,
+) -> Result<bool, error::Sync> {
+    let mut rwtxn: RwTxn<'_> = handler.dbs.write_txn()?;
+    let rejected_block = handler.handle_block_batch(&mut rwtxn, pending_blocks, event_tx)?;
+    rwtxn.commit()?;
+    let Some(rejected_block) = rejected_block else {
+        *total_handled_blocks += pending_blocks.len();
+        pending_blocks.clear();
+        return Ok(true);
+    };
+    let rejected_idx = pending_blocks
+        .iter()
+        .position(|block| block.block_hash() == rejected_block)
+        .expect("rejected block must be in the batch it was reported for");
+
+    // `missing_blocks` is a stack with the next expected block last, so
+    // restore the unconnected tail in reverse: the rejected block ends up
+    // as the next expected.
+    for block in pending_blocks[rejected_idx..].iter().rev() {
+        missing_blocks.push(block.block_hash());
+    }
+    *total_handled_blocks += rejected_idx;
+    pending_blocks.clear();
+    Ok(false)
+}
+
 /// Check cache for subsequent expected blocks and process them if found.
 /// This function iteratively looks for the next expected block in the cache
-/// and processes it until no more consecutive blocks are found.
+/// and processes it until no more consecutive blocks are found. Returns
+/// `false` if the validator rejected a block and file sync should stop.
 fn process_cached_blocks(
     handler: &BlockHandler<'_>,
     event_tx: &async_broadcast::Sender<Event>,
@@ -87,8 +121,7 @@ fn process_cached_blocks(
     missing_blocks: &mut Vec<BlockHash>,
     pending_blocks: &mut Vec<Block>,
     total_handled_blocks: &mut usize,
-) -> Result<(), error::Sync> {
-    let dbs = handler.dbs;
+) -> Result<bool, error::Sync> {
     while let Some(&expected_block_hash) = missing_blocks.last() {
         if let Some(cached_block) = block_cache.remove(&expected_block_hash) {
             // Found next expected block in cache
@@ -96,13 +129,16 @@ fn process_cached_blocks(
             missing_blocks.pop();
 
             // Check if we should process batch
-            if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
-                let mut rwtxn: RwTxn<'_> = dbs.write_txn()?;
-                handler.handle_block_batch(&mut rwtxn, pending_blocks, event_tx)?;
-                rwtxn.commit()?;
-
-                *total_handled_blocks += pending_blocks.len();
-                pending_blocks.clear();
+            if (pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty())
+                && !connect_pending_blocks(
+                    handler,
+                    event_tx,
+                    missing_blocks,
+                    pending_blocks,
+                    total_handled_blocks,
+                )?
+            {
+                return Ok(false);
             }
         } else {
             // Next expected block not in cache, break out
@@ -110,7 +146,7 @@ fn process_cached_blocks(
         }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Sync blocks by reading from the raw block files. The idea is to mutate the missing
@@ -120,6 +156,11 @@ fn process_cached_blocks(
 ///
 /// Handles non-sequential block layout by temporarily caching unexpected blocks
 /// and checking the cache when expected blocks are found.
+///
+/// If the validator rejects a block, file sync stops early, leaving the
+/// rejected block and everything after it in `missing_blocks`. The JSON-RPC
+/// sync will then re-encounter the rejection and stop the overall sync with
+/// a warning.
 #[tracing::instrument(skip_all)]
 pub fn sync_from_directory(
     handler: &BlockHandler<'_>,
@@ -192,15 +233,20 @@ pub fn sync_from_directory(
         // Check for shutdown every 100 iterations to avoid too much overhead
         if iteration_count % 100 == 0 && cancel.is_cancelled() {
             tracing::info!("Block file sync interrupted during processing");
-            // Process any remaining blocks in the current batch before aborting
+            // Process any remaining blocks in the current batch before
+            // aborting.
             if !pending_blocks.is_empty() {
                 tracing::debug!(
                     "syncing pending batch of {} blocks before shutdown",
                     pending_blocks.len()
                 );
-                let mut rwtxn = dbs.write_txn()?;
-                handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
-                rwtxn.commit()?;
+                connect_pending_blocks(
+                    handler,
+                    event_tx,
+                    missing_blocks,
+                    &mut pending_blocks,
+                    &mut total_handled_blocks,
+                )?;
             }
             return Err(error::Sync::Shutdown);
         }
@@ -267,24 +313,29 @@ pub fn sync_from_directory(
             missing_blocks.pop();
 
             // Check if we should process the current batch
-            if pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty() {
-                let mut rwtxn = dbs.write_txn()?;
-                handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
-                rwtxn.commit()?;
-
-                total_handled_blocks += pending_blocks.len();
-                pending_blocks.clear();
+            if (pending_blocks.len() >= BLOCKS_DIR_CONNECT_BATCH_SIZE || missing_blocks.is_empty())
+                && !connect_pending_blocks(
+                    handler,
+                    event_tx,
+                    missing_blocks,
+                    &mut pending_blocks,
+                    &mut total_handled_blocks,
+                )?
+            {
+                break;
             }
 
             // Check cache for subsequent expected blocks
-            process_cached_blocks(
+            if !process_cached_blocks(
                 handler,
                 event_tx,
                 &mut block_cache,
                 missing_blocks,
                 &mut pending_blocks,
                 &mut total_handled_blocks,
-            )?;
+            )? {
+                break;
+            }
         } else {
             // Block doesn't match expected - cache it
             let full_block = Block {
@@ -303,18 +354,20 @@ pub fn sync_from_directory(
                     expected_block_hash,
                 );
 
-                // Process any remaining blocks in the current batch before aborting
+                // Process any remaining blocks in the current batch before
+                // aborting.
                 if !pending_blocks.is_empty() {
                     tracing::debug!(
                         "syncing pending batch of {} blocks before aborting blocks dir sync",
                         pending_blocks.len()
                     );
-                    let mut rwtxn = dbs.write_txn()?;
-                    handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
-                    rwtxn.commit()?;
-
-                    total_handled_blocks += pending_blocks.len();
-                    pending_blocks.clear(); // Clear to avoid double processing
+                    connect_pending_blocks(
+                        handler,
+                        event_tx,
+                        missing_blocks,
+                        &mut pending_blocks,
+                        &mut total_handled_blocks,
+                    )?;
                 }
 
                 break;
@@ -333,17 +386,19 @@ pub fn sync_from_directory(
         }
     }
 
-    // Process any remaining blocks in the pending batch
+    // Process any remaining blocks in the pending batch.
     if !pending_blocks.is_empty() {
         tracing::debug!(
             "handling final batch of {} blocks at end of file sync",
             pending_blocks.len()
         );
-        let mut rwtxn = dbs.write_txn()?;
-        handler.handle_block_batch(&mut rwtxn, &pending_blocks, event_tx)?;
-        rwtxn.commit()?;
-
-        total_handled_blocks += pending_blocks.len();
+        connect_pending_blocks(
+            handler,
+            event_tx,
+            missing_blocks,
+            &mut pending_blocks,
+            &mut total_handled_blocks,
+        )?;
     }
 
     tracing::info!(
