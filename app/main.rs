@@ -1335,10 +1335,25 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
 
+    // The producer's `getblocktemplate` queries go to the enforcer's own
+    // block template server when it is enabled. Without the server, fall
+    // back to Bitcoin Core's templates, which know nothing of drivechain rules.
+    let gbt_client = if cli.enable_block_template_server {
+        bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
+            .build(format!("http://{}", cli.serve_rpc_addr))
+            .map_err(|err| {
+                miette::Report::from_err(err)
+                    .wrap_err("failed to create client for the block template server")
+            })?
+    } else {
+        mainchain_client.clone()
+    };
+
     let producer = BlockProducer::new(
         &wallet_data_dir,
         validator.clone(),
         mainchain_client.clone(),
+        gbt_client,
         cli.clone(),
         signet_challenge.clone(),
     )?;

@@ -174,29 +174,70 @@ impl ToStatus for FetchTransaction {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+#[error(
+    "failed to fetch block template{}",
+    .template_error.as_deref().map(|err| format!(": {err}")).unwrap_or_default()
+)]
+pub struct GetBlockTemplate {
+    #[source]
+    pub source: JsonRpcError,
+    /// From `BlockProducer::last_gbt_error`
+    pub template_error: Option<String>,
+}
+
+impl ToStatus for GetBlockTemplate {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match &self.source {
+            // The enforcer's own template server only comes up once the
+            // initial mempool sync is done, so a transport error usually
+            // means it is still starting.
+            JsonRpcError::Transport(_) => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::Unavailable)
+            }
+            _ => StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum SelectBlockTxs {
-    #[error(transparent)]
-    BitcoinCoreRPC(#[from] BitcoinCoreRPC),
-    #[error("failed to fetch transaction (`{txid}`)")]
-    FetchTransaction {
-        txid: bitcoin::Txid,
-        source: FetchTransaction,
-    },
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GenerateSuffixTxs),
     #[error(transparent)]
+    GetBlockTemplate(#[from] GetBlockTemplate),
+    #[error(transparent)]
     GetCtips(#[from] crate::validator::GetCtipsError),
+    #[error("failed to decode transaction `{txid}` from the block template")]
+    DecodeTemplateTransaction {
+        txid: bitcoin::Txid,
+        source: bitcoin::consensus::encode::Error,
+    },
+    /// The block template was built on a different tip than the one the
+    /// validator has caught up to. Building on the validator's tip while using
+    /// the template's tx set produces a block Core rejects as `inconclusive`,
+    /// so bail out and let the caller retry once the two tips agree.
+    #[error(
+        "block template is built on `{template_tip}`, but the validator tip is `{validator_tip}`"
+    )]
+    TemplateTipMismatch {
+        template_tip: bitcoin::BlockHash,
+        validator_tip: bitcoin::BlockHash,
+    },
 }
 
 impl ToStatus for SelectBlockTxs {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::BitcoinCoreRPC(err) => err.builder(),
-            Self::FetchTransaction { source, .. } => {
-                StatusBuilder::with_code(self, source.builder())
-            }
             Self::GenerateSuffixTxs(err) => err.builder(),
+            Self::GetBlockTemplate(err) => err.builder(),
             Self::GetCtips(err) => err.builder(),
+            Self::DecodeTemplateTransaction { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
+            }
+            // Retryable: whichever side is behind just needs to catch up.
+            Self::TemplateTipMismatch { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
         }
     }
 }
@@ -303,6 +344,8 @@ pub enum VerifyCanMine {
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
     #[error(transparent)]
+    GetBlockTemplate(#[from] GetBlockTemplate),
+    #[error(transparent)]
     MissingBinary(#[from] MissingBinary),
     #[error("cannot generate more than one block on signet")]
     MultipleBlocksOnSignet,
@@ -325,6 +368,7 @@ impl ToStatus for VerifyCanMine {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
+            Self::GetBlockTemplate(err) => err.builder(),
             Self::MissingBinary(err) => err.builder(),
             Self::MultipleBlocksOnSignet => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)

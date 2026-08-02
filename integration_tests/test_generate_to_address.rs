@@ -6,14 +6,27 @@ use futures::channel::mpsc;
 
 use crate::setup::{EnforcerWallet, Mode, PreSetup, SetupOpts};
 
-pub async fn test_generate_to_address(setup: PreSetup) -> anyhow::Result<()> {
+pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let setup_opts: SetupOpts = SetupOpts {
         enforcer_wallet: EnforcerWallet::Disabled,
         ..Default::default()
     };
 
-    let post_setup = setup.setup(Mode::NoMempool, setup_opts, res_tx).await?;
+    let post_setup = setup.setup(mode, setup_opts, res_tx).await?;
+
+    // In GetBlockTemplate mode, `GenerateToAddress` fetches its block template
+    // from the enforcer's own `getblocktemplate` server, which only comes up
+    // once the initial mempool sync is done. Wait for it, so the requests
+    // below don't race server startup.
+    if matches!(mode, Mode::GetBlockTemplate) {
+        crate::setup::wait_for_port(
+            "127.0.0.1",
+            post_setup.reserved_ports.enforcer_serve_rpc.port(),
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
+    }
 
     async fn block_count(
         bitcoin_cli: &bip300301_enforcer_lib::bins::BitcoinCli,
