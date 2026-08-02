@@ -4,6 +4,7 @@ pub mod mine;
 pub mod setup;
 mod test_activation_height;
 mod test_blinded_m6_roundtrip;
+mod test_bmm_conflict_deprioritization;
 mod test_consecutive_deposits;
 mod test_file_based_block_parser;
 mod test_generate_to_address;
