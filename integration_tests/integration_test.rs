@@ -823,17 +823,22 @@ pub fn tests(
     )]);
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
-    async_trials.push(new_trial(
-        "generate_to_address".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::GetBlockTemplate,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::test_generate_to_address::test_generate_to_address,
-    ));
+    // GetBlockTemplate mode mines from templates served by the enforcer's own
+    // `getblocktemplate` server; NoMempool mode exercises the fallback to
+    // Bitcoin Core's templates.
+    async_trials.extend([Mode::GetBlockTemplate, Mode::NoMempool].map(|mode| {
+        new_trial(
+            format!("generate_to_address (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            move |setup| crate::test_generate_to_address::test_generate_to_address(setup, mode),
+        )
+    }));
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
     async_trials.push(new_trial(

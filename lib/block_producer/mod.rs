@@ -33,6 +33,7 @@ struct Inner {
     validator: Validator,
     db: Db,
     main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     config: crate::cli::Config,
     // Always Some(_) on signets
     signet_challenge: Option<bitcoin::ScriptBuf>,
@@ -56,6 +57,7 @@ impl BlockProducer {
         data_dir: &std::path::Path,
         validator: Validator,
         main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+        gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
         config: crate::cli::Config,
         signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitDbConnection> {
@@ -65,6 +67,7 @@ impl BlockProducer {
                 validator,
                 db,
                 main_client,
+                gbt_client,
                 config,
                 signet_challenge,
                 last_gbt_error: parking_lot::RwLock::new(None),
@@ -80,6 +83,10 @@ impl BlockProducer {
     /// JSON-RPC client for the Bitcoin Core node.
     pub(crate) fn main_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
         &self.inner.main_client
+    }
+
+    pub(crate) fn gbt_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
+        &self.inner.gbt_client
     }
 
     pub(crate) fn config(&self) -> &crate::cli::Config {
