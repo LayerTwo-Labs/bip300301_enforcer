@@ -190,6 +190,17 @@ Integration tests can be run using
 $ cargo run --example integration_tests -- <TEST ARGS>
 ```
 
+or via the just recipe, which downloads the required binaries and writes the env
+files on first run. `--bitcoind` selects the Bitcoin Core build to run against:
+
+```bash
+$ just test-it                            # against bitcoin-patched (default)
+$ just test-it --bitcoind unpatched       # against the newest stock Bitcoin Core
+$ just test-it --bitcoind stock-30.2      # against a specific stock release
+$ just test-it --bitcoind drynet3         # against the ecash-com/bitcoin drynet fork
+$ just test-it --bitcoind all             # against every flavor in the CI matrix
+```
+
 # Profiling
 
 ```bash

@@ -59,13 +59,10 @@ fmt:
     bunx prettier --write .
     buf format -w proto
 
-# Run integration tests
+# Run integration tests. `--bitcoind` selects the Bitcoin Core build
+# (default: bitcoin-patched): bitcoin-patched, unpatched (newest stock),
+# stock-X.Y (a specific stock release), drynetN, or all (every flavor in
+# the CI matrix, continuing past failures); remaining args go to the test
+# runner.
 test-it *args='':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ ! -f '{{ justfile_directory() }}/integrationtests.env' ]; then
-        '{{ justfile_directory() }}/scripts/setup_integration_tests.sh'
-    fi
-    cargo build
-    env BIP300301_ENFORCER_INTEGRATION_TEST_ENV='{{ justfile_directory() }}/integrationtests.env' \
-        cargo run --example integration_tests -- {{ args }}
+    '{{ justfile_directory() }}/scripts/run_integration_tests.sh' {{ args }}
