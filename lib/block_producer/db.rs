@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::Path};
 
 use bitcoin::hashes::{Hash as _, sha256d};
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 
 use crate::{
     block_producer::error,
@@ -16,6 +16,18 @@ use crate::{
 
 /// Bundle proposals for a single sidechain, as stored (no validator filtering).
 pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>)>;
+
+/// The wallet's own most recently tracked in-flight BMM bid for a sidechain,
+/// used to build a genuine BIP125 replacement (fee-bump or manual
+/// input-reuse) instead of an unrelated second transaction. See
+/// [`Db::get_tracked_bmm_request`].
+pub struct TrackedBmmRequest {
+    pub prev_block_hash: bitcoin::BlockHash,
+    pub side_block_hash: BmmCommitment,
+    pub txid: bitcoin::Txid,
+    pub fee_sats: u64,
+    pub raw_tx: Vec<u8>,
+}
 
 /// Undo rows are kept for this many recently-produced blocks, so that blocks
 /// which stay on the main chain (and are therefore never disconnected) don't
@@ -111,6 +123,47 @@ impl Db {
                  ack_all_proposals BOOLEAN NOT NULL);
                  INSERT INTO block_producer_settings (id, ack_all_proposals)
                  VALUES (0, TRUE);",
+            ),
+            // In-flight (unconfirmed) bid tracking. Recording the broadcast
+            // transaction for a BMM request slot lets a later call for the
+            // same slot be recognized as a bid increase (RBF fee-bump)
+            // rather than an unrelated second transaction; `raw_tx` allows
+            // returning the exact previously-broadcast transaction without
+            // rebuilding it. The undo table gets the same columns so a reorg
+            // that disconnects a block we produced restores requests still
+            // tracked -- their transactions are back in the mempool, and a
+            // replacement must reuse their inputs.
+            //
+            // `bid_seq` orders bids by when they were last written, which
+            // `rowid` can't: the upsert in `upsert_bmm_request` resolves
+            // conflicts with `DO UPDATE`, leaving the existing row's `rowid`
+            // untouched, so re-bidding an older slot after a newer one
+            // updates a *lower* `rowid`. The `bmm_bid_seq` counter is never
+            // decremented, so numbers are only ever handed out once --
+            // drawing from `MAX(bid_seq) + 1` over the live table instead
+            // would free the highest number for reuse whenever its bid
+            // settled. Pre-upgrade rows are backfilled with `bid_seq =
+            // rowid` and the counter is seeded past every number already in
+            // use, including snapshots not yet pruned.
+            M::up(
+                "ALTER TABLE bmm_requests ADD COLUMN txid BLOB;
+                 ALTER TABLE bmm_requests ADD COLUMN fee_sats INTEGER;
+                 ALTER TABLE bmm_requests ADD COLUMN raw_tx BLOB;
+                 ALTER TABLE bmm_requests ADD COLUMN bid_seq INTEGER;
+                 UPDATE bmm_requests SET bid_seq = rowid WHERE bid_seq IS NULL;
+                 ALTER TABLE bmm_requests_undo ADD COLUMN txid BLOB;
+                 ALTER TABLE bmm_requests_undo ADD COLUMN fee_sats INTEGER;
+                 ALTER TABLE bmm_requests_undo ADD COLUMN raw_tx BLOB;
+                 ALTER TABLE bmm_requests_undo ADD COLUMN bid_seq INTEGER;
+                 CREATE TABLE bmm_bid_seq
+                    (id INTEGER PRIMARY KEY CHECK (id = 0),
+                     next INTEGER NOT NULL);
+                 INSERT INTO bmm_bid_seq (id, next)
+                 SELECT 0, IFNULL(MAX(bid_seq), 0) FROM (
+                     SELECT bid_seq FROM bmm_requests
+                     UNION ALL
+                     SELECT bid_seq FROM bmm_requests_undo
+                 );",
             ),
         ]);
 
@@ -306,36 +359,102 @@ impl Db {
         with_connection(&connection)
     }
 
-    /// Returns `true` if a BMM request was inserted, `false` if one already
-    /// exists for that sidechain and previous blockhash.
-    pub async fn insert_new_bmm_request(
+    /// The most recently tracked bid for `sidechain_number`, whichever slot
+    /// it targeted.
+    ///
+    /// Not scoped to the current slot on purpose. A bid that lost its auction
+    /// is consensus-dead, but its transaction stays in bitcoind's mempool
+    /// until something replaces it, and `Wallet::create_bmm_request` needs it
+    /// to build that replacement.
+    pub async fn get_tracked_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
-        prev_blockhash: bitcoin::BlockHash,
-        side_block_hash: BmmCommitment,
-    ) -> Result<bool, rusqlite::Error> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<bool, rusqlite::Error> {
-            connection
-                .prepare(
-                    "INSERT OR ABORT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) VALUES (?1, ?2, ?3)",
-                )?
-                .execute((
-                    u8::from(sidechain_number),
-                    prev_blockhash.to_byte_array(),
-                    side_block_hash.0,
-                ))
-                .map_or_else(
-                    |err| if err.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
-                        Ok(false)
-                    } else {
-                        Err(err)
+    ) -> Result<Option<TrackedBmmRequest>, rusqlite::Error> {
+        type Row = (
+            [u8; 32],
+            [u8; 32],
+            Option<[u8; 32]>,
+            Option<i64>,
+            Option<Vec<u8>>,
+        );
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            let row: Option<Row> = connection
+                .query_row(
+                    "SELECT prev_block_hash, side_block_hash, txid, fee_sats, raw_tx
+                     FROM bmm_requests WHERE sidechain_number = ?1
+                     ORDER BY bid_seq DESC, rowid DESC LIMIT 1",
+                    [u8::from(sidechain_number)],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
                     },
-                    |_| Ok(true)
                 )
+                .optional()?;
+            let Some((prev_block_hash, side_block_hash, txid, fee_sats, raw_tx)) = row else {
+                return Ok(None);
+            };
+            let (Some(txid), Some(fee_sats), Some(raw_tx)) = (txid, fee_sats, raw_tx) else {
+                return Ok(None);
+            };
+            Ok(Some(TrackedBmmRequest {
+                prev_block_hash: bitcoin::BlockHash::from_byte_array(prev_block_hash),
+                side_block_hash: BmmCommitment(side_block_hash),
+                txid: bitcoin::Txid::from_byte_array(txid),
+                fee_sats: fee_sats as u64,
+                raw_tx,
+            }))
         };
         let connection = self.conn.lock().await;
         with_connection(&connection)
+    }
+
+    /// Records the transaction currently tracked as the in-flight bid for
+    /// `(sidechain_number, prev_blockhash)`, superseding any previous
+    /// tracked bid for that same slot. Must only be called after `raw_tx`
+    /// has been successfully broadcast.
+    pub async fn upsert_bmm_request(
+        &self,
+        sidechain_number: SidechainNumber,
+        prev_blockhash: &bitcoin::BlockHash,
+        side_block_hash: BmmCommitment,
+        txid: bitcoin::Txid,
+        fee_sats: u64,
+        raw_tx: &[u8],
+    ) -> Result<(), rusqlite::Error> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &mut Connection| -> Result<(), rusqlite::Error> {
+            let tx = connection.transaction()?;
+            tx.execute("UPDATE bmm_bid_seq SET next = next + 1 WHERE id = 0;", [])?;
+            tx.execute(
+                "INSERT INTO bmm_requests
+                (sidechain_number, prev_block_hash, side_block_hash, txid, fee_sats,
+                 raw_tx, bid_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                (SELECT next FROM bmm_bid_seq WHERE id = 0))
+             ON CONFLICT(sidechain_number, prev_block_hash) DO UPDATE SET
+                side_block_hash = excluded.side_block_hash,
+                txid = excluded.txid,
+                fee_sats = excluded.fee_sats,
+                raw_tx = excluded.raw_tx,
+                bid_seq = excluded.bid_seq",
+                (
+                    u8::from(sidechain_number),
+                    prev_blockhash.as_byte_array(),
+                    side_block_hash.0,
+                    txid.as_byte_array(),
+                    fee_sats as i64,
+                    raw_tx,
+                ),
+            )?;
+            tx.commit()
+        };
+        let mut connection = self.conn.lock().await;
+        with_connection(&mut connection)
     }
 
     pub async fn put_withdrawal_bundle(
@@ -421,19 +540,41 @@ impl Db {
         Ok(())
     }
 
-    /// Consume the BMM requests for `prev_blockhash` when a block is generated on
-    /// top of it. The deleted rows are first snapshotted into `bmm_requests_undo`,
-    /// keyed by the mined `block_hash`, so they can be restored (see
-    /// [`Self::restore_bmm_requests`]) if that block is later disconnected by a
-    /// reorg — otherwise the operator would have to re-issue `create_bmm_request`
-    /// for the new mainchain tip.
-    pub(crate) async fn delete_bmm_requests(
+    /// The transaction of every tracked in-flight bid, across all sidechains
+    /// and slots. Used to work out which bids a connected block settled, by
+    /// intersecting against that block's transactions.
+    pub(crate) async fn tracked_bmm_txids(&self) -> Result<Vec<bitcoin::Txid>, rusqlite::Error> {
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            let mut statement =
+                connection.prepare("SELECT txid FROM bmm_requests WHERE txid IS NOT NULL")?;
+            let txids = statement
+                .query_map([], |row| {
+                    let txid: [u8; 32] = row.get(0)?;
+                    Ok(bitcoin::Txid::from_byte_array(txid))
+                })?
+                .collect::<Result<_, _>>()?;
+            Ok(txids)
+        };
+        let connection = self.conn.lock().await;
+        with_connection(&connection)
+    }
+
+    /// Consume the tracked bids that `block_hash` confirmed.
+    ///
+    /// Keyed on the winning transactions, not the superseded slot: a block
+    /// ends the auction for the losing bids too, but their transactions stay
+    /// in the mempool and their rows are what lets a later bid replace them.
+    ///
+    /// Deleted rows are snapshotted into `bmm_requests_undo` first, so
+    /// [`Self::restore_bmm_requests`] can put them back if `block_hash` is
+    /// disconnected and its transactions return to the mempool.
+    pub(crate) async fn delete_won_bmm_requests(
         &self,
-        prev_blockhash: &bitcoin::BlockHash,
         block_hash: &bitcoin::BlockHash,
-    ) -> Result<(), rusqlite::Error> {
+        won_txids: &[bitcoin::Txid],
+    ) -> Result<usize, rusqlite::Error> {
         let mut connection = self.conn.lock().await;
-        snapshot_and_delete_bmm_requests(&mut connection, prev_blockhash, block_hash)
+        snapshot_and_delete_won_bmm_requests(&mut connection, block_hash, won_txids)
     }
 
     /// Restore the BMM requests that were consumed when `block_hash` was
@@ -488,31 +629,39 @@ fn drop_legacy_wallet_seeds_if_empty(conn: &mut Connection) -> Result<(), rusqli
     tx.commit()
 }
 
-/// Snapshot the BMM requests keyed to `prev_blockhash` into `bmm_requests_undo`
-/// (keyed by the mined `block_hash`) and delete them from `bmm_requests`, within
-/// a single transaction. Called when a block is generated on top of
-/// `prev_blockhash`; the snapshot lets `restore_bmm_requests_from_undo` put the
-/// requests back if that block is later disconnected by a reorg. Undo rows for
-/// blocks beyond the most recent `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing
-/// blocks are pruned so the table stays bounded.
-fn snapshot_and_delete_bmm_requests(
+/// Snapshot the `bmm_requests` rows for `won_txids` into `bmm_requests_undo`
+/// (keyed by the confirming `block_hash`) and delete them from `bmm_requests`,
+/// within a single transaction. Returns the number of rows deleted.
+///
+/// Undo rows for blocks beyond the most recent
+/// `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` settling blocks are pruned so the table
+/// stays bounded.
+fn snapshot_and_delete_won_bmm_requests(
     connection: &mut Connection,
-    prev_blockhash: &bitcoin::BlockHash,
     block_hash: &bitcoin::BlockHash,
-) -> Result<(), rusqlite::Error> {
+    won_txids: &[bitcoin::Txid],
+) -> Result<usize, rusqlite::Error> {
+    if won_txids.is_empty() {
+        return Ok(0);
+    }
     let tx = connection.transaction()?;
-    tx.execute(
-        "INSERT INTO bmm_requests_undo \
-         (block_hash, sidechain_number, prev_block_hash, side_block_hash) \
-         SELECT ?1, sidechain_number, prev_block_hash, side_block_hash \
-         FROM bmm_requests WHERE prev_block_hash = ?2;",
-        (block_hash.as_byte_array(), prev_blockhash.as_byte_array()),
-    )?;
-    tx.execute(
-        "DELETE FROM bmm_requests where prev_block_hash = ?;",
-        [prev_blockhash.as_byte_array()],
-    )?;
-    // Keep only the undo rows for the most recently produced blocks, so blocks
+    let mut deleted = 0;
+    for txid in won_txids {
+        tx.execute(
+            "INSERT INTO bmm_requests_undo \
+             (block_hash, sidechain_number, prev_block_hash, side_block_hash, \
+              txid, fee_sats, raw_tx, bid_seq) \
+             SELECT ?1, sidechain_number, prev_block_hash, side_block_hash, \
+                    txid, fee_sats, raw_tx, bid_seq \
+             FROM bmm_requests WHERE txid = ?2;",
+            (block_hash.as_byte_array(), txid.as_byte_array()),
+        )?;
+        deleted += tx.execute(
+            "DELETE FROM bmm_requests WHERE txid = ?;",
+            [txid.as_byte_array()],
+        )?;
+    }
+    // Keep only the undo rows for the most recently settling blocks, so blocks
     // that stay on the main chain (and are therefore never disconnected) don't
     // accumulate undo rows forever.
     tx.execute(
@@ -525,7 +674,8 @@ fn snapshot_and_delete_bmm_requests(
          );",
         [BMM_REQUESTS_UNDO_RETAINED_BLOCKS],
     )?;
-    tx.commit()
+    tx.commit()?;
+    Ok(deleted)
 }
 
 /// Restore the BMM requests snapshotted for `block_hash` back into
@@ -537,10 +687,19 @@ fn restore_bmm_requests_from_undo(
     block_hash: &bitcoin::BlockHash,
 ) -> Result<usize, rusqlite::Error> {
     let tx = connection.transaction()?;
+    // Restored bids take fresh `bid_seq` values rather than their original
+    // ones. The disconnect makes them live again -- their transactions are
+    // back in the mempool -- while any bid placed for the slot this block
+    // opened is now consensus-dead. Keeping the old numbers would leave that
+    // dead bid ranked highest, so the next replacement would supersede it and
+    // leave the restored transaction stranded alongside.
+    tx.execute("UPDATE bmm_bid_seq SET next = next + 1 WHERE id = 0;", [])?;
     let restored = tx.execute(
         "INSERT OR IGNORE INTO bmm_requests \
-         (sidechain_number, prev_block_hash, side_block_hash) \
-         SELECT sidechain_number, prev_block_hash, side_block_hash \
+         (sidechain_number, prev_block_hash, side_block_hash, txid, fee_sats, raw_tx, bid_seq) \
+         SELECT sidechain_number, prev_block_hash, side_block_hash, \
+                txid, fee_sats, raw_tx, \
+                (SELECT next FROM bmm_bid_seq WHERE id = 0) \
          FROM bmm_requests_undo WHERE block_hash = ?;",
         [block_hash.as_byte_array()],
     )?;
@@ -557,7 +716,7 @@ mod bmm_requests_undo_tests {
     use bitcoin::hashes::Hash as _;
     use rusqlite::Connection;
 
-    use super::{restore_bmm_requests_from_undo, snapshot_and_delete_bmm_requests};
+    use super::{restore_bmm_requests_from_undo, snapshot_and_delete_won_bmm_requests};
 
     fn block_hash(byte: u8) -> bitcoin::BlockHash {
         bitcoin::BlockHash::from_byte_array([byte; 32])
@@ -573,26 +732,49 @@ mod bmm_requests_undo_tests {
                     (sidechain_number INTEGER NOT NULL,
                      prev_block_hash BLOB NOT NULL,
                      side_block_hash BLOB NOT NULL,
+                     txid BLOB,
+                     fee_sats INTEGER,
+                     raw_tx BLOB,
+                     bid_seq INTEGER,
                      UNIQUE(sidechain_number, prev_block_hash));
                  CREATE TABLE bmm_requests_undo
                     (block_hash BLOB NOT NULL,
                      sidechain_number INTEGER NOT NULL,
                      prev_block_hash BLOB NOT NULL,
-                     side_block_hash BLOB NOT NULL);",
+                     side_block_hash BLOB NOT NULL,
+                     txid BLOB,
+                     fee_sats INTEGER,
+                     raw_tx BLOB,
+                     bid_seq INTEGER);
+                 CREATE TABLE bmm_bid_seq
+                    (id INTEGER PRIMARY KEY CHECK (id = 0),
+                     next INTEGER NOT NULL);
+                 INSERT INTO bmm_bid_seq (id, next) VALUES (0, 0);",
             )
             .unwrap();
         connection
     }
 
-    fn insert_request(connection: &Connection, sidechain_number: u8, prev: &bitcoin::BlockHash) {
+    fn txid(byte: u8) -> bitcoin::Txid {
+        bitcoin::Txid::from_byte_array([byte; 32])
+    }
+
+    fn insert_request(
+        connection: &Connection,
+        sidechain_number: u8,
+        prev: &bitcoin::BlockHash,
+        bid_txid: bitcoin::Txid,
+    ) {
         connection
             .execute(
-                "INSERT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) \
-                 VALUES (?1, ?2, ?3);",
+                "INSERT INTO bmm_requests \
+                 (sidechain_number, prev_block_hash, side_block_hash, txid) \
+                 VALUES (?1, ?2, ?3, ?4);",
                 (
                     sidechain_number,
                     prev.as_byte_array(),
                     block_hash(0).as_byte_array(),
+                    bid_txid.as_byte_array(),
                 ),
             )
             .unwrap();
@@ -616,28 +798,37 @@ mod bmm_requests_undo_tests {
             .unwrap()
     }
 
-    /// A BMM request consumed by block production is snapshotted, then restored
-    /// verbatim when the producing block is disconnected by a reorg.
+    /// A BMM request settled by the block that confirmed it is snapshotted,
+    /// then restored verbatim when that block is disconnected by a reorg -- the
+    /// disconnect puts the bid's transaction back into the mempool, so it needs
+    /// tracking again.
     #[test]
-    fn bmm_request_restored_when_producing_block_disconnected() {
+    fn bmm_request_restored_when_confirming_block_disconnected() {
         let mut connection = open_db();
 
         let prev = block_hash(1);
         let mined = block_hash(2);
         let side = block_hash(3);
+        let bid = txid(9);
 
         // Operator queues a BMM request against the current tip `prev`.
         connection
             .execute(
-                "INSERT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) \
-                 VALUES (?1, ?2, ?3);",
-                (5, prev.as_byte_array(), side.as_byte_array()),
+                "INSERT INTO bmm_requests \
+                 (sidechain_number, prev_block_hash, side_block_hash, txid) \
+                 VALUES (?1, ?2, ?3, ?4);",
+                (
+                    5,
+                    prev.as_byte_array(),
+                    side.as_byte_array(),
+                    bid.as_byte_array(),
+                ),
             )
             .unwrap();
         assert_eq!(row_count(&connection, "bmm_requests"), 1);
 
-        // Producing `mined` on top of `prev` consumes the request into the undo log.
-        snapshot_and_delete_bmm_requests(&mut connection, &prev, &mined).unwrap();
+        // `mined` confirms the bid, settling it into the undo log.
+        snapshot_and_delete_won_bmm_requests(&mut connection, &mined, &[bid]).unwrap();
         assert_eq!(row_count(&connection, "bmm_requests"), 0);
         assert_eq!(row_count(&connection, "bmm_requests_undo"), 1);
 
@@ -661,19 +852,20 @@ mod bmm_requests_undo_tests {
 
     /// Blocks that stay on the main chain (never disconnected) must not
     /// accumulate undo rows without bound: only the most recent
-    /// `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing blocks are retained, and the
-    /// oldest snapshot is dropped once that many newer blocks have been produced.
+    /// `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` settling blocks are retained, and the
+    /// oldest snapshot is dropped once that many newer blocks have settled.
     #[test]
     fn old_undo_rows_are_pruned() {
         let mut connection = open_db();
 
-        // Produce `RETAINED + 1` blocks, each consuming a distinct BMM request.
+        // Settle `RETAINED + 1` blocks, each confirming a distinct BMM request.
         let total = super::BMM_REQUESTS_UNDO_RETAINED_BLOCKS + 1;
         for i in 0..total {
             let prev = block_hash(i as u8);
             let mined = block_hash((total - i) as u8);
-            insert_request(&connection, 0, &prev);
-            snapshot_and_delete_bmm_requests(&mut connection, &prev, &mined).unwrap();
+            let bid = txid(i as u8);
+            insert_request(&connection, 0, &prev, bid);
+            snapshot_and_delete_won_bmm_requests(&mut connection, &mined, &[bid]).unwrap();
         }
 
         // The table is bounded to the retention window, not the block count.
@@ -696,6 +888,381 @@ mod bmm_requests_undo_tests {
             restore_bmm_requests_from_undo(&mut connection, &newest).unwrap(),
             1
         );
+    }
+}
+
+/// Tests for the in-flight bid tracking that `Wallet::create_bmm_request`
+/// reads, exercised through the real migrated `Db` rather than a hand-rolled
+/// schema, so the migrations are covered too.
+#[cfg(test)]
+mod bmm_bid_tracking_tests {
+    use bitcoin::hashes::Hash as _;
+
+    use super::Db;
+    use crate::types::{BmmCommitment, SidechainNumber};
+
+    const SIDECHAIN: SidechainNumber = SidechainNumber(5);
+
+    fn block_hash(byte: u8) -> bitcoin::BlockHash {
+        bitcoin::BlockHash::from_byte_array([byte; 32])
+    }
+
+    fn txid(byte: u8) -> bitcoin::Txid {
+        bitcoin::Txid::from_byte_array([byte; 32])
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bip300301-bmm-bid-tracking-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A bid consumed by a block *we* produced must come back **tracked**
+    /// when that block is disconnected by a reorg. The disconnect puts the
+    /// bid's transaction back into the mempool, so the next bid for this
+    /// sidechain has to reuse its inputs as a BIP125 replacement — which it
+    /// can only do if `txid`/`fee_sats`/`raw_tx` survived the undo round
+    /// trip. Restoring the row with those columns NULL reads as untracked
+    /// and silently falls back to fresh coin selection, which is what the
+    /// tracking exists to prevent.
+    #[tokio::test]
+    async fn tracking_columns_survive_reorg_restore() {
+        let dir = temp_dir("reorg-restore");
+        let db = Db::new(&dir).unwrap();
+
+        let prev = block_hash(1);
+        let mined = block_hash(2);
+        let side = BmmCommitment([3; 32]);
+        let raw_tx = vec![0xde, 0xad, 0xbe, 0xef];
+
+        db.upsert_bmm_request(SIDECHAIN, &prev, side, txid(4), 1_000, &raw_tx)
+            .await
+            .unwrap();
+
+        // `mined` confirms the bid, settling it into the undo log.
+        assert_eq!(
+            db.delete_won_bmm_requests(&mined, &[txid(4)])
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            db.get_tracked_bmm_request(SIDECHAIN)
+                .await
+                .unwrap()
+                .is_none(),
+            "the settled bid must not still be tracked"
+        );
+
+        db.restore_bmm_requests(&mined).await.unwrap();
+        let tracked = db
+            .get_tracked_bmm_request(SIDECHAIN)
+            .await
+            .unwrap()
+            .expect("a bid restored by a reorg must still be tracked");
+        assert_eq!(tracked.prev_block_hash, prev);
+        assert_eq!(tracked.side_block_hash, side);
+        assert_eq!(tracked.txid, txid(4));
+        assert_eq!(tracked.fee_sats, 1_000);
+        assert_eq!(tracked.raw_tx, raw_tx);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A block that ends an auction without confirming our bid must leave it
+    /// tracked: the transaction stays in the mempool, and the row is what lets
+    /// the next bid replace it. Deleting by slot instead would take the losers
+    /// down with the winner, since every bid for a slot shares a
+    /// `prev_block_hash`.
+    #[tokio::test]
+    async fn losing_bid_survives_the_block_that_ended_its_auction() {
+        let dir = temp_dir("losing-bid");
+        let db = Db::new(&dir).unwrap();
+
+        // Two sidechains bid against the same slot; only sidechain 5's bid is
+        // confirmed by the block that ends it.
+        let slot = block_hash(1);
+        let settling_block = block_hash(2);
+        let winner = txid(10);
+        let loser = txid(11);
+
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &slot,
+            BmmCommitment([1; 32]),
+            winner,
+            5_000,
+            b"win",
+        )
+        .await
+        .unwrap();
+        db.upsert_bmm_request(
+            SidechainNumber(6),
+            &slot,
+            BmmCommitment([2; 32]),
+            loser,
+            4_000,
+            b"lose",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.delete_won_bmm_requests(&settling_block, &[winner])
+                .await
+                .unwrap(),
+            1,
+            "only the confirmed bid should be settled"
+        );
+
+        assert!(
+            db.get_tracked_bmm_request(SIDECHAIN)
+                .await
+                .unwrap()
+                .is_none(),
+            "the winning bid is settled and must no longer be tracked"
+        );
+        let still_tracked = db
+            .get_tracked_bmm_request(SidechainNumber(6))
+            .await
+            .unwrap()
+            .expect("the losing bid must still be tracked: its tx is still in the mempool");
+        assert_eq!(still_tracked.txid, loser);
+        assert_eq!(still_tracked.prev_block_hash, slot);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A bid restored by a reorg is live again -- the disconnect put its
+    /// transaction back in the mempool -- while a bid placed for the slot that
+    /// block opened is now consensus-dead. The restored one is what a
+    /// replacement has to supersede, so restoring has to re-rank it above
+    /// anything written while it was settled.
+
+    #[tokio::test]
+    async fn reorg_restored_bid_outranks_the_slot_it_reverted() {
+        let dir = temp_dir("reorg-newer");
+        let db = Db::new(&dir).unwrap();
+
+        let slot_a = block_hash(1);
+        let settling_block = block_hash(2);
+        let slot_b = block_hash(3);
+        let bid_a = txid(10);
+        let bid_b = txid(11);
+
+        // A wins its auction and is settled by the block that confirmed it.
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &slot_a,
+            BmmCommitment([1; 32]),
+            bid_a,
+            5_000,
+            b"a",
+        )
+        .await
+        .unwrap();
+        db.delete_won_bmm_requests(&settling_block, &[bid_a])
+            .await
+            .unwrap();
+
+        // A new bid is placed against the slot that block opened.
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &slot_b,
+            BmmCommitment([2; 32]),
+            bid_b,
+            6_000,
+            b"b",
+        )
+        .await
+        .unwrap();
+
+        // The block is then disconnected, putting A's transaction back into
+        // the mempool and its row back into the table.
+        db.restore_bmm_requests(&settling_block).await.unwrap();
+
+        let tracked = db
+            .get_tracked_bmm_request(SIDECHAIN)
+            .await
+            .unwrap()
+            .expect("a bid must be tracked");
+        assert_eq!(
+            tracked.txid, bid_a,
+            "after the disconnect A is live again and B is consensus-dead, so A is the bid \
+             a replacement must supersede"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `bid_seq` must keep ordering bids by write order even across
+    /// settlement. Drawing it from `MAX(bid_seq) + 1` over the live table did
+    /// not: settling the highest-numbered bid freed its number for the next
+    /// bid to reuse, and ordering against a row restored by a reorg then fell
+    /// to the `rowid` tiebreak instead.
+    #[tokio::test]
+    async fn bid_seq_is_not_reused_after_settlement() {
+        let dir = temp_dir("bid-seq-reuse");
+        let db = Db::new(&dir).unwrap();
+
+        let first = txid(1);
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &block_hash(1),
+            BmmCommitment([1; 32]),
+            first,
+            1,
+            b"a",
+        )
+        .await
+        .unwrap();
+        db.delete_won_bmm_requests(&block_hash(2), &[first])
+            .await
+            .unwrap();
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &block_hash(3),
+            BmmCommitment([2; 32]),
+            txid(2),
+            2,
+            b"b",
+        )
+        .await
+        .unwrap();
+
+        let assigned: i64 = {
+            let conn = rusqlite::Connection::open(dir.join("db.sqlite")).unwrap();
+            conn.query_row("SELECT bid_seq FROM bmm_requests", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            assigned, 2,
+            "the settled bid's number must not be handed out again"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review finding: a legacy row (no `txid`) shadowing a tracked one, so
+    /// that `get_tracked_bmm_request` reports nothing tracked.
+    ///
+    /// It cannot: the migration backfills pre-upgrade rows with
+    /// `bid_seq = rowid` and seeds the counter past all of them, so any bid
+    /// written afterwards outranks them. The suggested `WHERE txid IS NOT
+    /// NULL` filter would change nothing. (The underlying observation stands
+    /// -- a bid in flight across the upgrade has no recorded txid and cannot
+    /// be tracked -- but no query can recover what was never stored.)
+    #[tokio::test]
+    async fn legacy_rows_never_outrank_tracked_ones() {
+        let dir = temp_dir("legacy-rank");
+        // A pre-upgrade DB carrying an in-flight request, migrated for real.
+        {
+            let conn = rusqlite::Connection::open(dir.join("db.sqlite")).unwrap();
+            conn.execute_batch(super::migration_tests::LEGACY_V7_SCHEMA)
+                .unwrap();
+            conn.execute(
+                "INSERT INTO bmm_requests \
+                 (sidechain_number, prev_block_hash, side_block_hash) VALUES (?1, ?2, ?3);",
+                (
+                    u8::from(SIDECHAIN),
+                    block_hash(1).as_byte_array(),
+                    block_hash(2).as_byte_array(),
+                ),
+            )
+            .unwrap();
+        }
+        let db = Db::new(&dir).unwrap();
+
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &block_hash(3),
+            BmmCommitment([1; 32]),
+            txid(7),
+            1,
+            b"n",
+        )
+        .await
+        .unwrap();
+
+        let tracked = db
+            .get_tracked_bmm_request(SIDECHAIN)
+            .await
+            .unwrap()
+            .expect("the new bid outranks the legacy row");
+        assert_eq!(tracked.txid, txid(7));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `get_tracked_bmm_request` must return the most recently *written*
+    /// bid. It can't order by `rowid`: the upsert resolves conflicts with
+    /// `DO UPDATE`, which leaves the existing row's `rowid` alone, so
+    /// re-bidding an older slot updates a lower `rowid` than a newer slot's
+    /// row and `ORDER BY rowid DESC` hands back the superseded transaction.
+    #[tokio::test]
+    async fn most_recently_written_bid_wins_over_higher_rowid() {
+        let dir = temp_dir("bid-seq");
+        let db = Db::new(&dir).unwrap();
+
+        let t1 = block_hash(1);
+        let t2 = block_hash(2);
+
+        // Bid on slot T1, then on slot T2, so T2's row gets the higher
+        // `rowid`. Both rows coexist: only blocks *we* produce consume
+        // requests, and here the tip advanced by someone else's block.
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &t1,
+            BmmCommitment([11; 32]),
+            txid(1),
+            1_000,
+            b"tx1",
+        )
+        .await
+        .unwrap();
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &t2,
+            BmmCommitment([22; 32]),
+            txid(2),
+            2_000,
+            b"tx2",
+        )
+        .await
+        .unwrap();
+
+        // Re-bid the older slot. This updates T1's row in place, at its
+        // original lower `rowid`.
+        db.upsert_bmm_request(
+            SIDECHAIN,
+            &t1,
+            BmmCommitment([33; 32]),
+            txid(3),
+            3_000,
+            b"tx3",
+        )
+        .await
+        .unwrap();
+
+        let tracked = db
+            .get_tracked_bmm_request(SIDECHAIN)
+            .await
+            .unwrap()
+            .expect("a tracked bid must be found");
+        assert_eq!(
+            tracked.txid,
+            txid(3),
+            "the most recently written bid must win, not the highest rowid"
+        );
+        assert_eq!(tracked.prev_block_hash, t1);
+        assert_eq!(tracked.side_block_hash, BmmCommitment([33; 32]));
+        assert_eq!(tracked.fee_sats, 3_000);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -856,10 +1423,12 @@ pub(crate) mod migration_tests {
             "block_producer_settings must be created with ack-all defaulting on"
         );
 
-        // The snapshot-and-delete path `mine` hits after producing a block.
-        let prev = bitcoin::BlockHash::from_byte_array([1; 32]);
+        // The snapshot-and-delete path `apply_connected_block_policy` hits
+        // when a block confirms a tracked bid.
         let mined = bitcoin::BlockHash::from_byte_array([2; 32]);
-        db.delete_bmm_requests(&prev, &mined).await.unwrap();
+        db.delete_won_bmm_requests(&mined, &[bitcoin::Txid::from_byte_array([3; 32])])
+            .await
+            .unwrap();
         drop(db);
 
         assert!(has_wallet_seeds_table(&dir));

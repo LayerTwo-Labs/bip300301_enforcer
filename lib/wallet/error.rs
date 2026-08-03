@@ -1,7 +1,6 @@
 use std::{fmt::Debug, path::PathBuf};
 
 use bdk_esplora::esplora_client;
-use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
 use miette::Diagnostic;
 use serde::Deserialize;
@@ -970,7 +969,11 @@ impl ToStatus for SendWalletTransaction {
 #[derive(Debug, Diagnostic, Error)]
 pub enum BuildBmmTx {
     #[error(transparent)]
+    AddUtxo(#[from] bdk_wallet::AddUtxoError),
+    #[error(transparent)]
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
+    #[error("failed to deserialize previously tracked BMM transaction")]
+    DeserializeOldTx(#[source] bitcoin::consensus::encode::Error),
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
     #[error(transparent)]
@@ -980,9 +983,52 @@ pub enum BuildBmmTx {
 impl ToStatus for BuildBmmTx {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            // Wallet can't afford the requested bid. Caller input problem,
+            // not a server issue.
+            Self::CreateTx(err @ bdk_wallet::error::CreateTxError::CoinSelection(_)) => {
+                StatusBuilder::new(err).code(connectrpc::ErrorCode::InvalidArgument)
+            }
             Self::CreateTx(err) => StatusBuilder::new(err),
             Self::NotUnlocked(err) => err.builder(),
-            Self::Script(err) => StatusBuilder::new(err),
+            Self::AddUtxo(_) | Self::DeserializeOldTx(_) | Self::Script(_) => {
+                StatusBuilder::new(self)
+            }
+        }
+    }
+}
+
+/// Errors building a BIP125 fee-bump (RBF) replacement for a previously
+/// broadcast, still-unconfirmed BMM bid.
+#[derive(Debug, Diagnostic, Error)]
+pub enum BuildBmmFeeBump {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    #[error(transparent)]
+    BuildFeeBump(#[from] bdk_wallet::error::BuildFeeBumpError),
+    #[error(transparent)]
+    CreateTx(#[from] bdk_wallet::error::CreateTxError),
+    #[error(transparent)]
+    Script(#[from] bitcoin::script::PushBytesError),
+}
+
+impl ToStatus for BuildBmmFeeBump {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::NotUnlocked(err) => err.builder(),
+            Self::BuildFeeBump(
+                bdk_wallet::error::BuildFeeBumpError::TransactionNotFound(_)
+                | bdk_wallet::error::BuildFeeBumpError::UnknownUtxo(_),
+            ) => StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument),
+            Self::BuildFeeBump(_) => StatusBuilder::new(self),
+            // Insufficient-funds/fee-too-low-shaped errors are a caller
+            // input problem.
+            Self::CreateTx(
+                err @ (bdk_wallet::error::CreateTxError::CoinSelection(_)
+                | bdk_wallet::error::CreateTxError::FeeTooLow { .. }
+                | bdk_wallet::error::CreateTxError::FeeRateTooLow { .. }),
+            ) => StatusBuilder::new(err).code(connectrpc::ErrorCode::InvalidArgument),
+            Self::CreateTx(err) => StatusBuilder::new(err),
+            Self::Script(_) => StatusBuilder::new(self),
         }
     }
 }
@@ -991,14 +1037,26 @@ impl ToStatus for BuildBmmTx {
 pub(in crate::wallet) enum CreateBmmRequestInner {
     #[error("failed to build BMM tx")]
     BuildBmmTx(#[from] BuildBmmTx),
-    #[error("failed to broadcast nonstandard tx")]
-    BroadcastNonstandardTx(#[source] crate::p2p::BroadcastNonstandardTxError),
-    #[error("failed to broadcast BMM request tx via RPC")]
-    BroadcastTxRpc(#[source] JsonRpcError),
-    #[error("broadcast deposit transaction failed: {txid}")]
-    BroadcastUnsuccessful { txid: bitcoin::Txid },
+    #[error("failed to build BMM fee-bump tx")]
+    BuildBmmFeeBump(#[from] BuildBmmFeeBump),
+    #[error("bid must exceed the current tracked bid of {current_sats} sats for this slot")]
+    BidBelowCurrent { current_sats: u64 },
+    #[error(
+        "bid of {bid_sats} sats exceeds the wallet's spendable balance of {spendable_sats} sats"
+    )]
+    BidExceedsBalance { bid_sats: u64, spendable_sats: u64 },
+    #[error("failed to deserialize previously tracked BMM transaction")]
+    DeserializeTrackedTx(#[source] bitcoin::consensus::encode::Error),
+    #[error("failed to broadcast tx")]
+    BroadcastTx(#[source] jsonrpsee::core::ClientError),
+    #[error("BMM request transaction was not accepted by the node")]
+    BroadcastNotAccepted,
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    #[error(transparent)]
+    Persistence(#[from] Persistence),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
     #[error("failed to sign BMM tx")]
@@ -1009,11 +1067,35 @@ impl ToStatus for CreateBmmRequestInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
+            Self::BuildBmmFeeBump(err) => StatusBuilder::with_code(self, err.builder()),
+            Self::BidBelowCurrent { .. } | Self::BidExceedsBalance { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
+            }
+            Self::BroadcastTx(jsonrpsee::core::ClientError::Call(call_err))
+                if crate::rpc_client::contains_fee_rejection(call_err.message()) =>
+            {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
+            }
+            // The bid was built against a view of our own funds that
+            // bitcoind disagrees with. Nothing about the
+            // request is wrong, and the disagreement resolves itself as the
+            // mempool and our wallet converge, so tell the caller this is
+            // worth retrying rather than reporting an opaque failure.
+            // `create_bmm_request` deliberately does not retry on the
+            // caller's behalf: only the caller knows whether the bid is
+            // still worth placing by then.
+            Self::BroadcastTx(jsonrpsee::core::ClientError::Call(call_err))
+                if crate::rpc_client::contains_missing_or_spent_inputs(call_err.message()) =>
+            {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
             Self::GetHeaderInfo(err) => err.builder(),
+            Self::NotUnlocked(err) => err.builder(),
             Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
-            Self::BroadcastNonstandardTx(_)
-            | Self::BroadcastTxRpc(_)
-            | Self::BroadcastUnsuccessful { .. }
+            Self::Persistence(err) => StatusBuilder::new(err),
+            Self::DeserializeTrackedTx(_)
+            | Self::BroadcastTx(_)
+            | Self::BroadcastNotAccepted
             | Self::Rusqlite(_) => StatusBuilder::new(self),
         }
     }

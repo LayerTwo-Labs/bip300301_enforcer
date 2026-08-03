@@ -1934,12 +1934,14 @@ mod tests {
         sidechain_block_hash: [u8; 32],
         prev_mainchain_block_hash: BlockHash,
     ) -> Transaction {
-        let script_pubkey = M8BmmRequest::script_pubkey(
-            sidechain_number,
-            BmmCommitment(sidechain_block_hash),
-            prev_mainchain_block_hash,
-        )
-        .expect("failed to build M8 script");
+        let script_pubkey = ScriptBuf::new_op_return(
+            M8BmmRequest::build(
+                sidechain_number,
+                BmmCommitment(sidechain_block_hash),
+                prev_mainchain_block_hash,
+            )
+            .expect("failed to build M8 message"),
+        );
         Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,

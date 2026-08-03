@@ -67,7 +67,13 @@ pub enum MineGbtError {
     Var(#[from] Arc<VarError>),
 }
 
-async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, MineGbtError> {
+/// Mine a single GBT block and return its hash directly, without waiting for
+/// a `ConnectBlock` event -- unlike `mine`/`mine_gbt_check`, safe to use when
+/// the caller expects the enforcer to *reject* the resulting block (in which
+/// case no `ConnectBlock` event will ever arrive).
+pub(crate) async fn mine_gbt(
+    post_setup: &mut PostSetup,
+) -> Result<bitcoin::BlockHash, MineGbtError> {
     use cusf_enforcer_mempool::server::RpcClient;
     let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
     gbt_request.capabilities.insert("coinbasetxn".to_owned());

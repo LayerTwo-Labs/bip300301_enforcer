@@ -251,14 +251,13 @@ impl CusfEnforcer for Wallet {
         match &res {
             ConnectBlockAction::Accept { remove_mempool_txs } => {
                 let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
-                let mut wallet_write = self.inner.write_wallet().await?;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                wallet_write.with_mut(|wallet| {
+                self.inner.write_wallet().await?.with_mut(|wallet| {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
                     wallet.apply_evicted_txs(remove_mempool_txs.iter().map(|txid| (*txid, now)))
-                })
+                });
             }
             ConnectBlockAction::Reject => (),
         }
