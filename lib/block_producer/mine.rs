@@ -609,20 +609,37 @@ impl BlockProducer {
         let () = self
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
-        let transactions = self.select_block_txs(mainchain_tip).await?;
+        let selected = self.select_block_txs(mainchain_tip).await?;
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
-        for tx in &transactions {
-            if let Some(bmm_request) = crate::messages::parse_m8_tx(tx)
-                && coinbase_builder
+        let mut transactions = Vec::with_capacity(selected.len());
+        for tx in selected {
+            if let Some(bmm_request) = crate::messages::parse_m8_tx(&tx) {
+                // A block may accept at most one BMM request per sidechain, so
+                // any further M8 for that sidechain has to be left out rather
+                // than included unaccepted. `handle_m8` rejects an M8 whose
+                // commitment the coinbase does not accept, and it poisons the
+                // whole block -- so including it would mine a block we then
+                // invalidate ourselves. Reachable whenever two bids for one
+                // sidechain sit in the mempool at once, e.g. a bid that lost
+                // its auction but has not been replaced yet.
+                if coinbase_builder
                     .messages()
                     .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                    .is_none()
-            {
+                    .is_some()
+                {
+                    tracing::debug!(
+                        txid = %tx.compute_txid(),
+                        sidechain_number = %bmm_request.sidechain_number,
+                        "skipping BMM request: this block already accepts one for this sidechain",
+                    );
+                    continue;
+                }
                 coinbase_builder.bmm_accept(
                     bmm_request.sidechain_number,
                     bmm_request.sidechain_block_hash,
                 )?;
             }
+            transactions.push(tx);
         }
         let () = coinbase_builder.build()?;
 
@@ -635,10 +652,10 @@ impl BlockProducer {
         let block_hash = self
             .mine(coinbase_spk, &coinbase_outputs, transactions)
             .await?;
-        self.db()
-            .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await
-            .map_err(error::GenerateBlock::DeleteBmmRequests)?;
+        // BMM rows are not consumed here: producing a block ends the slot's
+        // auction but does not settle the bids that lost it, and deleting
+        // their rows stranded them untracked. `apply_connected_block_policy`
+        // drops exactly the bids a block confirmed, for any miner's block.
         Ok(block_hash)
     }
 }

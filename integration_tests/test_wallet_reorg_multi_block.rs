@@ -16,8 +16,8 @@ use bip300301_enforcer_lib::{
     types::BmmCommitment,
 };
 use bitcoin::{
-    Amount, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid, consensus::encode::serialize_hex,
-    transaction::Version,
+    Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid,
+    consensus::encode::serialize_hex, transaction::Version,
 };
 use futures::channel::mpsc;
 use serde::Deserialize;
@@ -295,11 +295,11 @@ async fn broadcast_raw_bid(
     let change_address = bitcoin::Address::from_str(change_address.trim())?
         .require_network(post_setup.network.into())?;
 
-    let script_pubkey = M8BmmRequest::script_pubkey(
+    let script_pubkey = ScriptBuf::new_op_return(&M8BmmRequest::build(
         DummySidechain::SIDECHAIN_NUMBER,
         BmmCommitment(h_star),
         prev_mainchain_block_hash,
-    )?;
+    )?);
 
     let unsigned_tx = Transaction {
         version: Version::TWO,
