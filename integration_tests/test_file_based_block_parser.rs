@@ -8,7 +8,8 @@ use futures::channel::mpsc;
 
 use crate::{
     setup::{
-        PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port, wait_for_validator_synced,
+        BitcoindKind, PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port,
+        wait_for_validator_synced,
     },
     util::Enforcer,
 };
@@ -17,12 +18,13 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     let (res_tx, _) = mpsc::unbounded::<anyhow::Result<()>>();
 
     let bitcoind = new_bitcoind(
-        setup.bin_paths.bitcoind()?.clone(),
+        &setup.bin_paths,
+        BitcoindKind::Patched,
         setup.directories.bitcoin_dir.clone(),
         &setup.reserved_ports,
         setup.network,
         None,
-    );
+    )?;
 
     tracing::info!("Starting bitcoind for the first time");
     let first_bitcoind = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], {

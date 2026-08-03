@@ -141,11 +141,14 @@ jobs:
       - name: Check for unused dependencies
         run: cargo shear --deny-warnings
 
-  # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs` and emits
+  # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs` and the
+  # drynet tag out of `scripts/setup_integration_tests.sh`, and emits
   # the integration-test matrix. Keeping the list of stock versions in
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
   # matrix can't drift — a unit test (`ci_versions_match_majors`) asserts
-  # the two are consistent.
+  # the two are consistent. The drynet tag lives in the setup script so
+  # local `just test-it --bitcoind drynetN` runs and CI exercise the same
+  # release.
   compute-integration-matrix:
     name: Compute integration-test matrix
     runs-on: ubuntu-latest
@@ -154,7 +157,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Parse CI_BITCOIN_CORE_VERSIONS from lib/version.rs
+      - name: Build matrix from lib/version.rs + setup_integration_tests.sh
         id: build
         run: |
           set -euo pipefail
@@ -171,18 +174,29 @@ jobs:
               exit 1
             fi
           done
-          ITEMS='{"flavor":"patched"}'
+          DRYNET_TAG=$(grep -oE '^DRYNET_DEFAULT_REVISION="[^"]+"' scripts/setup_integration_tests.sh | cut -d'"' -f2)
+          if [ -z "$DRYNET_TAG" ]; then
+            echo "could not parse DRYNET_DEFAULT_REVISION from scripts/setup_integration_tests.sh" >&2
+            exit 1
+          fi
+          # Every entry carries a display `name` plus either `zip` (a
+          # drivechain-patched build fetched from releases.drivechain.info,
+          # runs the full suite) or `version` (a stock release fetched from
+          # bitcoincore.org, skips drivechain-consensus tests). Steps key
+          # off those fields, not off which entry they are. `grpc_checks`
+          # marks the one entry that also runs the flavor-independent gRPC
+          # reflection checks.
+          ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
+          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\"}"
           for v in $VERSIONS; do
-            ITEMS="$ITEMS,{\"flavor\":\"stock\",\"version\":\"$v\"}"
+            ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
           done
           MATRIX="{\"include\":[${ITEMS}]}"
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
           echo "$MATRIX"
 
   integration-test:
-    name:
-      Integration test (${{ matrix.flavor == 'patched' && 'bitcoin-patched' ||
-      format('Bitcoin Core {0}', matrix.version) }})
+    name: Integration test (${{ matrix.name }})
     needs: compute-integration-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -193,21 +207,22 @@ jobs:
       ELECTRS_VERSION: v3.2.0
       GRPCURL_VERSION: "1.9.3"
     steps:
-      - name: Download Bitcoin Core (patched)
-        if: matrix.flavor == 'patched'
+      - name: Download drivechain-patched Bitcoin Core (${{ matrix.name }})
+        if: matrix.zip
         run: |
           pushd ..
-          wget https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          unzip L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-bins
+          DIR='${{ matrix.zip }}-x86_64-unknown-linux-gnu'
+          wget "https://releases.drivechain.info/${DIR}.zip"
+          unzip "${DIR}.zip"
+          rm "${DIR}.zip"
+          mv "${DIR}" bitcoin-bins
           chmod +x bitcoin-bins/bitcoind
           chmod +x bitcoin-bins/bitcoin-cli
           chmod +x bitcoin-bins/bitcoin-util
           popd
 
       - name: Download Bitcoin Core (stock ${{ matrix.version }})
-        if: matrix.flavor == 'stock'
+        if: matrix.version
         run: |
           pushd ..
           VERSION='${{ matrix.version }}'
@@ -227,9 +242,9 @@ jobs:
           tests)
         # `test_peer_bmm_request` exercises a cross-binary p2p path via
         # `BITCOIND_UNPATCHED`. For the stock matrix we reuse the same
-        # stock binary; for the patched job we still want a stock 30.2
-        # alongside the patched binaries.
-        if: matrix.flavor == 'patched'
+        # stock binary; for the drivechain-patched jobs we still want a
+        # stock 30.2 alongside the patched binaries.
+        if: matrix.zip
         run: |
           pushd ..
           wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
@@ -246,10 +261,10 @@ jobs:
         # requires `SIGNET_MINER` to point at the script. Stock Bitcoin
         # Core tarballs don't ship `contrib/signet/miner`, and the
         # patched variant's `--getblocktemplate-command` support is what
-        # our signet tests rely on — so we fetch it here for both flavors.
+        # our signet tests rely on — so we fetch it here for every flavor.
         run: |
           pushd ..
-          git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
+          git clone --depth 1 https://github.com/LayerTwo-Labs/bitcoin-patched.git
           popd
 
       - name: Cache electrs binary
@@ -287,13 +302,13 @@ jobs:
       # build; gated to a single matrix entry since the result does not
       # depend on the Bitcoin Core flavor.
       - name: Install buf
-        if: matrix.flavor == 'patched'
+        if: matrix.grpc_checks
         uses: bufbuild/buf-action@v1
         with:
           setup_only: true
 
       - name: Cache grpcurl
-        if: matrix.flavor == 'patched'
+        if: matrix.grpc_checks
         id: cache-grpcurl
         uses: actions/cache@v6
         with:
@@ -302,7 +317,7 @@ jobs:
 
       - name: Install grpcurl
         if: |
-          matrix.flavor == 'patched' &&
+          matrix.grpc_checks &&
           steps.cache-grpcurl.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/grpcurl-bin
@@ -310,7 +325,7 @@ jobs:
           tar -xzf "grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" -C ~/grpcurl-bin grpcurl
 
       - name: Verify gRPC reflection (grpcurl + buf curl)
-        if: matrix.flavor == 'patched'
+        if: matrix.grpc_checks
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
           export BITCOIND='../bitcoin-bins/bitcoind'
@@ -321,9 +336,19 @@ jobs:
         # Stock Bitcoin Core rejects drivechain deposit transactions with
         # `mempool-script-verify-flag-failed (NOPx reserved for soft-fork
         # upgrades)` — the consensus rules repurposing those opcodes only
-        # live in bitcoin-patched — so we skip `deposit_withdraw_roundtrip`
-        # on stock. The remaining tests exercise RPC, block-parser, p2p,
-        # and mempool integration with upstream Bitcoin Core.
+        # live in the drivechain-patched builds — so we skip
+        # `deposit_withdraw_roundtrip` on stock. The remaining tests
+        # exercise RPC, block-parser, p2p, and mempool integration with
+        # upstream Bitcoin Core. Drivechain-patched builds (`matrix.zip`
+        # entries) run the full suite.
+        #
+        # BITCOIND_HAS_DRIVECHAIN=0 tells the harness that BITCOIND is a
+        # stock build, so it spawns it with -acceptnonstdtxn. Patched
+        # builds run with real standardness policy — with the flag,
+        # IsStandardTx is disabled and a patched build whose OP_DRIVECHAIN
+        # outputs classify as non-standard would pass the deposit test
+        # here while rejecting deposits with -26 "scriptpubkey" in
+        # production, where chain=main forbids the flag.
         run: |
           export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
           export BITCOIND='../bitcoin-bins/bitcoind'
@@ -337,12 +362,14 @@ jobs:
           # them as artifacts when a test fails.
           export TMPDIR="$RUNNER_TEMP/it-logs"
           mkdir -p "$TMPDIR"
-          if [ '${{ matrix.flavor }}' = 'patched' ]; then
-            export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
-            cargo run --example integration_tests
-          else
+          if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
+            export BITCOIND_HAS_DRIVECHAIN=0
             cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip
+          else
+            export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
+            export BITCOIND_HAS_DRIVECHAIN=1
+            cargo run --example integration_tests
           fi
 
       - name: Upload integration test logs
@@ -353,9 +380,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name:
-            integration-test-logs-${{ matrix.flavor == 'patched' && 'patched' ||
-            format('stock-{0}', matrix.version) }}
+          name: integration-test-logs-${{ matrix.name }}
           path: |
             ${{ runner.temp }}/it-logs/**/*.txt
             ${{ runner.temp }}/it-logs/**/*.log

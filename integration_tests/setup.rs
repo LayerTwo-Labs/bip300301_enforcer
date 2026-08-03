@@ -240,14 +240,15 @@ impl ReservedPorts {
 }
 
 pub fn new_bitcoind(
-    bitcoind_path: PathBuf,
+    bin_paths: &BinPaths,
+    bitcoind_kind: BitcoindKind,
     data_dir: PathBuf,
     reserved_ports: &ReservedPorts,
     network: Network,
     signet_setup: Option<&SignetSetup>,
-) -> Bitcoind {
-    Bitcoind {
-        path: bitcoind_path,
+) -> Result<Bitcoind, crate::util::VarError> {
+    Ok(Bitcoind {
+        path: bitcoind_path(bin_paths, bitcoind_kind)?.clone(),
         data_dir,
         listen_port: reserved_ports.bitcoind_listen.port(),
         network: network.into(),
@@ -259,9 +260,10 @@ pub fn new_bitcoind(
         signet_challenge: signet_setup
             .as_ref()
             .map(|setup| setup.signet_challenge.clone()),
+        accept_nonstd_txns: bitcoind_kind.accept_nonstd_txns(),
         txindex: true,
         zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
-    }
+    })
 }
 
 /// Waits for a TCP port to become available by attempting to connect periodically.
@@ -487,6 +489,24 @@ pub enum BitcoindKind {
     Unpatched,
 }
 
+impl BitcoindKind {
+    /// Whether nodes of this kind run with `-acceptnonstdtxn`. Only
+    /// genuinely stock Bitcoin Core gets the flag — on drivechain-patched
+    /// builds OP_DRIVECHAIN txs are supposed to be *standard*, and running
+    /// them with standardness disabled would mask policy regressions that
+    /// break deposits on mainnet (where the flag is unavailable).
+    pub fn accept_nonstd_txns(self) -> bool {
+        match self {
+            // `BITCOIND_UNPATCHED` always points at a stock release.
+            Self::Unpatched => true,
+            // `BITCOIND` is drivechain-patched unless the run says
+            // otherwise: the stock flavors (env files and CI matrix
+            // entries) set `BITCOIND_HAS_DRIVECHAIN=0`.
+            Self::Patched => std::env::var("BITCOIND_HAS_DRIVECHAIN").is_ok_and(|v| v == "0"),
+        }
+    }
+}
+
 fn bitcoind_path(
     bin_paths: &BinPaths,
     bitcoind_kind: BitcoindKind,
@@ -585,12 +605,13 @@ impl PostSetup {
 
         tracing::debug!("Starting bitcoin node");
         let mut bitcoind = new_bitcoind(
-            bitcoind_path(bin_paths, opts.bitcoind_kind)?.clone(),
+            bin_paths,
+            opts.bitcoind_kind,
             dirs.bitcoin_dir.clone(),
             &reserved_ports,
             network,
             signet_setup.as_ref(),
-        );
+        )?;
         bitcoind.txindex = enable_wallet;
         let bitcoind_task =
             bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, {
