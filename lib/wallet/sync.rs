@@ -65,7 +65,7 @@ impl WalletInner {
         let mut wallet_write = self.write_wallet().await?;
         let () = self
             .producer
-            .apply_connected_block_policy(block_info)
+            .apply_connected_block_policy(&block.block_hash(), block_info)
             .await?;
         let mut database = self.bdk_db.lock().await;
         tracing::trace!("applying block to BDK wallet");
