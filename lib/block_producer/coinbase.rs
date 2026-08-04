@@ -64,7 +64,6 @@ impl BlockProducer {
     }
 
     fn validate_sidechain_ack(
-        &self,
         ack: &SidechainAck,
         pending_proposals: &HashMap<SidechainNumber, SidechainProposal>,
     ) -> bool {
@@ -86,6 +85,37 @@ impl BlockProducer {
             );
             false
         }
+    }
+
+    /// Split the stored ACKs into the ones to emit and the stale ones to
+    /// delete, adding an auto-ACK for every pending proposal left without one
+    /// when `ack_all_proposals` is set. Stale rows are dropped before that,
+    /// so a stale ACK for a slot cannot suppress the auto-ACK for the
+    /// replacement proposal in the same slot.
+    fn select_sidechain_acks(
+        stored_acks: Vec<SidechainAck>,
+        pending_proposals: &HashMap<SidechainNumber, SidechainProposal>,
+        ack_all_proposals: bool,
+    ) -> (Vec<SidechainAck>, Vec<SidechainAck>) {
+        let (mut acks, stale_acks): (Vec<_>, Vec<_>) = stored_acks
+            .into_iter()
+            .partition(|ack| Self::validate_sidechain_ack(ack, pending_proposals));
+        if ack_all_proposals {
+            for (sidechain_number, proposal) in pending_proposals {
+                if acks
+                    .iter()
+                    .any(|ack| ack.sidechain_number == *sidechain_number)
+                {
+                    continue;
+                }
+                tracing::debug!("Handle sidechain ACK: adding 'fake' ACK for {sidechain_number}");
+                acks.push(SidechainAck {
+                    sidechain_number: *sidechain_number,
+                    description_hash: proposal.description.sha256d_hash(),
+                });
+            }
+        }
+        (acks, stale_acks)
     }
 
     /// Extend coinbase txouts for a new block with our drivechain messages:
@@ -139,7 +169,7 @@ impl BlockProducer {
             }
         }
 
-        let mut sidechain_acks = self.db().get_sidechain_acks().await?;
+        let stored_acks = self.db().get_sidechain_acks().await?;
 
         // Pending sidechain proposals from the /validator/, i.e. proposals
         // broadcast by (potentially) someone else, and already active.
@@ -149,35 +179,21 @@ impl BlockProducer {
             tracing::info!(
                 "Handle sidechain ACK: acking all sidechains regardless of what DB says"
             );
-
-            for (sidechain_number, sidechain_proposal) in &active_sidechain_proposals {
-                let sidechain_number = *sidechain_number;
-
-                if !sidechain_acks
-                    .iter()
-                    .any(|ack| ack.sidechain_number == sidechain_number)
-                {
-                    tracing::debug!(
-                        "Handle sidechain ACK: adding 'fake' ACK for {}",
-                        sidechain_number
-                    );
-                    sidechain_acks.push(SidechainAck {
-                        sidechain_number,
-                        description_hash: sidechain_proposal.description.sha256d_hash(),
-                    });
-                }
-            }
+        }
+        let (sidechain_acks, stale_acks) = Self::select_sidechain_acks(
+            stored_acks,
+            &active_sidechain_proposals,
+            ack_all_proposals,
+        );
+        for stale_ack in stale_acks {
+            self.db().delete_sidechain_ack(&stale_ack).await?;
+            tracing::info!(
+                "Unable to handle sidechain ack, deleted: {}",
+                stale_ack.sidechain_number
+            );
         }
 
         for sidechain_ack in sidechain_acks {
-            if !self.validate_sidechain_ack(&sidechain_ack, &active_sidechain_proposals) {
-                self.db().delete_sidechain_ack(&sidechain_ack).await?;
-                tracing::info!(
-                    "Unable to handle sidechain ack, deleted: {}",
-                    sidechain_ack.sidechain_number
-                );
-                continue;
-            }
             if coinbase_builder
                 .messages()
                 .m2_ack_slot_vout(&sidechain_ack.sidechain_number)
@@ -301,9 +317,24 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use bitcoin::Amount;
 
-    use crate::{block_producer::BlockProducer, types::AmountUnderflowError};
+    use crate::{
+        block_producer::BlockProducer,
+        types::{
+            AmountUnderflowError, SidechainAck, SidechainDescription, SidechainNumber,
+            SidechainProposal,
+        },
+    };
+
+    fn test_proposal(sidechain_number: SidechainNumber, description: &[u8]) -> SidechainProposal {
+        SidechainProposal {
+            sidechain_number,
+            description: SidechainDescription(description.to_vec()),
+        }
+    }
 
     #[test]
     fn new_treasury_value_rejects_bundle_exceeding_treasury() {
@@ -327,5 +358,57 @@ mod tests {
             BlockProducer::new_treasury_value(value, fee, payout).unwrap(),
             Amount::from_sat(39_000)
         );
+    }
+
+    #[test]
+    fn stale_same_slot_ack_does_not_suppress_replacement_auto_ack() {
+        let slot = SidechainNumber(7);
+        let replacement = test_proposal(slot, b"new");
+        let replacement_hash = replacement.description.sha256d_hash();
+        let stale = SidechainAck {
+            sidechain_number: slot,
+            description_hash: test_proposal(slot, b"old").description.sha256d_hash(),
+        };
+        let pending = HashMap::from_iter([(slot, replacement)]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![stale], &pending, true);
+
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].sidechain_number, slot);
+        assert_eq!(acks[0].description_hash, replacement_hash);
+        assert_eq!(stale_acks.len(), 1);
+    }
+
+    #[test]
+    fn matching_stored_ack_is_kept_and_not_duplicated() {
+        let slot = SidechainNumber(7);
+        let proposal = test_proposal(slot, b"desc");
+        let description_hash = proposal.description.sha256d_hash();
+        let ack = SidechainAck {
+            sidechain_number: slot,
+            description_hash,
+        };
+        let pending = HashMap::from_iter([(slot, proposal)]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![ack], &pending, true);
+
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].description_hash, description_hash);
+        assert!(stale_acks.is_empty());
+    }
+
+    #[test]
+    fn stale_ack_is_deleted_without_auto_ack() {
+        let slot = SidechainNumber(7);
+        let stale = SidechainAck {
+            sidechain_number: slot,
+            description_hash: test_proposal(slot, b"old").description.sha256d_hash(),
+        };
+
+        let (acks, stale_acks) =
+            BlockProducer::select_sidechain_acks(vec![stale], &HashMap::new(), false);
+
+        assert!(acks.is_empty());
+        assert_eq!(stale_acks.len(), 1);
     }
 }
