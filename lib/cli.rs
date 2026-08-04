@@ -292,8 +292,11 @@ pub struct NodeRpcConfig {
     pub user: Option<String>,
     /// RPC password for Bitcoin Core. Implies also setting user. Cannot
     /// be set together with cookie path.
+    // Doc comments on these fields become `--help` text, so this note is a
+    // plain comment: the `SecretString` type is what redacts this value
+    // everywhere, including the startup configuration dump.
     #[arg(long = "node-rpc-pass")]
-    pub pass: Option<String>,
+    pub pass: Option<SecretString>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -503,7 +506,197 @@ pub struct Config {
     pub bitcoin_core_skip_version_check: bool,
 }
 
+/// Written in place of a sensitive value.
+const REDACTED: &str = "[redacted]";
+
+/// Written in place of an argument that was neither given nor defaulted.
+const UNSET: &str = "<unset>";
+
+/// A configuration value that must never be written to a log.
+///
+/// The annotation lives on the field, as its type. Two things follow from
+/// that, neither of which depends on anyone maintaining a list of names:
+///
+/// - `Debug` and `Display` print `[redacted]`, so a secret cannot escape
+///   through a stray `{:?}` on a whole config struct.
+/// - [`log_effective_config`] asks clap what type each argument parses into,
+///   so typing a field `SecretString` is what makes it redacted in the dump.
+///
+/// Read the value back with [`SecretString::expose`], which is deliberately
+/// noisy at the call site.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretString(String);
+
+impl SecretString {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Read the underlying secret. Every call is a place a secret could
+    /// escape, so keep them few and obvious.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(REDACTED)
+    }
+}
+
+impl std::fmt::Display for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(REDACTED)
+    }
+}
+
+/// Parses a [`SecretString`]. Exists so that clap builds a value parser whose
+/// output type is `SecretString`, which is how secret arguments are recognized
+/// without matching on their names.
+#[derive(Clone, Copy, Debug)]
+pub struct SecretStringParser;
+
+impl clap::builder::TypedValueParser for SecretStringParser {
+    type Value = SecretString;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        match value.to_str() {
+            Some(value) => Ok(SecretString::new(value)),
+            // Deliberately does not quote the value back, the way clap's own
+            // InvalidUtf8 message would.
+            None => Err(clap::Error::raw(
+                clap::error::ErrorKind::InvalidUtf8,
+                "secret value is not valid UTF-8\n",
+            )
+            .with_cmd(cmd)),
+        }
+    }
+}
+
+impl clap::builder::ValueParserFactory for SecretString {
+    type Parser = SecretStringParser;
+
+    fn value_parser() -> Self::Parser {
+        SecretStringParser
+    }
+}
+
+/// Whether `arg`'s value is secret, determined by asking clap what type the
+/// argument parses into rather than by matching on its name.
+fn is_secret_arg(arg: &clap::Arg) -> bool {
+    use clap::builder::{ValueParser, ValueParserFactory as _};
+
+    let secret = ValueParser::from(SecretString::value_parser());
+    arg.get_value_parser().type_id() == secret.type_id()
+}
+
+/// Strip the password from a value that parses as a URL, e.g.
+/// `https://user:hunter2@example.com/api`. Returns `None` when there is
+/// nothing to strip, so callers can keep the original value.
+fn redact_embedded_credentials(value: &str) -> Option<String> {
+    let mut url = url::Url::parse(value).ok()?;
+    url.password()?;
+    // `set_password` only fails for URLs that cannot have credentials at all,
+    // which cannot be the case for one that already has a password.
+    url.set_password(Some("redacted")).ok()?;
+    Some(url.to_string())
+}
+
+/// Log the effective value of every argument, one line each, with secrets
+/// masked. This mirrors the configuration dump Bitcoin Core writes at startup:
+/// it makes a log self-describing, so a bug report says exactly what the node
+/// was run with, defaults included.
+pub fn log_effective_config(matches: &clap::ArgMatches) {
+    for line in effective_config_lines(matches) {
+        tracing::info!("Command-line arg: {line}");
+    }
+}
+
+/// Render `name=value (source)` for every argument, sorted by flag name.
+///
+/// Works off the raw [`clap::ArgMatches`] rather than a [`Config`] so that
+/// every argument is covered by construction: a new argument shows up here
+/// without anyone remembering to add it. Kept separate from the logging so
+/// that tests can assert on exactly what would be written.
+fn effective_config_lines(matches: &clap::ArgMatches) -> Vec<String> {
+    use clap::{CommandFactory as _, parser::ValueSource};
+
+    let command = Config::command();
+    // Sorted by the flag the operator actually types, not by clap's internal
+    // id, which is the struct field name and orders the dump arbitrarily.
+    let mut arguments: Vec<_> = command
+        .get_arguments()
+        .filter(|arg| !matches!(arg.get_id().as_str(), "help" | "version"))
+        .map(|arg| {
+            let id = arg.get_id().as_str();
+            let name = arg
+                .get_long()
+                .map_or_else(|| id.to_owned(), |long| format!("--{long}"));
+            (name, id, is_secret_arg(arg))
+        })
+        .collect();
+    arguments.sort_unstable();
+
+    let mut lines = Vec::with_capacity(arguments.len());
+    for (name, id, secret) in arguments {
+        let source = match matches.value_source(id) {
+            Some(ValueSource::CommandLine) => "command line",
+            Some(ValueSource::EnvVariable) => "env",
+            Some(ValueSource::DefaultValue) => "default",
+            _ => "unset",
+        };
+        let values: Vec<String> = match matches.try_get_raw(id) {
+            Ok(Some(values)) => values
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect(),
+            // An argument that was never given and has no default.
+            Ok(None) | Err(_) => Vec::new(),
+        };
+        let rendered = if values.is_empty() {
+            UNSET.to_owned()
+        } else if secret {
+            REDACTED.to_owned()
+        } else {
+            let values: Vec<String> = values
+                .iter()
+                .map(|value| {
+                    let value = redact_embedded_credentials(value).unwrap_or_else(|| value.clone());
+                    format!("{value:?}")
+                })
+                .collect();
+            // Bracket repeated arguments so a multi-valued one is not mistaken
+            // for a single value that happens to contain a comma.
+            match values.as_slice() {
+                [single] => single.clone(),
+                many => format!("[{}]", many.join(", ")),
+            }
+        };
+        lines.push(format!("{name}={rendered} ({source})"));
+    }
+    lines
+}
+
 impl Config {
+    /// Parse the command line, keeping the raw [`clap::ArgMatches`] alongside
+    /// the parsed config so that [`log_effective_config`] can report where each
+    /// value came from once a tracing subscriber has been installed.
+    pub fn parse_with_matches() -> (Self, clap::ArgMatches) {
+        use clap::{CommandFactory as _, FromArgMatches as _};
+
+        let matches = Self::command().get_matches();
+        match Self::from_arg_matches(&matches) {
+            Ok(config) => (config, matches),
+            // The same exit path `Parser::parse` takes on a bad command line.
+            Err(err) => err.exit(),
+        }
+    }
+
     /// Returns the git hash that was set during build time
     pub fn git_hash(&self) -> &'static str {
         env!("GIT_HASH")
@@ -564,5 +757,144 @@ impl Config {
         builder
             .build(self.log_dir())
             .map_err(RollingLoggerError::Init)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory as _, parser::ValueSource};
+
+    use super::{
+        Config, REDACTED, SecretString, UNSET, is_secret_arg, redact_embedded_credentials,
+    };
+
+    /// The annotation itself: typing a field `SecretString` is what makes the
+    /// dump redact it, and typing it anything else is what makes the dump
+    /// print it.
+    #[test]
+    fn secret_args_are_recognized_by_their_type() {
+        let command = Config::command();
+        let arg = |id: &str| {
+            command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .unwrap_or_else(|| panic!("no argument `{id}`"))
+        };
+        assert!(
+            is_secret_arg(arg("pass")),
+            "--node-rpc-pass is typed SecretString, so it must be recognized as secret",
+        );
+        assert!(
+            !is_secret_arg(arg("user")),
+            "--node-rpc-user is a plain String and must not be redacted",
+        );
+        // A path is not a secret; over-redacting one costs debuggability.
+        assert!(!is_secret_arg(arg("mnemonic_path")));
+        assert!(!is_secret_arg(arg("data_dir")));
+    }
+
+    /// A secret must not render its value through any of the usual escapes.
+    #[test]
+    fn secret_string_never_renders_its_value() {
+        let secret = SecretString::new("hunter2");
+        assert_eq!(format!("{secret:?}"), REDACTED);
+        assert_eq!(format!("{secret}"), REDACTED);
+        // Including when nested inside a derived `Debug`.
+        assert!(!format!("{:?}", Some(secret.clone())).contains("hunter2"));
+        assert_eq!(secret.expose(), "hunter2", "but it is still readable");
+    }
+
+    /// End to end over what actually gets written: the secret is masked, the
+    /// non-secrets around it are not, and the plaintext appears nowhere.
+    #[test]
+    fn the_dump_masks_secrets_and_nothing_else() {
+        let matches = Config::command().get_matches_from([
+            "bip300301_enforcer",
+            "--node-rpc-user=alice",
+            "--node-rpc-pass=hunter2",
+            "--wallet-esplora-url=https://bob:s3kr1t@esplora.example/api",
+        ]);
+        let lines = super::effective_config_lines(&matches);
+
+        assert!(
+            lines.contains(&format!("--node-rpc-pass={REDACTED} (command line)")),
+            "expected a redacted password line, got: {lines:#?}"
+        );
+        assert!(lines.contains(&"--node-rpc-user=\"alice\" (command line)".to_owned()));
+        assert!(
+            lines.contains(
+                &"--wallet-esplora-url=\"https://bob:redacted@esplora.example/api\" \
+                  (command line)"
+                    .to_owned()
+            ),
+            "URL credentials must be stripped, got: {lines:#?}"
+        );
+
+        let dump = lines.join("\n");
+        assert!(!dump.contains("hunter2"), "the password leaked: {dump}");
+        assert!(!dump.contains("s3kr1t"), "URL credentials leaked: {dump}");
+    }
+
+    /// Defaults and unset arguments are distinguishable in the dump, which is
+    /// the point of reporting the value source.
+    #[test]
+    fn value_sources_distinguish_default_from_unset() {
+        let matches = Config::command().get_matches_from(["bip300301_enforcer"]);
+
+        assert_eq!(
+            matches.value_source("sync_source"),
+            Some(ValueSource::DefaultValue),
+            "an argument with a default reports one",
+        );
+        assert_eq!(
+            matches.value_source("pass"),
+            None,
+            "an unset optional argument reports no source",
+        );
+        assert!(
+            matches.try_get_raw("pass").unwrap().is_none(),
+            "an unset optional argument has no raw value, and renders as {UNSET}",
+        );
+        assert_eq!(REDACTED, "[redacted]");
+    }
+
+    /// Booleans reach the dump as raw values too, rather than vanishing.
+    #[test]
+    fn boolean_flags_have_raw_values() {
+        let matches = Config::command().get_matches_from(["bip300301_enforcer", "--enable-wallet"]);
+        let raw: Vec<_> = matches
+            .try_get_raw("enable_wallet")
+            .unwrap()
+            .unwrap()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(raw, ["true"]);
+    }
+
+    /// `value_source` panics on an unknown id, so confirm the dump only ever
+    /// asks about ids that really exist, for every argument, in one pass.
+    #[test]
+    fn dumping_the_config_does_not_panic() {
+        let matches = Config::command().get_matches_from([
+            "bip300301_enforcer",
+            "--node-rpc-pass=hunter2",
+            "--node-rpc-user=alice",
+            "--enable-wallet",
+        ]);
+        super::log_effective_config(&matches);
+    }
+
+    #[test]
+    fn url_credentials_are_stripped() {
+        assert_eq!(
+            redact_embedded_credentials("https://alice:hunter2@esplora.example/api").as_deref(),
+            Some("https://alice:redacted@esplora.example/api"),
+        );
+        // Nothing to strip: caller keeps the value as-is.
+        assert_eq!(
+            redact_embedded_credentials("https://esplora.example/api"),
+            None,
+        );
+        assert_eq!(redact_embedded_credentials("/not/a/url"), None);
     }
 }

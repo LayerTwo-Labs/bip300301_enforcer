@@ -68,7 +68,8 @@ pub struct BitcoinCli {
     pub path: PathBuf,
     pub network: bitcoin::Network,
     pub rpc_user: Option<String>,
-    pub rpc_pass: Option<String>,
+    /// Redacted by `Debug`, so a logged `BitcoinCli` cannot leak it.
+    pub rpc_pass: Option<crate::cli::SecretString>,
     pub rpc_cookie_path: Option<String>,
     pub rpc_port: u16,
     pub rpc_host: String,
@@ -92,7 +93,7 @@ impl BitcoinCli {
         }
 
         if let Some(rpc_pass) = &self.rpc_pass {
-            res.push(format!("-rpcpassword={rpc_pass}"));
+            res.push(format!("-rpcpassword={}", rpc_pass.expose()));
         }
 
         if let Some(rpc_wallet) = &self.rpc_wallet {

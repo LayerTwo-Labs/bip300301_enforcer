@@ -470,7 +470,6 @@ dependencies = [
  "bitcoin",
  "bitcoin-jsonrpsee",
  "buffa",
- "clap",
  "connectrpc",
  "connectrpc-health",
  "connectrpc-reflection",
