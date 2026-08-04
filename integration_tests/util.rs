@@ -673,7 +673,9 @@ impl Bitcoind {
             path,
             network: self.network,
             rpc_user: Some(self.rpc_user.clone()),
-            rpc_pass: Some(self.rpc_pass.clone()),
+            rpc_pass: Some(bip300301_enforcer_lib::cli::SecretString::new(
+                self.rpc_pass.clone(),
+            )),
             rpc_cookie_path: None,
             rpc_port: self.rpc_port,
             rpc_host: self.rpc_host.clone(),

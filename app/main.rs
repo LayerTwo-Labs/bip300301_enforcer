@@ -30,7 +30,6 @@ use bip300301_enforcer_lib::{
 };
 use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
-use clap::Parser;
 use connectrpc::Router;
 use connectrpc_health::{HealthExt, HealthService, StaticChecker};
 use connectrpc_reflection::Reflector;
@@ -1068,7 +1067,7 @@ async fn main() -> Result<()> {
         default_hook(info); // Panics are bad. re-throw!
     }));
 
-    let cli = cli::Config::parse();
+    let (cli, arg_matches) = cli::Config::parse_with_matches();
     // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
     let _tracing_guard = logging::set_tracing_subscriber(
         cli.log_formatter(),
@@ -1082,6 +1081,7 @@ async fn main() -> Result<()> {
         build = if cfg!(debug_assertions) { "debug" } else { "release" },
         "Starting up bip300301_enforcer",
     );
+    cli::log_effective_config(&arg_matches);
 
     // Validate the verification reference early, before creating node connections etc.
     let verify_reference = cli

@@ -35,7 +35,12 @@ pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, Error> {
     }
 
     let mut conf_user = conf.user.clone().unwrap_or_default();
-    let mut conf_pass = conf.pass.clone().unwrap_or_default();
+    // The secret is exposed here, at the boundary where it is handed to the
+    // RPC client, and nowhere else.
+    let mut conf_pass = conf
+        .pass
+        .as_ref()
+        .map_or_else(String::new, |pass| pass.expose().to_owned());
 
     if conf.cookie_path.is_some() {
         let cookie_path = conf.cookie_path.clone().unwrap();

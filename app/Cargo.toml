@@ -12,7 +12,6 @@ buffa = { workspace = true }
 bip300301_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
-clap = { workspace = true, features = ["std"] }
 cusf-enforcer-mempool = { workspace = true }
 educe = { workspace = true }
 either = { workspace = true }

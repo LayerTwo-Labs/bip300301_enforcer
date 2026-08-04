@@ -862,8 +862,10 @@ impl PostSetup {
             node_rpc_pass: self
                 .bitcoin_cli
                 .rpc_pass
-                .clone()
-                .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?,
+                .as_ref()
+                .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?
+                .expose()
+                .to_owned(),
             node_rpc_port: self.bitcoin_cli.rpc_port,
             node_zmq_sequence_port: self.reserved_ports.bitcoind_zmq_sequence.port(),
             serve_grpc_port: self.reserved_ports.enforcer_serve_grpc.port(),
@@ -933,8 +935,10 @@ impl PostSetup {
                     .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_user"))?,
                 self.bitcoin_cli
                     .rpc_pass
-                    .clone()
-                    .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?,
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?
+                    .expose()
+                    .to_owned(),
             ),
             daemon_dir: self.directories.bitcoin_dir.join("path"),
             daemon_rpc_port: self.bitcoin_cli.rpc_port,
