@@ -925,6 +925,26 @@ pub fn tests(
         crate::test_blinded_m6_roundtrip::test_blinded_m6_zero_input_roundtrip,
     ));
 
+    // Needs direct `bin_paths` (to respawn the enforcer mid-test), so it uses
+    // a bespoke trial rather than `new_trial_with_setup`.
+    async_trials.push({
+        let name = crate::test_wallet_large_gap_sync::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                async move {
+                    let test_future =
+                        crate::test_wallet_large_gap_sync::test_wallet_large_gap_sync(bin_paths)
+                            .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    });
+
     // Needs direct `bin_paths` (to respawn the enforcer/electrs mid-test),
     // so it uses a bespoke trial rather than `new_trial_with_setup`.
     async_trials.push({

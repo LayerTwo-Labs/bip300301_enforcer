@@ -71,6 +71,43 @@ async fn sync_wallet_to_tip(
     } else {
         wallet_tip
     };
+    // Replaying the gap block-by-block below costs two node RPCs and a wallet
+    // persist per block, and each persist gets slower as the local chain grows.
+    // That is fine for the handful of blocks a running node falls behind by, but
+    // a gap of hundreds of thousands of blocks takes hours. Past this many
+    // blocks, advance the local chain with a single checkpoint update built from
+    // validator headers and recover any wallet transactions in the skipped range
+    // with a full scan against the chain source.
+    const MAX_BLOCK_BY_BLOCK_REPLAY: u32 = 2_000;
+    let blocks_behind = new_tip_height.saturating_sub(wallet_tip.height);
+    let wallet_tip = if blocks_behind <= MAX_BLOCK_BY_BLOCK_REPLAY {
+        wallet_tip
+    } else if wallet.inner.has_chain_source() {
+        tracing::info!(
+            wallet_tip_height = wallet_tip.height,
+            %new_tip_height,
+            %blocks_behind,
+            "wallet is too far behind to replay block-by-block, \
+             checkpointing chain forward and running a full scan instead"
+        );
+        // `full_scan` checkpoints the local chain to the validator tip from
+        // validator headers, then scans the chain source for transactions
+        // against that checkpoint, so it both closes the gap and recovers the
+        // wallet transactions the skipped blocks would have contributed.
+        let _tip: BlockHash = wallet.inner.full_scan().await?;
+        wallet.inner.get_tip().await?
+    } else {
+        tracing::warn!(
+            wallet_tip_height = wallet_tip.height,
+            %new_tip_height,
+            %blocks_behind,
+            "wallet is far behind and no chain source is configured, \
+             falling back to block-by-block replay. This is very slow. \
+             Set --wallet-sync-source to electrum or esplora to catch up \
+             with a checkpoint and full scan instead"
+        );
+        wallet_tip
+    };
     // If the wallet tip is higher than the block height we need to connect the missing blocks.
     // We have logic for that below. We therefore use max() here to ensure that the loop
     // will run at least once (thereby triggering the logic for missing blocks).

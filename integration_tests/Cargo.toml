@@ -25,6 +25,7 @@ jsonrpsee = { workspace = true }
 thiserror = { workspace = true }
 libtest-mimic = { workspace = true }
 parking_lot = { workspace = true }
+reqwest = { workspace = true }
 reserve-port = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
