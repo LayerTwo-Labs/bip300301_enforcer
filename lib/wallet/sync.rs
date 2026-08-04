@@ -120,6 +120,13 @@ impl WalletInner {
         }
     }
 
+    /// Whether a chain source (Electrum/Esplora) is configured. Without one,
+    /// the wallet can only learn about its transactions from blocks connected
+    /// one at a time, so [`Self::full_scan`] is not available.
+    pub(in crate::wallet) fn has_chain_source(&self) -> bool {
+        self.chain_source_client.is_some()
+    }
+
     /// Fast-forward the wallet's local chain up to `up_to_height` (or the
     /// validator tip) by applying one checkpoint update built from validator
     /// headers, instead of connecting every missing block individually.
@@ -295,16 +302,26 @@ impl WalletInner {
                 .unwrap_or("nil".to_string()),
         );
 
+        // Extend the wallet's existing checkpoint rather than building a fresh
+        // chain that starts at its tip. A sync inserts a `BlockId` for every
+        // transaction it finds, and `CheckPoint::insert` panics ("will break
+        // before genesis block") if an insert lands below the lowest checkpoint
+        // it was handed. A chain rebuilt from the tip has no history below it,
+        // so the wallet's own older transactions are exactly what blows it up.
+        let tip = local_chain.tip();
+        let tip_height = tip.height();
         let block_ids = headers
             .into_iter()
+            // Anything at or below the tip is already covered by the checkpoint
+            // being extended, and `extend` requires strictly ascending heights.
+            .filter(|(height, _)| *height > tip_height)
             .map(|(height, hash)| bdk_chain::BlockId { height, hash });
 
-        let checkpoint =
-            bdk_chain::CheckPoint::from_block_ids(block_ids).map_err(|last_successful_header| {
-                error::FullScan::CreateCheckPointFromHeaders {
-                    last_successful_header,
-                }
-            })?;
+        let checkpoint = tip.extend(block_ids).map_err(|last_successful_header| {
+            error::FullScan::CreateCheckPointFromHeaders {
+                last_successful_header: Some(last_successful_header),
+            }
+        })?;
         Ok(checkpoint)
     }
 

@@ -796,8 +796,8 @@ where
 pub(in crate::wallet) enum SyncWalletToTipInner {
     #[error("failed to connect missing block to wallet")]
     ConnectMissingBlock(#[from] ConnectMissingBlock),
-    #[error("failed to fast-forward wallet chain to tip")]
-    FastForward(#[from] FullScan),
+    #[error("failed to catch wallet chain up to tip")]
+    ChainCatchUp(#[from] FullScan),
     #[error("unable to fetch block from mainchain")]
     #[diagnostic(code(fetch_block_error))]
     GetBlock(#[source] BitcoinCoreRPC),

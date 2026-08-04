@@ -519,6 +519,7 @@ dependencies = [
  "jsonrpsee",
  "libtest-mimic",
  "parking_lot",
+ "reqwest 0.13.4",
  "reserve-port",
  "rusqlite",
  "serde",
