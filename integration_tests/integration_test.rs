@@ -24,6 +24,7 @@ use crate::{
     mine::{mine, mine_check_block_events, mine_generateblocks_check, mine_signet_check},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
+        wait_for_pending_proposal, wait_for_tx_in_mempool,
     },
     test_peer_bmm_request, test_unconfirmed_transactions,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
@@ -173,8 +174,13 @@ where
         .block_producer_service_client
         .create_sidechain_proposal(create_sidechain_proposal_request)
         .await?;
-    // Wait before mining
-    sleep(std::time::Duration::from_secs(1)).await;
+    // The proposal must be persisted before we mine, or the coinbase won't
+    // carry the M1.
+    let () = wait_for_pending_proposal(
+        &post_setup.block_producer_service_client,
+        S::SIDECHAIN_NUMBER,
+    )
+    .await?;
     tracing::debug!("Mining 1 block");
     let () = mine::<S>(post_setup, 1, Some(true)).await?;
     let Some(_) = create_sidechain_proposal_resp.message().await? else {
@@ -263,6 +269,23 @@ pub async fn wait_for_wallet_sync(post_setup: &mut PostSetup) -> anyhow::Result<
     }
 }
 
+/// How much to move into the enforcer wallet on signet when funding it from an
+/// already-mined chain. Far more than the deposits and withdrawals in these
+/// tests need, so no test has to reason about the exact figure.
+const SIGNET_FUNDING_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(5_000_000_000);
+
+/// Bitcoin Core's own spendable (mature, confirmed) wallet balance.
+async fn spendable_core_balance(post_setup: &PostSetup) -> anyhow::Result<bitcoin::Amount> {
+    let balance_btc: f64 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getbalance", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    Ok(bitcoin::Amount::from_btc(balance_btc)?)
+}
+
 pub async fn fund_enforcer<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
 where
     S: Sidechain,
@@ -290,7 +313,50 @@ where
                 .await?;
         }
         Network::Signet => {
-            mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| Ok(())).await?;
+            // Signet blocks cost real proof-of-work, so mining 100 of them
+            // just to mature a coinbase is by far the most expensive thing in
+            // the suite. When the chain was restored from the cache,
+            // bitcoind's own wallet already holds mature coinbases -- so just
+            // send from it and confirm that in a single block.
+            let spendable = spendable_core_balance(post_setup).await?;
+            if spendable >= SIGNET_FUNDING_AMOUNT {
+                tracing::debug!(
+                    %spendable,
+                    "Funding enforcer from the pre-mined chain's mature coinbases",
+                );
+                let address = post_setup
+                    .wallet_service_client
+                    .create_new_address(CreateNewAddressRequest::default())
+                    .await?
+                    .into_owned()
+                    .address;
+                // `-named` with an explicit `fee_rate`: this chain has no fee
+                // history, so Core's estimator has nothing to work from and
+                // `sendtoaddress` would fail rather than pick a rate.
+                let funding_txid: bitcoin::Txid = post_setup
+                    .bitcoin_cli
+                    .command::<_, _, _, _, _>(
+                        ["-named"],
+                        "sendtoaddress",
+                        [
+                            format!("address={address}"),
+                            format!("amount={}", SIGNET_FUNDING_AMOUNT.to_btc()),
+                            "fee_rate=2".to_owned(),
+                        ],
+                    )
+                    .run_utf8()
+                    .await?
+                    .trim()
+                    .parse()?;
+                let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &funding_txid).await?;
+                mine_signet_check::<_, Infallible, S>(post_setup, 1, |_| Ok(())).await?;
+            } else {
+                tracing::debug!(
+                    %spendable,
+                    "No pre-mined signet chain, mining {BLOCKS} blocks to coinbase maturity",
+                );
+                mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| Ok(())).await?;
+            }
         }
     };
     tracing::debug!("Waiting for wallet sync...");
@@ -331,8 +397,7 @@ where
         .ok_or_else(|| proto::Error::missing_field::<CreateDepositTransactionResponse>("txid"))?
         .decode::<CreateDepositTransactionResponse, _>("txid")?;
     tracing::debug!("Deposit TXID: {deposit_txid}");
-    // Wait for deposit tx to enter mempool
-    sleep(std::time::Duration::from_secs(1)).await;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid).await?;
     tracing::debug!("Mining 1 sidechain block");
     let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
         .events

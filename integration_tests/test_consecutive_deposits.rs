@@ -5,6 +5,7 @@ use bip300301_enforcer_lib::{
         mainchain::{
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
             CreateNewAddressRequest, ListUnspentOutputsRequest, SendTransactionRequest,
+            SendTransactionResponse,
         },
     },
 };
@@ -15,7 +16,7 @@ use crate::{
     integration_test::{
         activate_sidechain, fund_enforcer, propose_sidechain, wait_for_wallet_sync,
     },
-    setup::{DummySidechain, PostSetup, Sidechain as _},
+    setup::{DummySidechain, PostSetup, Sidechain as _, wait_for_tx_in_mempool},
 };
 
 const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
@@ -91,21 +92,34 @@ async fn consolidate_to_single_utxo(post_setup: &mut PostSetup) -> anyhow::Resul
             .await?
             .into_owned()
             .address;
-        let _drain = post_setup
+        let drain_txid = post_setup
             .wallet_service_client
             .send_transaction(SendTransactionRequest {
                 drain_wallet_to: Some(drain_address),
                 ..Default::default()
             })
-            .await?;
-        sleep(std::time::Duration::from_secs(1)).await;
+            .await?
+            .into_owned()
+            .txid
+            .ok_or_else(|| proto::Error::missing_field::<SendTransactionResponse>("txid"))?
+            .decode::<SendTransactionResponse, _>("txid")?;
+        // The drain must be in the mempool before we mine, or it won't confirm.
+        let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &drain_txid).await?;
         let () = mine_to_core(post_setup, 1).await?;
-        // Poll for the enforcer wallet to ingest the confirmed drain.
-        for _ in 0..10 {
-            sleep(std::time::Duration::from_secs(2)).await;
+        // Poll for the enforcer wallet to ingest the confirmed drain. A timeout
+        // here is not fatal: a single drain can't always sweep the whole
+        // wallet, so fall through and let the outer loop try another one.
+        const INGEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+        const INGEST_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+        let deadline = std::time::Instant::now() + INGEST_TIMEOUT;
+        loop {
             if unspent_output_count(post_setup).await? == 1 {
                 return Ok(());
             }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            sleep(INGEST_POLL_INTERVAL).await;
         }
     }
     anyhow::bail!(
@@ -133,8 +147,7 @@ pub async fn test_consecutive_deposits(mut post_setup: PostSetup) -> anyhow::Res
     // First deposit: always succeeds, spending the sole UTXO.
     let deposit_txid_1 = create_deposit(&mut post_setup, "sidechain address 1").await?;
     tracing::info!(%deposit_txid_1, "Created first deposit");
-    // Wait for the deposit tx to enter the mempool.
-    sleep(std::time::Duration::from_secs(1)).await;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid_1).await?;
 
     // Second deposit, without a block in between. This must succeed: it should
     // be funded from the first deposit's change output, not by reselecting the
@@ -149,7 +162,7 @@ pub async fn test_consecutive_deposits(mut post_setup: PostSetup) -> anyhow::Res
             )
         })?;
     tracing::info!(%deposit_txid_2, "Created second deposit");
-    sleep(std::time::Duration::from_secs(1)).await;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid_2).await?;
 
     anyhow::ensure!(
         deposit_txid_1 != deposit_txid_2,

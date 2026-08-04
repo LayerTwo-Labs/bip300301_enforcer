@@ -2,6 +2,7 @@ pub mod block_verdict;
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
+pub mod signet_chain_params;
 mod test_activation_height;
 mod test_blinded_m6_roundtrip;
 mod test_consecutive_deposits;
