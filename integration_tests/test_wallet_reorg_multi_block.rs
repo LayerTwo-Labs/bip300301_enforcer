@@ -7,7 +7,7 @@
 //! enforcer's validated tip stuck behind bitcoind's tip, a terminal state
 //! nothing else can sync past.
 
-use std::{str::FromStr as _, time::Duration};
+use std::str::FromStr as _;
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use crate::{
     integration_test::{fund_enforcer, wait_for_wallet_sync},
-    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain},
+    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain, wait_until},
     util::BinPaths,
 };
 
@@ -431,6 +431,17 @@ async fn rejected_block_scenario(
         .run_utf8()
         .await?;
 
+    // The last block the enforcer can accept: everything from the poisoned
+    // block onwards builds on a chain it rejects, so this is where its own
+    // validated tip must come to rest once it has caught up.
+    let last_valid_height: u32 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+
     // Force-mine a block containing the now-stale bid directly, bypassing
     // ordinary mempool/fee-based template selection entirely (which would
     // never pick a bid this stale on its own) -- exactly what an operator
@@ -482,31 +493,37 @@ async fn rejected_block_scenario(
         .restart_enforcer(bin_paths, Vec::<String>::new(), res_tx.clone())
         .await?;
 
-    // Give the batch sync a moment to actually run, then confirm the
-    // process is still alive and responsive -- pre-fix, it crashed almost
-    // immediately on restart and this call would fail with a connection
-    // error.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let tip_info = post_setup
-        .validator_service_client
-        .get_chain_tip(GetChainTipRequest::default())
-        .await?
-        .into_owned();
+    // Wait for the batch sync to actually land on the last block the enforcer
+    // accepts. Polling `GetChainTip` doubles as the liveness check this
+    // scenario exists for -- pre-fix the enforcer crashed almost immediately
+    // on restart, so these calls would fail with a connection error rather
+    // than ever reaching the expected height.
+    let () = wait_until(
+        &format!("enforcer's validated tip to settle at height {last_valid_height}"),
+        || async {
+            let synced_height = post_setup
+                .validator_service_client
+                .get_chain_tip(GetChainTipRequest::default())
+                .await?
+                .into_owned()
+                .block_header_info
+                .into_option()
+                .ok_or_else(|| anyhow::anyhow!("GetChainTipResponse missing block_header_info"))?
+                .height;
+            anyhow::ensure!(
+                synced_height <= last_valid_height,
+                "expected the enforcer's own validated tip ({synced_height}) to stop at the last \
+                 block it accepts ({last_valid_height}), strictly before bitcoind's tip \
+                 ({tip_after_height}), since everything from the rejected block onward builds on \
+                 a chain it doesn't accept"
+            );
+            Ok(synced_height == last_valid_height)
+        },
+    )
+    .await?;
     tracing::info!(
-        ?tip_info,
-        "enforcer survived the restart and answered GetChainTip"
-    );
-
-    let synced_height = tip_info
-        .block_header_info
-        .into_option()
-        .ok_or_else(|| anyhow::anyhow!("GetChainTipResponse missing block_header_info"))?
-        .height;
-    anyhow::ensure!(
-        synced_height < tip_after_height,
-        "expected the enforcer's own validated tip ({synced_height}) to stop strictly before \
-         bitcoind's tip ({tip_after_height}), since everything from the rejected block onward \
-         builds on a chain it doesn't accept"
+        last_valid_height,
+        "enforcer survived the restart and caught up to its last accepted block"
     );
 
     Ok(())

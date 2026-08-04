@@ -297,6 +297,31 @@ jobs:
       - name: Build (debug)
         run: cargo build
 
+      # A signet chain can only be extended by real proof-of-work, and no
+      # coinbase is spendable until it is 100 blocks deep — so mining one per
+      # run cost more than the rest of the suite combined. The harness pins the
+      # signet challenge key, which makes the chain reproducible, so the test
+      # run mines one on first use into SIGNET_CHAIN_DIR and reuses it after.
+      # Here that means: restore it if we have it, and let the test run mine it
+      # if we don't.
+      #
+      # Keyed on the file holding the values that define the chain, so ordinary
+      # harness edits keep the cache and a real change invalidates it. The
+      # bitcoind build is in the key too, since this caches a datadir written
+      # by that binary: `zip` for the drivechain-patched flavors, `version` for
+      # stock (exactly one of the two is set per matrix entry). A restored
+      # chain that doesn't match the challenge is detected and re-mined rather
+      # than used, but nothing detects a datadir from a different flavor — so
+      # the key has to keep those apart.
+      - name: Restore pre-mined signet chain
+        id: cache-signet-chain
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/signet-chain
+          key:
+            signet-chain-${{ matrix.zip || matrix.version }}-${{
+            hashFiles('integration_tests/signet_chain_params.rs') }}
+
       # Verify gRPC server reflection with real schema-free clients
       # (grpcurl + buf curl). Reuses this job's bitcoind download and debug
       # build; gated to a single matrix entry since the result does not
@@ -356,6 +381,7 @@ jobs:
           export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
+          export SIGNET_CHAIN_DIR='${{ runner.temp }}/signet-chain'
           # Each test leaks a TempDir holding per-component stdout/stderr (the
           # enforcer runs at --log-level=trace). Point TMPDIR at a known
           # directory so the "Upload integration test logs" step can collect
@@ -371,6 +397,31 @@ jobs:
             export BITCOIND_HAS_DRIVECHAIN=1
             cargo run --example integration_tests
           fi
+
+      # Did the run end up with a chain worth caching? A run that never needed
+      # one (the stock matrix skips the only signet test) leaves nothing to
+      # save, and `cache/save` would warn about the missing path.
+      #
+      # This is a shell test rather than `hashFiles` in the save step's `if`,
+      # because `hashFiles` only sees paths inside GITHUB_WORKSPACE — the chain
+      # lives in RUNNER_TEMP, so it silently returned '' and the save never ran.
+      - name: Check for a mined signet chain
+        id: mined-signet-chain
+        run: |
+          if [ -f "$RUNNER_TEMP/signet-chain/chain-info.txt" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Save whatever chain the run ended up with, so the next run restores it
+      # instead of re-mining.
+      - name: Save pre-mined signet chain
+        if: |
+          steps.cache-signet-chain.outputs.cache-hit != 'true' &&
+          steps.mined-signet-chain.outputs.present == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/signet-chain
+          key: ${{ steps.cache-signet-chain.outputs.cache-primary-key }}
 
       - name: Upload integration test logs
         # Only on failure: the leaked TempDirs contain full trace-level

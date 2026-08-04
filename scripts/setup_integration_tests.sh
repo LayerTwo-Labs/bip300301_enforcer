@@ -56,6 +56,9 @@ DRYNET_DIR="$DEPS_DIR/bitcoin-ecash-$DRYNET_REVISION"
 UNPATCHED_DIR="$DEPS_DIR/bitcoin-stock-$BITCOIN_VERSION"
 SIGNET_REPO_DIR="$DEPS_DIR/bitcoin-patched-repo"
 ELECTRS_DIR="$DEPS_DIR/electrs-$ELECTRS_VERSION"
+# Pre-mined signet chain, reused across runs. Not built here (it needs the
+# integration-test binary); `just test-it` mines it on first use.
+SIGNET_CHAIN_DIR="$DEPS_DIR/signet-chain"
 
 # `releases.drivechain.info` only publishes patched bitcoin for
 # x86_64-{linux,darwin,windows}. arm64 falls back to the x86_64 darwin
@@ -176,6 +179,7 @@ BITCOIN_CLI='$bins_dir/bitcoin-cli'
 BITCOIN_UTIL='$bins_dir/bitcoin-util'
 ELECTRS='$ELECTRS_BIN'
 SIGNET_MINER='$SIGNET_REPO_DIR/contrib/signet/miner'
+SIGNET_CHAIN_DIR='$SIGNET_CHAIN_DIR'
 EOF
     echo "Wrote $env_file"
 }

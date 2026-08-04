@@ -13,13 +13,16 @@ use bip300301_enforcer_lib::{
 };
 use buffa::MessageField;
 use futures::{StreamExt as _, channel::mpsc};
-use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     mine,
-    setup::{BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain},
+    setup::{
+        BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain,
+        WAIT_POLL_INTERVAL_SUBPROCESS, wait_for_port_free, wait_for_tx_in_mempool, wait_until,
+        wait_until_every,
+    },
     util::{self, BinPaths, FileDumpConfig, TestFileRegistry},
 };
 
@@ -183,15 +186,17 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         anyhow::bail!("Failed to create a tx to fund sender wallet")
     };
     let () = crate::mine::mine::<DummySidechain>(&mut post_setup.miner, 1, None).await?;
-    // Wait for sender to receive block
-    sleep(std::time::Duration::from_secs(1)).await;
-    let sender_balance = post_setup
-        .sender
-        .wallet_service_client
-        .get_balance(GetBalanceRequest::default())
-        .await?
-        .into_owned();
-    anyhow::ensure!(sender_balance.confirmed_sats > 0);
+    // Wait for the sender to receive the block over p2p and credit the funds.
+    let () = wait_until("sender wallet to see the funding tx confirmed", || async {
+        let balance = post_setup
+            .sender
+            .wallet_service_client
+            .get_balance(GetBalanceRequest::default())
+            .await?
+            .into_owned();
+        Ok(balance.confirmed_sats > 0)
+    })
+    .await?;
     tracing::info!("Funded enforcer successfully (sender)");
 
     let BlockHeaderInfo {
@@ -248,29 +253,32 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         .run_utf8()
         .await?;
     tracing::debug!(%sender_mempool_entry);
-    // Wait for mempool inclusion / p2p broadcast.
-    // This can take >5s sometimes, for unknown reasons.
-    sleep(std::time::Duration::from_secs(10)).await;
-    let mempool_entry = post_setup
-        .miner
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getmempoolentry", [bmm_request_txid])
-        .run_utf8()
-        .await?;
-    tracing::debug!(%mempool_entry);
+    // Wait for the BMM request to reach the miner node's mempool over p2p.
+    let () = wait_for_tx_in_mempool(
+        &post_setup.miner.bitcoin_cli,
+        &bmm_request_txid.parse::<bitcoin::Txid>()?,
+    )
+    .await?;
     // Check that the tx entered the sender node's mempool via RPC broadcast,
-    // rather than via p2p relay from the miner node
-    let sender_enforcer_stdout = std::fs::read_to_string(
-        post_setup
-            .sender
-            .directories
-            .enforcer_dir
-            .join("stdout.txt"),
-    )?;
-    anyhow::ensure!(
-        sender_enforcer_stdout.contains("Broadcast BMM request transaction via RPC to own node"),
-        "Expected sender enforcer to broadcast the BMM request tx via RPC to its own node"
-    );
+    // rather than via p2p relay from the miner node. The enforcer logs this
+    // asynchronously, so poll rather than reading the log once.
+    const RPC_BROADCAST_LOG_LINE: &str = "Broadcast BMM request transaction via RPC to own node";
+    let sender_enforcer_stdout_path = post_setup
+        .sender
+        .directories
+        .enforcer_dir
+        .join("stdout.txt");
+    // The enforcer log is megabytes of trace output, so re-reading it in full
+    // is not a cheap check -- poll it at the slower interval.
+    let () = wait_until_every(
+        "sender enforcer to log the BMM request RPC broadcast to its own node",
+        WAIT_POLL_INTERVAL_SUBPROCESS,
+        || async {
+            let stdout = std::fs::read_to_string(&sender_enforcer_stdout_path)?;
+            Ok(stdout.contains(RPC_BROADCAST_LOG_LINE))
+        },
+    )
+    .await?;
     // Mine a block and check that the BMM request worked
     let () = mine::mine_check_block_events::<_, DummySidechain>(
         &mut post_setup.miner,
@@ -293,10 +301,23 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         post_setup.miner.directories.base_dir.path().display(),
         post_setup.sender.directories.base_dir.path().display()
     );
+    // The child processes hold their data dirs open, so wait for them to
+    // actually exit before removing the dirs out from under them. Aborting the
+    // task only schedules cancellation; a freed port is proof it finished.
+    let teardown_ports: Vec<u16> = [&post_setup.miner, &post_setup.sender]
+        .into_iter()
+        .flat_map(|setup| {
+            [
+                setup.reserved_ports.bitcoind_rpc.port(),
+                setup.reserved_ports.enforcer_serve_grpc.port(),
+            ]
+        })
+        .collect();
     drop(post_setup.miner.tasks);
     drop(post_setup.sender.tasks);
-    // Wait for tasks to die
-    sleep(std::time::Duration::from_secs(1)).await;
+    for port in teardown_ports {
+        wait_for_port_free("127.0.0.1", port, std::time::Duration::from_secs(30)).await?;
+    }
     post_setup.miner.directories.base_dir.cleanup()?;
     post_setup.sender.directories.base_dir.cleanup()?;
     Ok(())

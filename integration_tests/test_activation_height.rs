@@ -19,11 +19,10 @@ use bip300301_enforcer_lib::{
         },
     },
 };
-use tokio::time::sleep;
 
 use crate::{
     mine::mine,
-    setup::{DummySidechain, PostSetup, Sidechain as _},
+    setup::{DummySidechain, PostSetup, Sidechain as _, wait_for_pending_proposal},
 };
 
 async fn block_count(post_setup: &PostSetup) -> anyhow::Result<u32> {
@@ -95,7 +94,13 @@ pub async fn test_activation_height(mut post_setup: PostSetup) -> anyhow::Result
         .block_producer_service_client
         .create_sidechain_proposal(create_sidechain_proposal_request)
         .await?;
-    sleep(std::time::Duration::from_secs(1)).await;
+    // The proposal must be persisted before we mine, or the coinbases below
+    // the activation height won't carry the M1 this test needs them to.
+    let () = wait_for_pending_proposal(
+        &post_setup.block_producer_service_client,
+        DummySidechain::SIDECHAIN_NUMBER,
+    )
+    .await?;
 
     // Mine up to (but not including) the activation height. Every one of
     // these coinbases carries the M1; the validator must ignore all of them.

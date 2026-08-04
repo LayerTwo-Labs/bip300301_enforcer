@@ -64,5 +64,10 @@ fmt:
 # stock-X.Y (a specific stock release), drynetN, or all (every flavor in
 # the CI matrix, continuing past failures); remaining args go to the test
 # runner.
+# 
+# The signet tests need a chain with mature (spendable) coinbases, which costs
+# real proof-of-work to mine. The harness mines one on first use into
+# SIGNET_CHAIN_DIR and reuses it thereafter, so the first run here is a couple
+# of minutes slower than the rest.
 test-it *args='':
     '{{ justfile_directory() }}/scripts/run_integration_tests.sh' {{ args }}

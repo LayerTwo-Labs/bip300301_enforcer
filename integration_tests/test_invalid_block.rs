@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tokio::time::sleep;
 
 use crate::{
-    block_verdict::{Expect, assert_enforcer_verdict},
+    block_verdict::{Expect, assert_enforcer_verdict, wait_for_enforcer_height},
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{DummySidechain, PostSetup, Sidechain},
 };
@@ -224,6 +224,19 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
         )
         .run_utf8()
         .await?;
+
+    // Let the enforcer catch up on those blocks before the bad one goes in.
+    // Mining that many at once leaves it far enough behind that the verdict
+    // timeout below would otherwise expire while it is still connecting the
+    // funding blocks, never having seen the block under test.
+    let funded_height: u32 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    let () = wait_for_enforcer_height(post_setup, funded_height).await?;
 
     let utxos: Vec<Utxo> = {
         let json = post_setup

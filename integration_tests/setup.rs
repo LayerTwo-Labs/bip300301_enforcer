@@ -30,7 +30,6 @@ use bitcoin::{Address, BlockHash, Txid};
 use connectrpc::{
     ConnectError,
     client::{ClientConfig, HttpClient},
-    error::ErrorCode,
 };
 use futures::{channel::mpsc, future};
 use reserve_port::ReservedPort;
@@ -41,7 +40,10 @@ use tokio::{
     time::{Duration, sleep, timeout},
 };
 
-use crate::util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer, VarError};
+use crate::{
+    signet_chain_params::{SIGNET_CACHED_CHAIN_BLOCKS, SIGNET_CHALLENGE_SECRET_KEY},
+    util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer, VarError},
+};
 
 #[derive(strum::Display, Clone, Copy, Debug)]
 pub enum Network {
@@ -68,7 +70,10 @@ pub struct SignetSetup {
 
 impl SignetSetup {
     fn new() -> anyhow::Result<Self> {
-        let secret_key = bitcoin::PrivateKey::generate(bitcoin::NetworkKind::Test);
+        let secret_key = bitcoin::PrivateKey::from_slice(
+            &SIGNET_CHALLENGE_SECRET_KEY,
+            bitcoin::NetworkKind::Test,
+        )?;
         let cpk = bitcoin::CompressedPublicKey::from_private_key(
             &bitcoin::secp256k1::Secp256k1::new(),
             &secret_key,
@@ -407,18 +412,375 @@ pub async fn wait_for_validator_synced(
                         .into_option()
                         .ok_or_else(|| anyhow!("no block header info in chain tip"));
                 }
-                // Validator is not synced yet
-                Err(err) if err.code == ErrorCode::Unavailable => {
-                    tracing::trace!("Validator is not synced yet, waiting...");
+                // Not ready yet. `Unavailable` means the validator is still
+                // syncing; a transport error means the gRPC server isn't
+                // actually serving yet, even though the port accepted a TCP
+                // connection. With the whole suite starting processes at once
+                // both are routine, so retry either until the timeout rather
+                // than failing a test on a startup hiccup.
+                Err(err) => {
+                    tracing::trace!("Validator not ready yet ({err}), waiting...");
                     sleep(CHECK_INTERVAL).await;
                 }
-                Err(err) => return Err(anyhow!("Error getting enforcer tip: {err}")),
             }
         }
     };
     timeout(TIMEOUT, task)
         .await
         .map_err(|_| anyhow!("Timeout waiting for validator to sync after {TIMEOUT:?}"))?
+}
+
+/// Default budget for the `wait_for_*` helpers below. Generous, because the
+/// whole suite runs in parallel and the machine is saturated; these are
+/// deadlines that catch a genuinely stuck test, not expected wait times.
+pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Interval between polls for conditions checked in-process or over an already
+/// open connection (gRPC, a file read). Short, because these are cheap and the
+/// conditions are normally already true on the first check.
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Interval between polls for conditions checked by shelling out to
+/// `bitcoin-cli`. Each check forks a process and opens a fresh RPC connection,
+/// so polling these as fast as the in-process checks would put more load on an
+/// already-saturated machine than it saves in latency.
+pub const WAIT_POLL_INTERVAL_SUBPROCESS: Duration = Duration::from_millis(250);
+
+/// Poll `check` until it reports the condition has been reached, erroring out
+/// with `what` in the message if it hasn't happened within `WAIT_TIMEOUT`.
+///
+/// Prefer this over sleeping a fixed duration: it returns as soon as the state
+/// is actually observable (normally on the first poll) instead of paying a
+/// worst-case guess every run, and it fails loudly rather than silently
+/// continuing against state that was never reached.
+///
+/// A failing `check` counts as "not yet", not as a test failure: processes are
+/// still coming up while the suite runs in parallel, so an RPC can legitimately
+/// be refused or time out on the first attempts. Whatever it failed with last
+/// is reported if the deadline runs out.
+pub async fn wait_until<Check, Fut>(what: &str, check: Check) -> anyhow::Result<()>
+where
+    Check: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<bool>>,
+{
+    wait_until_every(what, WAIT_POLL_INTERVAL, check).await
+}
+
+/// [`wait_until`], with an explicit poll interval. Use
+/// [`WAIT_POLL_INTERVAL_SUBPROCESS`] for checks that shell out.
+pub async fn wait_until_every<Check, Fut>(
+    what: &str,
+    poll_interval: Duration,
+    mut check: Check,
+) -> anyhow::Result<()>
+where
+    Check: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<bool>>,
+{
+    let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
+    let mut last_err: Option<anyhow::Error> = None;
+    loop {
+        // Bound each individual check by whatever budget is left, so a single
+        // hung RPC can't outlive the deadline.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match timeout(remaining, check()).await {
+            Ok(Ok(true)) => return Ok(()),
+            Ok(Ok(false)) => tracing::trace!("still waiting for {what}..."),
+            Ok(Err(err)) => {
+                tracing::trace!("still waiting for {what} (check failed: {err:#})");
+                last_err = Some(err);
+            }
+            Err(_elapsed) => break,
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        sleep(poll_interval.min(remaining)).await;
+    }
+    Err(match last_err {
+        Some(err) => err.context(format!(
+            "Timed out after {WAIT_TIMEOUT:?} waiting for {what}; last check failed"
+        )),
+        None => anyhow!("Timeout waiting for {what} after {WAIT_TIMEOUT:?}"),
+    })
+}
+
+/// Wait until `txid` is in `bitcoin_cli`'s node's mempool.
+///
+/// The wallet broadcasts asynchronously, so a tx is not necessarily in the
+/// node's mempool by the time the RPC that created it returns.
+pub async fn wait_for_tx_in_mempool(
+    bitcoin_cli: &bins::BitcoinCli,
+    txid: &bitcoin::Txid,
+) -> anyhow::Result<()> {
+    let txid = txid.to_string();
+    wait_until_every(
+        &format!("tx `{txid}` to enter the mempool"),
+        WAIT_POLL_INTERVAL_SUBPROCESS,
+        || async {
+            Ok(bitcoin_cli
+                .command::<String, _, _, _, _>([], "getmempoolentry", [txid.clone()])
+                .run_utf8()
+                .await
+                .is_ok())
+        },
+    )
+    .await
+}
+
+/// Wait until a sidechain proposal for `sidechain_number` has been persisted by
+/// the block producer, so that the next block it builds carries the M1.
+///
+/// `CreateSidechainProposal` persists before it returns, but the unary response
+/// to a server-streaming call resolves on headers, so poll the state the next
+/// block template actually reads rather than assuming the write landed.
+pub async fn wait_for_pending_proposal(
+    client: &BlockProducerServiceClient<Transport>,
+    sidechain_number: SidechainNumber,
+) -> anyhow::Result<()> {
+    use proto::mainchain::GetBlockProducerStateRequest;
+    let slot = u32::from(sidechain_number.0);
+    wait_until(
+        &format!("sidechain proposal for slot {slot} to be persisted"),
+        || async {
+            let state = client
+                .get_block_producer_state(GetBlockProducerStateRequest::default())
+                .await?
+                .into_owned();
+            Ok(state.pending_proposals.into_iter().any(|proposal| {
+                proto::unwrap_u32(proposal.sidechain_number).is_some_and(|number| number == slot)
+            }))
+        },
+    )
+    .await
+}
+
+/// Per-run state that bitcoind rewrites on startup, or that would leak one
+/// run's runtime details into the next. Excluded when snapshotting a datadir
+/// for reuse.
+const DATADIR_VOLATILE_NAMES: &[&str] = &[
+    ".cookie",
+    ".lock",
+    "anchors.dat",
+    "banlist.json",
+    "bitcoind.pid",
+    "debug.log",
+    "fee_estimates.dat",
+    "mempool.dat",
+    "peers.dat",
+    "stderr.txt",
+    "stdout.txt",
+];
+
+/// Recursively copy `src` into `dst`, skipping [`DATADIR_VOLATILE_NAMES`].
+fn copy_datadir(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if DATADIR_VOLATILE_NAMES.contains(&name.to_string_lossy().as_ref()) {
+            continue;
+        }
+        let (src_path, dst_path) = (entry.path(), dst.join(&name));
+        if entry.file_type()?.is_dir() {
+            copy_datadir(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Written into the cached chain directory, recording what the chain actually
+/// is. A chain mined for a different signet challenge is not merely stale --
+/// bitcoind would reject every block in it -- so it is checked before use
+/// rather than trusting whatever a cache (local or CI) restored.
+const SIGNET_CHAIN_MARKER_FILE: &str = "chain-info.txt";
+
+fn signet_chain_marker(signet_setup: &SignetSetup) -> String {
+    format!(
+        "challenge={}\nblocks={SIGNET_CACHED_CHAIN_BLOCKS}\n",
+        hex::encode(signet_setup.signet_challenge.as_bytes()),
+    )
+}
+
+/// Whether `dir` holds a chain usable by *this* build: present, and built for
+/// the current challenge and block count.
+fn usable_cached_signet_chain(dir: &std::path::Path, signet_setup: &SignetSetup) -> bool {
+    if !dir.join("signet").is_dir() {
+        return false;
+    }
+    let marker = std::fs::read_to_string(dir.join(SIGNET_CHAIN_MARKER_FILE)).unwrap_or_default();
+    if marker != signet_chain_marker(signet_setup) {
+        tracing::warn!(
+            "Cached signet chain at `{}` was built for a different challenge or \
+             block count; re-mining it.",
+            dir.display()
+        );
+        return false;
+    }
+    true
+}
+
+/// Resolved once per process: several tests can reach [`Setup::setup`] at the
+/// same time, and they must not mine into the same directory concurrently.
+/// The first caller mines; the rest await its result.
+static CACHED_SIGNET_CHAIN: LazyLock<tokio::sync::OnceCell<Option<PathBuf>>> =
+    LazyLock::new(tokio::sync::OnceCell::new);
+
+/// Path to the pre-mined signet chain, mining it first if it isn't there yet.
+///
+/// Mining signet blocks costs real proof-of-work, and a fresh chain needs 100+
+/// blocks before any coinbase is spendable -- which cost more than the rest of
+/// the test suite put together. Since [`SIGNET_CHALLENGE_SECRET_KEY`] is fixed,
+/// that chain is identical every run, so it is mined once and reused: by later
+/// runs on the same machine, and on CI by caching `SIGNET_CHAIN_DIR`.
+///
+/// Returns `None` when `SIGNET_CHAIN_DIR` is unset, i.e. when there is nowhere
+/// to keep a chain. Signet tests then mine to coinbase maturity themselves:
+/// much slower, but self-contained and correct.
+async fn cached_signet_chain(
+    bin_paths: &BinPaths,
+    signet_setup: &SignetSetup,
+) -> anyhow::Result<Option<PathBuf>> {
+    CACHED_SIGNET_CHAIN
+        .get_or_try_init(|| async {
+            let Some(dir) = std::env::var_os("SIGNET_CHAIN_DIR").map(PathBuf::from) else {
+                tracing::debug!("SIGNET_CHAIN_DIR is unset, not caching a signet chain");
+                return Ok(None);
+            };
+            if !usable_cached_signet_chain(&dir, signet_setup) {
+                let () = mine_cached_signet_chain(bin_paths, &dir, signet_setup).await?;
+            }
+            Ok(Some(dir))
+        })
+        .await
+        .cloned()
+}
+
+/// Mine the cached signet chain into `out_dir`, replacing anything already
+/// there.
+///
+/// Runs bitcoind and the signet miner on a throwaway datadir, mines
+/// [`SIGNET_CACHED_CHAIN_BLOCKS`] blocks to an address the node wallet owns,
+/// shuts bitcoind down cleanly, then snapshots the datadir.
+async fn mine_cached_signet_chain(
+    bin_paths: &BinPaths,
+    out_dir: &std::path::Path,
+    signet_setup: &SignetSetup,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "Mining {SIGNET_CACHED_CHAIN_BLOCKS}-block signet chain into `{}`. \
+         This is a one-off: later runs reuse it.",
+        out_dir.display()
+    );
+    let reserved_ports = ReservedPorts::new()?;
+    let dirs = Directories::new()?;
+    let (res_tx, _res_rx) = mpsc::unbounded::<anyhow::Result<()>>();
+
+    let mut bitcoind = new_bitcoind(
+        bin_paths,
+        BitcoindKind::Patched,
+        dirs.bitcoin_dir.clone(),
+        &reserved_ports,
+        Network::Signet,
+        Some(signet_setup),
+    )?;
+    // Match what the tests run with, so the snapshot doesn't force a reindex.
+    bitcoind.txindex = true;
+    let bitcoind_task = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], {
+        move |err| {
+            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+        }
+    });
+    let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
+    wait_for_bitcoind_ready(&bitcoin_cli).await?;
+
+    let _create_wallet_output = bitcoin_cli
+        .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
+        .run_utf8()
+        .await?;
+    bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
+    let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
+
+    // Pay the coinbases to an address the wallet actually owns, so the whole
+    // point of this chain -- mature, *spendable* coins ready on startup -- is
+    // met. Note this is deliberately not `signet_challenge_addr`: that is
+    // derived from the challenge script code, so it satisfies the signet block
+    // signature but is not an output the wallet can spend from.
+    let mining_address = bitcoin_cli
+        .command::<String, _, String, _, _>([], "getnewaddress", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse::<bitcoin::Address<_>>()?
+        .require_network(bitcoin::Network::Signet)?;
+    tracing::info!(%mining_address, "Mining cached chain's coinbases to the node wallet");
+    let signet_miner = bins::SignetMiner {
+        path: bin_paths.signet_miner()?.clone(),
+        bitcoin_cli: bitcoin_cli.clone(),
+        bitcoin_util: bin_paths.bitcoin_util()?.clone(),
+        block_interval: None,
+        coinbase_recipient: Some(mining_address.clone()),
+        debug: false,
+        // Signet's floor difficulty. Still real work -- roughly 0.6s of
+        // grinding per block -- which is exactly why this is cached.
+        nbits: None,
+        // Mine against Bitcoin Core's own templates: these are plain funding
+        // blocks, with no BIP300 messages that would need the enforcer.
+        getblocktemplate_command: None,
+        coinbasetxn: false,
+    };
+    for height in 1..=SIGNET_CACHED_CHAIN_BLOCKS {
+        let _mine_output = signet_miner
+            .command("generate", vec!["--address", &mining_address.to_string()])
+            .run_utf8()
+            .await?;
+        if height % 25 == 0 || height == SIGNET_CACHED_CHAIN_BLOCKS {
+            tracing::info!("Mined {height}/{SIGNET_CACHED_CHAIN_BLOCKS} signet blocks");
+        }
+    }
+    let blocks: u32 = bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    anyhow::ensure!(
+        blocks == SIGNET_CACHED_CHAIN_BLOCKS,
+        "expected to mine {SIGNET_CACHED_CHAIN_BLOCKS} blocks, chain is at height {blocks}"
+    );
+
+    // Shut bitcoind down cleanly so the snapshot has a consistent chainstate
+    // and a flushed wallet, rather than one that needs recovery on load.
+    // bitcoind closes its RPC port early in shutdown and keeps flushing after,
+    // so wait for the process itself to exit -- not for the port to free up.
+    tracing::info!("Stopping bitcoind before snapshotting");
+    let _stop_output = bitcoin_cli
+        .command::<String, _, String, _, _>([], "stop", [])
+        .run_utf8()
+        .await?;
+    timeout(Duration::from_secs(120), bitcoind_task.into_inner())
+        .await
+        .map_err(|_elapsed| anyhow!("Timed out waiting for bitcoind to shut down"))??;
+
+    if out_dir.exists() {
+        std::fs::remove_dir_all(out_dir)?;
+    }
+    copy_datadir(&dirs.bitcoin_dir, out_dir)?;
+    std::fs::write(
+        out_dir.join(SIGNET_CHAIN_MARKER_FILE),
+        signet_chain_marker(signet_setup),
+    )?;
+    tracing::info!(
+        "Wrote cached signet chain ({SIGNET_CACHED_CHAIN_BLOCKS} blocks) to `{}`",
+        out_dir.display()
+    );
+    Ok(())
 }
 
 /// Running tasks, aborted on drop
@@ -603,6 +965,22 @@ impl PostSetup {
         // regtest and signet regardless of either, and the one mode that does
         // need a mempool (`GetBlockTemplate`) enables it by construction.
 
+        // Start signet from the pre-mined chain when one is cached, so the
+        // test doesn't have to re-do its proof-of-work. It ships bitcoind's
+        // wallet too, already holding mature coinbases.
+        let cached_signet_chain = match signet_setup.as_ref() {
+            Some(signet_setup) => cached_signet_chain(bin_paths, signet_setup).await?,
+            None => None,
+        };
+        if let Some(cached_chain) = &cached_signet_chain {
+            tracing::debug!(
+                "Restoring cached signet chain from `{}`",
+                cached_chain.display()
+            );
+            copy_datadir(cached_chain, &dirs.bitcoin_dir)?;
+        }
+        let restored_signet_chain = cached_signet_chain.is_some();
+
         tracing::debug!("Starting bitcoin node");
         let mut bitcoind = new_bitcoind(
             bin_paths,
@@ -624,16 +1002,36 @@ impl PostSetup {
         let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
         wait_for_bitcoind_ready(&bitcoin_cli).await?;
 
-        // Create a wallet and initialize it
-        tracing::debug!("Creating wallet");
-        let _create_wallet_output = bitcoin_cli
-            .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
-            .run_utf8()
-            .await?;
-        bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
+        // Create a wallet and initialize it. A restored chain already ships
+        // one, holding the mature coinbases it was mined to.
+        const WALLET_NAME: &str = "integration-test";
+        if restored_signet_chain {
+            tracing::debug!("Loading wallet from the restored chain");
+            let loaded_wallets: Vec<String> = serde_json::from_str(
+                &bitcoin_cli
+                    .command::<String, _, String, _, _>([], "listwallets", [])
+                    .run_utf8()
+                    .await?,
+            )?;
+            if !loaded_wallets.iter().any(|wallet| wallet == WALLET_NAME) {
+                let _load_wallet_output = bitcoin_cli
+                    .command::<String, _, _, _, _>([], "loadwallet", [WALLET_NAME])
+                    .run_utf8()
+                    .await?;
+            }
+        } else {
+            tracing::debug!("Creating wallet");
+            let _create_wallet_output = bitcoin_cli
+                .command::<String, _, _, _, _>([], "createwallet", [WALLET_NAME])
+                .run_utf8()
+                .await?;
+        }
+        bitcoin_cli.rpc_wallet = Some(WALLET_NAME.to_owned());
         let mining_address = match signet_setup.as_ref() {
             Some(signet_setup) => {
-                let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
+                if !restored_signet_chain {
+                    let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
+                }
                 signet_setup.signet_challenge_addr.clone()
             }
             None => {
@@ -678,9 +1076,24 @@ impl PostSetup {
         } else {
             None
         };
-        // Mine 1 block
+        // Mine 1 block, so the chain is non-empty. A restored chain already
+        // has blocks -- and mining a signet one costs real proof-of-work, so
+        // don't.
         tracing::debug!(%mining_address, "Mining 1 block");
-        if let Some(signet_miner) = signet_miner.as_ref() {
+        if restored_signet_chain {
+            let blocks: u32 = bitcoin_cli
+                .command::<String, _, String, _, _>([], "getblockcount", [])
+                .run_utf8()
+                .await?
+                .trim()
+                .parse()?;
+            anyhow::ensure!(
+                blocks >= SIGNET_CACHED_CHAIN_BLOCKS,
+                "restored signet chain is only {blocks} blocks, expected at least \
+                 {SIGNET_CACHED_CHAIN_BLOCKS}"
+            );
+            tracing::debug!("Restored signet chain at height {blocks}");
+        } else if let Some(signet_miner) = signet_miner.as_ref() {
             let mine_output = signet_miner
                 .command("generate", vec!["--address", &mining_address.to_string()])
                 .run_utf8()
@@ -723,8 +1136,14 @@ impl PostSetup {
                 let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
             }
         });
-        // wait for electrs to start
-        sleep(std::time::Duration::from_secs(1)).await;
+        // Wait for electrs to start serving. The enforcer's wallet talks to
+        // both the Electrum RPC and HTTP ports, so wait for each to accept
+        // connections rather than guessing at a fixed startup delay.
+        for port in [electrs.electrum_rpc_port, electrs.electrum_http_port] {
+            wait_for_port("127.0.0.1", port, Duration::from_secs(60))
+                .await
+                .map_err(|err| anyhow!("Failed waiting for electrs port {port}: {err}"))?;
+        }
         // Start BIP300301 Enforcer
         tracing::debug!("Starting bip300301_enforcer");
         let enforcer = Enforcer {
@@ -763,10 +1182,24 @@ impl PostSetup {
         wait_for_port(
             "127.0.0.1",
             enforcer.serve_grpc_port,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
         )
         .await
         .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+
+        // The JSON-RPC (`getblocktemplate`) server comes up after the gRPC one,
+        // and only in the mode that serves block templates. Both the `gbt_client`
+        // below and the signet miner's GBT script talk to it, so wait for it
+        // too rather than racing the first template request against startup.
+        if enforcer.enable_block_template_server {
+            wait_for_port(
+                "127.0.0.1",
+                enforcer.serve_rpc_port,
+                Duration::from_secs(60),
+            )
+            .await
+            .map_err(|e| anyhow!("Failed waiting for enforcer JSON-RPC port: {e}"))?;
+        }
 
         let gbt_client = jsonrpsee::http_client::HttpClient::builder()
             .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))

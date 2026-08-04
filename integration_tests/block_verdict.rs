@@ -7,7 +7,7 @@ use bip300301_enforcer_lib::{
 use bitcoin::BlockHash;
 use tokio::time::sleep;
 
-use crate::setup::PostSetup;
+use crate::setup::{PostSetup, wait_until};
 
 /// Expected outcome of submitting a block to the enforcer.
 pub enum Expect {
@@ -21,7 +21,7 @@ pub enum Expect {
 /// The enforcer's validated chain tip `(hash, height)`. Surfaces the RPC error
 /// (e.g. `Unavailable` while the validator is not yet synced) so poll-loop
 /// callers can retry rather than abort.
-async fn enforcer_tip(post_setup: &mut PostSetup) -> anyhow::Result<(BlockHash, u32)> {
+async fn enforcer_tip(post_setup: &PostSetup) -> anyhow::Result<(BlockHash, u32)> {
     let info = post_setup
         .validator_service_client
         .get_chain_tip(GetChainTipRequest::default())
@@ -37,6 +37,24 @@ async fn enforcer_tip(post_setup: &mut PostSetup) -> anyhow::Result<(BlockHash, 
         .ok_or_else(|| anyhow::anyhow!("get_chain_tip: missing block_hash"))?
         .decode::<BlockHeaderInfo, BlockHash>("block_hash")?;
     Ok((hash, info.height))
+}
+
+/// Wait until the enforcer has validated the chain up to `height`.
+///
+/// Mining RPCs return once *bitcoind* has the blocks; the enforcer connects
+/// them asynchronously and is routinely well behind at that point. Anything
+/// that then asserts on the enforcer's verdict for a freshly mined block has to
+/// clear that backlog first, or [`assert_enforcer_verdict`]'s timeout is spent
+/// on the catch-up rather than on the verdict it is meant to be measuring.
+pub async fn wait_for_enforcer_height(post_setup: &PostSetup, height: u32) -> anyhow::Result<()> {
+    wait_until(
+        &format!("the enforcer to validate the chain up to height {height}"),
+        || async {
+            let (_tip_hash, tip_height) = enforcer_tip(post_setup).await?;
+            Ok(tip_height >= height)
+        },
+    )
+    .await
 }
 
 /// `Some(height)` if `block_hash` is on bitcoind's active chain (`getblock`
