@@ -702,6 +702,12 @@ impl Bitcoind {
             // test runtime. Only unsafe on OS crash/power loss, which never
             // matters for throwaway test datadirs.
             "-unsafesqlitesync=1".to_owned(),
+            // Leave IBD regardless of how old the tip is. A restored signet
+            // chain is as old as the cache it was mined into, so past the
+            // 24h default bitcoind stays in IBD forever -- nothing mines into
+            // it before startup -- and electrs refuses to serve until it's
+            // out. Sync progress is never a question for a test chain anyway.
+            "-maxtipage=2000000000".to_owned(),
             format!("-chain={}", self.network.to_core_arg()),
             format!("-datadir={}", self.data_dir.display()),
             format!("-bind=127.0.0.1:{}", self.listen_port),
