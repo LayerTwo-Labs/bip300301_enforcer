@@ -156,10 +156,16 @@ pub struct BlockHashDbs {
         SerdeBincode<(BlockHash, SidechainNumber)>,
         SerdeBincode<(Txid, BmmCommitment)>,
     >,
+    /// Absolute fee of each seen BMM request -- the bid it represents.
+    ///
+    /// Kept beside `seen_bmm_request_txs` rather than folded into its value:
+    /// that table predates bids-as-fees, so widening it would leave already
+    /// synced validators unable to decode their own rows.
+    seen_bmm_request_fees: DatabaseUnique<SerdeBincode<Txid>, SerdeBincode<u64>>,
 }
 
 impl BlockHashDbs {
-    pub const NUM_DBS: u32 = 8;
+    pub const NUM_DBS: u32 = 9;
 
     pub(super) fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
         let bmm_commitments = DatabaseUnique::create(env, rwtxn, "block_hash_to_bmm_commitments")?;
@@ -170,6 +176,8 @@ impl BlockHashDbs {
         let header = DatabaseUnique::create(env, rwtxn, "block_hash_to_header")?;
         let height = DatabaseUnique::create(env, rwtxn, "block_hash_to_height")?;
         let seen_bmm_request_txs = DatabaseDup::create(env, rwtxn, "seen_bmm_request_txs")?;
+        let seen_bmm_request_fees =
+            DatabaseUnique::create(env, rwtxn, "seen_bmm_request_txid_to_fee")?;
         Ok(Self {
             bmm_commitments,
             coinbase_txid,
@@ -179,6 +187,7 @@ impl BlockHashDbs {
             header,
             height,
             seen_bmm_request_txs,
+            seen_bmm_request_fees,
         })
     }
 
@@ -589,6 +598,27 @@ impl BlockHashDbs {
             .map_err(db::error::Range::from)
     }
 
+    /// The absolute fees of the given seen BMM requests, omitting any whose
+    /// fee was not recorded.
+    pub fn get_seen_bmm_request_fees<I>(
+        &self,
+        rotxn: &RoTxn,
+        txids: I,
+    ) -> Result<HashMap<Txid, u64>, db::error::TryGet>
+    where
+        I: IntoIterator<Item = Txid>,
+    {
+        let mut res = HashMap::new();
+        for txid in txids {
+            if let Some(fee) = self.seen_bmm_request_fees.try_get(rotxn, &txid)? {
+                res.insert(txid, fee);
+            }
+        }
+        Ok(res)
+    }
+
+    /// `fee_sats` is the request's absolute fee, i.e. the bid, and is `None`
+    /// when it could not be computed because an input was not available.
     pub fn put_seen_bmm_request(
         &self,
         rwtxn: &mut RwTxn,
@@ -596,11 +626,16 @@ impl BlockHashDbs {
         sidechain_slot: SidechainNumber,
         txid: Txid,
         commitment: BmmCommitment,
+        fee_sats: Option<u64>,
     ) -> Result<(), db::error::Put> {
-        self.seen_bmm_request_txs.put(
+        let () = self.seen_bmm_request_txs.put(
             rwtxn,
             &(parent_block_hash, sidechain_slot),
             &(txid, commitment),
-        )
+        )?;
+        match fee_sats {
+            Some(fee_sats) => self.seen_bmm_request_fees.put(rwtxn, &txid, &fee_sats),
+            None => Ok(()),
+        }
     }
 }

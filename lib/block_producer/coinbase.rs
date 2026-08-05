@@ -24,11 +24,16 @@ pub(crate) enum BmmRequestAction {
 /// that slot, whoever placed it.
 ///
 /// A BMM bid *is* its transaction fee, so nothing else may decide the
-/// auction -- least of all which bid we happen to be tracking in our own DB.
-/// The block-template path never calls this: the mempool has already made
-/// the same choice, handed every competing bid for a slot by `accept_tx` as
-/// `conflicts_with`, and only the best-paying one survives. Direct mining
-/// builds on bitcoind's template, which has no such rule, so it chooses here.
+/// auction -- not which bid we happen to be tracking in our own DB, and not
+/// how many bytes it arrived in.
+///
+/// Both mining paths settle it here, and neither can leave it to the mempool.
+/// `propose_txs` walks candidates by ancestor fee *rate* and drops the rest
+/// as conflicts, so it would hand the slot to a compact 9,000-sat bid over a
+/// padded 10,000-sat one -- and direct mining, which sees the bids
+/// themselves, would then disagree with a template built from the same
+/// mempool. The template path excludes the losers before selection runs;
+/// direct mining, building on bitcoind's template, filters them as it goes.
 pub(crate) fn bmm_auction_winners<I>(candidates: I) -> HashMap<SidechainNumber, BmmCommitment>
 where
     I: IntoIterator<Item = (SidechainNumber, BmmCommitment, Amount)>,

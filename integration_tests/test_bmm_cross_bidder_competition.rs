@@ -38,7 +38,9 @@ use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
-    integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
+    integration_test::{
+        activate_sidechain, fund_enforcer, propose_sidechain, wait_for_wallet_sync,
+    },
     mine,
     setup::{BitcoindKind, DummySidechain, Mode, Network, PostSetup, SetupOpts, Sidechain},
     util::{self, BinPaths, FileDumpConfig, TestFileRegistry},
@@ -91,15 +93,23 @@ fn sidechain_block_hash(label: &str) -> [u8; 32] {
     bitcoin::hashes::sha256::Hash::hash(format!("cross bidder {label}").as_bytes()).to_byte_array()
 }
 
+/// Value of each padding output, comfortably above the dust threshold.
+const PADDING_OUTPUT_VALUE: Amount = Amount::from_sat(1_000);
+
 /// Craft, sign, and broadcast a competing M8 bid directly against `post_setup`'s
 /// own bitcoind wallet -- entirely independent of any enforcer wallet, so it
 /// shares no inputs with any enforcer-originated bid.
+///
+/// `padding_outputs` inflates the transaction's size without changing its fee,
+/// which lowers its fee *rate* while leaving the bid it represents untouched.
 async fn broadcast_competing_bid(
     post_setup: &PostSetup,
     prev_mainchain_block_hash: bitcoin::BlockHash,
     h_star: [u8; 32],
     fee: Amount,
+    padding_outputs: usize,
 ) -> anyhow::Result<Txid> {
+    let padding_total = PADDING_OUTPUT_VALUE * padding_outputs as u64;
     let utxos: Vec<Utxo> = {
         let json = post_setup
             .bitcoin_cli
@@ -108,13 +118,25 @@ async fn broadcast_competing_bid(
             .await?;
         serde_json::from_str(&json)?
     };
+    let available = utxos.len();
+    let largest = utxos
+        .iter()
+        .filter_map(|u| Amount::from_btc(u.amount).ok())
+        .max()
+        .unwrap_or(Amount::ZERO);
     let (utxo, input_value) = utxos
         .into_iter()
         .find_map(|u| {
             let amount = Amount::from_btc(u.amount).ok()?;
-            (amount > fee).then_some((u, amount))
+            (amount > fee + padding_total).then_some((u, amount))
         })
-        .ok_or_else(|| anyhow::anyhow!("no spendable UTXO in bitcoind wallet"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no spendable UTXO in bitcoind wallet covering {} (fee {fee} + padding \
+                 {padding_total}); {available} available, largest {largest}",
+                fee + padding_total,
+            )
+        })?;
 
     let change_address = post_setup
         .bitcoin_cli
@@ -130,6 +152,23 @@ async fn broadcast_competing_bid(
         prev_mainchain_block_hash,
     )?);
 
+    // The M8 OP_RETURN must stay the first output (BIP301); padding goes after
+    // it, ahead of the change.
+    let mut output = vec![TxOut {
+        script_pubkey,
+        value: Amount::ZERO,
+    }];
+    for _ in 0..padding_outputs {
+        output.push(TxOut {
+            script_pubkey: change_address.script_pubkey(),
+            value: PADDING_OUTPUT_VALUE,
+        });
+    }
+    output.push(TxOut {
+        script_pubkey: change_address.script_pubkey(),
+        value: input_value - fee - padding_total,
+    });
+
     let unsigned_tx = Transaction {
         version: Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -140,16 +179,7 @@ async fn broadcast_competing_bid(
             },
             ..TxIn::default()
         }],
-        output: vec![
-            TxOut {
-                script_pubkey,
-                value: Amount::ZERO,
-            },
-            TxOut {
-                script_pubkey: change_address.script_pubkey(),
-                value: input_value - fee,
-            },
-        ],
+        output,
     };
 
     let signed_hex = {
@@ -275,8 +305,9 @@ async fn setup(bin_paths: BinPaths, file_registry: &TestFileRegistry) -> anyhow:
 #[derive(Clone, Copy)]
 enum MinerBid {
     /// Straight against bitcoind, so nothing is recorded in the producer's
-    /// bid-tracking table.
-    Raw,
+    /// bid-tracking table. `padding_outputs` inflates the transaction so the
+    /// two bids differ in size as well as amount.
+    Raw { padding_outputs: usize },
     /// Through the miner's own enforcer wallet, which records it as a tracked
     /// bid -- the arrangement in which `extend_coinbase_txouts` preloads its
     /// M7 into the coinbase before any fee has been compared.
@@ -313,11 +344,12 @@ async fn run_round(
     tracing::info!(round, %sender_txid, sender_fee, "Sender bid placed");
 
     let miner_txid = match miner_bid {
-        MinerBid::Raw => broadcast_competing_bid(
+        MinerBid::Raw { padding_outputs } => broadcast_competing_bid(
             &setups.miner,
             prev_hash,
             h_star_miner,
             Amount::from_sat(miner_fee),
+            padding_outputs,
         )
         .await?
         .to_string(),
@@ -366,8 +398,14 @@ async fn run_round(
             let expected = ConsensusHex::encode(&expected_h_star);
             anyhow::ensure!(
                 bmm_commitment == expected,
-                "expected the higher-fee bid ({} sats) to win, got a different h*",
+                "expected the higher-fee bid ({} sats) to win: the block should commit to \
+                 {}'s h* {expected:?}, but committed to {bmm_commitment:?}",
                 sender_fee.max(miner_fee),
+                if expect_sender_wins {
+                    "sender"
+                } else {
+                    "miner"
+                },
             );
             Ok(())
         },
@@ -384,6 +422,32 @@ async fn test_bmm_cross_bidder_competition_task(mut setups: Setups) -> anyhow::R
     let () = propose_sidechain::<DummySidechain>(&mut setups.miner).await?;
     let () = activate_sidechain::<DummySidechain>(&mut setups.miner).await?;
     let () = fund_enforcer::<DummySidechain>(&mut setups.miner).await?;
+
+    // Mature several outputs in the miner's *bitcoind* wallet, which is what
+    // `broadcast_competing_bid` spends from. One per round is not enough: a
+    // bid that loses stays resident in the mempool, so its input stays spent
+    // and its change stays unconfirmed, and neither returns to `listunspent`.
+    {
+        const MATURE_BLOCKS: usize = 100;
+        const SPENDABLE_OUTPUTS: usize = 8;
+        let mining_address = setups.miner.mining_address.to_string();
+        let _hashes: String = setups
+            .miner
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "generatetoaddress",
+                [
+                    (MATURE_BLOCKS + SPENDABLE_OUTPUTS).to_string(),
+                    mining_address,
+                ],
+            )
+            .run_utf8()
+            .await?;
+        // Let the enforcer catch up before anything builds a template on the
+        // new tip, or `submitblock` comes back `inconclusive`.
+        let () = wait_for_wallet_sync(&mut setups.miner).await?;
+    }
 
     let sender_addr = setups
         .sender
@@ -409,11 +473,25 @@ async fn test_bmm_cross_bidder_competition_task(mut setups: Setups) -> anyhow::R
     let () = wait_for_sender_tip(&mut setups.sender, tip).await?;
 
     // Round 1: the miner-local bid has the higher fee.
-    let () = run_round(&mut setups, "round1", 5_000, 50_000, MinerBid::Raw).await?;
+    let () = run_round(
+        &mut setups,
+        "round1",
+        5_000,
+        50_000,
+        MinerBid::Raw { padding_outputs: 0 },
+    )
+    .await?;
     // Round 2: swap which side has the higher fee, to prove the winner is
     // determined by fee, not by which side happens to be "local" or
     // "p2p-relayed".
-    let () = run_round(&mut setups, "round2", 50_000, 5_000, MinerBid::Raw).await?;
+    let () = run_round(
+        &mut setups,
+        "round2",
+        50_000,
+        5_000,
+        MinerBid::Raw { padding_outputs: 0 },
+    )
+    .await?;
     // Round 3: the losing side is the miner's own, and this time it is placed
     // through the miner's enforcer wallet rather than straight against
     // bitcoind. Rounds 1 and 2 never record a bid in the miner's producer DB,
@@ -428,6 +506,28 @@ async fn test_bmm_cross_bidder_competition_task(mut setups: Setups) -> anyhow::R
         50_000,
         5_000,
         MinerBid::EnforcerWallet,
+    )
+    .await?;
+    // Round 4: the bids differ in *size* as well as amount, which is what
+    // separates the bid from its fee rate. The miner bids more in absolute
+    // terms but pads its transaction, so the sender's smaller bid has the
+    // higher fee rate. Every round above kept the two transactions roughly
+    // the same size, where the two orderings agree and nothing distinguishes
+    // them.
+    //
+    // A BMM bid is what the sidechain pays for the slot, so the larger bid
+    // has to win regardless of how many bytes it arrived in -- and both
+    // mining paths have to agree on that, or a template-built block and a
+    // directly-mined one commit to different sidechain blocks from the same
+    // mempool.
+    let () = run_round(
+        &mut setups,
+        "round4",
+        9_000,
+        10_000,
+        MinerBid::Raw {
+            padding_outputs: 12,
+        },
     )
     .await?;
 

@@ -7,7 +7,7 @@ use std::{
 };
 
 use async_broadcast::TrySendError;
-use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
+use bitcoin::{Amount, Block, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
 };
@@ -165,6 +165,25 @@ enum RejectReason {
         block_hash: BlockHash,
         parent: BlockHash,
     },
+}
+
+/// A BMM request's absolute fee, or `None` if any input's previous output was
+/// not supplied -- without every input value there is no fee to speak of, and
+/// guessing one would let a bid win an auction it did not pay for.
+fn bmm_request_fee_sats<TxRef>(tx: &Transaction, tx_inputs: &HashMap<Txid, TxRef>) -> Option<u64>
+where
+    TxRef: Borrow<Transaction>,
+{
+    let input_value = tx.input.iter().try_fold(Amount::ZERO, |acc, txin| {
+        let outpoint = txin.previous_output;
+        let previous_tx = tx_inputs.get(&outpoint.txid)?.borrow();
+        acc.checked_add(previous_tx.output.get(outpoint.vout as usize)?.value)
+    })?;
+    let output_value = tx
+        .output
+        .iter()
+        .try_fold(Amount::ZERO, |acc, txout| acc.checked_add(txout.value))?;
+    input_value.checked_sub(output_value).map(Amount::to_sat)
 }
 
 /// Connect block action, with rwtxns that can be committed or aborted
@@ -433,7 +452,7 @@ impl CusfEnforcer for Validator {
     fn accept_tx<TxRef>(
         &mut self,
         tx: &Transaction,
-        _tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
+        tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
     ) -> Result<TxAcceptAction, Self::AcceptTxError>
     where
         TxRef: Borrow<Transaction>,
@@ -461,6 +480,15 @@ impl CusfEnforcer for Validator {
                     seen_bmm_request_txs.remove(&txid);
                     seen_bmm_request_txs
                 };
+                // The bid *is* this transaction's fee, and this is the only
+                // place it can be worked out: the block producer sees BMM
+                // requests as bare txids, long after their inputs are to
+                // hand. Recorded here, the auction can be settled on the bids
+                // themselves.
+                let fee_sats = bmm_request_fee_sats(tx, tx_inputs);
+                if fee_sats.is_none() {
+                    tracing::warn!(%txid, "BMM request fee unknown: an input was unavailable");
+                }
                 let () = self
                     .dbs
                     .block_hashes
@@ -470,6 +498,7 @@ impl CusfEnforcer for Validator {
                         bmm_request.sidechain_number,
                         txid,
                         bmm_request.sidechain_block_hash,
+                        fee_sats,
                     )
                     .map_err(db::Error::from)?;
                 rwtxn.commit()?;

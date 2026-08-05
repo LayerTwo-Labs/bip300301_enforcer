@@ -418,11 +418,52 @@ impl BlockProducer {
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
         );
-        // No BMM exclusions here. The only bid worth dropping was one that
-        // competed with the commitment we had preloaded; without that
-        // preload, the auction is the mempool's to settle, and it settles it
-        // by fee. Excluding from the seen-bid table instead would decide it
-        // on a record of every bid ever seen, fees ignored.
+        // Settle each sidechain's auction here, before selection, and exclude
+        // the bids that lost it. Left to the mempool, the winner would be
+        // whichever bid has the highest ancestor fee *rate*, because that is
+        // the order `propose_txs` walks and it drops the rest as conflicts --
+        // so a compact 9,000-sat bid would beat a padded 10,000-sat one, and
+        // direct mining, which weighs the bids themselves, would disagree
+        // about the same mempool.
+        {
+            let seen_bmm_requests = self
+                .validator()
+                .get_seen_bmm_requests_for_parent_block(*parent_block_hash)?;
+            let fees = self.validator().get_seen_bmm_request_fees(
+                seen_bmm_requests
+                    .values()
+                    .flat_map(|by_commitment| by_commitment.values().flatten().copied()),
+            )?;
+            for (sidechain_number, by_commitment) in &seen_bmm_requests {
+                let candidates: Option<Vec<_>> = by_commitment
+                    .iter()
+                    .flat_map(|(commitment, txids)| {
+                        txids.iter().map(move |txid| (commitment, txid))
+                    })
+                    .map(|(commitment, txid)| {
+                        let fee = bitcoin::Amount::from_sat(*fees.get(txid)?);
+                        Some((*sidechain_number, *commitment, fee))
+                    })
+                    .collect();
+                // A slot holding a bid we cannot price is left alone:
+                // excluding its rivals would award the slot on no evidence.
+                let winner = candidates
+                    .and_then(|candidates| {
+                        coinbase::bmm_auction_winners(candidates).remove(sidechain_number)
+                    })
+                    .or_else(|| {
+                        tracing::warn!(%sidechain_number, "BMM auction not settled: a bid's fee is unknown");
+                        None
+                    });
+                let Some(winner) = winner else { continue };
+                template.exclude_mempool_txs.extend(
+                    by_commitment
+                        .iter()
+                        .filter(|(commitment, _)| **commitment != winner)
+                        .flat_map(|(_, txids)| txids.iter().copied()),
+                );
+            }
+        }
         // Reserve suffix txs
         {
             let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {

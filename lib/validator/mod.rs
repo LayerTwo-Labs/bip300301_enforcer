@@ -373,6 +373,8 @@ pub enum GetSeenBmmRequestsForParentBlockError {
     #[error(transparent)]
     DbRange(#[from] db::error::Range),
     #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
+    #[error(transparent)]
     ReadTxn(#[from] env::error::ReadTxn),
 }
 
@@ -809,6 +811,23 @@ impl Validator {
             .dbs
             .block_hashes
             .get_seen_bmm_requests_for_parent_block(&rotxn, parent_block_hash)?;
+        Ok(res)
+    }
+
+    /// The absolute fee -- the bid -- of each of the given seen BMM requests.
+    /// Requests whose fee was never recorded are omitted.
+    pub fn get_seen_bmm_request_fees<I>(
+        &self,
+        txids: I,
+    ) -> Result<HashMap<Txid, u64>, GetSeenBmmRequestsForParentBlockError>
+    where
+        I: IntoIterator<Item = Txid>,
+    {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
+            .block_hashes
+            .get_seen_bmm_request_fees(&rotxn, txids)?;
         Ok(res)
     }
 }
