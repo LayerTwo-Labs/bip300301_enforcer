@@ -678,11 +678,12 @@ impl BlockProducer {
         // block will actually carry -- which is what the coinbase commits to
         // below.
         let winners = loop {
-            let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee, _)| {
+            let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee, txid)| {
                 let bmm_request = crate::messages::parse_m8_tx(tx)?;
                 (bmm_request.prev_mainchain_block_hash == mainchain_tip).then_some((
                     bmm_request.sidechain_number,
                     bmm_request.sidechain_block_hash,
+                    *txid,
                     *fee,
                 ))
             }));
@@ -690,11 +691,11 @@ impl BlockProducer {
                 .iter()
                 .filter_map(|(tx, _, txid)| {
                     let bmm_request = crate::messages::parse_m8_tx(tx)?;
-                    (classify_bmm_request(
-                        winners.get(&bmm_request.sidechain_number).copied(),
-                        &mainchain_tip,
-                        &bmm_request,
-                    ) == BmmRequestAction::Exclude)
+                    let winner = winners
+                        .get(&bmm_request.sidechain_number)
+                        .map(|(_commitment, txid)| *txid);
+                    (classify_bmm_request(winner, &mainchain_tip, *txid, &bmm_request)
+                        == BmmRequestAction::Exclude)
                         .then_some(*txid)
                 })
                 .collect();
@@ -709,8 +710,8 @@ impl BlockProducer {
             selected.retain(|(_, _, txid)| !dropped.contains(txid));
         };
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
-        for (sidechain_number, commitment) in &winners {
-            tracing::info!(%sidechain_number, %commitment, "BMM auction won");
+        for (sidechain_number, (commitment, txid)) in &winners {
+            tracing::info!(%sidechain_number, %commitment, %txid, "BMM auction won");
             coinbase_builder.bmm_accept(*sidechain_number, *commitment)?;
         }
         let mut fees = Amount::ZERO;

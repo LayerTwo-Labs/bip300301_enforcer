@@ -17,7 +17,7 @@ use tracing::instrument;
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    types::{BlindedM6, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
+    types::{BlindedM6, M6id, PendingM6idInfo, SidechainNumber, WithdrawalBundleEventKind},
     validator::Validator,
 };
 
@@ -442,7 +442,7 @@ impl BlockProducer {
                     })
                     .map(|(commitment, txid)| {
                         let fee = bitcoin::Amount::from_sat(*fees.get(txid)?);
-                        Some((*sidechain_number, *commitment, fee))
+                        Some((*sidechain_number, *commitment, *txid, fee))
                     })
                     .collect();
                 // A slot holding a bid we cannot price is left alone:
@@ -455,12 +455,18 @@ impl BlockProducer {
                         tracing::warn!(%sidechain_number, "BMM auction not settled: a bid's fee is unknown");
                         None
                     });
-                let Some(winner) = winner else { continue };
+                // Kept by txid, not by commitment: BIP301 allows one M8 per
+                // slot, and a duplicate carrying the winner's `(S, H)` is
+                // still a second one.
+                let Some((_commitment, winner_txid)) = winner else {
+                    continue;
+                };
                 template.exclude_mempool_txs.extend(
                     by_commitment
-                        .iter()
-                        .filter(|(commitment, _)| **commitment != winner)
-                        .flat_map(|(_, txids)| txids.iter().copied()),
+                        .values()
+                        .flatten()
+                        .copied()
+                        .filter(|txid| *txid != winner_txid),
                 );
             }
         }
@@ -521,14 +527,24 @@ impl BlockProducer {
                 // their slot still free -- this is where a bid from another
                 // wallet earns its M7. The tx set is fixed by now, so the
                 // rule's other verdicts are the exclusion pass's to enforce.
+                //
+                // Which transaction claimed each slot is tracked here rather
+                // than read back off the coinbase: a duplicate carrying the
+                // same `(S, H)` would match the M7 already written and be
+                // waved through as the same request.
+                let mut accepted_by_slot: HashMap<SidechainNumber, Txid> = HashMap::new();
                 for (tx, _) in template.prefix_txs {
                     if let Some(bmm_request) = parse_m8_tx(tx) {
-                        let accepted = coinbase_builder
-                            .messages()
-                            .m7_bmm_accept_commitment(&bmm_request.sidechain_number);
-                        if coinbase::classify_bmm_request(accepted, parent_block_hash, &bmm_request)
-                            == coinbase::BmmRequestAction::Accept
+                        let txid = tx.compute_txid();
+                        let claimed = accepted_by_slot.get(&bmm_request.sidechain_number).copied();
+                        if coinbase::classify_bmm_request(
+                            claimed,
+                            parent_block_hash,
+                            txid,
+                            &bmm_request,
+                        ) == coinbase::BmmRequestAction::Accept
                         {
+                            accepted_by_slot.insert(bmm_request.sidechain_number, txid);
                             coinbase_builder.bmm_accept(
                                 bmm_request.sidechain_number,
                                 bmm_request.sidechain_block_hash,

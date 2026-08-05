@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use bitcoin::{Amount, BlockHash, OutPoint, Transaction, TxOut};
+use bitcoin::{Amount, BlockHash, OutPoint, Transaction, TxOut, Txid};
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 
 use crate::{
@@ -20,8 +20,10 @@ pub(crate) enum BmmRequestAction {
     Exclude,
 }
 
-/// The commitment each sidechain slot goes to: the highest-fee request for
-/// that slot, whoever placed it.
+/// The request that wins each sidechain slot: the highest-fee one, whoever
+/// placed it. Identified by transaction, not just by commitment -- BIP301
+/// allows only one M8 per block per slot, and two transactions can carry the
+/// same `(S, H)` while spending different inputs.
 ///
 /// A BMM bid *is* its transaction fee, so nothing else may decide the
 /// auction -- not which bid we happen to be tracking in our own DB, and not
@@ -34,31 +36,41 @@ pub(crate) enum BmmRequestAction {
 /// themselves, would then disagree with a template built from the same
 /// mempool. The template path excludes the losers before selection runs;
 /// direct mining, building on bitcoind's template, filters them as it goes.
-pub(crate) fn bmm_auction_winners<I>(candidates: I) -> HashMap<SidechainNumber, BmmCommitment>
+pub(crate) fn bmm_auction_winners<I>(
+    candidates: I,
+) -> HashMap<SidechainNumber, (BmmCommitment, Txid)>
 where
-    I: IntoIterator<Item = (SidechainNumber, BmmCommitment, Amount)>,
+    I: IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
 {
-    let mut best: HashMap<SidechainNumber, (BmmCommitment, Amount)> = HashMap::new();
-    for (sidechain_number, commitment, fee) in candidates {
-        let best = best.entry(sidechain_number).or_insert((commitment, fee));
-        if fee > best.1 {
-            *best = (commitment, fee);
+    let mut best: HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> = HashMap::new();
+    for (sidechain_number, commitment, txid, fee) in candidates {
+        let best = best
+            .entry(sidechain_number)
+            .or_insert((commitment, txid, fee));
+        if fee > best.2 {
+            *best = (commitment, txid, fee);
         }
     }
     best.into_iter()
-        .map(|(sidechain_number, (commitment, _fee))| (sidechain_number, commitment))
+        .map(|(sidechain_number, (commitment, txid, _fee))| (sidechain_number, (commitment, txid)))
         .collect()
 }
 
+/// `winner` is the transaction this block commits to for `request`'s slot, if
+/// one has been settled on. Compared by txid rather than commitment: a
+/// duplicate carrying the same `(S, H)` is a *second* M8 for the slot, which
+/// BIP301 does not permit, and matching on the commitment would wave it
+/// through.
 pub(crate) fn classify_bmm_request(
-    accepted: Option<BmmCommitment>,
+    winner: Option<Txid>,
     parent: &BlockHash,
+    txid: Txid,
     request: &M8BmmRequest,
 ) -> BmmRequestAction {
     if request.prev_mainchain_block_hash != *parent {
         BmmRequestAction::Exclude
-    } else if let Some(accepted) = accepted {
-        if accepted == request.sidechain_block_hash {
+    } else if let Some(winner) = winner {
+        if winner == txid {
             BmmRequestAction::AlreadyAccepted
         } else {
             BmmRequestAction::Exclude

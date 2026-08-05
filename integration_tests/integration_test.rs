@@ -969,6 +969,26 @@ pub fn tests(
     async_trials.push(bmm_multi_sidechain_trial);
     async_trials.push(bmm_bid_chain_eviction_trial);
     async_trials.push({
+        let name = test_bmm_multi_sidechain::DUPLICATE_BID_BLOCK_TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                let file_registry = file_registry.clone();
+                async move {
+                    let test_future = test_bmm_multi_sidechain::test_bmm_duplicate_bid_block(
+                        bin_paths,
+                        file_registry,
+                    )
+                    .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    });
+    async_trials.push({
         let name = test_bmm_multi_sidechain::MISSING_INPUT_BLOCK_TEST_NAME;
         AsyncTrial::new(
             name,

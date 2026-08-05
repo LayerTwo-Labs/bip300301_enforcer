@@ -36,6 +36,7 @@ use crate::{
 pub const TEST_NAME: &str = "bmm_multi_sidechain";
 pub const BID_CHAIN_EVICTION_TEST_NAME: &str = "bmm_bid_chain_eviction";
 pub const MISSING_INPUT_BLOCK_TEST_NAME: &str = "bmm_missing_input_block";
+pub const DUPLICATE_BID_BLOCK_TEST_NAME: &str = "bmm_duplicate_bid_block";
 
 type Sc0 = DummySidechainImpl<0>;
 type Sc1 = DummySidechainImpl<1>;
@@ -152,6 +153,36 @@ async fn mempool_contains(post_setup: &PostSetup, txid: &str) -> anyhow::Result<
         .run_utf8()
         .await;
     Ok(result.is_ok())
+}
+
+async fn get_best_block_hash(post_setup: &PostSetup) -> anyhow::Result<bitcoin::BlockHash> {
+    let hex = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getbestblockhash", [])
+        .run_utf8()
+        .await?;
+    Ok(hex.trim().parse()?)
+}
+
+/// The txids of every transaction in `block_hash`, coinbase first.
+async fn block_txids(
+    post_setup: &PostSetup,
+    block_hash: &bitcoin::BlockHash,
+) -> anyhow::Result<Vec<String>> {
+    let json = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string()])
+        .run_utf8()
+        .await?;
+    let block: serde_json::Value = serde_json::from_str(&json)?;
+    let txids = block
+        .get("tx")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("getblock: missing `tx` array"))?
+        .iter()
+        .filter_map(|txid| txid.as_str().map(str::to_owned))
+        .collect();
+    Ok(txids)
 }
 
 async fn get_raw_tx_hex(post_setup: &PostSetup, txid: &str) -> anyhow::Result<String> {
@@ -558,6 +589,110 @@ async fn missing_input_block_body(post_setup: &mut PostSetup) -> anyhow::Result<
     Ok(())
 }
 
+/// A block must carry at most one BMM request per sidechain slot.
+///
+/// Two transactions can carry byte-identical M8 payloads -- same sidechain,
+/// same h*, same parent -- while spending different inputs, which anyone can
+/// arrange by copying the OP_RETURN and funding it themselves. They are not
+/// replacements of one another, so nothing in bitcoind separates them, and its
+/// template offers both.
+///
+/// The enforcer's own mempool treats them as conflicts, so the block-template
+/// path never sees more than one. Direct generation builds on bitcoind's
+/// template instead, where the only thing standing between the two of them and
+/// the same block is the auction deciding which transaction won -- not merely
+/// which commitment did.
+async fn duplicate_bid_block_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    const SLOT: u8 = 0;
+
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let _sc0 = Sc0::setup((), post_setup, res_tx).await?;
+    let () = propose_sidechain::<Sc0>(post_setup).await?;
+    let () = activate_sidechains::<Sc0>(post_setup, 1).await?;
+    let () = fund_enforcer::<Sc0>(post_setup).await?;
+
+    let (prev_bytes, _height) = get_tip_info(post_setup).await?;
+    let prev_hash: bitcoin::BlockHash =
+        prev_bytes.decode::<BlockHeaderInfo, bitcoin::BlockHash>("block_hash")?;
+    let h_star = sidechain_block_hash(SLOT, 1);
+    let mut bids = Vec::new();
+    for (round, fee) in [(1u8, OPENING_BID), (2, OPENING_BID + 10_000)] {
+        let txid = crate::test_bmm_cross_bidder_competition::broadcast_competing_bid(
+            &*post_setup,
+            SidechainNumber(SLOT),
+            prev_hash,
+            h_star,
+            bitcoin::Amount::from_sat(fee),
+            0,
+        )
+        .await?;
+        tracing::info!(round, %txid, fee, "Broadcast a bid for the same sidechain and h*");
+        bids.push(txid.to_string());
+    }
+    anyhow::ensure!(
+        bids[0] != bids[1],
+        "the two bids must be distinct transactions, got {} twice",
+        bids[0],
+    );
+
+    let () = crate::mine::mine::<Sc0>(post_setup, 1, None).await?;
+    let mined = block_txids(&*post_setup, &get_best_block_hash(&*post_setup).await?).await?;
+    let included: Vec<&String> = bids.iter().filter(|txid| mined.contains(txid)).collect();
+    anyhow::ensure!(
+        included.len() == 1,
+        "a block may accept at most one BMM request per sidechain, but this one carries \
+         {} of the {} bids for sidechain {SLOT} at h* -- {included:?}",
+        included.len(),
+        bids.len(),
+    );
+    tracing::info!(winner = %included[0], "Block carried exactly one bid for the slot");
+
+    // The rule is the validator's too, not just the producer's: a miner who
+    // does not run this enforcer can force both into a block, and BIP301 says
+    // that block is not one we may build on.
+    let (prev_bytes, _height) = get_tip_info(post_setup).await?;
+    let prev_hash: bitcoin::BlockHash =
+        prev_bytes.decode::<BlockHeaderInfo, bitcoin::BlockHash>("block_hash")?;
+    let h_star_forced = sidechain_block_hash(SLOT, 2);
+    let mut forced_hexes = Vec::new();
+    for fee in [OPENING_BID, OPENING_BID + 10_000] {
+        let txid = crate::test_bmm_cross_bidder_competition::broadcast_competing_bid(
+            &*post_setup,
+            SidechainNumber(SLOT),
+            prev_hash,
+            h_star_forced,
+            bitcoin::Amount::from_sat(fee),
+            0,
+        )
+        .await?;
+        forced_hexes.push(get_raw_tx_hex(&*post_setup, &txid.to_string()).await?);
+    }
+    let forced_hex_refs: Vec<&str> = forced_hexes.iter().map(String::as_str).collect();
+    let poisoned_block = crate::bmm_block::submit_block_with_bmm_accepts(
+        &*post_setup,
+        &[(SidechainNumber(SLOT), h_star_forced)],
+        &forced_hex_refs,
+    )
+    .await?;
+    let () = assert_enforcer_verdict(
+        post_setup,
+        poisoned_block,
+        Expect::Rejected {
+            log_contains: "Multiple BMM requests accepted in sidechain slot",
+        },
+        Duration::from_secs(30),
+    )
+    .await?;
+    tracing::info!(%poisoned_block, "Enforcer rejected a block carrying two bids for one slot");
+    Ok(())
+}
+
+async fn duplicate_bid_block_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let res = duplicate_bid_block_body(&mut post_setup).await;
+    drop(post_setup.tasks);
+    res
+}
+
 async fn test_bmm_multi_sidechain_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let res = test_bmm_multi_sidechain_body(&mut post_setup).await;
     drop(post_setup.tasks);
@@ -599,6 +734,44 @@ pub async fn test_bmm_multi_sidechain(
     let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
         async move {
             let res = test_bmm_multi_sidechain_task(post_setup).await;
+            let _send_err: Result<(), _> = res_tx.unbounded_send(res);
+        }
+        .in_current_span()
+    })
+    .into();
+    res_rx
+        .next()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Unexpected end of test task result stream"))?
+}
+
+/// A block must carry at most one BMM request per sidechain slot.
+pub async fn test_bmm_duplicate_bid_block(
+    bin_paths: BinPaths,
+    file_registry: TestFileRegistry,
+) -> anyhow::Result<()> {
+    let (res_tx, mut res_rx) = mpsc::unbounded();
+    let pre_setup = PreSetup::new(bin_paths, Network::Regtest)?;
+    register_files(
+        &file_registry,
+        DUPLICATE_BID_BLOCK_TEST_NAME,
+        &pre_setup.directories,
+    );
+    let post_setup = pre_setup
+        .setup(
+            Mode::Mempool,
+            SetupOpts {
+                bitcoind_args: Vec::<String>::new(),
+                bitcoind_kind: Default::default(),
+                enforcer_args: Vec::<String>::new(),
+                enforcer_wallet: Default::default(),
+            },
+            res_tx.clone(),
+        )
+        .await?;
+    let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
+        async move {
+            let res = duplicate_bid_block_task(post_setup).await;
             let _send_err: Result<(), _> = res_tx.unbounded_send(res);
         }
         .in_current_span()
