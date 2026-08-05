@@ -1898,26 +1898,50 @@ impl Wallet {
                     // Rebroadcast rather than merely returning the recorded
                     // transaction: for a bid still in the mempool this is a
                     // no-op, but if bitcoind lost its mempool (a restart,
-                    // say) this is what puts the bid back in flight. And if
-                    // the bid *cannot* be in flight anymore -- replaced,
-                    // inputs spent, already confirmed -- the caller hears
-                    // that here, instead of being handed a dead transaction
-                    // reported as a live bid.
-                    let broadcast_txid = crate::rpc_client::broadcast_transaction(
+                    // say) this is what puts the bid back in flight.
+                    match crate::rpc_client::broadcast_transaction(
                         &self.inner.main_client,
                         &tx,
                         Some(0.0),
                     )
                     .await
-                    .map_err(error::CreateBmmRequestInner::BroadcastTx)?;
-                    let Some(_) = broadcast_txid else {
-                        return Err(error::CreateBmmRequestInner::BroadcastNotAccepted.into());
-                    };
-                    tracing::debug!(
-                        txid = %tracked.txid,
-                        "create_bmm_request: bid amount unchanged, rebroadcast existing tracked transaction",
-                    );
-                    return Ok(tx);
+                    {
+                        Ok(Some(_)) => {
+                            tracing::debug!(
+                                txid = %tracked.txid,
+                                "create_bmm_request: bid amount unchanged, rebroadcast existing tracked transaction",
+                            );
+                            return Ok(tx);
+                        }
+                        Ok(None) => {
+                            return Err(error::CreateBmmRequestInner::BroadcastNotAccepted.into());
+                        }
+                        // The recorded transaction can never be broadcast
+                        // again: its inputs are gone. Usually that is because
+                        // a bid for *another* sidechain was raised and this
+                        // one, funded from its change, was evicted along with
+                        // it -- our own doing, not the caller's. Erring here
+                        // would strand the sidechain for good, since an
+                        // identical retry leaves the tracking row identical
+                        // and fails the same way. Fall through instead and
+                        // build afresh, the same rung
+                        // `try_build_bmm_replacement` uses when a previous
+                        // bid's inputs turn out to be spent.
+                        Err(bitcoin_jsonrpsee::jsonrpsee::core::ClientError::Call(ref err))
+                            if crate::rpc_client::contains_missing_or_spent_inputs(
+                                err.message(),
+                            ) =>
+                        {
+                            tracing::info!(
+                                txid = %tracked.txid,
+                                "create_bmm_request: tracked bid's inputs are gone, \
+                                 building a fresh transaction for the same bid",
+                            );
+                        }
+                        Err(err) => {
+                            return Err(error::CreateBmmRequestInner::BroadcastTx(err).into());
+                        }
+                    }
                 }
                 std::cmp::Ordering::Greater => (),
             }

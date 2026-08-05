@@ -391,7 +391,11 @@ struct ChainedBids {
     height: u32,
     ancestor_h_star: [u8; 32],
     ancestor_txid: String,
+    descendant_h_star: [u8; 32],
     descendant_txid: String,
+    /// What the descendant bid, so a caller can resubmit the identical
+    /// request.
+    descendant_bid: u64,
     /// The two bids combined -- what a replacement of the ancestor must
     /// out-pay, since Core weighs it against everything it evicts.
     chain_total: u64,
@@ -456,7 +460,9 @@ async fn place_chained_bids(post_setup: &mut PostSetup) -> anyhow::Result<Chaine
                 height,
                 ancestor_h_star,
                 ancestor_txid,
+                descendant_h_star,
                 descendant_txid,
+                descendant_bid,
                 chain_total: ancestor_bid + descendant_bid,
             });
             break;
@@ -484,7 +490,9 @@ async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<(
         height,
         ancestor_h_star,
         ancestor_txid,
+        descendant_h_star,
         descendant_txid,
+        descendant_bid,
         chain_total,
     } = place_chained_bids(post_setup).await?;
     let ancestor_slot = CHAINED_SLOTS[0];
@@ -507,7 +515,37 @@ async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<(
     );
     tracing::info!(%bumped_txid, "Raised the ancestor bid, evicting the descendant");
 
-    // The stranded sidechain must still be able to bid.
+    // Resubmitting the *identical* request is what a client actually does --
+    // same slot, same h*, same amount -- and it must work. An unchanged amount
+    // is the idempotent path, which rebroadcasts the recorded transaction
+    // rather than building one; that transaction is precisely the one just
+    // evicted, and its input went with the bid it descended from. Erring here
+    // would leave the sidechain answering for a transaction *we* killed, by
+    // bumping a different sidechain, with no way to change the answer:
+    // retrying identically leaves the tracking row identical.
+    let exact_retry_txid = create_bid(
+        post_setup,
+        descendant_slot,
+        height,
+        &prev_bytes,
+        &descendant_h_star,
+        descendant_bid,
+    )
+    .await
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "sidechain {descendant_slot} cannot resubmit its identical bid after sidechain \
+             {ancestor_slot} bumped and evicted it: {err}"
+        )
+    })?;
+    anyhow::ensure!(
+        mempool_contains(&*post_setup, &exact_retry_txid).await?,
+        "sidechain {descendant_slot}'s resubmitted bid {exact_retry_txid} is not in the mempool",
+    );
+    tracing::info!(%exact_retry_txid, "Identical resubmission put a live bid back in flight");
+
+    // A changed request must work too, and takes the replacement path rather
+    // than the idempotent one.
     let h_star_retry = sidechain_block_hash(descendant_slot, CHAIN_ATTEMPTS + 1);
     let retry_txid = create_bid(
         post_setup,
@@ -547,7 +585,9 @@ async fn missing_input_block_body(post_setup: &mut PostSetup) -> anyhow::Result<
         height: _,
         ancestor_h_star: _,
         ancestor_txid,
+        descendant_h_star: _,
         descendant_txid,
+        descendant_bid: _,
         chain_total,
     } = place_chained_bids(post_setup).await?;
     let ancestor_slot = CHAINED_SLOTS[0];
