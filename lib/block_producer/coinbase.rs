@@ -20,6 +20,31 @@ pub(crate) enum BmmRequestAction {
     Exclude,
 }
 
+/// The commitment each sidechain slot goes to: the highest-fee request for
+/// that slot, whoever placed it.
+///
+/// A BMM bid *is* its transaction fee, so nothing else may decide the
+/// auction -- least of all which bid we happen to be tracking in our own DB.
+/// The block-template path never calls this: the mempool has already made
+/// the same choice, handed every competing bid for a slot by `accept_tx` as
+/// `conflicts_with`, and only the best-paying one survives. Direct mining
+/// builds on bitcoind's template, which has no such rule, so it chooses here.
+pub(crate) fn bmm_auction_winners<I>(candidates: I) -> HashMap<SidechainNumber, BmmCommitment>
+where
+    I: IntoIterator<Item = (SidechainNumber, BmmCommitment, Amount)>,
+{
+    let mut best: HashMap<SidechainNumber, (BmmCommitment, Amount)> = HashMap::new();
+    for (sidechain_number, commitment, fee) in candidates {
+        let best = best.entry(sidechain_number).or_insert((commitment, fee));
+        if fee > best.1 {
+            *best = (commitment, fee);
+        }
+    }
+    best.into_iter()
+        .map(|(sidechain_number, (commitment, _fee))| (sidechain_number, commitment))
+        .collect()
+}
+
 pub(crate) fn classify_bmm_request(
     accepted: Option<BmmCommitment>,
     parent: &BlockHash,
@@ -117,19 +142,25 @@ impl BlockProducer {
         }
     }
 
-    /// Extend coinbase txouts for a new block with our drivechain messages:
-    /// M1 (propose), M2 (ack), M3 (bundle propose), M4 (bundle votes) and
-    /// M7 (BMM accept).
+    /// Extend coinbase txouts for a block building on `parent_block_hash`
+    /// with our drivechain messages: M1 (propose), M2 (ack), M3 (bundle
+    /// propose) and M4 (bundle votes).
+    ///
+    /// Not M7: a BMM accept names the winner of a fee auction, settled per
+    /// block from the transactions on offer (see [`bmm_auction_winners`]).
+    /// Writing our own tracked bid's commitment in here, before any fee had
+    /// been compared, is what let a 5,000-sat bid of ours shut out a
+    /// 50,000-sat one.
     pub(crate) async fn extend_coinbase_txouts(
         &self,
         ack_all_proposals: bool,
-        mainchain_tip: BlockHash,
+        parent_block_hash: BlockHash,
         coinbase_txouts: &mut Vec<TxOut>,
     ) -> Result<(), error::GenerateCoinbaseTxouts> {
         let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
         tracing::debug!(
             ack_all_proposals,
-            %mainchain_tip,
+            %parent_block_hash,
             "Extending coinbase txouts",
         );
 
@@ -226,22 +257,6 @@ impl BlockProducer {
             )?;
         }
 
-        let bmm_hashes = self.db().get_bmm_requests(&mainchain_tip).await?;
-        for (sidechain_number, bmm_hash) in bmm_hashes {
-            if coinbase_builder
-                .messages()
-                .m7_bmm_accept_slot_vout(&sidechain_number)
-                .is_some()
-            {
-                continue;
-            }
-            tracing::info!(
-                "Adding BMM accept for SC {} with hash: {}",
-                sidechain_number,
-                bmm_hash
-            );
-            coinbase_builder.bmm_accept(sidechain_number, bmm_hash)?;
-        }
         for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
             for (m6id, _blinded_m6, m6id_info) in m6ids {
                 if m6id_info.is_none() {

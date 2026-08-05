@@ -480,24 +480,11 @@ impl CoinbaseMessages {
         self.m4_index.is_some()
     }
 
-    pub fn m7_bmm_accept_slot_vout(&self, slot: &SidechainNumber) -> Option<usize> {
-        self.m7_slot_to_commitment_index
-            .get(slot)
-            .map(|(_, vout)| *vout)
-    }
-
     /// The commitment this coinbase accepts for `slot`, if any.
     pub fn m7_bmm_accept_commitment(&self, slot: &SidechainNumber) -> Option<BmmCommitment> {
         self.m7_slot_to_commitment_index
             .get(slot)
             .map(|(commitment, _)| *commitment)
-    }
-
-    pub fn m7_bmm_accepts(&self) -> HashMap<SidechainNumber, BmmCommitment> {
-        self.m7_slot_to_commitment_index
-            .iter()
-            .map(|(sidechain_number, (commitment, _))| (*sidechain_number, *commitment))
-            .collect()
     }
 
     // TODO: ensure that M3 pushes are valid

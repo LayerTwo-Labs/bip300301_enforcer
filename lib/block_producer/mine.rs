@@ -34,7 +34,7 @@ use crate::{
     bins::{self, CommandExt as _},
     block_producer::{
         BlockProducer,
-        coinbase::{BmmRequestAction, classify_bmm_request},
+        coinbase::{BmmRequestAction, bmm_auction_winners, classify_bmm_request},
         error,
     },
     messages::CoinbaseBuilder,
@@ -627,34 +627,38 @@ impl BlockProducer {
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
         let selected = self.select_block_txs(mainchain_tip).await?;
+        // Settle each sidechain's auction on the fees actually on offer,
+        // before committing to anything: bitcoind's template knows nothing of
+        // BMM, and hands us every competing bid for a slot.
+        let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {
+            let bmm_request = crate::messages::parse_m8_tx(tx)?;
+            (bmm_request.prev_mainchain_block_hash == mainchain_tip).then_some((
+                bmm_request.sidechain_number,
+                bmm_request.sidechain_block_hash,
+                *fee,
+            ))
+        }));
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
+        for (sidechain_number, commitment) in &winners {
+            tracing::info!(%sidechain_number, %commitment, "BMM auction won");
+            coinbase_builder.bmm_accept(*sidechain_number, *commitment)?;
+        }
         let mut transactions = Vec::with_capacity(selected.len());
         let mut fees = Amount::ZERO;
         for (tx, fee) in selected {
-            if let Some(bmm_request) = crate::messages::parse_m8_tx(&tx) {
-                let accepted = coinbase_builder
-                    .messages()
-                    .m7_bmm_accept_commitment(&bmm_request.sidechain_number);
-                match classify_bmm_request(accepted, &mainchain_tip, &bmm_request) {
-                    BmmRequestAction::Exclude => {
-                        tracing::debug!(
-                            txid = %tx.compute_txid(),
-                            sidechain_number = %bmm_request.sidechain_number,
-                            "skipping BMM request: not the one this block commits to",
-                        );
-                        continue;
-                    }
-                    // The M7 is already in the coinbase, preloaded from our
-                    // own tracked bid. All that is left is to carry its
-                    // transaction.
-                    BmmRequestAction::AlreadyAccepted => (),
-                    BmmRequestAction::Accept => {
-                        coinbase_builder.bmm_accept(
-                            bmm_request.sidechain_number,
-                            bmm_request.sidechain_block_hash,
-                        )?;
-                    }
-                }
+            if let Some(bmm_request) = crate::messages::parse_m8_tx(&tx)
+                && classify_bmm_request(
+                    winners.get(&bmm_request.sidechain_number).copied(),
+                    &mainchain_tip,
+                    &bmm_request,
+                ) == BmmRequestAction::Exclude
+            {
+                tracing::debug!(
+                    txid = %tx.compute_txid(),
+                    sidechain_number = %bmm_request.sidechain_number,
+                    "skipping BMM request: not the one this block commits to",
+                );
+                continue;
             }
             fees += fee;
             transactions.push(tx);

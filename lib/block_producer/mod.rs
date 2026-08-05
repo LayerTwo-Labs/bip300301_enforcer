@@ -16,7 +16,7 @@ use tracing::instrument;
 
 use crate::{
     errors::ErrorChain,
-    messages::{CoinbaseBuilder, M8BmmRequest, parse_m8_tx},
+    messages::{CoinbaseBuilder, parse_m8_tx},
     types::{BlindedM6, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
     validator::Validator,
 };
@@ -398,7 +398,6 @@ impl BlockProducer {
             template.coinbase_txouts
         );
 
-        let mainchain_tip = self.validator().get_mainchain_tip()?;
         let wit = wit.map(CoinbaseTxouts);
         let coinbase_txouts: &mut Vec<_> = wit.in_mut().to_right(&mut template.coinbase_txouts);
 
@@ -413,41 +412,17 @@ impl BlockProducer {
             .await
             .map_err(error::InitialBlockTemplateInner::GetAckAllProposals)?;
         let () = self
-            .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, coinbase_txouts)
+            .extend_coinbase_txouts(ack_all_proposals, *parent_block_hash, coinbase_txouts)
             .await?;
         tracing::debug!(
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
         );
-        // Keep out the M8s this block cannot carry, by the same rule direct
-        // mining applies. Note what this pass cannot see: a request built on
-        // an older parent poisons the block just as surely, but the seen-bid
-        // table is keyed by parent. Deprioritization is what keeps those out.
-        {
-            let coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
-            let coinbase_m7_accepts = coinbase_builder.messages().m7_bmm_accepts();
-            let mut seen_bmm_requests = self
-                .validator()
-                .get_seen_bmm_requests_for_parent_block(*parent_block_hash)?;
-            for (sidechain_number, by_commitment) in &mut seen_bmm_requests {
-                let accepted = coinbase_m7_accepts.get(sidechain_number).copied();
-                by_commitment.retain(|commitment, _txids| {
-                    let request = M8BmmRequest {
-                        sidechain_number: *sidechain_number,
-                        sidechain_block_hash: *commitment,
-                        // Guaranteed by the query key.
-                        prev_mainchain_block_hash: *parent_block_hash,
-                    };
-                    coinbase::classify_bmm_request(accepted, parent_block_hash, &request)
-                        == coinbase::BmmRequestAction::Exclude
-                });
-            }
-            template.exclude_mempool_txs.extend(
-                seen_bmm_requests
-                    .into_values()
-                    .flat_map(|txids| txids.into_values().flatten()),
-            );
-        }
+        // No BMM exclusions here. The only bid worth dropping was one that
+        // competed with the commitment we had preloaded; without that
+        // preload, the auction is the mempool's to settle, and it settles it
+        // by fee. Excluding from the seen-bid table instead would decide it
+        // on a record of every bid ever seen, fees ignored.
         // Reserve suffix txs
         {
             let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {

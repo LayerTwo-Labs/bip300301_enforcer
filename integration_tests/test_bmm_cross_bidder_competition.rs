@@ -7,9 +7,13 @@
 //! feeds via `accept_tx` (`lib/validator/cusf_enforcer.rs`) but does not
 //! itself implement.
 //!
-//! Two rounds, with the higher-fee side swapped, prove the winner is
-//! determined by fee and not by which side happens to be "the miner's own"
-//! or "the one relayed over p2p".
+//! Three rounds prove the winner is determined by fee and not by which side
+//! happens to be "the miner's own" or "the one relayed over p2p". The first
+//! two swap which side bids higher. The third makes the miner's own bid the
+//! losing one *and* places it through the miner's enforcer wallet, so it is
+//! recorded as a tracked bid -- the only arrangement that reaches the
+//! coinbase's M7 preload, and so the only one that can show the tracking
+//! table overriding the auction.
 
 use std::{str::FromStr as _, time::Duration};
 
@@ -267,11 +271,24 @@ async fn setup(bin_paths: BinPaths, file_registry: &TestFileRegistry) -> anyhow:
     Ok(Setups { miner, sender })
 }
 
+/// How the miner's own competing bid gets into its mempool.
+#[derive(Clone, Copy)]
+enum MinerBid {
+    /// Straight against bitcoind, so nothing is recorded in the producer's
+    /// bid-tracking table.
+    Raw,
+    /// Through the miner's own enforcer wallet, which records it as a tracked
+    /// bid -- the arrangement in which `extend_coinbase_txouts` preloads its
+    /// M7 into the coinbase before any fee has been compared.
+    EnforcerWallet,
+}
+
 async fn run_round(
     setups: &mut Setups,
     round: &str,
     sender_fee: u64,
     miner_fee: u64,
+    miner_bid: MinerBid,
 ) -> anyhow::Result<()> {
     let (prev_bytes, height, prev_hash) = get_tip_info(&mut setups.sender).await?;
     let h_star_sender = sidechain_block_hash(&format!("{round}-sender"));
@@ -285,7 +302,7 @@ async fn run_round(
             value_sats: proto::wrap_u64(sender_fee),
             height: proto::wrap_u32(height),
             critical_hash: MessageField::some(ConsensusHex::encode(&h_star_sender)),
-            prev_bytes: MessageField::some(prev_bytes),
+            prev_bytes: MessageField::some(prev_bytes.clone()),
         })
         .await?
         .into_owned()
@@ -295,13 +312,32 @@ async fn run_round(
         .ok_or_else(|| anyhow::anyhow!("missing txid"))?;
     tracing::info!(round, %sender_txid, sender_fee, "Sender bid placed");
 
-    let miner_txid = broadcast_competing_bid(
-        &setups.miner,
-        prev_hash,
-        h_star_miner,
-        Amount::from_sat(miner_fee),
-    )
-    .await?;
+    let miner_txid = match miner_bid {
+        MinerBid::Raw => broadcast_competing_bid(
+            &setups.miner,
+            prev_hash,
+            h_star_miner,
+            Amount::from_sat(miner_fee),
+        )
+        .await?
+        .to_string(),
+        MinerBid::EnforcerWallet => setups
+            .miner
+            .wallet_service_client
+            .create_bmm_critical_data_transaction(CreateBmmCriticalDataTransactionRequest {
+                sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+                value_sats: proto::wrap_u64(miner_fee),
+                height: proto::wrap_u32(height),
+                critical_hash: MessageField::some(ConsensusHex::encode(&h_star_miner)),
+                prev_bytes: MessageField::some(prev_bytes),
+            })
+            .await?
+            .into_owned()
+            .txid
+            .into_option()
+            .and_then(|txid| proto::unwrap_string(txid.hex))
+            .ok_or_else(|| anyhow::anyhow!("missing txid"))?,
+    };
     tracing::info!(round, %miner_txid, miner_fee, "Miner-local competing bid placed");
 
     // Give the sender's bid time to reach the miner over p2p.
@@ -373,11 +409,27 @@ async fn test_bmm_cross_bidder_competition_task(mut setups: Setups) -> anyhow::R
     let () = wait_for_sender_tip(&mut setups.sender, tip).await?;
 
     // Round 1: the miner-local bid has the higher fee.
-    let () = run_round(&mut setups, "round1", 5_000, 50_000).await?;
+    let () = run_round(&mut setups, "round1", 5_000, 50_000, MinerBid::Raw).await?;
     // Round 2: swap which side has the higher fee, to prove the winner is
     // determined by fee, not by which side happens to be "local" or
     // "p2p-relayed".
-    let () = run_round(&mut setups, "round2", 50_000, 5_000).await?;
+    let () = run_round(&mut setups, "round2", 50_000, 5_000, MinerBid::Raw).await?;
+    // Round 3: the losing side is the miner's own, and this time it is placed
+    // through the miner's enforcer wallet rather than straight against
+    // bitcoind. Rounds 1 and 2 never record a bid in the miner's producer DB,
+    // so they never reach the path where `extend_coinbase_txouts` claims the
+    // sidechain's slot with the miner's own h* before a single fee has been
+    // looked at -- and where the template pass then excludes every competing
+    // h*, the 50,000-sat one included. "Whose bid it is" must not decide the
+    // auction; the fee must.
+    let () = run_round(
+        &mut setups,
+        "round3",
+        50_000,
+        5_000,
+        MinerBid::EnforcerWallet,
+    )
+    .await?;
 
     drop(setups.miner.tasks);
     drop(setups.sender.tasks);
