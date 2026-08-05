@@ -1215,8 +1215,12 @@ impl BlockHandler<'_> {
         let block_hash = block.header.block_hash();
         let prev_mainchain_block_hash = block.header.prev_blockhash;
         let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
+        // BIP301: "Only one `M8` can be accepted per mainchain block per
+        // sidechain slot." Without this, a miner can collect the fees of
+        // several BMM requests while connecting only one sidechain block --
+        let mut bmm_request_slots: HashSet<SidechainNumber> = HashSet::new();
         'connect_txs: for transaction in &block.txdata[1..] {
-            let Some((tx_event, diff)) = tx_diffs
+            let handled = tx_diffs
                 .rotxn(|rotxn, _dbs| {
                     self.handle_transaction(
                         rotxn,
@@ -1229,8 +1233,18 @@ impl BlockHandler<'_> {
                     txid: transaction.compute_txid(),
                     block_hash,
                     source,
-                })?
-            else {
+                })?;
+
+            // Only requests `handle_transaction` accepted get this far, so a
+            // repeat here is a second *valid* request for the slot.
+            if let Some(bmm_request) = parse_m8_tx(transaction)
+                && !bmm_request_slots.insert(bmm_request.sidechain_number)
+            {
+                return Err(error::ConnectBlock::MultipleBmmRequests {
+                    sidechain_number: bmm_request.sidechain_number,
+                });
+            }
+            let Some((tx_event, diff)) = handled else {
                 continue 'connect_txs;
             };
             let () = tx_diffs.apply(diff)?;
