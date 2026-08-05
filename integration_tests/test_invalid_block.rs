@@ -2,8 +2,8 @@ use std::{str::FromStr as _, time::Duration};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
-    messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept},
-    types::{BmmCommitment, SidechainDescription, op_drivechain_script},
+    messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
+    types::{BmmCommitment, SidechainDescription, SidechainNumber, op_drivechain_script},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
@@ -139,6 +139,20 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
         }
     }
 
+    // An M8 is a regular transaction too, but needs a coinbase carrying the
+    // matching M7, so it is neither an extra coinbase output nor something
+    // `generateblock` can mine. Runs last: it leaves two requests resident in
+    // the mempool and a rejected block behind it, which the cases above are
+    // not built to tolerate.
+    const M8_CASE: &str = "duplicate_m8";
+    match run_duplicate_m8_case(&mut post_setup).await {
+        Ok(()) => tracing::info!(case = M8_CASE, "case passed"),
+        Err(err) => {
+            tracing::error!(case = M8_CASE, "case failed: {err:#}");
+            failures.push(format!("{M8_CASE}: {err:#}"));
+        }
+    }
+
     if !failures.is_empty() {
         anyhow::bail!(
             "invalid_block cases failed:\n  - {}",
@@ -188,6 +202,164 @@ struct SignResult {
 #[derive(Deserialize)]
 struct GenerateBlockResult {
     hash: String,
+}
+
+const M8_FUNDING_BLOCKS: u32 = 101;
+
+const M8_TX_FEE: Amount = Amount::from_sat(5_000);
+
+/// BIP301: "Only one `M8` can be accepted per mainchain block per sidechain
+/// slot", so that a miner cannot collect the fees of several BMM requests
+/// while connecting only one sidechain block.
+///
+/// The coinbase half of the same rule is the `duplicate_m7` case above. This
+/// is the transaction half, and it cannot be caught the same way: both
+/// requests here are individually valid, name the current tip, and carry the
+/// same h*, so each one *corresponds* to the single M7 in the coinbase.
+async fn run_duplicate_m8_case(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let bad_block_hash = submit_duplicate_m8_block(post_setup).await?;
+    tracing::info!(%bad_block_hash, "submitted block with two BMM requests for one slot");
+
+    assert_enforcer_verdict(
+        post_setup,
+        bad_block_hash,
+        Expect::Rejected {
+            log_contains: "Multiple BMM requests accepted in sidechain slot",
+        },
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+/// Build two distinct transactions carrying the same M8 payload, and submit a
+/// block containing both alongside a coinbase that legitimately accepts their
+/// commitment.
+async fn submit_duplicate_m8_block(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
+    let mining_address = post_setup.mining_address.to_string();
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [M8_FUNDING_BLOCKS.to_string(), mining_address],
+        )
+        .run_utf8()
+        .await?;
+
+    let tip: BlockHash = {
+        let hex = post_setup
+            .bitcoin_cli
+            .command::<String, _, String, _, _>([], "getbestblockhash", [])
+            .run_utf8()
+            .await?;
+        BlockHash::from_str(hex.trim())?
+    };
+    let h_star = [0xD8; 32];
+    let script_pubkey = ScriptBuf::new_op_return(&M8BmmRequest::build(
+        DummySidechain::SIDECHAIN_NUMBER,
+        BmmCommitment(h_star),
+        tip,
+    )?);
+
+    let mut tx_hexes = Vec::new();
+    for request in 1..=2 {
+        // Broadcast rather than merely signing: it takes the spent output out
+        // of `listunspent`, so the second request is funded from a different
+        // one and the two differ as transactions while their M8 payloads stay
+        // byte-identical.
+        let hex = build_and_broadcast_m8(post_setup, script_pubkey.clone()).await?;
+        tracing::info!(request, "built a BMM request for the same slot and h*");
+        tx_hexes.push(hex);
+    }
+    anyhow::ensure!(
+        tx_hexes[0] != tx_hexes[1],
+        "the two BMM requests must be distinct transactions to test anything",
+    );
+    let tx_hex_refs: Vec<&str> = tx_hexes.iter().map(String::as_str).collect();
+    crate::bmm_block::submit_block_with_bmm_accepts(
+        post_setup,
+        &[(
+            SidechainNumber::from(DummySidechain::SIDECHAIN_NUMBER),
+            h_star,
+        )],
+        &tx_hex_refs,
+    )
+    .await
+}
+
+/// Fund, sign and broadcast a transaction whose first output is `script_pubkey`.
+async fn build_and_broadcast_m8(
+    post_setup: &PostSetup,
+    script_pubkey: ScriptBuf,
+) -> anyhow::Result<String> {
+    let utxos: Vec<Utxo> = {
+        let json = post_setup
+            .bitcoin_cli
+            .command::<String, _, String, _, _>([], "listunspent", [])
+            .run_utf8()
+            .await?;
+        serde_json::from_str(&json)?
+    };
+    let (utxo, input_value) = utxos
+        .into_iter()
+        .find_map(|u| {
+            let amount = Amount::from_btc(u.amount).ok()?;
+            (amount > M8_TX_FEE).then_some((u, amount))
+        })
+        .ok_or_else(|| anyhow::anyhow!("no spendable UTXO in bitcoind wallet"))?;
+    let change_address = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getnewaddress", [])
+        .run_utf8()
+        .await?;
+    let change_address = bitcoin::Address::from_str(change_address.trim())?
+        .require_network(post_setup.network.into())?;
+
+    let unsigned_tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Txid::from_str(&utxo.txid)?,
+                vout: utxo.vout,
+            },
+            ..TxIn::default()
+        }],
+        output: vec![
+            TxOut {
+                script_pubkey,
+                value: Amount::ZERO,
+            },
+            TxOut {
+                script_pubkey: change_address.script_pubkey(),
+                value: input_value - M8_TX_FEE,
+            },
+        ],
+    };
+    let signed_hex = {
+        let json = post_setup
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "signrawtransactionwithwallet",
+                [serialize_hex(&unsigned_tx)],
+            )
+            .run_utf8()
+            .await?;
+        let signed: SignResult = serde_json::from_str(&json)?;
+        anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
+        signed.hex
+    };
+    let _txid: String = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "sendrawtransaction",
+            [signed_hex.clone(), "0".to_owned()],
+        )
+        .run_utf8()
+        .await?;
+    Ok(signed_hex)
 }
 
 async fn run_m5_missing_address_case(post_setup: &mut PostSetup) -> anyhow::Result<()> {
