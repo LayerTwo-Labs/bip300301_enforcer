@@ -3,7 +3,7 @@ use std::{str::FromStr as _, time::Duration};
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
-    types::{BmmCommitment, SidechainDescription, SidechainNumber, op_drivechain_script},
+    types::{BmmCommitment, SidechainDescription, op_drivechain_script},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
@@ -278,10 +278,7 @@ async fn submit_duplicate_m8_block(post_setup: &mut PostSetup) -> anyhow::Result
     let tx_hex_refs: Vec<&str> = tx_hexes.iter().map(String::as_str).collect();
     crate::bmm_block::submit_block_with_bmm_accepts(
         post_setup,
-        &[(
-            SidechainNumber::from(DummySidechain::SIDECHAIN_NUMBER),
-            h_star,
-        )],
+        &[(DummySidechain::SIDECHAIN_NUMBER, h_star)],
         &tx_hex_refs,
     )
     .await
