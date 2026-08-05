@@ -604,6 +604,34 @@ impl BlockProducer {
         Ok(block_hash)
     }
 
+    /// Grow `dropped` to everything in `txs` that spends one of its members,
+    /// directly or through a chain of them.
+    ///
+    /// Iterated rather than swept once: block templates list parents before
+    /// children, but nothing here enforces that, and a single pass over a
+    /// differently ordered set would silently leave a child behind.
+    fn extend_with_descendants(txs: &[(Transaction, Amount, Txid)], dropped: &mut HashSet<Txid>) {
+        loop {
+            let mut grew = false;
+            for (tx, _fee, txid) in txs {
+                if dropped.contains(txid) {
+                    continue;
+                }
+                if tx
+                    .input
+                    .iter()
+                    .any(|txin| dropped.contains(&txin.previous_output.txid))
+                {
+                    dropped.insert(*txid);
+                    grew = true;
+                }
+            }
+            if !grew {
+                return;
+            }
+        }
+    }
+
     /// Build and mine a single block, paying the block reward to
     /// `coinbase_addr`. The caller is responsible for verifying that mining is
     /// possible (see [`Self::verify_can_mine`]).
@@ -626,43 +654,73 @@ impl BlockProducer {
         let () = self
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
-        let selected = self.select_block_txs(mainchain_tip).await?;
-        // Settle each sidechain's auction on the fees actually on offer,
-        // before committing to anything: bitcoind's template knows nothing of
-        // BMM, and hands us every competing bid for a slot.
-        let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {
-            let bmm_request = crate::messages::parse_m8_tx(tx)?;
-            (bmm_request.prev_mainchain_block_hash == mainchain_tip).then_some((
-                bmm_request.sidechain_number,
-                bmm_request.sidechain_block_hash,
-                *fee,
-            ))
-        }));
+        let mut selected: Vec<(Transaction, Amount, Txid)> = self
+            .select_block_txs(mainchain_tip)
+            .await?
+            .into_iter()
+            .map(|(tx, fee)| {
+                let txid = tx.compute_txid();
+                (tx, fee, txid)
+            })
+            .collect();
+        // Settle each sidechain's auction on the fees actually on offer --
+        // bitcoind's template knows nothing of BMM, and hands us every
+        // competing bid for a slot -- then drop the bids that lost, together
+        // with anything spending them. A losing bid is an ordinary
+        // transaction to everyone but us, so the template may well contain
+        // its children, and a block that keeps a child while dropping its
+        // parent is one bitcoind rejects outright.
+        //
+        // Settled repeatedly because dropping a chain can take a *winning*
+        // bid with it, when that bid was funded from another slot's loser.
+        // That re-opens its slot for the best surviving bid, and only when
+        // nothing more is dropped do the winners match the transactions the
+        // block will actually carry -- which is what the coinbase commits to
+        // below.
+        let winners = loop {
+            let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee, _)| {
+                let bmm_request = crate::messages::parse_m8_tx(tx)?;
+                (bmm_request.prev_mainchain_block_hash == mainchain_tip).then_some((
+                    bmm_request.sidechain_number,
+                    bmm_request.sidechain_block_hash,
+                    *fee,
+                ))
+            }));
+            let mut dropped: HashSet<Txid> = selected
+                .iter()
+                .filter_map(|(tx, _, txid)| {
+                    let bmm_request = crate::messages::parse_m8_tx(tx)?;
+                    (classify_bmm_request(
+                        winners.get(&bmm_request.sidechain_number).copied(),
+                        &mainchain_tip,
+                        &bmm_request,
+                    ) == BmmRequestAction::Exclude)
+                        .then_some(*txid)
+                })
+                .collect();
+            if dropped.is_empty() {
+                break winners;
+            }
+            let () = Self::extend_with_descendants(&selected, &mut dropped);
+            tracing::debug!(
+                dropped = dropped.len(),
+                "dropping BMM requests this block does not commit to, and their descendants",
+            );
+            selected.retain(|(_, _, txid)| !dropped.contains(txid));
+        };
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
         for (sidechain_number, commitment) in &winners {
             tracing::info!(%sidechain_number, %commitment, "BMM auction won");
             coinbase_builder.bmm_accept(*sidechain_number, *commitment)?;
         }
-        let mut transactions = Vec::with_capacity(selected.len());
         let mut fees = Amount::ZERO;
-        for (tx, fee) in selected {
-            if let Some(bmm_request) = crate::messages::parse_m8_tx(&tx)
-                && classify_bmm_request(
-                    winners.get(&bmm_request.sidechain_number).copied(),
-                    &mainchain_tip,
-                    &bmm_request,
-                ) == BmmRequestAction::Exclude
-            {
-                tracing::debug!(
-                    txid = %tx.compute_txid(),
-                    sidechain_number = %bmm_request.sidechain_number,
-                    "skipping BMM request: not the one this block commits to",
-                );
-                continue;
-            }
-            fees += fee;
-            transactions.push(tx);
-        }
+        let transactions: Vec<Transaction> = selected
+            .into_iter()
+            .map(|(tx, fee, _)| {
+                fees += fee;
+                tx
+            })
+            .collect();
         let () = coinbase_builder.build()?;
 
         tracing::info!(

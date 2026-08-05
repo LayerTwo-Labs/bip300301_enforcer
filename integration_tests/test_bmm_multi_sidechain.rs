@@ -35,6 +35,7 @@ use crate::{
 
 pub const TEST_NAME: &str = "bmm_multi_sidechain";
 pub const BID_CHAIN_EVICTION_TEST_NAME: &str = "bmm_bid_chain_eviction";
+pub const MISSING_INPUT_BLOCK_TEST_NAME: &str = "bmm_missing_input_block";
 
 type Sc0 = DummySidechainImpl<0>;
 type Sc1 = DummySidechainImpl<1>;
@@ -347,21 +348,39 @@ async fn test_bmm_multi_sidechain_body(post_setup: &mut PostSetup) -> anyhow::Re
 /// Coin selection is still free to surprise us, so the chaining is checked
 /// rather than assumed: a run where it never happens fails loudly instead of
 /// passing having tested nothing.
-async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
-    const CHAINED_SLOTS: [u8; 2] = [0, 1];
-    /// How many bid pairs to place before concluding that bids no longer chain
-    /// at all. Each round replaces the last, so they cost no extra UTXOs.
-    const CHAIN_ATTEMPTS: u8 = 6;
+/// The two sidechains driven by [`place_chained_bids`], and how many bid pairs
+/// it places before giving up on them chaining. Each round replaces the last,
+/// so the attempts cost no extra UTXOs.
+const CHAINED_SLOTS: [u8; 2] = [0, 1];
+const CHAIN_ATTEMPTS: u8 = 6;
 
+/// A pair of bids where the second is funded from the first's change.
+struct ChainedBids {
+    prev_bytes: ReverseHex,
+    height: u32,
+    ancestor_h_star: [u8; 32],
+    ancestor_txid: String,
+    descendant_txid: String,
+    /// The two bids combined -- what a replacement of the ancestor must
+    /// out-pay, since Core weighs it against everything it evicts.
+    chain_total: u64,
+}
+
+/// Activate two sidechains on a wallet with a single spendable output, then
+/// bid on both until the second is funded from the first's change.
+///
+/// One spendable output is the point: `fund_enforcer_with_utxos` would mature
+/// a second, which the descendant could be funded from instead. Coin selection
+/// is still free to surprise us, so the chaining is checked rather than
+/// assumed, and never chaining fails loudly instead of passing having tested
+/// nothing.
+async fn place_chained_bids(post_setup: &mut PostSetup) -> anyhow::Result<ChainedBids> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let _sc0 = Sc0::setup((), post_setup, res_tx.clone()).await?;
     let _sc1 = Sc1::setup((), post_setup, res_tx).await?;
     let () = propose_sidechain::<Sc0>(post_setup).await?;
     let () = propose_sidechain::<Sc1>(post_setup).await?;
     let () = activate_sidechains::<Sc0>(post_setup, CHAINED_SLOTS.len()).await?;
-    // Exactly one spendable output -- `fund_enforcer_with_utxos` would mature
-    // a second, which the descendant could be funded from instead. With one,
-    // the only candidate for the second bid is the first bid's change.
     let () = fund_enforcer::<Sc0>(post_setup).await?;
 
     let (prev_bytes, height) = get_tip_info(post_setup).await?;
@@ -401,22 +420,42 @@ async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<(
             .any(|txin| txin.previous_output.txid.to_string() == ancestor_txid)
         {
             tracing::info!(round, %ancestor_txid, %descendant_txid, "Bids chained");
-            chained = Some((
+            chained = Some(ChainedBids {
+                prev_bytes: prev_bytes.clone(),
+                height,
                 ancestor_h_star,
                 ancestor_txid,
                 descendant_txid,
-                ancestor_bid + descendant_bid,
-            ));
+                chain_total: ancestor_bid + descendant_bid,
+            });
             break;
         }
         tracing::debug!(round, "Bids funded independently, bidding again");
     }
-    let Some((ancestor_h_star, ancestor_txid, descendant_txid, chain_total)) = chained else {
-        anyhow::bail!(
-            "no pair of bids chained in {CHAIN_ATTEMPTS} attempts, so the descendant-eviction \
-             path this test exists for was never reached"
-        );
-    };
+    chained.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no pair of bids chained in {CHAIN_ATTEMPTS} attempts, so the paths that need one \
+             bid to descend from another were never reached"
+        )
+    })
+}
+
+/// Bumping one sidechain's bid must not strand another sidechain.
+///
+/// Replacing the ancestor makes Core evict the descendant with it, which is
+/// correct and unavoidable. What must not follow is the enforcer carrying on
+/// as though the descendant were live -- its row stays tracked, so the next
+/// bid for that sidechain is built against a transaction bitcoind has already
+/// discarded.
+async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let ChainedBids {
+        prev_bytes,
+        height,
+        ancestor_h_star,
+        ancestor_txid,
+        descendant_txid,
+        chain_total,
+    } = place_chained_bids(post_setup).await?;
     let ancestor_slot = CHAINED_SLOTS[0];
     let descendant_slot = CHAINED_SLOTS[1];
 
@@ -462,8 +501,71 @@ async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<(
     Ok(())
 }
 
+/// A block must never be assembled around a transaction whose parent it left
+/// out.
+///
+/// The ancestor bid is outbid by a rival from another wallet, so the auction
+/// excludes it -- but the descendant, which is funded from its change, is a
+/// perfectly ordinary transaction that no BMM rule touches. Dropping the
+/// ancestor alone leaves the descendant's input in neither the block nor the
+/// UTXO set, and `submitblock` rejects the result. The fee the coinbase claims
+/// has to shed the dropped transactions too.
+async fn missing_input_block_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let ChainedBids {
+        prev_bytes,
+        height: _,
+        ancestor_h_star: _,
+        ancestor_txid,
+        descendant_txid,
+        chain_total,
+    } = place_chained_bids(post_setup).await?;
+    let ancestor_slot = CHAINED_SLOTS[0];
+
+    // Outbid the ancestor from bitcoind's own wallet, so it loses its auction
+    // while staying in the mempool -- an enforcer-side bid would replace it
+    // instead, taking the descendant with it and testing something else.
+    let prev_hash: bitcoin::BlockHash =
+        prev_bytes.decode::<BlockHeaderInfo, bitcoin::BlockHash>("block_hash")?;
+    let rival_h_star = sidechain_block_hash(ancestor_slot, CHAIN_ATTEMPTS + 2);
+    let rival_txid = crate::test_bmm_cross_bidder_competition::broadcast_competing_bid(
+        &*post_setup,
+        SidechainNumber(ancestor_slot),
+        prev_hash,
+        rival_h_star,
+        bitcoin::Amount::from_sat(chain_total + OPENING_BID),
+        0,
+    )
+    .await?;
+    anyhow::ensure!(
+        mempool_contains(&*post_setup, &ancestor_txid).await?,
+        "sidechain {ancestor_slot}'s losing bid {ancestor_txid} must stay in the mempool: \
+         losing an auction is not a double-spend, and the block template still offers it",
+    );
+    tracing::info!(%rival_txid, %ancestor_txid, "Rival outbid the ancestor");
+
+    // Producing a block is the assertion: the auction drops the ancestor, and
+    // the descendant must not be left behind pointing at it.
+    let () = crate::mine::mine::<Sc0>(post_setup, 1, None)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "mining a block while sidechain {ancestor_slot}'s bid {ancestor_txid} lost its \
+                 auction failed -- its descendant {descendant_txid} was most likely kept while \
+                 the bid itself was dropped: {err}"
+            )
+        })?;
+    tracing::info!("Mined a block with a losing ancestor bid excluded");
+    Ok(())
+}
+
 async fn test_bmm_multi_sidechain_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let res = test_bmm_multi_sidechain_body(&mut post_setup).await;
+    drop(post_setup.tasks);
+    res
+}
+
+async fn missing_input_block_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let res = missing_input_block_body(&mut post_setup).await;
     drop(post_setup.tasks);
     res
 }
@@ -497,6 +599,44 @@ pub async fn test_bmm_multi_sidechain(
     let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
         async move {
             let res = test_bmm_multi_sidechain_task(post_setup).await;
+            let _send_err: Result<(), _> = res_tx.unbounded_send(res);
+        }
+        .in_current_span()
+    })
+    .into();
+    res_rx
+        .next()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Unexpected end of test task result stream"))?
+}
+
+/// A block must never be built around a transaction whose parent it dropped.
+pub async fn test_bmm_missing_input_block(
+    bin_paths: BinPaths,
+    file_registry: TestFileRegistry,
+) -> anyhow::Result<()> {
+    let (res_tx, mut res_rx) = mpsc::unbounded();
+    let pre_setup = PreSetup::new(bin_paths, Network::Regtest)?;
+    register_files(
+        &file_registry,
+        MISSING_INPUT_BLOCK_TEST_NAME,
+        &pre_setup.directories,
+    );
+    let post_setup = pre_setup
+        .setup(
+            Mode::Mempool,
+            SetupOpts {
+                bitcoind_args: Vec::<String>::new(),
+                bitcoind_kind: Default::default(),
+                enforcer_args: Vec::<String>::new(),
+                enforcer_wallet: Default::default(),
+            },
+            res_tx.clone(),
+        )
+        .await?;
+    let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
+        async move {
+            let res = missing_input_block_task(post_setup).await;
             let _send_err: Result<(), _> = res_tx.unbounded_send(res);
         }
         .in_current_span()

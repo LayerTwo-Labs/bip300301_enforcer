@@ -102,8 +102,9 @@ const PADDING_OUTPUT_VALUE: Amount = Amount::from_sat(1_000);
 ///
 /// `padding_outputs` inflates the transaction's size without changing its fee,
 /// which lowers its fee *rate* while leaving the bid it represents untouched.
-async fn broadcast_competing_bid(
+pub(crate) async fn broadcast_competing_bid(
     post_setup: &PostSetup,
+    sidechain_number: bip300301_enforcer_lib::types::SidechainNumber,
     prev_mainchain_block_hash: bitcoin::BlockHash,
     h_star: [u8; 32],
     fee: Amount,
@@ -147,7 +148,7 @@ async fn broadcast_competing_bid(
         .require_network(post_setup.network.into())?;
 
     let script_pubkey = ScriptBuf::new_op_return(&M8BmmRequest::build(
-        DummySidechain::SIDECHAIN_NUMBER,
+        sidechain_number,
         BmmCommitment(h_star),
         prev_mainchain_block_hash,
     )?);
@@ -346,6 +347,7 @@ async fn run_round(
     let miner_txid = match miner_bid {
         MinerBid::Raw { padding_outputs } => broadcast_competing_bid(
             &setups.miner,
+            DummySidechain::SIDECHAIN_NUMBER,
             prev_hash,
             h_star_miner,
             Amount::from_sat(miner_fee),
