@@ -5,9 +5,38 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 
 use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
-    messages::{CoinbaseBuilder, M4AckBundles},
-    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    messages::{CoinbaseBuilder, M4AckBundles, M8BmmRequest},
+    types::{
+        AmountUnderflowError, BmmCommitment, Ctip, SidechainAck, SidechainNumber, SidechainProposal,
+    },
 };
+
+/// What a block under construction should do with a BMM request it could
+/// carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BmmRequestAction {
+    Accept,
+    AlreadyAccepted,
+    Exclude,
+}
+
+pub(crate) fn classify_bmm_request(
+    accepted: Option<BmmCommitment>,
+    parent: &BlockHash,
+    request: &M8BmmRequest,
+) -> BmmRequestAction {
+    if request.prev_mainchain_block_hash != *parent {
+        BmmRequestAction::Exclude
+    } else if let Some(accepted) = accepted {
+        if accepted == request.sidechain_block_hash {
+            BmmRequestAction::AlreadyAccepted
+        } else {
+            BmmRequestAction::Exclude
+        }
+    } else {
+        BmmRequestAction::Accept
+    }
+}
 
 impl BlockProducer {
     /// Bundle proposals we've stored, joined with the validator's view of each

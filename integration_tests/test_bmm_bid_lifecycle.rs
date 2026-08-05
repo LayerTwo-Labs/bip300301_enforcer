@@ -206,6 +206,27 @@ async fn get_best_block_hash(post_setup: &PostSetup) -> anyhow::Result<bitcoin::
     Ok(hex.trim().parse()?)
 }
 
+/// The txids of every transaction in `block_hash`, coinbase first.
+async fn block_txids(
+    post_setup: &PostSetup,
+    block_hash: &bitcoin::BlockHash,
+) -> anyhow::Result<Vec<String>> {
+    let json = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string()])
+        .run_utf8()
+        .await?;
+    let block: serde_json::Value = serde_json::from_str(&json)?;
+    let txids = block
+        .get("tx")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("getblock: missing `tx` array"))?
+        .iter()
+        .filter_map(|txid| txid.as_str().map(str::to_owned))
+        .collect();
+    Ok(txids)
+}
+
 /// The sole previous output the given mempool transaction spends.
 async fn sole_input_outpoint(
     post_setup: &PostSetup,
@@ -989,6 +1010,35 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
             anyhow::anyhow!("enforcer unresponsive after unaffordable bid (possible crash): {err}")
         })?;
     tracing::info!("Unaffordable bid rejected gracefully, enforcer still serving");
+
+    // ---- Self-mined win: the block must carry the bid it commits to ----
+    // Every winning bid above was mined by a hand-crafted block. This one
+    // goes through the enforcer itself -- what a single-process deployment
+    // runs, where the node holding the tracked bid also builds the block.
+    // Only then does `extend_coinbase_txouts` preload that bid's own M7, so
+    // that by the time transactions are chosen an M7 for this sidechain
+    // already exists. Reading that as "an M8 is already in" throws away the
+    // very transaction the M7 commits to, and the block goes out committing
+    // to h* with the fee left unpaid in the mempool. `fresh_txid` is the live
+    // tracked bid from the phase above, still targeting the current tip.
+    let () = assert_in_mempool(&post_setup, &fresh_txid, "bid about to be self-mined").await?;
+    let () = crate::mine::mine::<DummySidechain>(&mut post_setup, 1, None).await?;
+    let self_mined_block = get_best_block_hash(&post_setup).await?;
+    let mined_txids = block_txids(&post_setup, &self_mined_block).await?;
+    anyhow::ensure!(
+        mined_txids.contains(&fresh_txid),
+        "the enforcer mined a block committing to this sidechain's h*, but left the bid \
+         transaction {fresh_txid} out of it -- the coinbase accepts the commitment while the \
+         fee stays unpaid in the mempool (block {self_mined_block} carries {} tx(s))",
+        mined_txids.len(),
+    );
+    let () = assert_not_in_mempool(&post_setup, &fresh_txid, "self-mined winning bid").await?;
+    tracing::info!(
+        %fresh_txid,
+        %self_mined_block,
+        "Self-mined block carried the bid its coinbase commits to"
+    );
+
     let () = crate::test_bmm_stale_bid_rejected::stale_bid_rejected_body(&mut post_setup).await?;
 
     drop(post_setup.tasks);

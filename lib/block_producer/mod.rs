@@ -16,7 +16,7 @@ use tracing::instrument;
 
 use crate::{
     errors::ErrorChain,
-    messages::{CoinbaseBuilder, parse_m8_tx},
+    messages::{CoinbaseBuilder, M8BmmRequest, parse_m8_tx},
     types::{BlindedM6, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
     validator::Validator,
 };
@@ -419,27 +419,34 @@ impl BlockProducer {
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
         );
-        // Exclude M8 txs with different h*
+        // Keep out the M8s this block cannot carry, by the same rule direct
+        // mining applies. Note what this pass cannot see: a request built on
+        // an older parent poisons the block just as surely, but the seen-bid
+        // table is keyed by parent. Deprioritization is what keeps those out.
         {
             let coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
             let coinbase_m7_accepts = coinbase_builder.messages().m7_bmm_accepts();
-            let seen_bmm_requests = self
+            let mut seen_bmm_requests = self
                 .validator()
                 .get_seen_bmm_requests_for_parent_block(*parent_block_hash)?;
-            let exclude = {
-                let mut exclude = seen_bmm_requests;
-                exclude.retain(|sidechain_number, txids| {
-                    let Some(commitment) = coinbase_m7_accepts.get(sidechain_number) else {
-                        return false;
+            for (sidechain_number, by_commitment) in &mut seen_bmm_requests {
+                let accepted = coinbase_m7_accepts.get(sidechain_number).copied();
+                by_commitment.retain(|commitment, _txids| {
+                    let request = M8BmmRequest {
+                        sidechain_number: *sidechain_number,
+                        sidechain_block_hash: *commitment,
+                        // Guaranteed by the query key.
+                        prev_mainchain_block_hash: *parent_block_hash,
                     };
-                    txids.remove(commitment);
-                    true
+                    coinbase::classify_bmm_request(accepted, parent_block_hash, &request)
+                        == coinbase::BmmRequestAction::Exclude
                 });
-                exclude
+            }
+            template.exclude_mempool_txs.extend(
+                seen_bmm_requests
                     .into_values()
-                    .flat_map(|txids| txids.into_values().flatten())
-            };
-            template.exclude_mempool_txs.extend(exclude);
+                    .flat_map(|txids| txids.into_values().flatten()),
+            );
         }
         // Reserve suffix txs
         {
@@ -467,7 +474,7 @@ impl BlockProducer {
 
     async fn block_template_suffix_inner<const COINBASE_TXN: bool>(
         &self,
-        _parent_block_hash: &BlockHash,
+        parent_block_hash: &BlockHash,
         coinbase_txn_wit: BoolWit<COINBASE_TXN>,
         template: &mut FilledBlockTemplate<COINBASE_TXN>,
     ) -> Result<(), error::FinalizeBlockTemplate>
@@ -494,17 +501,23 @@ impl BlockProducer {
                     .in_mut()
                     .to_right(template.coinbase_txouts);
                 let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
+                // Accept the requests that made it into the template with
+                // their slot still free -- this is where a bid from another
+                // wallet earns its M7. The tx set is fixed by now, so the
+                // rule's other verdicts are the exclusion pass's to enforce.
                 for (tx, _) in template.prefix_txs {
-                    if let Some(bmm_request) = parse_m8_tx(tx)
-                        && coinbase_builder
+                    if let Some(bmm_request) = parse_m8_tx(tx) {
+                        let accepted = coinbase_builder
                             .messages()
-                            .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                            .is_none()
-                    {
-                        coinbase_builder.bmm_accept(
-                            bmm_request.sidechain_number,
-                            bmm_request.sidechain_block_hash,
-                        )?;
+                            .m7_bmm_accept_commitment(&bmm_request.sidechain_number);
+                        if coinbase::classify_bmm_request(accepted, parent_block_hash, &bmm_request)
+                            == coinbase::BmmRequestAction::Accept
+                        {
+                            coinbase_builder.bmm_accept(
+                                bmm_request.sidechain_number,
+                                bmm_request.sidechain_block_hash,
+                            )?;
+                        }
                     }
                 }
                 let coinbase_txouts_suffix = coinbase_builder

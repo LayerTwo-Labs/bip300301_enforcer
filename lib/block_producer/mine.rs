@@ -32,7 +32,11 @@ use bitcoin_jsonrpsee::{
 
 use crate::{
     bins::{self, CommandExt as _},
-    block_producer::{BlockProducer, error},
+    block_producer::{
+        BlockProducer,
+        coinbase::{BmmRequestAction, classify_bmm_request},
+        error,
+    },
     messages::CoinbaseBuilder,
 };
 
@@ -628,30 +632,29 @@ impl BlockProducer {
         let mut fees = Amount::ZERO;
         for (tx, fee) in selected {
             if let Some(bmm_request) = crate::messages::parse_m8_tx(&tx) {
-                // A block may accept at most one BMM request per sidechain, so
-                // any further M8 for that sidechain has to be left out rather
-                // than included unaccepted. `handle_m8` rejects an M8 whose
-                // commitment the coinbase does not accept, and it poisons the
-                // whole block -- so including it would mine a block we then
-                // invalidate ourselves. Reachable whenever two bids for one
-                // sidechain sit in the mempool at once, e.g. a bid that lost
-                // its auction but has not been replaced yet.
-                if coinbase_builder
+                let accepted = coinbase_builder
                     .messages()
-                    .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                    .is_some()
-                {
-                    tracing::debug!(
-                        txid = %tx.compute_txid(),
-                        sidechain_number = %bmm_request.sidechain_number,
-                        "skipping BMM request: this block already accepts one for this sidechain",
-                    );
-                    continue;
+                    .m7_bmm_accept_commitment(&bmm_request.sidechain_number);
+                match classify_bmm_request(accepted, &mainchain_tip, &bmm_request) {
+                    BmmRequestAction::Exclude => {
+                        tracing::debug!(
+                            txid = %tx.compute_txid(),
+                            sidechain_number = %bmm_request.sidechain_number,
+                            "skipping BMM request: not the one this block commits to",
+                        );
+                        continue;
+                    }
+                    // The M7 is already in the coinbase, preloaded from our
+                    // own tracked bid. All that is left is to carry its
+                    // transaction.
+                    BmmRequestAction::AlreadyAccepted => (),
+                    BmmRequestAction::Accept => {
+                        coinbase_builder.bmm_accept(
+                            bmm_request.sidechain_number,
+                            bmm_request.sidechain_block_hash,
+                        )?;
+                    }
                 }
-                coinbase_builder.bmm_accept(
-                    bmm_request.sidechain_number,
-                    bmm_request.sidechain_block_hash,
-                )?;
             }
             fees += fee;
             transactions.push(tx);
