@@ -383,6 +383,12 @@ pub(in crate::validator) enum ConnectBlock {
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
     #[fatal(false)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },
+    #[error(
+        "Multiple BMM requests accepted in sidechain slot {}",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    MultipleBmmRequests { sidechain_number: SidechainNumber },
     #[error("Block has no transactions (missing coinbase)")]
     #[fatal(false)]
     NoCoinbase,

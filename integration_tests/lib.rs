@@ -1,4 +1,5 @@
 pub mod block_verdict;
+pub mod bmm_block;
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
