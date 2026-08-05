@@ -2005,10 +2005,27 @@ impl Wallet {
             // bid and its replacement often share one. On a tie it can keep
             // the replaced tx and offer its change -- which bitcoind has
             // discarded -- to coin selection.
+            //
+            // Its descendants go with it, because bitcoind drops the whole
+            // set when it accepts a replacement, and one of them is often
+            // another sidechain's bid funded from this one's change. Left
+            // canonical, that bid is what the next bid for *that* sidechain
+            // gets fee-bumped from -- onto an input bitcoind no longer has,
+            // which it rejects as `bad-txns-inputs-missingorspent`.
             if let Some(replaced_txid) = replaced_txid
                 && replaced_txid != txid
             {
-                wallet.apply_evicted_txs([(replaced_txid, now)]);
+                // Collected rather than streamed: the walk borrows the graph,
+                // and applying the eviction needs the wallet mutably.
+                let evicted: Vec<_> = std::iter::once(replaced_txid)
+                    .chain(
+                        wallet
+                            .tx_graph()
+                            .walk_descendants(replaced_txid, |_depth, descendant| Some(descendant)),
+                    )
+                    .map(|evicted_txid| (evicted_txid, now))
+                    .collect();
+                wallet.apply_evicted_txs(evicted);
             }
             wallet.apply_unconfirmed_txs(vec![(tx.clone(), now)]);
         });
