@@ -50,29 +50,43 @@ use crate::{
 
 pub const TEST_NAME: &str = "bmm_bid_lifecycle";
 
+/// The modes this runs under. `NoMempool` is not redundant with
+/// `GetBlockTemplate`: it is the mode where the mempool sync task never runs,
+/// so the losing-bid handling the constant-bid rounds depend on has to come
+/// from block connection alone.
+pub const MODES: [Mode; 2] = [Mode::GetBlockTemplate, Mode::NoMempool];
+
+pub fn trial_name(mode: Mode) -> String {
+    format!("{TEST_NAME} (mode: {mode})")
+}
+
 #[derive(Deserialize)]
 struct GenerateBlockResult {
     hash: String,
 }
 
-fn register_files(file_registry: &TestFileRegistry, directories: &crate::setup::Directories) {
+fn register_files(
+    file_registry: &TestFileRegistry,
+    test_name: &str,
+    directories: &crate::setup::Directories,
+) {
     file_registry.register_file(
-        TEST_NAME,
+        test_name,
         directories.bitcoin_dir.join("stdout.txt"),
         FileDumpConfig::new().with_label("Bitcoin Core stdout"),
     );
     file_registry.register_file(
-        TEST_NAME,
+        test_name,
         directories.bitcoin_dir.join("stderr.txt"),
         FileDumpConfig::new().with_label("Bitcoin Core stderr"),
     );
     file_registry.register_file(
-        TEST_NAME,
+        test_name,
         directories.enforcer_dir.join("stdout.txt"),
         FileDumpConfig::new().with_label("Enforcer stdout"),
     );
     file_registry.register_file(
-        TEST_NAME,
+        test_name,
         directories.enforcer_dir.join("stderr.txt"),
         FileDumpConfig::new().with_label("Enforcer stderr"),
     );
@@ -509,21 +523,32 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
     let () = assert_in_mempool(&post_setup, &txid_2, "after rejected insufficient bump").await?;
     tracing::info!("Bid increase, idempotency, and rejection behavior verified");
 
-    // ---- Expire several bids in a row, proving UTXOs get reused rather than exhausted ----
+    // ---- Lose several auctions in a row, at an unchanging bid ----
     // Each round bids, then a block is mined *without* including that bid
     // (via `generateblock` with an explicit empty tx list, bypassing the
     // mempool entirely) -- simulating a mainchain block someone else found
     // that doesn't include our request. The bid is now consensus-dead for
     // the superseded tip, but its transaction is *not* magically gone from
     // bitcoind's mempool -- nothing ever double-spends it away. With only
-    // one spendable UTXO funded above, the next round's bid can only
-    // succeed by replacing that same still-unconfirmed transaction, which
-    // requires a strictly higher fee each time (BIP125) -- a real sidechain
-    // client re-bidding after losing would naturally do this anyway.
+    // one spendable UTXO funded above, the next round's bid can only succeed
+    // by replacing that same still-unconfirmed transaction. Two things are
+    // under test at once: that inputs get reused rather than exhausted, and
+    // that losing an auction does not force the next bid upwards.
+    //
+    // The constant bid is the point. BIP125 makes a replacement pay strictly
+    // more than what it replaces, so a client bidding a fixed amount -- what
+    // real ones do -- would be locked out from its first loss onwards, its
+    // funds stuck behind an unmineable transaction until bitcoind's 336-hour
+    // mempool expiry. What saves it is `apply_connected_block_policy` sinking
+    // every bid the new block superseded to a modified fee of about
+    // -21,000,000 BTC: Core's replacement rules compare *modified* fees, so a
+    // dead bid stops being a floor.
+    //
+    // Round 2 is the exception, and pays more once: it replaces a bid still
+    // live for the current tip, which genuinely must be outbid.
     const EXPIRY_ROUNDS: u8 = 5;
-    let mut round_bid = bumped_bid;
+    let round_bid = bumped_bid + 20_000;
     for round in 2..=(1 + EXPIRY_ROUNDS) {
-        round_bid += 20_000;
         let (prev_bytes, height) = get_tip_info(&mut post_setup).await?;
         let h_star = sidechain_block_hash(round);
         let txid = create_bid(&mut post_setup, height, &prev_bytes, &h_star, round_bid).await?;
@@ -553,8 +578,10 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
     }
     tracing::info!(
         EXPIRY_ROUNDS,
+        round_bid,
         "Wallet created a fresh bid after every one of {EXPIRY_ROUNDS} consecutive losing \
-         auctions with only one spendable UTXO -- no UTXO exhaustion"
+         auctions, at an unchanging bid and with only one spendable UTXO -- no UTXO \
+         exhaustion, no forced escalation"
     );
 
     // ---- A bid that WINS must not keep being reported as in-flight ----
@@ -972,19 +999,18 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
 pub async fn test_bmm_bid_lifecycle(
     bin_paths: BinPaths,
     file_registry: TestFileRegistry,
+    mode: Mode,
 ) -> anyhow::Result<()> {
     let (res_tx, mut res_rx) = mpsc::unbounded();
     let pre_setup = PreSetup::new(bin_paths, Network::Regtest)?;
-    register_files(&file_registry, &pre_setup.directories);
+    register_files(&file_registry, &trial_name(mode), &pre_setup.directories);
     let setup_opts: SetupOpts = SetupOpts {
         bitcoind_args: Vec::new(),
         bitcoind_kind: BitcoindKind::Unpatched,
         enforcer_args: Vec::new(),
         enforcer_wallet: Default::default(),
     };
-    let post_setup = pre_setup
-        .setup(Mode::GetBlockTemplate, setup_opts, res_tx.clone())
-        .await?;
+    let post_setup = pre_setup.setup(mode, setup_opts, res_tx.clone()).await?;
     let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
         async move {
             let res = test_bmm_bid_lifecycle_task(post_setup).await;

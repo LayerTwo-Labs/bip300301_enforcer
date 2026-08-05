@@ -272,6 +272,14 @@ pub async fn stale_bid_rejected_body(post_setup: &mut PostSetup) -> anyhow::Resu
     // deprioritizes L the moment its targeted tip is superseded. L is still
     // nominally resident in the mempool -- "losing" is not a double-spend --
     // but from here on real fee-based mining will never pick it again.
+    //
+    // Only reachable with a mempool, and not by implementation choice: L is
+    // somebody else's transaction, so the only way to learn it exists is to
+    // watch it arrive, which is `accept_tx`. Bids the enforcer placed
+    // *itself* are deprioritized in every mode, by
+    // `apply_connected_block_policy`. Layer 2 is what covers L without a
+    // mempool -- and is a consensus rule rather than a policy nicety
+    // precisely because layer 1 cannot be universal.
     let entry_json = post_setup
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "getmempoolentry", [stale_txid.to_string()])
@@ -283,17 +291,26 @@ pub async fn stale_bid_rejected_body(post_setup: &mut PostSetup) -> anyhow::Resu
         .and_then(|fees| fees.get("modified"))
         .and_then(serde_json::Value::as_f64)
         .ok_or_else(|| anyhow::anyhow!("getmempoolentry: missing fees.modified"))?;
-    anyhow::ensure!(
-        deprioritized_fee < 0.0,
-        "expected the enforcer to have deprioritized the losing bid to a negative effective \
-         fee (found {deprioritized_fee}); real fee-based mining relies on this to never \
-         re-select it"
-    );
-    tracing::info!(
-        deprioritized_fee,
-        "Confirmed layer 1: the enforcer deprioritized L to a negative effective fee -- \
-         ordinary fee-driven mining will never select it again"
-    );
+    if post_setup.mode.enable_mempool() {
+        anyhow::ensure!(
+            deprioritized_fee < 0.0,
+            "expected the enforcer to have deprioritized the losing bid to a negative effective \
+             fee (found {deprioritized_fee}); real fee-based mining relies on this to never \
+             re-select it"
+        );
+        tracing::info!(
+            deprioritized_fee,
+            "Confirmed layer 1: the enforcer deprioritized L to a negative effective fee -- \
+             ordinary fee-driven mining will never select it again"
+        );
+    } else {
+        tracing::info!(
+            deprioritized_fee,
+            mode = %post_setup.mode,
+            "Skipped layer 1: a foreign bid is invisible without a mempool, so L keeps its \
+             fee. Layer 2 below must catch it on its own",
+        );
+    }
 
     // ---- A fresh, *correctly targeted* bid for the exact same h* is placed
     // via the enforcer's own wallet, from entirely different UTXOs, so it can

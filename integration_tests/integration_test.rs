@@ -870,24 +870,30 @@ pub fn tests(
             failure_collector.clone(),
         )
     };
-    let bmm_bid_lifecycle_trial: TestTrial = {
-        let name = test_bmm_bid_lifecycle::TEST_NAME;
-        AsyncTrial::new(
-            name,
-            Box::pin({
-                let bin_paths = bin_paths.clone();
-                let file_registry = file_registry.clone();
-                async move {
-                    let test_future =
-                        test_bmm_bid_lifecycle::test_bmm_bid_lifecycle(bin_paths, file_registry)
+    let bmm_bid_lifecycle_trials =
+        test_bmm_bid_lifecycle::MODES
+            .into_iter()
+            .map(|mode| -> TestTrial {
+                let name = test_bmm_bid_lifecycle::trial_name(mode);
+                AsyncTrial::new(
+                    name.clone(),
+                    Box::pin({
+                        let bin_paths = bin_paths.clone();
+                        let file_registry = file_registry.clone();
+                        async move {
+                            let test_future = test_bmm_bid_lifecycle::test_bmm_bid_lifecycle(
+                                bin_paths,
+                                file_registry,
+                                mode,
+                            )
                             .instrument(tracing::info_span!("test", name = %name));
-                    catch_unwind(test_future).await
-                }
-            }),
-            file_registry.clone(),
-            failure_collector.clone(),
-        )
-    };
+                            catch_unwind(test_future).await
+                        }
+                    }),
+                    file_registry.clone(),
+                    failure_collector.clone(),
+                )
+            });
 
     let bmm_cross_bidder_competition_trial: TestTrial = {
         let name = test_bmm_cross_bidder_competition::TEST_NAME;
@@ -937,7 +943,7 @@ pub fn tests(
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
     async_trials.push(peer_bmm_request_trial);
-    async_trials.push(bmm_bid_lifecycle_trial);
+    async_trials.extend(bmm_bid_lifecycle_trials);
     async_trials.push(bmm_cross_bidder_competition_trial);
     async_trials.push(bmm_multi_sidechain_trial);
     async_trials.push(new_trial_with_setup_opts(

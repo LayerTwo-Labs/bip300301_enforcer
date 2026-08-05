@@ -136,24 +136,73 @@ impl BlockProducer {
         self.inner.validator.clone().connect_block(block).await
     }
 
+    /// Sink a dead bid's fee to the floor in bitcoind's mempool.
+    ///
+    /// A bid that lost its auction can never be mined -- `handle_m8` rejects
+    /// any block carrying an M8 whose `prev_mainchain_block_hash` isn't that
+    /// block's actual parent -- but nothing removes it from the mempool,
+    /// where it goes on holding its inputs. Core weighs *modified* fees when
+    /// judging whether a replacement pays enough, so sinking this one is what
+    /// lets the next bid reuse those inputs instead of having to outbid a
+    /// transaction that cannot win. Without it, a client bidding a fixed
+    /// amount is locked out from its first loss onwards.
+    ///
+    /// `cusf-enforcer-mempool`'s sync task does this for the validator's
+    /// seen-bid table, which only `accept_tx` fills, so that one is empty
+    /// whenever we run without a mempool. Our own tracked bids are recorded
+    /// at broadcast time, in every mode; deltas from the two paths stack.
+    ///
+    /// Best-effort: an unreachable bitcoind must not fail block connection.
+    async fn deprioritize_lost_bids(&self, lost: &HashSet<Txid>) {
+        use bitcoin_jsonrpsee::client::MainClient as _;
+        const NEGATIVE_MAX_SATS: i64 = -(21_000_000 * 100_000_000);
+        for txid in lost {
+            match self
+                .inner
+                .main_client
+                .prioritize_transaction(*txid, NEGATIVE_MAX_SATS)
+                .await
+            {
+                Ok(_) => tracing::debug!(%txid, "deprioritized bid that lost its auction"),
+                Err(err) => tracing::warn!(
+                    %txid,
+                    "failed to deprioritize losing bid: {:#}",
+                    ErrorChain::new(&err),
+                ),
+            }
+        }
+    }
+
     /// Policy-table maintenance for a block the validator just accepted: drop the
     /// sidechain proposals and withdrawal bundles that this block settled, so we
     /// stop re-proposing them in later coinbases.
+    ///
+    /// Returns the tracked bids this block killed: they targeted the slot it
+    /// just filled, and it did not include them. Their rows stay -- a later
+    /// bid replaces those transactions -- but a caller with a BDK wallet must
+    /// evict them, or BDK goes on treating their inputs as spent.
     pub(crate) async fn apply_connected_block_policy(
         &self,
         block: &bitcoin::Block,
         block_info: &crate::types::BlockInfo,
-    ) -> Result<(), rusqlite::Error> {
-        // Stop tracking the bids this block confirmed. Skipped when nothing
-        // is tracked, so a non-bidding node does no per-tx hashing.
-        let tracked_bmm_txids = self.inner.db.tracked_bmm_txids().await?;
-        if !tracked_bmm_txids.is_empty() {
+    ) -> Result<HashSet<Txid>, rusqlite::Error> {
+        // Sort the tracked bids by what this block did to each. Skipped when
+        // nothing is tracked, so a non-bidding node does no per-tx hashing.
+        let tracked_bmm_bids = self.inner.db.tracked_bmm_bids().await?;
+        let mut lost: HashSet<Txid> = HashSet::new();
+        if !tracked_bmm_bids.is_empty() {
             let block_txids: HashSet<Txid> =
                 block.txdata.iter().map(|tx| tx.compute_txid()).collect();
-            let won: Vec<Txid> = tracked_bmm_txids
-                .into_iter()
-                .filter(|txid| block_txids.contains(txid))
-                .collect();
+            let mut won: Vec<Txid> = Vec::new();
+            for (txid, prev_block_hash) in tracked_bmm_bids {
+                if block_txids.contains(&txid) {
+                    won.push(txid);
+                } else if prev_block_hash == block.header.prev_blockhash {
+                    // Bid for the slot this block just filled, and not in it.
+                    // Bids for older slots already lost, and were sunk then.
+                    lost.insert(txid);
+                }
+            }
             let deleted = self
                 .inner
                 .db
@@ -165,6 +214,7 @@ impl BlockProducer {
                     "settled {deleted} BMM request(s) confirmed by this block",
                 );
             }
+            let () = self.deprioritize_lost_bids(&lost).await;
         }
         let finalized_withdrawal_bundles =
             block_info
@@ -185,10 +235,12 @@ impl BlockProducer {
         let sidechain_proposal_ids = block_info
             .sidechain_proposals()
             .map(|(_vout, proposal)| proposal.compute_id());
-        self.inner
+        let () = self
+            .inner
             .db
             .delete_pending_sidechain_proposals(sidechain_proposal_ids)
-            .await
+            .await?;
+        Ok(lost)
     }
 }
 
@@ -224,7 +276,10 @@ impl CusfEnforcer for BlockProducer {
             let block_hash = block.block_hash();
             let block_infos = self.inner.validator.get_block_infos(&block_hash, 0)?;
             for (_header_info, block_info) in &block_infos {
-                let () = self.apply_connected_block_policy(block, block_info).await?;
+                // Losing bids are dropped: a producer without a wallet has no
+                // BDK view to evict them from, and the deprioritization
+                // already happened inside.
+                let _lost = self.apply_connected_block_policy(block, block_info).await?;
             }
         }
         Ok(res)

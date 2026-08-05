@@ -541,19 +541,27 @@ impl Db {
     }
 
     /// The transaction of every tracked in-flight bid, across all sidechains
-    /// and slots. Used to work out which bids a connected block settled, by
-    /// intersecting against that block's transactions.
-    pub(crate) async fn tracked_bmm_txids(&self) -> Result<Vec<bitcoin::Txid>, rusqlite::Error> {
+    /// and slots, paired with the mainchain block it bid to build on. Used to
+    /// work out what a connected block did to each, by intersecting against
+    /// that block's transactions: a bid in the block won, and one targeting
+    /// the same slot but absent from it lost.
+    pub(crate) async fn tracked_bmm_bids(
+        &self,
+    ) -> Result<Vec<(bitcoin::Txid, bitcoin::BlockHash)>, rusqlite::Error> {
         let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
-            let mut statement =
-                connection.prepare("SELECT txid FROM bmm_requests WHERE txid IS NOT NULL")?;
-            let txids = statement
+            let mut statement = connection
+                .prepare("SELECT txid, prev_block_hash FROM bmm_requests WHERE txid IS NOT NULL")?;
+            let bids = statement
                 .query_map([], |row| {
                     let txid: [u8; 32] = row.get(0)?;
-                    Ok(bitcoin::Txid::from_byte_array(txid))
+                    let prev_block_hash: [u8; 32] = row.get(1)?;
+                    Ok((
+                        bitcoin::Txid::from_byte_array(txid),
+                        bitcoin::BlockHash::from_byte_array(prev_block_hash),
+                    ))
                 })?
                 .collect::<Result<_, _>>()?;
-            Ok(txids)
+            Ok(bids)
         };
         let connection = self.conn.lock().await;
         with_connection(&connection)

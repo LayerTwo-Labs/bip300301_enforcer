@@ -63,10 +63,24 @@ impl WalletInner {
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
         let mut wallet_write = self.write_wallet().await?;
-        let () = self
+        let lost_bids = self
             .producer
             .apply_connected_block_policy(block, block_info)
             .await?;
+        // Tell BDK the bids this block killed are gone. Their transactions sit
+        // in bitcoind's mempool and can never be mined, so left alone BDK
+        // treats their inputs as spent forever and the wallet starves.
+        // `connect_block` applies the mempool sync task's eviction set too,
+        // but that one is empty without a mempool.
+        if !lost_bids.is_empty() {
+            let now = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            wallet_write.with_mut(|wallet| {
+                wallet.apply_evicted_txs(lost_bids.into_iter().map(|txid| (txid, now)))
+            });
+        }
         let mut database = self.bdk_db.lock().await;
         tracing::trace!("applying block to BDK wallet");
 
