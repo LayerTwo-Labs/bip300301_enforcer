@@ -84,7 +84,7 @@ impl BlockProducer {
     async fn select_block_txs(
         &self,
         mainchain_tip: BlockHash,
-    ) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
+    ) -> Result<Vec<(Transaction, Amount)>, error::SelectBlockTxs> {
         let template = self
             .fetch_block_template(vec!["segwit".to_string()])
             .await?;
@@ -120,24 +120,34 @@ impl BlockProducer {
                 bitcoin::consensus::deserialize(&template_tx.data).map_err(|err| {
                     error::SelectBlockTxs::DecodeTemplateTransaction { txid, source: err }
                 })?;
-            res.push(transaction);
+            // Negative fees are a GBT convention for the coinbase txn only,
+            // which never appears in `transactions`.
+            let fee = template_tx.fee.to_unsigned().map_err(|_| {
+                error::SelectBlockTxs::NegativeTemplateTransactionFee {
+                    txid,
+                    fee: template_tx.fee,
+                }
+            })?;
+            res.push((transaction, fee));
         }
 
         Ok(res)
     }
 
-    /// Construct a coinbase tx paying out to `coinbase_spk`
+    /// Construct a coinbase tx paying out to `coinbase_spk`, claiming the
+    /// subsidy plus fees
     fn finalize_coinbase(
         &self,
         best_block_height: u32,
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
+        fees: Amount,
     ) -> Transaction {
         let script_sig = bitcoin::blockdata::script::Builder::new()
             .push_int((best_block_height + 1) as i64)
             .push_opcode(OP_0)
             .into_script();
-        let value = get_block_value(best_block_height + 1, Amount::ZERO, Network::Regtest);
+        let value = get_block_value(best_block_height + 1, fees, Network::Regtest);
         let output = if value > Amount::ZERO {
             vec![TxOut {
                 script_pubkey: coinbase_spk,
@@ -171,13 +181,15 @@ impl BlockProducer {
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
+        fees: Amount,
     ) -> Result<Block, error::FinalizeBlock> {
         let best_block_hash = self.validator().get_mainchain_tip()?;
         let tip_header = self.validator().get_header_info(&best_block_hash)?;
         let best_block_height = tip_header.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
 
-        let coinbase_tx = self.finalize_coinbase(best_block_height, coinbase_spk, coinbase_outputs);
+        let coinbase_tx =
+            self.finalize_coinbase(best_block_height, coinbase_spk, coinbase_outputs, fees);
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
         // Keep block times strictly increasing so blocks mined faster than once
         // per second are not rejected as `time-too-old` (timestamp must exceed
@@ -219,16 +231,17 @@ impl BlockProducer {
         Ok(block)
     }
 
-    /// Mine a block
+    /// Mine a block.
     async fn mine(
         &self,
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
+        fees: Amount,
     ) -> Result<BlockHash, error::Mine> {
         let transaction_count = transactions.len();
 
-        let mut block = self.finalize_block(coinbase_spk, coinbase_outputs, transactions)?;
+        let mut block = self.finalize_block(coinbase_spk, coinbase_outputs, transactions, fees)?;
         loop {
             block.header.nonce += 1;
             if block.header.validate_pow(block.header.target()).is_ok() {
@@ -612,7 +625,8 @@ impl BlockProducer {
         let selected = self.select_block_txs(mainchain_tip).await?;
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
         let mut transactions = Vec::with_capacity(selected.len());
-        for tx in selected {
+        let mut fees = Amount::ZERO;
+        for (tx, fee) in selected {
             if let Some(bmm_request) = crate::messages::parse_m8_tx(&tx) {
                 // A block may accept at most one BMM request per sidechain, so
                 // any further M8 for that sidechain has to be left out rather
@@ -639,6 +653,7 @@ impl BlockProducer {
                     bmm_request.sidechain_block_hash,
                 )?;
             }
+            fees += fee;
             transactions.push(tx);
         }
         let () = coinbase_builder.build()?;
@@ -646,11 +661,12 @@ impl BlockProducer {
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),
             transactions = %transactions.len(),
+            %fees,
             "Mining block",
         );
 
         let block_hash = self
-            .mine(coinbase_spk, &coinbase_outputs, transactions)
+            .mine(coinbase_spk, &coinbase_outputs, transactions, fees)
             .await?;
         // BMM rows are not consumed here: producing a block ends the slot's
         // auction but does not settle the bids that lost it, and deleting

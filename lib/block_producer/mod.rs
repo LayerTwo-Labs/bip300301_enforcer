@@ -401,7 +401,7 @@ impl BlockProducer {
             let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
             template
                 .suffix_txs
-                .extend(fake_suffix_txs.into_iter().map(|tx| {
+                .extend(fake_suffix_txs.into_iter().map(|(tx, _fee)| {
                     initial_block_template::SuffixTxsItem::Reserved {
                         weight: tx.weight(),
                     }
@@ -507,9 +507,7 @@ impl BlockProducer {
                     error::FinalizeBlockTemplateInner::InitialBlockTemplate { reason }
                 })?;
                 let suffix_txs = self.generate_suffix_txs(&ctips).await?;
-                template
-                    .suffix_txs
-                    .extend(suffix_txs.into_iter().map(|tx| (tx, bitcoin::Amount::ZERO)));
+                template.suffix_txs.extend(suffix_txs);
                 Ok(())
             }
             BoolWit::False(_wit) => Ok(()),

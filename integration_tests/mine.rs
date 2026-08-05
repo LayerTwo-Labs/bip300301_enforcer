@@ -331,6 +331,134 @@ pub enum MineError {
     Signet(MineSignetError),
     #[error("the GenerateBlocks mining mode is not supported on Signet")]
     SignetGenerateBlocks,
+    #[error(transparent)]
+    CoinbaseClaim(#[from] CoinbaseClaimError),
+}
+
+#[derive(Debug, Error)]
+pub enum CoinbaseClaimError {
+    #[error(transparent)]
+    Command(#[from] CommandError),
+    #[error("failed to parse verbose block")]
+    ParseBlock(#[from] serde_json::Error),
+    #[error("invalid amount in verbose block")]
+    ParseAmount(#[from] bitcoin::amount::ParseAmountError),
+    #[error("invalid block hash in verbose block")]
+    ParseHash(#[from] bitcoin::hashes::hex::HexToArrayError),
+    #[error("transaction `{txid}` in block `{block_hash}` has no fee field")]
+    MissingFee {
+        block_hash: bitcoin::BlockHash,
+        txid: String,
+    },
+    #[error("block `{block_hash}` has no coinbase transaction")]
+    NoCoinbase { block_hash: bitcoin::BlockHash },
+    #[error("block `{block_hash}` has no previous block hash")]
+    NoPrevBlockHash { block_hash: bitcoin::BlockHash },
+    #[error(
+        "coinbase of block `{block_hash}` claims {claimed} but subsidy + fees is {expected} \
+         (subsidy {subsidy}, fees {fees}): the difference is destroyed"
+    )]
+    ValueMismatch {
+        block_hash: bitcoin::BlockHash,
+        claimed: bitcoin::Amount,
+        expected: bitcoin::Amount,
+        subsidy: bitcoin::Amount,
+        fees: bitcoin::Amount,
+    },
+}
+
+/// Assert that the coinbase of `block_hash` claims the regtest subsidy plus
+/// every fee paid by the block's transactions, returning the block's parent
+/// hash (for walking a freshly mined range). A coinbase claiming less is
+/// consensus-valid -- the difference is simply destroyed -- which would
+/// silently burn BMM bids, whose fee is the miner's auction revenue.
+pub async fn assert_coinbase_claims_fees(
+    post_setup: &PostSetup,
+    block_hash: bitcoin::BlockHash,
+) -> Result<bitcoin::BlockHash, CoinbaseClaimError> {
+    #[derive(serde::Deserialize)]
+    struct Vout {
+        value: f64,
+    }
+    #[derive(serde::Deserialize)]
+    struct BlockTx {
+        txid: String,
+        fee: Option<f64>,
+        vout: Vec<Vout>,
+    }
+    #[derive(serde::Deserialize)]
+    struct VerboseBlock {
+        height: u32,
+        previousblockhash: Option<String>,
+        tx: Vec<BlockTx>,
+    }
+
+    let block_json = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string(), "2".to_owned()])
+        .run_utf8()
+        .await?;
+    let block: VerboseBlock = serde_json::from_str(&block_json)?;
+
+    let coinbase = block
+        .tx
+        .first()
+        .ok_or(CoinbaseClaimError::NoCoinbase { block_hash })?;
+    let mut claimed = bitcoin::Amount::ZERO;
+    for vout in &coinbase.vout {
+        claimed += bitcoin::Amount::from_btc(vout.value)?;
+    }
+    let mut fees = bitcoin::Amount::ZERO;
+    for tx in &block.tx[1..] {
+        let fee = tx.fee.ok_or_else(|| CoinbaseClaimError::MissingFee {
+            block_hash,
+            txid: tx.txid.clone(),
+        })?;
+        fees += bitcoin::Amount::from_btc(fee)?;
+    }
+
+    const REGTEST_HALVING_INTERVAL: u32 = 150;
+    let halvings = block.height / REGTEST_HALVING_INTERVAL;
+    let subsidy = if halvings >= 64 {
+        bitcoin::Amount::ZERO
+    } else {
+        bitcoin::Amount::from_sat((50 * bitcoin::Amount::ONE_BTC.to_sat()) >> halvings)
+    };
+
+    let expected = subsidy + fees;
+    if claimed != expected {
+        return Err(CoinbaseClaimError::ValueMismatch {
+            block_hash,
+            claimed,
+            expected,
+            subsidy,
+            fees,
+        });
+    }
+    block
+        .previousblockhash
+        .ok_or(CoinbaseClaimError::NoPrevBlockHash { block_hash })?
+        .parse()
+        .map_err(CoinbaseClaimError::from)
+}
+
+/// Assert [`assert_coinbase_claims_fees`] for the `blocks` most recently
+/// mined blocks, walking back from the current tip.
+async fn assert_recent_coinbases_claim_fees(
+    post_setup: &PostSetup,
+    blocks: u32,
+) -> Result<(), CoinbaseClaimError> {
+    let mut block_hash: bitcoin::BlockHash = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getbestblockhash", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    for _ in 0..blocks {
+        block_hash = assert_coinbase_claims_fees(post_setup, block_hash).await?;
+    }
+    Ok(())
 }
 
 pub async fn mine<S>(
@@ -342,7 +470,7 @@ where
     S: Sidechain,
 {
     use std::convert::Infallible;
-    match (post_setup.network, post_setup.mode.mining_mode()) {
+    let () = match (post_setup.network, post_setup.mode.mining_mode()) {
         (Network::Regtest, MiningMode::GenerateBlocks) => {
             mine_generateblocks_check(post_setup, blocks, ack_all_proposals, |_| {
                 Ok::<_, Infallible>(())
@@ -350,24 +478,30 @@ where
             .await
             .map_err(|err| match err {
                 Either::Left(err) => MineError::GenerateToAddress(err),
-            })
+            })?
         }
         (Network::Regtest, MiningMode::GetBlockTemplate) => {
             mine_gbt_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MineError::Gbt(err),
-                })
+                })?
         }
         (Network::Signet, MiningMode::GetBlockTemplate) => {
-            mine_signet_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
+            return mine_signet_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MineError::Signet(err),
-                })
+                });
         }
-        (Network::Signet, MiningMode::GenerateBlocks) => Err(MineError::SignetGenerateBlocks),
-    }
+        (Network::Signet, MiningMode::GenerateBlocks) => {
+            return Err(MineError::SignetGenerateBlocks);
+        }
+    };
+    // Every regtest block mined through the enforcer -- either mode -- must
+    // pay its fees to the coinbase, not destroy them.
+    let () = assert_recent_coinbases_claim_fees(post_setup, blocks).await?;
+    Ok(())
 }
 
 /// Mine blocks, and check the events for each block

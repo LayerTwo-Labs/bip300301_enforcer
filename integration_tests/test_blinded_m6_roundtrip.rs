@@ -81,6 +81,9 @@ async fn mine_block_and_collect_proposed_m6ids(
     let block_hash = block_hashes
         .first()
         .ok_or_else(|| anyhow::anyhow!("generate_blocks produced no block"))?;
+    // Every block this test mines must pay its fees -- including an included
+    // M6's declared fee -- to the coinbase, not destroy them.
+    let _ = crate::mine::assert_coinbase_claims_fees(post_setup, *block_hash).await?;
     let block_hex = post_setup
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string(), "0".to_string()])

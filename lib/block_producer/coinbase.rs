@@ -266,7 +266,7 @@ impl BlockProducer {
     pub(crate) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
-    ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
+    ) -> Result<Vec<(Transaction, Amount)>, error::GenerateSuffixTxs> {
         let thresholds = self.validator().network_params().thresholds;
         let mut res = Vec::new();
         for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
@@ -281,8 +281,8 @@ impl BlockProducer {
                             .get(&sidechain_id)
                             .ok_or_else(|| error::GenerateSuffixTxs::MissingCtip { sidechain_id })?
                     };
-                    let new_value =
-                        Self::new_treasury_value(value, *blinded_m6.fee(), *blinded_m6.payout())?;
+                    let fee = *blinded_m6.fee();
+                    let new_value = Self::new_treasury_value(value, fee, *blinded_m6.payout())?;
                     let m6 = blinded_m6.into_m6(sidechain_id, outpoint, value)?;
                     ctip = Some(Ctip {
                         outpoint: OutPoint {
@@ -291,7 +291,7 @@ impl BlockProducer {
                         },
                         value: new_value,
                     });
-                    res.push(m6);
+                    res.push((m6, fee));
                 }
             }
         }
