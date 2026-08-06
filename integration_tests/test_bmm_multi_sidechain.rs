@@ -357,18 +357,6 @@ async fn test_bmm_multi_sidechain_body(post_setup: &mut PostSetup) -> anyhow::Re
     Ok(())
 }
 
-/// Bumping one sidechain's bid must not strand another sidechain.
-///
-/// The wallet is funded with a single spendable output, so the second bid can
-/// only come from the first's change: the two chain. Replacing the ancestor
-/// then makes Core evict the descendant with it, which is correct and
-/// unavoidable. What must not follow is the enforcer carrying on as though
-/// the descendant were live -- its row stays tracked, so the next bid for that
-/// sidechain is built against a transaction bitcoind has already discarded.
-///
-/// Coin selection is still free to surprise us, so the chaining is checked
-/// rather than assumed: a run where it never happens fails loudly instead of
-/// passing having tested nothing.
 /// The two sidechains driven by [`bid_isolation_body`].
 const ISOLATED_SLOTS: [u8; 2] = [0, 1];
 
@@ -831,9 +819,9 @@ pub async fn test_bmm_missing_input_block(
         .ok_or_else(|| anyhow::anyhow!("Unexpected end of test task result stream"))?
 }
 
-/// Bumping one sidechain's bid must not strand another whose bid descends
-/// from it. Needs its own node: the wallet is deliberately funded with a
-/// single output, which is what forces the two bids to chain.
+/// A BMM bid never spends another BMM bid's change. Needs its own node: it
+/// funds the wallet twice over, first with a single output and then with
+/// several.
 pub async fn test_bmm_bid_isolation(
     bin_paths: BinPaths,
     file_registry: TestFileRegistry,
