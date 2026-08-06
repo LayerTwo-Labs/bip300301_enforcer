@@ -338,6 +338,95 @@ async fn assert_rejected(
     Ok(())
 }
 
+/// The producer's policy DB, which the tests reach into directly to construct
+/// states a live enforcer cannot be raced into.
+fn producer_db_dir(post_setup: &PostSetup) -> std::path::PathBuf {
+    post_setup
+        .directories
+        .enforcer_dir
+        .join("wallet")
+        .join("regtest")
+}
+
+/// A bid Core accepted but whose tracking row was never written must be
+/// adopted on the next startup.
+///
+/// `create_bmm_request` broadcasts (`lib/wallet/mod.rs`) before it upserts the
+/// tracking row, and no commit can be made atomic with Core's mempool. A crash
+/// or cancellation in between -- or an upsert that simply fails, which returns
+/// an error to a caller whose money is already committed -- leaves an
+/// expensive transaction live and untracked: the next bid builds fresh instead
+/// of replacing it, leaving two live M8s for the slot, and nothing can
+/// deprioritize the loser.
+///
+/// The window cannot be hit deterministically from outside, so the state it
+/// leaves is constructed directly: bid normally, then delete the row.
+async fn untracked_bid_scenario(
+    post_setup: &mut PostSetup,
+    bin_paths: &BinPaths,
+    res_tx: &mpsc::UnboundedSender<anyhow::Result<()>>,
+    bid: &mut u64,
+) -> anyhow::Result<()> {
+    *bid += 20_000;
+    let h_star = sidechain_block_hash(0xA1);
+    let (prev_bytes, height) = get_tip_info(post_setup).await?;
+    let bid_txid = create_bid(post_setup, height, &prev_bytes, &h_star, *bid).await?;
+    let () = assert_in_mempool(post_setup, &bid_txid, "bid about to lose its tracking row").await?;
+
+    let () = post_setup.kill_enforcer().await?;
+    let deleted = {
+        use bitcoin::hashes::Hash as _;
+        let connection = rusqlite::Connection::open(producer_db_dir(post_setup).join("db.sqlite"))?;
+        connection.execute(
+            "DELETE FROM bmm_requests WHERE txid = ?1",
+            [bid_txid.parse::<bitcoin::Txid>()?.to_byte_array()],
+        )?
+    };
+    anyhow::ensure!(
+        deleted == 1,
+        "expected to delete the tracking row of {bid_txid}, deleted {deleted} row(s) -- the \
+         post-broadcast crash state is not being constructed"
+    );
+
+    let () = post_setup
+        .restart_enforcer(bin_paths, Vec::<String>::new(), res_tx.clone())
+        .await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
+    // The transaction Core accepted is untouched by any of this: it is the
+    // thing the restarted enforcer has to notice it owns.
+    let () = assert_in_mempool(post_setup, &bid_txid, "bid left live by the crash").await?;
+
+    let tracked = ProducerDb::new(&producer_db_dir(post_setup))?
+        .get_tracked_bmm_request(DummySidechain::SIDECHAIN_NUMBER)
+        .await?
+        .map(|tracked| tracked.txid.to_string());
+    anyhow::ensure!(
+        tracked.as_deref() == Some(bid_txid.as_str()),
+        "{bid_txid} is live in Core's mempool and was funded by this wallet, but after a restart \
+         the producer tracks {tracked:?} -- a bid broadcast without its row ever being written is \
+         never adopted, so nothing can replace or deprioritize it"
+    );
+
+    *bid += 20_000;
+    let (prev_bytes, height) = get_tip_info(post_setup).await?;
+    let next_txid = create_bid(
+        post_setup,
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(0xA2),
+        *bid,
+    )
+    .await?;
+    let () = assert_in_mempool(post_setup, &next_txid, "bid placed after the adoption").await?;
+    let () =
+        assert_not_in_mempool(post_setup, &bid_txid, "adopted bid, after being replaced").await?;
+    tracing::info!(
+        %bid_txid, %next_txid,
+        "Untracked live bid was adopted on startup; the next bid replaced it"
+    );
+    Ok(())
+}
+
 /// A settling block reorged out while the enforcer is down must still restore
 /// the bid's tracking row.
 ///
@@ -432,16 +521,10 @@ async fn offline_reorg_scenario(
     )
     .await?;
 
-    let tracked = ProducerDb::new(
-        &post_setup
-            .directories
-            .enforcer_dir
-            .join("wallet")
-            .join("regtest"),
-    )?
-    .get_tracked_bmm_request(DummySidechain::SIDECHAIN_NUMBER)
-    .await?
-    .map(|tracked| tracked.txid.to_string());
+    let tracked = ProducerDb::new(&producer_db_dir(post_setup))?
+        .get_tracked_bmm_request(DummySidechain::SIDECHAIN_NUMBER)
+        .await?
+        .map(|tracked| tracked.txid.to_string());
     anyhow::ensure!(
         tracked.as_deref() == Some(bid_txid.as_str()),
         "the settling block was disconnected while the enforcer was down, putting {bid_txid} \
@@ -1067,13 +1150,7 @@ async fn test_bmm_bid_lifecycle_task(
 
     let settled_bid_amount = chain_bid;
     {
-        let producer_db = ProducerDb::new(
-            &post_setup
-                .directories
-                .enforcer_dir
-                .join("wallet")
-                .join("regtest"),
-        )?;
+        let producer_db = ProducerDb::new(&producer_db_dir(&post_setup))?;
         producer_db
             .upsert_bmm_request(
                 DummySidechain::SIDECHAIN_NUMBER,
@@ -1188,6 +1265,7 @@ async fn test_bmm_bid_lifecycle_task(
     );
 
     let () = offline_reorg_scenario(&mut post_setup, &bin_paths, &res_tx, &mut chain_bid).await?;
+    let () = untracked_bid_scenario(&mut post_setup, &bin_paths, &res_tx, &mut chain_bid).await?;
 
     // ---- Raising a bid must be judged on what the raise can spend ----
     // A replacement recovers the inputs of the bid it replaces, so the

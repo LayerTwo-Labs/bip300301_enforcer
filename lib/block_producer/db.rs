@@ -585,6 +585,22 @@ impl Db {
         snapshot_and_delete_won_bmm_requests(&mut connection, block_hash, won_txids)
     }
 
+    /// Whether any tracked bid, for any slot, is `txid`.
+    pub async fn contains_bmm_request_txid(
+        &self,
+        txid: bitcoin::Txid,
+    ) -> Result<bool, rusqlite::Error> {
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM bmm_requests WHERE txid = ?1)",
+                [txid.as_byte_array()],
+                |row| row.get(0),
+            )
+        };
+        let connection = self.conn.lock().await;
+        with_connection(&connection)
+    }
+
     /// The distinct blocks that still hold undo rows, i.e. every block whose
     /// consumed BMM requests could still be restored.
     pub(crate) async fn bmm_requests_undo_block_hashes(

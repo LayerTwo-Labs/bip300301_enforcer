@@ -1859,6 +1859,91 @@ impl Wallet {
         }
     }
 
+    /// Adopt live bids this wallet funded that no tracking row covers.
+    ///
+    /// [`Self::create_bmm_request`] has to broadcast before it can record
+    /// anything, and no commit is atomic with Core's mempool: a crash in
+    /// between -- or an upsert that simply fails, returning an error to a
+    /// caller whose money is already committed -- leaves an expensive
+    /// transaction live and untracked. Nothing else recovers it, so the next
+    /// bid builds fresh and leaves two live M8s for the slot, neither of which
+    /// can be replaced or deprioritized.
+    ///
+    /// A bid counts as ours if the wallet can price it: `calculate_fee` needs
+    /// every input's previous output, which BDK holds only for transactions it
+    /// funded. Somebody else's M8 is therefore skipped rather than adopted.
+    ///
+    /// Best-effort, like the rest of the policy DB maintenance: failures are
+    /// logged rather than failing the sync.
+    pub(in crate::wallet) async fn adopt_untracked_bmm_requests(&self) {
+        let candidates: Vec<(crate::messages::M8BmmRequest, Txid, u64, Vec<u8>)> = {
+            let wallet_read = match self.inner.read_wallet().await {
+                Ok(wallet_read) => wallet_read,
+                Err(err) => {
+                    tracing::warn!(
+                        "skipping BMM bid adoption, wallet is unavailable: {:#}",
+                        ErrorChain::new(&err),
+                    );
+                    return;
+                }
+            };
+            wallet_read
+                .transactions()
+                .filter(|wallet_tx| !wallet_tx.chain_position.is_confirmed())
+                .filter_map(|wallet_tx| {
+                    let tx: &bitcoin::Transaction = &wallet_tx.tx_node.tx;
+                    let request = crate::messages::parse_m8_tx(tx)?;
+                    let fee = wallet_read.calculate_fee(tx).ok()?;
+                    Some((
+                        request,
+                        wallet_tx.tx_node.txid,
+                        fee.to_sat(),
+                        bitcoin::consensus::serialize(tx),
+                    ))
+                })
+                .collect()
+        };
+        for (request, txid, fee_sats, raw_tx) in candidates {
+            match self.inner.db().contains_bmm_request_txid(txid).await {
+                Ok(true) => continue,
+                Ok(false) => (),
+                Err(err) => {
+                    tracing::error!(
+                        %txid,
+                        "failed to check whether a live BMM bid is tracked: {:#}",
+                        ErrorChain::new(&err),
+                    );
+                    continue;
+                }
+            }
+            match self
+                .inner
+                .db()
+                .upsert_bmm_request(
+                    request.sidechain_number,
+                    &request.prev_mainchain_block_hash,
+                    request.sidechain_block_hash,
+                    txid,
+                    fee_sats,
+                    &raw_tx,
+                )
+                .await
+            {
+                Ok(()) => tracing::info!(
+                    %txid,
+                    sidechain_number = %request.sidechain_number,
+                    fee_sats,
+                    "adopted a live BMM bid that no tracking row covered",
+                ),
+                Err(err) => tracing::error!(
+                    %txid,
+                    "failed to adopt a live BMM bid: {:#}",
+                    ErrorChain::new(&err),
+                ),
+            }
+        }
+    }
+
     /// Creates a BMM request transaction for the given sidechain slot, or
     /// increases an already-broadcast bid for the same slot via a standard
     /// BIP125 fee-bump (RBF) replacement.
@@ -2055,31 +2140,40 @@ impl Wallet {
         };
         tracing::info!(%txid, "create_bmm_request: broadcast successfully");
 
-        // Apply the tx in memory: an immediately-following bid increase
-        // fee-bumps this exact txid and needs it canonical. No `persist_async`
-        // here -- `accept_tx` already does that for the same tx via the
-        // mempool-sync task, and doing both raced for the `bdk_db` lock.
-        self.inner.write_wallet().await?.with_mut(|wallet| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            // Tell BDK outright that the replaced tx is gone. Left to infer
-            // it, BDK compares `last_seen`, which counts whole seconds, and a
-            // bid and its replacement often share one. On a tie it can keep
-            // the replaced tx and offer its change -- which bitcoind has
-            // discarded -- to coin selection.
-            //
-            // Only the replaced transaction: a bid never spends another bid's
-            // change (see [`Self::configure_bmm_builder`]), so no bid is ever
-            // a descendant of one.
-            if let Some(replaced_txid) = replaced_txid
-                && replaced_txid != txid
-            {
-                wallet.apply_evicted_txs([(replaced_txid, now)]);
-            }
-            wallet.apply_unconfirmed_txs(vec![(tx.clone(), now)]);
-        });
+        // Apply the tx: an immediately-following bid increase fee-bumps this
+        // exact txid and needs it canonical. Persisted in the same `with_mut`
+        // as the apply, so the wallet is never advanced in memory without the
+        // matching write being issued -- `accept_tx` persists the same tx too,
+        // but only with a mempool, and only eventually.
+        let mut wallet_write = self.inner.write_wallet().await?;
+        let mut bdk_db = self.inner.bdk_db.lock().await;
+        wallet_write
+            .with_mut(|wallet| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                // Tell BDK outright that the replaced tx is gone. Left to
+                // infer it, BDK compares `last_seen`, which counts whole
+                // seconds, and a bid and its replacement often share one. On a
+                // tie it can keep the replaced tx and offer its change --
+                // which bitcoind has discarded -- to coin selection.
+                //
+                // Only the replaced transaction: a bid never spends another
+                // bid's change (see [`Self::configure_bmm_builder`]), so no
+                // bid is ever a descendant of one.
+                if let Some(replaced_txid) = replaced_txid
+                    && replaced_txid != txid
+                {
+                    wallet.apply_evicted_txs([(replaced_txid, now)]);
+                }
+                wallet.apply_unconfirmed_txs(vec![(tx.clone(), now)]);
+                wallet.persist_async(&mut bdk_db)
+            })
+            .await
+            .map_err(error::CreateBmmRequestInner::Persistence)?;
+        drop(bdk_db);
+        drop(wallet_write);
 
         self.inner
             .db()

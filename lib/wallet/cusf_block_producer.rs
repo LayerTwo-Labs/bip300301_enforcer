@@ -214,18 +214,23 @@ impl CusfEnforcer for Wallet {
         let synced_tip_hash = self.inner.validator().get_mainchain_tip()?;
         tracing::debug!(%tip_hash, %synced_tip_hash, "Synced validator");
 
-        let sync_wallet_to_tip = sync_wallet_to_tip(self, synced_tip_hash, None);
-        tokio::pin!(sync_wallet_to_tip);
-        match futures::future::select(shutdown_signal, sync_wallet_to_tip).await {
-            futures::future::Either::Left(((), _sync_wallet_to_tip)) => {
-                Err(Self::SyncError::Shutdown)
+        // Scoped, so the wallet is no longer mutably borrowed by the sync
+        // future below.
+        let () = {
+            let sync_wallet_to_tip = sync_wallet_to_tip(self, synced_tip_hash, None);
+            tokio::pin!(sync_wallet_to_tip);
+            match futures::future::select(shutdown_signal, sync_wallet_to_tip).await {
+                futures::future::Either::Left(((), _sync_wallet_to_tip)) => {
+                    Err(Self::SyncError::Shutdown)
+                }
+                futures::future::Either::Right((res, _)) => res.map_err(Self::SyncError::from),
             }
-            futures::future::Either::Right((res, _)) => {
-                let () = res?;
-                tracing::debug!(%synced_tip_hash, "Synced wallet");
-                Ok(())
-            }
-        }
+        }?;
+        tracing::debug!(%synced_tip_hash, "Synced wallet");
+        // With the wallet caught up, its own view of the mempool is the only
+        // place a bid broadcast without its tracking row can still be found.
+        let () = self.adopt_untracked_bmm_requests().await;
+        Ok(())
     }
 
     type ConnectBlockError = error::ConnectBlock;
