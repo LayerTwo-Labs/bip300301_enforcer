@@ -522,14 +522,14 @@ impl<T> From<JoinHandle<T>> for AbortOnDrop<T> {
     }
 }
 
-fn open_file_or_create_new(path: &std::path::Path) -> Result<std::fs::File, std::io::Error> {
-    std::fs::File::create_new(path).or_else(|err| {
-        if err.kind() == std::io::ErrorKind::AlreadyExists {
-            std::fs::File::open(path)
-        } else {
-            Err(err)
-        }
-    })
+/// Append, so that a process respawned into the same directory keeps writing
+/// to the log its predecessor left behind. Opening an existing file read-only
+/// instead silently discards everything the restarted process says.
+fn open_log_file(path: &std::path::Path) -> Result<std::fs::File, std::io::Error> {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
 }
 
 /// Run command with args, dumping stderr/stdout to `dir` on exit
@@ -554,7 +554,7 @@ where
     let stderr_fp = dir.join("stderr.txt");
     let stdout_fp = dir.join("stdout.txt");
     async move {
-        let stderr_file = match open_file_or_create_new(&stderr_fp) {
+        let stderr_file = match open_log_file(&stderr_fp) {
             Ok(stderr_file) => stderr_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -564,7 +564,7 @@ where
             }
         };
         cmd.stderr(std::process::Stdio::from(stderr_file));
-        let stdout_file = match open_file_or_create_new(&stdout_fp) {
+        let stdout_file = match open_log_file(&stdout_fp) {
             Ok(stdout_file) => stdout_file,
             Err(err) => {
                 let err = anyhow::Error::from(err);

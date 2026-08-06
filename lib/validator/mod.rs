@@ -323,6 +323,32 @@ impl ToStatus for GetMainchainTipError {
     }
 }
 
+#[derive(Debug, Error)]
+enum IsOnActiveChainErrorInner {
+    #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
+    #[error(transparent)]
+    LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
+    #[error(transparent)]
+    ReadTxn(#[from] env::error::ReadTxn),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct IsOnActiveChainError(IsOnActiveChainErrorInner);
+
+impl<T> From<T> for IsOnActiveChainError
+where
+    IsOnActiveChainErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum TryGetMainchainTipHeightError {
     #[error(transparent)]
@@ -728,6 +754,29 @@ impl Validator {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.get(&rotxn, &())?;
         Ok(res)
+    }
+
+    /// Whether `block_hash` is the mainchain tip or one of its ancestors. A
+    /// block a reorg left behind, and one the validator holds no header for,
+    /// are both `false`.
+    pub fn is_on_active_chain(&self, block_hash: &BlockHash) -> Result<bool, IsOnActiveChainError> {
+        let rotxn = self.dbs.read_txn()?;
+        let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
+            return Ok(false);
+        };
+        if self
+            .dbs
+            .block_hashes
+            .try_get_header_info(&rotxn, block_hash)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let last_common_ancestor =
+            self.dbs
+                .block_hashes
+                .last_common_ancestor(&rotxn, tip, *block_hash)?;
+        Ok(last_common_ancestor == *block_hash)
     }
 
     /// Get the mainchain tip height. Returns `None` if not synced

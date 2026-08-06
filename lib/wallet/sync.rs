@@ -60,6 +60,14 @@ impl WalletInner {
         block_info: &crate::types::BlockInfo,
     ) -> Result<Result<(), bdk_chain::local_chain::CannotConnectError>, error::HandleConnectBlock>
     {
+        // Before the wallet lock, and in that order everywhere. A bid in
+        // flight has passed its tip check but may not have written its row
+        // yet; taken here, this block cannot snapshot the tracked bids in
+        // between, so the bid either lands first and is judged against this
+        // block, or waits and finds its tip has moved. Acquiring it *after*
+        // the wallet lock would deadlock against `create_bmm_request`, which
+        // takes them the other way round.
+        let _bid_lock = self.bmm_bid_lock.lock().await;
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
         let mut wallet_write = self.write_wallet().await?;

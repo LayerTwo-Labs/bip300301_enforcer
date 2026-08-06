@@ -1870,10 +1870,28 @@ impl Wallet {
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<bdk_wallet::bitcoin::Transaction, error::CreateBmmRequest> {
-        // Held across the whole read-tracked -> build -> sign -> broadcast ->
-        // write sequence, so two concurrent calls for the same slot can't
-        // both observe the same stale tracked bid and independently bump it.
+        // Held across the whole check-tip -> read-tracked -> build -> sign ->
+        // broadcast -> write sequence, so two concurrent calls for the same
+        // slot can't both observe the same stale tracked bid and
+        // independently bump it. `handle_connect_block` takes it too, before
+        // the wallet lock, so a block cannot connect part-way through.
         let bid_lock = self.inner.bmm_bid_lock.lock().await;
+
+        // Under the lock, because the answer is only good while it is held.
+        // The caller's check happened before this call; if a block connected
+        // since, this bid is for a superseded tip and must be refused. Let it
+        // through and it is recorded *after* that block took its snapshot of
+        // the tracked bids -- so it is never marked as having lost, no later
+        // block matches it either, and it sits in the mempool at full fee
+        // forever, which every subsequent bid then has to out-pay.
+        let mainchain_tip = self.inner.validator().get_mainchain_tip()?;
+        if mainchain_tip != prev_mainchain_block_hash {
+            return Err(error::CreateBmmRequestInner::TipMoved {
+                requested: prev_mainchain_block_hash,
+                current: mainchain_tip,
+            }
+            .into());
+        }
 
         let tracked = self
             .inner

@@ -242,6 +242,53 @@ impl BlockProducer {
             .await?;
         Ok(lost)
     }
+
+    /// Restore the tracked bids of every block a reorg has left behind.
+    ///
+    /// `disconnect_block` only covers reorgs seen live. One resolved while the
+    /// enforcer is down never reaches it -- the validator walks back to the
+    /// last common ancestor inside its own sync -- so the row stays stranded
+    /// in `bmm_requests_undo` while bitcoind puts the bid's transaction back
+    /// in its mempool: untracked, so nothing replaces or deprioritizes it, and
+    /// the next bid becomes a second live M8 for the sidechain. Running after
+    /// every sync covers reorgs of any depth, seen or unseen, and repairs
+    /// databases already carrying stranded rows.
+    ///
+    /// Policy SQLite is best-effort here as on disconnect: failures are logged
+    /// rather than failing the sync.
+    async fn restore_disconnected_bmm_requests(&self) {
+        let block_hashes = match self.inner.db.bmm_requests_undo_block_hashes().await {
+            Ok(block_hashes) => block_hashes,
+            Err(err) => {
+                tracing::error!(
+                    "failed to read restorable BMM requests: {:#}",
+                    ErrorChain::new(&err),
+                );
+                return;
+            }
+        };
+        for block_hash in block_hashes {
+            match self.inner.validator.is_on_active_chain(&block_hash) {
+                Ok(true) => continue,
+                Ok(false) => (),
+                Err(err) => {
+                    tracing::error!(
+                        %block_hash,
+                        "failed to check whether a block is on the active chain: {:#}",
+                        ErrorChain::new(&err),
+                    );
+                    continue;
+                }
+            }
+            if let Err(err) = self.inner.db.restore_bmm_requests(&block_hash).await {
+                tracing::error!(
+                    %block_hash,
+                    "failed to restore BMM requests of a disconnected block: {:#}",
+                    ErrorChain::new(&err),
+                );
+            }
+        }
+    }
 }
 
 impl CusfEnforcer for BlockProducer {
@@ -255,11 +302,14 @@ impl CusfEnforcer for BlockProducer {
     where
         Signal: std::future::Future<Output = ()> + Send,
     {
-        self.inner
+        let () = self
+            .inner
             .validator
             .clone()
             .sync_to_tip(shutdown_signal, tip_hash)
-            .await
+            .await?;
+        let () = self.restore_disconnected_bmm_requests().await;
+        Ok(())
     }
 
     type ConnectBlockError = error::ConnectBlock;

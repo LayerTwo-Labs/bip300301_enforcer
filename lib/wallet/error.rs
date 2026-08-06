@@ -1041,6 +1041,11 @@ pub(in crate::wallet) enum CreateBmmRequestInner {
     BuildBmmFeeBump(#[from] BuildBmmFeeBump),
     #[error("bid must exceed the current tracked bid of {current_sats} sats for this slot")]
     BidBelowCurrent { current_sats: u64 },
+    #[error("bid targets mainchain block {requested}, but the tip is now {current}")]
+    TipMoved {
+        requested: bitcoin::BlockHash,
+        current: bitcoin::BlockHash,
+    },
     #[error(
         "bid of {bid_sats} sats exceeds the wallet's spendable balance of {spendable_sats} sats"
     )]
@@ -1053,6 +1058,8 @@ pub(in crate::wallet) enum CreateBmmRequestInner {
     BroadcastNotAccepted,
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+    #[error(transparent)]
+    GetMainchainTip(#[from] validator::GetMainchainTipError),
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
     #[error(transparent)]
@@ -1068,7 +1075,9 @@ impl ToStatus for CreateBmmRequestInner {
         match self {
             Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::BuildBmmFeeBump(err) => StatusBuilder::with_code(self, err.builder()),
-            Self::BidBelowCurrent { .. } | Self::BidExceedsBalance { .. } => {
+            Self::BidBelowCurrent { .. }
+            | Self::BidExceedsBalance { .. }
+            | Self::TipMoved { .. } => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
             }
             Self::BroadcastTx(jsonrpsee::core::ClientError::Call(call_err))
@@ -1090,6 +1099,7 @@ impl ToStatus for CreateBmmRequestInner {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
             Self::GetHeaderInfo(err) => err.builder(),
+            Self::GetMainchainTip(_) => StatusBuilder::new(self),
             Self::NotUnlocked(err) => err.builder(),
             Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::Persistence(err) => StatusBuilder::new(err),

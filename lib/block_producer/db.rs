@@ -585,6 +585,26 @@ impl Db {
         snapshot_and_delete_won_bmm_requests(&mut connection, block_hash, won_txids)
     }
 
+    /// The distinct blocks that still hold undo rows, i.e. every block whose
+    /// consumed BMM requests could still be restored.
+    pub(crate) async fn bmm_requests_undo_block_hashes(
+        &self,
+    ) -> Result<Vec<bitcoin::BlockHash>, rusqlite::Error> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            let mut statement =
+                connection.prepare("SELECT DISTINCT block_hash FROM bmm_requests_undo")?;
+            let block_hashes = statement
+                .query_map([], |row| {
+                    Ok(bitcoin::BlockHash::from_byte_array(row.get(0)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            Ok(block_hashes)
+        };
+        let connection = self.conn.lock().await;
+        with_connection(&connection)
+    }
+
     /// Restore the BMM requests that were consumed when `block_hash` was
     /// generated, moving them back out of `bmm_requests_undo`. Called when
     /// `block_hash` is disconnected by a reorg, so the operator's queued BMM

@@ -338,7 +338,148 @@ async fn assert_rejected(
     Ok(())
 }
 
-async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
+/// A settling block reorged out while the enforcer is down must still restore
+/// the bid's tracking row.
+///
+/// The producer's policy undo (`restore_bmm_requests`) runs only from
+/// `BlockProducer::disconnect_block`, which a live enforcer reaches through
+/// its streamed block events. A reorg resolved during a restart never gets
+/// there: the validator walks back to the last common ancestor inside its own
+/// sync, and the wallet's `sync_to_tip` delegates straight to that. The row
+/// stays stranded in `bmm_requests_undo` while bitcoind puts the bid's
+/// transaction back into its mempool -- untracked, so nothing can replace or
+/// deprioritize it, and the sidechain's next bid becomes a second live M8.
+async fn offline_reorg_scenario(
+    post_setup: &mut PostSetup,
+    bin_paths: &BinPaths,
+    res_tx: &mpsc::UnboundedSender<anyhow::Result<()>>,
+    bid: &mut u64,
+) -> anyhow::Result<()> {
+    *bid += 20_000;
+    let h_star = sidechain_block_hash(0xF1);
+    let (prev_bytes, height) = get_tip_info(post_setup).await?;
+    let bid_txid = create_bid(post_setup, height, &prev_bytes, &h_star, *bid).await?;
+    let bid_hex = get_raw_tx_hex(post_setup, &bid_txid).await?;
+    let settling_block = crate::bmm_block::submit_block_with_bmm_accepts(
+        post_setup,
+        &[(DummySidechain::SIDECHAIN_NUMBER, h_star)],
+        &[&bid_hex],
+    )
+    .await?;
+    let () = assert_enforcer_verdict(
+        post_setup,
+        settling_block,
+        Expect::Accepted,
+        Duration::from_secs(30),
+    )
+    .await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
+    let () = assert_not_in_mempool(
+        post_setup,
+        &bid_txid,
+        "settled by the block about to be reorged out",
+    )
+    .await?;
+
+    // From here to the restart the enforcer is down, so the disconnect is
+    // something it can only learn by catching up across it.
+    let () = post_setup.kill_enforcer().await?;
+    let () = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "invalidateblock", [settling_block.to_string()])
+        .run_utf8()
+        .await
+        .map(drop)?;
+    let () = assert_in_mempool(
+        post_setup,
+        &bid_txid,
+        "returned to the mempool by the offline disconnect",
+    )
+    .await?;
+
+    // Two empty blocks, so the branch replacing the settling block is strictly
+    // longer: electrs, and through it the wallet, won't follow a chain that
+    // merely got shorter. Empty on purpose -- mempool-based generation would
+    // just confirm the restored bid again.
+    let mining_address = post_setup.mining_address.to_string();
+    let mut replacement_block = None;
+    for _ in 0..2 {
+        let json = post_setup
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "generateblock",
+                [mining_address.clone(), "[]".to_owned()],
+            )
+            .run_utf8()
+            .await?;
+        let result: GenerateBlockResult = serde_json::from_str(&json)?;
+        replacement_block = Some(result.hash.parse::<bitcoin::BlockHash>()?);
+    }
+    let replacement_block =
+        replacement_block.ok_or_else(|| anyhow::anyhow!("no replacement block was mined"))?;
+
+    let () = post_setup
+        .restart_enforcer(bin_paths, Vec::<String>::new(), res_tx.clone())
+        .await?;
+    let () = wait_for_wallet_tip(post_setup, replacement_block, Duration::from_secs(60)).await?;
+    // Without the transaction actually back in the mempool there is nothing
+    // for the next bid to replace, and everything below would pass vacuously.
+    let () = assert_in_mempool(
+        post_setup,
+        &bid_txid,
+        "restored to the mempool by the offline reorg",
+    )
+    .await?;
+
+    let tracked = ProducerDb::new(
+        &post_setup
+            .directories
+            .enforcer_dir
+            .join("wallet")
+            .join("regtest"),
+    )?
+    .get_tracked_bmm_request(DummySidechain::SIDECHAIN_NUMBER)
+    .await?
+    .map(|tracked| tracked.txid.to_string());
+    anyhow::ensure!(
+        tracked.as_deref() == Some(bid_txid.as_str()),
+        "the settling block was disconnected while the enforcer was down, putting {bid_txid} \
+         back in bitcoind's mempool, but the producer tracks {tracked:?} as the in-flight bid -- \
+         the row stayed stranded in `bmm_requests_undo`, so nothing can replace or deprioritize \
+         the restored transaction"
+    );
+
+    *bid += 20_000;
+    let (prev_bytes, height) = get_tip_info(post_setup).await?;
+    let next_txid = create_bid(
+        post_setup,
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(0xF2),
+        *bid,
+    )
+    .await?;
+    let () =
+        assert_in_mempool(post_setup, &next_txid, "bid placed after the offline reorg").await?;
+    let () = assert_not_in_mempool(
+        post_setup,
+        &bid_txid,
+        "reorg-restored bid, after being replaced",
+    )
+    .await?;
+    tracing::info!(
+        %bid_txid, %next_txid,
+        "Offline reorg restored the bid's tracking row; the next bid replaced it"
+    );
+    Ok(())
+}
+
+async fn test_bmm_bid_lifecycle_task(
+    mut post_setup: PostSetup,
+    bin_paths: BinPaths,
+    res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+) -> anyhow::Result<()> {
     tracing::info!("Setup successfully");
     let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
     let () = activate_sidechain::<DummySidechain>(&mut post_setup).await?;
@@ -1046,6 +1187,8 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
         "Self-mined block carried the bid its coinbase commits to"
     );
 
+    let () = offline_reorg_scenario(&mut post_setup, &bin_paths, &res_tx, &mut chain_bid).await?;
+
     // ---- Raising a bid must be judged on what the raise can spend ----
     // A replacement recovers the inputs of the bid it replaces, so the
     // wallet's *spendable* balance is the wrong yardstick: the money funding
@@ -1109,7 +1252,7 @@ pub async fn test_bmm_bid_lifecycle(
     mode: Mode,
 ) -> anyhow::Result<()> {
     let (res_tx, mut res_rx) = mpsc::unbounded();
-    let pre_setup = PreSetup::new(bin_paths, Network::Regtest)?;
+    let pre_setup = PreSetup::new(bin_paths.clone(), Network::Regtest)?;
     register_files(&file_registry, &trial_name(mode), &pre_setup.directories);
     let setup_opts: SetupOpts = SetupOpts {
         bitcoind_args: Vec::new(),
@@ -1120,7 +1263,7 @@ pub async fn test_bmm_bid_lifecycle(
     let post_setup = pre_setup.setup(mode, setup_opts, res_tx.clone()).await?;
     let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
         async move {
-            let res = test_bmm_bid_lifecycle_task(post_setup).await;
+            let res = test_bmm_bid_lifecycle_task(post_setup, bin_paths, res_tx.clone()).await;
             let _send_err: Result<(), _> = res_tx.unbounded_send(res);
         }
         .in_current_span()

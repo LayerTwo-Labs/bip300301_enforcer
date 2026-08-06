@@ -183,11 +183,14 @@ impl CusfEnforcer for Wallet {
     {
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         tokio::pin!(shutdown_signal);
+        // Through the producer rather than straight to the validator: the
+        // producer's own sync is where policy state left behind by a reorg
+        // resolved offline gets reconciled.
         let sync_validator_to_tip = {
             let cancellation_token = cancellation_token.clone();
-            let mut validator = self.inner.validator().clone();
+            let mut producer = self.inner.producer.clone();
             async move {
-                validator
+                producer
                     .sync_to_tip(cancellation_token.cancelled_owned(), tip_hash)
                     .await
             }
