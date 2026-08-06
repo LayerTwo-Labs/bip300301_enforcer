@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -589,6 +589,20 @@ pub struct WalletInfo {
 #[derive(Clone)]
 pub struct Wallet {
     inner: Arc<WalletInner>,
+}
+
+/// Everything a BMM bid transaction is built from, fresh or replacement.
+///
+/// Bundled because every builder needs all of it: threading six parallel
+/// arguments through four functions is how they drift apart.
+struct BmmBidSpec<'a> {
+    sidechain_number: SidechainNumber,
+    prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
+    sidechain_block_hash: BmmCommitment,
+    bid_amount: bdk_wallet::bitcoin::Amount,
+    locktime: bdk_wallet::bitcoin::absolute::LockTime,
+    /// The bids already in flight, whose change this one must not spend.
+    bid_txids: &'a HashSet<bdk_wallet::bitcoin::Txid>,
 }
 
 impl Wallet {
@@ -1652,36 +1666,56 @@ impl Wallet {
             bdk_wallet::coin_selection::DefaultCoinSelectionAlgorithm,
         >,
         message: &bitcoin::script::PushBytesBuf,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+        spec: &BmmBidSpec<'_>,
+        other_bid_outputs: Vec<bdk_wallet::bitcoin::OutPoint>,
     ) {
         // OP_RETURN message MUST be the first output (BIP301 M8)
         builder.ordering(bdk_wallet::TxOrdering::Untouched);
-        builder.nlocktime(locktime);
+        builder.nlocktime(spec.locktime);
         builder.add_data(message);
-        builder.fee_absolute(bid_amount);
+        builder.fee_absolute(spec.bid_amount);
+        // A bid never spends another bid's change. Bids that chain are bids
+        // that die together: replacing one makes bitcoind evict the whole
+        // descendant set, so raising a bid for one sidechain would cancel
+        // another sidechain's, and the raise would have to out-pay every bid
+        // it took down. Kept apart, each auction is its own.
+        //
+        // `add_utxos` outranks this, so a replacement can still reuse the
+        // inputs of the bid it replaces -- which is what makes it a
+        // replacement.
+        builder.unspendable(other_bid_outputs);
+    }
+
+    /// The wallet's own outputs that belong to in-flight BMM bids, which a
+    /// new bid must leave alone. See [`Self::configure_bmm_builder`].
+    fn other_bid_outputs(
+        wallet: &BdkWallet,
+        bid_txids: &HashSet<bdk_wallet::bitcoin::Txid>,
+    ) -> Vec<bdk_wallet::bitcoin::OutPoint> {
+        wallet
+            .list_unspent()
+            .map(|utxo| utxo.outpoint)
+            .filter(|outpoint| bid_txids.contains(&outpoint.txid))
+            .collect()
     }
 
     async fn build_bmm_tx(
         &self,
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+        spec: &BmmBidSpec<'_>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmTx> {
         // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
         let message = M8BmmRequest::build(
-            sidechain_number,
-            sidechain_block_hash,
-            prev_mainchain_block_hash,
+            spec.sidechain_number,
+            spec.sidechain_block_hash,
+            spec.prev_mainchain_block_hash,
         )?;
 
         let mut wallet_write = self.inner.write_wallet().await?;
         let psbt = tokio::task::block_in_place(|| {
             wallet_write.with_mut(|wallet| {
+                let other_bid_outputs = Self::other_bid_outputs(wallet, spec.bid_txids);
                 let mut builder = wallet.build_tx();
-                Self::configure_bmm_builder(&mut builder, &message, bid_amount, locktime);
+                Self::configure_bmm_builder(&mut builder, &message, spec, other_bid_outputs);
                 builder.finish()
             })
         })?;
@@ -1697,16 +1731,12 @@ impl Wallet {
     async fn build_bmm_manual_replacement(
         &self,
         old_raw_tx: &[u8],
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+        spec: &BmmBidSpec<'_>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmTx> {
         let message = M8BmmRequest::build(
-            sidechain_number,
-            sidechain_block_hash,
-            prev_mainchain_block_hash,
+            spec.sidechain_number,
+            spec.sidechain_block_hash,
+            spec.prev_mainchain_block_hash,
         )?;
         let old_tx: bdk_wallet::bitcoin::Transaction = bitcoin::consensus::deserialize(old_raw_tx)
             .map_err(error::BuildBmmTx::DeserializeOldTx)?;
@@ -1719,10 +1749,14 @@ impl Wallet {
         let mut wallet_write = self.inner.write_wallet().await?;
         tokio::task::block_in_place(|| {
             wallet_write.with_mut(|wallet| -> Result<_, error::BuildBmmTx> {
+                let other_bid_outputs = Self::other_bid_outputs(wallet, spec.bid_txids);
                 let mut builder = wallet.build_tx();
-                Self::configure_bmm_builder(&mut builder, &message, bid_amount, locktime);
+                Self::configure_bmm_builder(&mut builder, &message, spec, other_bid_outputs);
+                // Required, not exclusive. Spending the old inputs is what
+                // makes this a replacement of the old bid; it is not a budget.
+                // A raise beyond what they hold may draw on the rest of the
+                // wallet, exactly as the fee-bump rung above can.
                 builder.add_utxos(&old_inputs)?;
-                builder.manually_selected_only();
                 Ok(builder.finish()?)
             })
         })
@@ -1731,25 +1765,22 @@ impl Wallet {
     async fn build_bmm_content_replacement(
         &self,
         old_txid: bdk_wallet::bitcoin::Txid,
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+        spec: &BmmBidSpec<'_>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmFeeBump> {
         let message = M8BmmRequest::build(
-            sidechain_number,
-            sidechain_block_hash,
-            prev_mainchain_block_hash,
+            spec.sidechain_number,
+            spec.sidechain_block_hash,
+            spec.prev_mainchain_block_hash,
         )?;
 
         let mut wallet_write = self.inner.write_wallet().await?;
         tokio::task::block_in_place(|| {
             wallet_write.with_mut(|wallet| -> Result<_, error::BuildBmmFeeBump> {
+                let other_bid_outputs = Self::other_bid_outputs(wallet, spec.bid_txids);
                 let mut builder = wallet.build_fee_bump(old_txid)?;
                 // Drop the replaced bid's outputs; the M8 is re-added below.
                 builder.set_recipients(Vec::new());
-                Self::configure_bmm_builder(&mut builder, &message, bid_amount, locktime);
+                Self::configure_bmm_builder(&mut builder, &message, spec, other_bid_outputs);
                 Ok(builder.finish()?)
             })
         })
@@ -1773,23 +1804,9 @@ impl Wallet {
     async fn try_build_bmm_replacement(
         &self,
         tracked: &crate::block_producer::db::TrackedBmmRequest,
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+        spec: &BmmBidSpec<'_>,
     ) -> Result<Option<bdk_wallet::bitcoin::psbt::Psbt>, error::CreateBmmRequestInner> {
-        match self
-            .build_bmm_content_replacement(
-                tracked.txid,
-                sidechain_number,
-                prev_mainchain_block_hash,
-                sidechain_block_hash,
-                bid_amount,
-                locktime,
-            )
-            .await
-        {
+        match self.build_bmm_content_replacement(tracked.txid, spec).await {
             Ok(psbt) => Ok(Some(psbt)),
             // Nothing live to replace -- the previous bid is in a block.
             // This call is a new auction against the current tip.
@@ -1816,14 +1833,7 @@ impl Wallet {
                      view, reusing its inputs by hand",
                 );
                 match self
-                    .build_bmm_manual_replacement(
-                        &tracked.raw_tx,
-                        sidechain_number,
-                        prev_mainchain_block_hash,
-                        sidechain_block_hash,
-                        bid_amount,
-                        locktime,
-                    )
+                    .build_bmm_manual_replacement(&tracked.raw_tx, spec)
                     .await
                 {
                     Ok(psbt) => Ok(Some(psbt)),
@@ -1951,20 +1961,47 @@ impl Wallet {
         // can never be built. Answered here so the caller hears about their
         // bid rather than about whichever builder happened to fail. Marginal
         // shortfalls are left to BDK, which accounts for weight and dust.
-        let spendable = self
-            .inner
-            .read_wallet()
-            .await?
-            .balance()
-            .trusted_spendable();
-        if bid_amount >= spendable {
-            return Err(error::CreateBmmRequestInner::BidExceedsBalance {
-                bid_sats: bid_amount.to_sat(),
-                spendable_sats: spendable.to_sat(),
+        //
+        // Only for a bid with nothing to replace. A replacement is funded by
+        // the inputs of the bid it replaces, and those left the spendable
+        // balance the moment that bid went out -- so the balance understates
+        // what the replacement can spend by the whole of the previous bid's
+        // input, and this would refuse raises the wallet can plainly afford.
+        // What a replacement can pay is BDK's to work out.
+        if tracked.is_none() {
+            let spendable = self
+                .inner
+                .read_wallet()
+                .await?
+                .balance()
+                .trusted_spendable();
+            if bid_amount >= spendable {
+                return Err(error::CreateBmmRequestInner::BidExceedsBalance {
+                    bid_sats: bid_amount.to_sat(),
+                    spendable_sats: spendable.to_sat(),
+                }
+                .into());
             }
-            .into());
         }
 
+        // Every bid in flight, so this one can be built without spending any
+        // of their change. See [`Self::configure_bmm_builder`].
+        let bid_txids: HashSet<bdk_wallet::bitcoin::Txid> = self
+            .inner
+            .db()
+            .tracked_bmm_bids()
+            .await?
+            .into_iter()
+            .map(|(txid, _prev_block_hash)| txid)
+            .collect();
+        let spec = BmmBidSpec {
+            sidechain_number,
+            prev_mainchain_block_hash,
+            sidechain_block_hash,
+            bid_amount,
+            locktime,
+            bid_txids: &bid_txids,
+        };
         let replacement = match &tracked {
             Some(tracked) => {
                 tracing::debug!(
@@ -1972,31 +2009,16 @@ impl Wallet {
                     same_slot,
                     "create_bmm_request: replacing previous in-flight bid for this sidechain",
                 );
-                self.try_build_bmm_replacement(
-                    tracked,
-                    sidechain_number,
-                    prev_mainchain_block_hash,
-                    sidechain_block_hash,
-                    bid_amount,
-                    locktime,
-                )
-                .await?
-                .map(|psbt| (psbt, tracked.txid))
+                self.try_build_bmm_replacement(tracked, &spec)
+                    .await?
+                    .map(|psbt| (psbt, tracked.txid))
             }
             None => None,
         };
         let (psbt, replaced_txid) = match replacement {
             Some((psbt, replaced_txid)) => (psbt, Some(replaced_txid)),
             None => {
-                let psbt = self
-                    .build_bmm_tx(
-                        sidechain_number,
-                        prev_mainchain_block_hash,
-                        sidechain_block_hash,
-                        bid_amount,
-                        locktime,
-                    )
-                    .await?;
+                let psbt = self.build_bmm_tx(&spec).await?;
                 (psbt, None)
             }
         };
@@ -2030,26 +2052,13 @@ impl Wallet {
             // the replaced tx and offer its change -- which bitcoind has
             // discarded -- to coin selection.
             //
-            // Its descendants go with it, because bitcoind drops the whole
-            // set when it accepts a replacement, and one of them is often
-            // another sidechain's bid funded from this one's change. Left
-            // canonical, that bid is what the next bid for *that* sidechain
-            // gets fee-bumped from -- onto an input bitcoind no longer has,
-            // which it rejects as `bad-txns-inputs-missingorspent`.
+            // Only the replaced transaction: a bid never spends another bid's
+            // change (see [`Self::configure_bmm_builder`]), so no bid is ever
+            // a descendant of one.
             if let Some(replaced_txid) = replaced_txid
                 && replaced_txid != txid
             {
-                // Collected rather than streamed: the walk borrows the graph,
-                // and applying the eviction needs the wallet mutably.
-                let evicted: Vec<_> = std::iter::once(replaced_txid)
-                    .chain(
-                        wallet
-                            .tx_graph()
-                            .walk_descendants(replaced_txid, |_depth, descendant| Some(descendant)),
-                    )
-                    .map(|evicted_txid| (evicted_txid, now))
-                    .collect();
-                wallet.apply_evicted_txs(evicted);
+                wallet.apply_evicted_txs([(replaced_txid, now)]);
             }
             wallet.apply_unconfirmed_txs(vec![(tx.clone(), now)]);
         });

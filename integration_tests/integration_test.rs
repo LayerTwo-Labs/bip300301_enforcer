@@ -917,19 +917,17 @@ pub fn tests(
         )
     };
 
-    let bmm_bid_chain_eviction_trial: TestTrial = {
-        let name = test_bmm_multi_sidechain::BID_CHAIN_EVICTION_TEST_NAME;
+    let bmm_bid_isolation_trial: TestTrial = {
+        let name = test_bmm_multi_sidechain::BID_ISOLATION_TEST_NAME;
         AsyncTrial::new(
             name,
             Box::pin({
                 let bin_paths = bin_paths.clone();
                 let file_registry = file_registry.clone();
                 async move {
-                    let test_future = test_bmm_multi_sidechain::test_bmm_bid_chain_eviction(
-                        bin_paths,
-                        file_registry,
-                    )
-                    .instrument(tracing::info_span!("test", name = %name));
+                    let test_future =
+                        test_bmm_multi_sidechain::test_bmm_bid_isolation(bin_paths, file_registry)
+                            .instrument(tracing::info_span!("test", name = %name));
                     catch_unwind(test_future).await
                 }
             }),
@@ -967,7 +965,7 @@ pub fn tests(
     async_trials.extend(bmm_bid_lifecycle_trials);
     async_trials.push(bmm_cross_bidder_competition_trial);
     async_trials.push(bmm_multi_sidechain_trial);
-    async_trials.push(bmm_bid_chain_eviction_trial);
+    async_trials.push(bmm_bid_isolation_trial);
     async_trials.push({
         let name = test_bmm_multi_sidechain::DUPLICATE_BID_BLOCK_TEST_NAME;
         AsyncTrial::new(

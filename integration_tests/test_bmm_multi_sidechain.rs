@@ -8,7 +8,7 @@
 //! Deposits and withdrawals run alongside the bidding, so the policy tables
 //! are written for several reasons at once.
 
-use std::time::Duration;
+use std::{str::FromStr as _, time::Duration};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
@@ -34,7 +34,7 @@ use crate::{
 };
 
 pub const TEST_NAME: &str = "bmm_multi_sidechain";
-pub const BID_CHAIN_EVICTION_TEST_NAME: &str = "bmm_bid_chain_eviction";
+pub const BID_ISOLATION_TEST_NAME: &str = "bmm_bid_isolation";
 pub const MISSING_INPUT_BLOCK_TEST_NAME: &str = "bmm_missing_input_block";
 pub const DUPLICATE_BID_BLOCK_TEST_NAME: &str = "bmm_duplicate_bid_block";
 
@@ -48,17 +48,11 @@ const SLOTS: [u8; 3] = [0, 1, 2];
 /// Opening bid per sidechain, all against the same tip.
 const OPENING_BID: u64 = 100_000;
 
-/// Set to dominate every opening bid combined: bids from one wallet often
-/// chain off each other's change, and replacing an ancestor means out-paying
-/// the whole chain.
-///
-/// RBF bumping is left to `bmm_bid_lifecycle`. Here it would only evict the
-/// other sidechains' bids, which tests the chain rather than this test's
-/// subject -- see [`bid_chain_eviction_body`] for that.
+/// Set above every opening bid, so each sidechain's second bid replaces its
+/// own first rather than being refused as a decrease.
 const POST_SETTLEMENT_BID: u64 = 900_000;
 
-/// The sidechain left unconfirmed by the settling block. Must be the slot bid
-/// *last*, so that omitting it from the block cannot orphan an ancestor.
+/// The sidechain left unconfirmed by the settling block.
 const LOSER_SLOT: u8 = 2;
 
 fn register_files(
@@ -268,12 +262,8 @@ async fn test_bmm_multi_sidechain_body(post_setup: &mut PostSetup) -> anyhow::Re
 
     let bumped = bids.clone();
     // ---- One block settles some sidechains and not others ----
-    // The sidechains bid from one wallet, so coin selection often funds each
-    // bid from the previous one's change and the in-flight bids form a
-    // descendant chain. A block may omit a descendant but never an ancestor,
-    // so the sidechain left unconfirmed has to be the one bid *last* -- with
-    // any other choice the block would be invalid on the runs that chained.
-    // Everything before it is confirmed together.
+    // Any slot can be the one left out: bids never spend each other's change
+    // (see [`bid_isolation_body`]), so omitting one cannot orphan another.
     let winners: Vec<_> = bumped
         .iter()
         .filter(|(slot, _, _)| *slot != LOSER_SLOT)
@@ -379,253 +369,233 @@ async fn test_bmm_multi_sidechain_body(post_setup: &mut PostSetup) -> anyhow::Re
 /// Coin selection is still free to surprise us, so the chaining is checked
 /// rather than assumed: a run where it never happens fails loudly instead of
 /// passing having tested nothing.
-/// The two sidechains driven by [`place_chained_bids`], and how many bid pairs
-/// it places before giving up on them chaining. Each round replaces the last,
-/// so the attempts cost no extra UTXOs.
-const CHAINED_SLOTS: [u8; 2] = [0, 1];
-const CHAIN_ATTEMPTS: u8 = 6;
+/// The two sidechains driven by [`bid_isolation_body`].
+const ISOLATED_SLOTS: [u8; 2] = [0, 1];
 
-/// A pair of bids where the second is funded from the first's change.
-struct ChainedBids {
-    prev_bytes: ReverseHex,
-    height: u32,
-    ancestor_h_star: [u8; 32],
-    ancestor_txid: String,
-    descendant_h_star: [u8; 32],
-    descendant_txid: String,
-    /// What the descendant bid, so a caller can resubmit the identical
-    /// request.
-    descendant_bid: u64,
-    /// The two bids combined -- what a replacement of the ancestor must
-    /// out-pay, since Core weighs it against everything it evicts.
-    chain_total: u64,
-}
-
-/// Activate two sidechains on a wallet with a single spendable output, then
-/// bid on both until the second is funded from the first's change.
+/// A BMM bid never spends another BMM bid's change.
 ///
-/// One spendable output is the point: `fund_enforcer_with_utxos` would mature
-/// a second, which the descendant could be funded from instead. Coin selection
-/// is still free to surprise us, so the chaining is checked rather than
-/// assumed, and never chaining fails loudly instead of passing having tested
-/// nothing.
-async fn place_chained_bids(post_setup: &mut PostSetup) -> anyhow::Result<ChainedBids> {
+/// Bids that chain are bids that die together: replacing one makes bitcoind
+/// evict the whole descendant set, so raising one sidechain's bid would cancel
+/// another's, and the raise would have to out-pay every bid it took down.
+/// Keeping them apart is what makes each sidechain's auction its own.
+///
+/// Funded first with a single spendable output, where a second bid has nowhere
+/// to draw from *but* the first bid's change -- so it must be refused rather
+/// than quietly chained. Then funded properly, where both bids stand on their
+/// own inputs and raising one leaves the other alone.
+async fn bid_isolation_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let _sc0 = Sc0::setup((), post_setup, res_tx.clone()).await?;
     let _sc1 = Sc1::setup((), post_setup, res_tx).await?;
     let () = propose_sidechain::<Sc0>(post_setup).await?;
     let () = propose_sidechain::<Sc1>(post_setup).await?;
-    let () = activate_sidechains::<Sc0>(post_setup, CHAINED_SLOTS.len()).await?;
+    let () = activate_sidechains::<Sc0>(post_setup, ISOLATED_SLOTS.len()).await?;
+
+    // ---- One output between them: the second bid is refused, not chained ----
     let () = fund_enforcer::<Sc0>(post_setup).await?;
-
     let (prev_bytes, height) = get_tip_info(post_setup).await?;
-    let mut chained = None;
-    for round in 1..=CHAIN_ATTEMPTS {
-        // Each round replaces the previous round's bids, so every bid must
-        // out-pay its predecessor.
-        let ancestor_bid = OPENING_BID * round as u64;
-        let descendant_bid = ancestor_bid + 10_000;
-        let ancestor_h_star = sidechain_block_hash(CHAINED_SLOTS[0], round);
-        let descendant_h_star = sidechain_block_hash(CHAINED_SLOTS[1], round);
-        let ancestor_txid = create_bid(
-            post_setup,
-            CHAINED_SLOTS[0],
-            height,
-            &prev_bytes,
-            &ancestor_h_star,
-            ancestor_bid,
-        )
-        .await?;
-        let descendant_txid = create_bid(
-            post_setup,
-            CHAINED_SLOTS[1],
-            height,
-            &prev_bytes,
-            &descendant_h_star,
-            descendant_bid,
-        )
-        .await?;
-
-        let descendant_hex = get_raw_tx_hex(&*post_setup, &descendant_txid).await?;
-        let descendant_tx: bitcoin::Transaction =
-            bitcoin::consensus::encode::deserialize_hex(&descendant_hex)?;
-        if descendant_tx
-            .input
-            .iter()
-            .any(|txin| txin.previous_output.txid.to_string() == ancestor_txid)
-        {
-            tracing::info!(round, %ancestor_txid, %descendant_txid, "Bids chained");
-            chained = Some(ChainedBids {
-                prev_bytes: prev_bytes.clone(),
-                height,
-                ancestor_h_star,
-                ancestor_txid,
-                descendant_h_star,
-                descendant_txid,
-                descendant_bid,
-                chain_total: ancestor_bid + descendant_bid,
-            });
-            break;
-        }
-        tracing::debug!(round, "Bids funded independently, bidding again");
-    }
-    chained.ok_or_else(|| {
-        anyhow::anyhow!(
-            "no pair of bids chained in {CHAIN_ATTEMPTS} attempts, so the paths that need one \
-             bid to descend from another were never reached"
-        )
-    })
-}
-
-/// Bumping one sidechain's bid must not strand another sidechain.
-///
-/// Replacing the ancestor makes Core evict the descendant with it, which is
-/// correct and unavoidable. What must not follow is the enforcer carrying on
-/// as though the descendant were live -- its row stays tracked, so the next
-/// bid for that sidechain is built against a transaction bitcoind has already
-/// discarded.
-async fn bid_chain_eviction_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
-    let ChainedBids {
-        prev_bytes,
-        height,
-        ancestor_h_star,
-        ancestor_txid,
-        descendant_h_star,
-        descendant_txid,
-        descendant_bid,
-        chain_total,
-    } = place_chained_bids(post_setup).await?;
-    let ancestor_slot = CHAINED_SLOTS[0];
-    let descendant_slot = CHAINED_SLOTS[1];
-
-    // Raise the ancestor, out-paying the whole chain Core evicts with it.
-    let bumped_txid = create_bid(
+    let thin_h_star = sidechain_block_hash(ISOLATED_SLOTS[0], 1);
+    let thin_txid = create_bid(
         post_setup,
-        ancestor_slot,
+        ISOLATED_SLOTS[0],
         height,
         &prev_bytes,
-        &ancestor_h_star,
-        chain_total + OPENING_BID,
+        &thin_h_star,
+        OPENING_BID,
+    )
+    .await?;
+    let err = create_bid(
+        post_setup,
+        ISOLATED_SLOTS[1],
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(ISOLATED_SLOTS[1], 1),
+        OPENING_BID,
+    )
+    .await
+    .err()
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "sidechain {}'s bid succeeded on a wallet whose only spendable output funds \
+             sidechain {}'s bid -- it can only have come from that bid's change",
+            ISOLATED_SLOTS[1],
+            ISOLATED_SLOTS[0],
+        )
+    })?;
+    anyhow::ensure!(
+        format!("{err:#}").contains("Insufficient funds"),
+        "expected the second bid to be refused for want of an output of its own, got {err:#}",
+    );
+    tracing::info!("Second bid refused rather than funded from the first's change");
+
+    // Settle that bid into a block before mining any more. `generatetoaddress`
+    // builds from the mempool, and a bid mined without a matching M7 in the
+    // coinbase is a block the enforcer rightly rejects.
+    let settling_block = crate::bmm_block::submit_block_with_bmm_accepts(
+        &*post_setup,
+        &[(SidechainNumber(ISOLATED_SLOTS[0]), thin_h_star)],
+        &[&get_raw_tx_hex(&*post_setup, &thin_txid).await?],
+    )
+    .await?;
+    let () = assert_enforcer_verdict(
+        post_setup,
+        settling_block,
+        Expect::Accepted,
+        Duration::from_secs(30),
+    )
+    .await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
+
+    // ---- An output apiece: both stand, and stay independent ----
+    let () = fund_enforcer_with_utxos::<Sc0>(post_setup, 4).await?;
+    let (prev_bytes, height) = get_tip_info(post_setup).await?;
+    let first_txid = create_bid(
+        post_setup,
+        ISOLATED_SLOTS[0],
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(ISOLATED_SLOTS[0], 2),
+        OPENING_BID,
+    )
+    .await?;
+    let second_txid = create_bid(
+        post_setup,
+        ISOLATED_SLOTS[1],
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(ISOLATED_SLOTS[1], 2),
+        OPENING_BID + 10_000,
+    )
+    .await?;
+    let second_hex = get_raw_tx_hex(&*post_setup, &second_txid).await?;
+    let second_tx: bitcoin::Transaction = bitcoin::consensus::encode::deserialize_hex(&second_hex)?;
+    anyhow::ensure!(
+        !second_tx
+            .input
+            .iter()
+            .any(|txin| txin.previous_output.txid.to_string() == first_txid),
+        "sidechain {}'s bid {second_txid} is funded from sidechain {}'s bid {first_txid}",
+        ISOLATED_SLOTS[1],
+        ISOLATED_SLOTS[0],
+    );
+
+    // Raising one sidechain's bid must leave the other's alone. Where they
+    // chained, this is where the other one silently disappeared.
+    let raised_txid = create_bid(
+        post_setup,
+        ISOLATED_SLOTS[0],
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(ISOLATED_SLOTS[0], 2),
+        OPENING_BID * 3,
     )
     .await?;
     anyhow::ensure!(
-        !mempool_contains(&*post_setup, &descendant_txid).await?,
-        "sidechain {descendant_slot}'s bid {descendant_txid} should have been evicted as a \
-         descendant of the replaced bid {ancestor_txid}",
+        mempool_contains(&*post_setup, &second_txid).await?,
+        "raising sidechain {}'s bid to {raised_txid} evicted sidechain {}'s bid {second_txid}",
+        ISOLATED_SLOTS[0],
+        ISOLATED_SLOTS[1],
     );
-    tracing::info!(%bumped_txid, "Raised the ancestor bid, evicting the descendant");
-
-    // Resubmitting the *identical* request is what a client actually does --
-    // same slot, same h*, same amount -- and it must work. An unchanged amount
-    // is the idempotent path, which rebroadcasts the recorded transaction
-    // rather than building one; that transaction is precisely the one just
-    // evicted, and its input went with the bid it descended from. Erring here
-    // would leave the sidechain answering for a transaction *we* killed, by
-    // bumping a different sidechain, with no way to change the answer:
-    // retrying identically leaves the tracking row identical.
-    let exact_retry_txid = create_bid(
-        post_setup,
-        descendant_slot,
-        height,
-        &prev_bytes,
-        &descendant_h_star,
-        descendant_bid,
-    )
-    .await
-    .map_err(|err| {
-        anyhow::anyhow!(
-            "sidechain {descendant_slot} cannot resubmit its identical bid after sidechain \
-             {ancestor_slot} bumped and evicted it: {err}"
-        )
-    })?;
-    anyhow::ensure!(
-        mempool_contains(&*post_setup, &exact_retry_txid).await?,
-        "sidechain {descendant_slot}'s resubmitted bid {exact_retry_txid} is not in the mempool",
-    );
-    tracing::info!(%exact_retry_txid, "Identical resubmission put a live bid back in flight");
-
-    // A changed request must work too, and takes the replacement path rather
-    // than the idempotent one.
-    let h_star_retry = sidechain_block_hash(descendant_slot, CHAIN_ATTEMPTS + 1);
-    let retry_txid = create_bid(
-        post_setup,
-        descendant_slot,
-        height,
-        &prev_bytes,
-        &h_star_retry,
-        chain_total + OPENING_BID,
-    )
-    .await
-    .map_err(|err| {
-        anyhow::anyhow!(
-            "sidechain {descendant_slot} cannot bid after sidechain {ancestor_slot} bumped \
-             and evicted its bid: {err}"
-        )
-    })?;
-    anyhow::ensure!(
-        mempool_contains(&*post_setup, &retry_txid).await?,
-        "sidechain {descendant_slot}'s replacement bid {retry_txid} is not in the mempool",
-    );
-    tracing::info!(%retry_txid, "Stranded sidechain bid again successfully");
+    tracing::info!(%raised_txid, "Raising one sidechain's bid left the other's standing");
     Ok(())
 }
 
 /// A block must never be assembled around a transaction whose parent it left
 /// out.
 ///
-/// The ancestor bid is outbid by a rival from another wallet, so the auction
-/// excludes it -- but the descendant, which is funded from its change, is a
-/// perfectly ordinary transaction that no BMM rule touches. Dropping the
-/// ancestor alone leaves the descendant's input in neither the block nor the
-/// UTXO set, and `submitblock` rejects the result. The fee the coinbase claims
-/// has to shed the dropped transactions too.
+/// A bid that loses its auction is excluded from the block, but anything
+/// spending its change is an ordinary transaction that no BMM rule touches.
+/// Dropping the bid alone leaves that transaction's input in neither the block
+/// nor the UTXO set, and `submitblock` rejects the result. The fee the coinbase
+/// claims has to shed the dropped transactions too.
+///
+/// The descendant is a plain wallet send rather than another bid: bids no
+/// longer spend one another's change (see [`bid_isolation_body`]), but nothing
+/// stops an ordinary payment from doing so.
 async fn missing_input_block_body(post_setup: &mut PostSetup) -> anyhow::Result<()> {
-    let ChainedBids {
-        prev_bytes,
-        height: _,
-        ancestor_h_star: _,
-        ancestor_txid,
-        descendant_h_star: _,
-        descendant_txid,
-        descendant_bid: _,
-        chain_total,
-    } = place_chained_bids(post_setup).await?;
-    let ancestor_slot = CHAINED_SLOTS[0];
+    const SLOT: u8 = 0;
 
-    // Outbid the ancestor from bitcoind's own wallet, so it loses its auction
-    // while staying in the mempool -- an enforcer-side bid would replace it
-    // instead, taking the descendant with it and testing something else.
-    let prev_hash: bitcoin::BlockHash =
-        prev_bytes.decode::<BlockHeaderInfo, bitcoin::BlockHash>("block_hash")?;
-    let rival_h_star = sidechain_block_hash(ancestor_slot, CHAIN_ATTEMPTS + 2);
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let _sc0 = Sc0::setup((), post_setup, res_tx).await?;
+    let () = propose_sidechain::<Sc0>(post_setup).await?;
+    let () = activate_sidechains::<Sc0>(post_setup, 1).await?;
+    let () = fund_enforcer_with_utxos::<Sc0>(post_setup, 4).await?;
+
+    let (prev_bytes, height) = get_tip_info(post_setup).await?;
+    let prev_hash: bitcoin::BlockHash = prev_bytes
+        .clone()
+        .decode::<BlockHeaderInfo, bitcoin::BlockHash>("block_hash")?;
+    let bid_txid = create_bid(
+        post_setup,
+        SLOT,
+        height,
+        &prev_bytes,
+        &sidechain_block_hash(SLOT, 1),
+        OPENING_BID,
+    )
+    .await?;
+
+    // Spend the bid's change, pinned so coin selection cannot pick anything
+    // else. The M8 OP_RETURN is output 0 (BIP301), so the change is output 1.
+    let destination = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getnewaddress", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .to_owned();
+    let send_txid = post_setup
+        .wallet_service_client
+        .send_transaction(proto::mainchain::SendTransactionRequest {
+            destinations: std::collections::HashMap::from([(destination, 1_000_000_u64)])
+                .into_iter()
+                .collect(),
+            fee_rate: MessageField::some(proto::mainchain::send_transaction_request::FeeRate {
+                fee: Some(proto::mainchain::send_transaction_request::fee_rate::Fee::Sats(10_000)),
+            }),
+            required_utxos: vec![proto::mainchain::send_transaction_request::RequiredUtxo {
+                txid: MessageField::some(ReverseHex::encode(&bitcoin::Txid::from_str(&bid_txid)?)),
+                vout: 1,
+            }],
+            ..Default::default()
+        })
+        .await?
+        .into_owned()
+        .txid
+        .into_option()
+        .and_then(|txid| proto::unwrap_string(txid.hex))
+        .ok_or_else(|| anyhow::anyhow!("send response must include a txid"))?;
+    tracing::info!(%bid_txid, %send_txid, "A plain send now descends from the bid");
+
+    // Outbid the bid from bitcoind's own wallet, so it loses its auction while
+    // staying in the mempool -- an enforcer-side bid would replace it instead.
     let rival_txid = crate::test_bmm_cross_bidder_competition::broadcast_competing_bid(
         &*post_setup,
-        SidechainNumber(ancestor_slot),
+        SidechainNumber(SLOT),
         prev_hash,
-        rival_h_star,
-        bitcoin::Amount::from_sat(chain_total + OPENING_BID),
+        sidechain_block_hash(SLOT, 2),
+        bitcoin::Amount::from_sat(OPENING_BID * 5),
         0,
     )
     .await?;
     anyhow::ensure!(
-        mempool_contains(&*post_setup, &ancestor_txid).await?,
-        "sidechain {ancestor_slot}'s losing bid {ancestor_txid} must stay in the mempool: \
-         losing an auction is not a double-spend, and the block template still offers it",
+        mempool_contains(&*post_setup, &bid_txid).await?,
+        "the losing bid {bid_txid} must stay in the mempool: the block template still offers it",
     );
-    tracing::info!(%rival_txid, %ancestor_txid, "Rival outbid the ancestor");
+    tracing::info!(%rival_txid, "Rival outbid the sidechain's own bid");
 
-    // Producing a block is the assertion: the auction drops the ancestor, and
-    // the descendant must not be left behind pointing at it.
+    // Producing a block is the assertion: the auction drops the losing bid,
+    // and the send must not be left behind pointing at it.
     let () = crate::mine::mine::<Sc0>(post_setup, 1, None)
         .await
         .map_err(|err| {
             anyhow::anyhow!(
-                "mining a block while sidechain {ancestor_slot}'s bid {ancestor_txid} lost its \
-                 auction failed -- its descendant {descendant_txid} was most likely kept while \
-                 the bid itself was dropped: {err}"
+                "mining a block while bid {bid_txid} lost its auction failed -- the send \
+                 {send_txid} that descends from it was most likely kept while the bid itself \
+                 was dropped: {err}"
             )
         })?;
-    tracing::info!("Mined a block with a losing ancestor bid excluded");
+    tracing::info!("Mined a block with a losing bid and its descendant both excluded");
     Ok(())
 }
 
@@ -745,8 +715,8 @@ async fn missing_input_block_task(mut post_setup: PostSetup) -> anyhow::Result<(
     res
 }
 
-async fn bid_chain_eviction_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
-    let res = bid_chain_eviction_body(&mut post_setup).await;
+async fn bid_isolation_task(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let res = bid_isolation_body(&mut post_setup).await;
     drop(post_setup.tasks);
     res
 }
@@ -864,7 +834,7 @@ pub async fn test_bmm_missing_input_block(
 /// Bumping one sidechain's bid must not strand another whose bid descends
 /// from it. Needs its own node: the wallet is deliberately funded with a
 /// single output, which is what forces the two bids to chain.
-pub async fn test_bmm_bid_chain_eviction(
+pub async fn test_bmm_bid_isolation(
     bin_paths: BinPaths,
     file_registry: TestFileRegistry,
 ) -> anyhow::Result<()> {
@@ -872,7 +842,7 @@ pub async fn test_bmm_bid_chain_eviction(
     let pre_setup = PreSetup::new(bin_paths, Network::Regtest)?;
     register_files(
         &file_registry,
-        BID_CHAIN_EVICTION_TEST_NAME,
+        BID_ISOLATION_TEST_NAME,
         &pre_setup.directories,
     );
     let post_setup = pre_setup
@@ -889,7 +859,7 @@ pub async fn test_bmm_bid_chain_eviction(
         .await?;
     let _test_task: util::AbortOnDrop<()> = tokio::task::spawn({
         async move {
-            let res = bid_chain_eviction_task(post_setup).await;
+            let res = bid_isolation_task(post_setup).await;
             let _send_err: Result<(), _> = res_tx.unbounded_send(res);
         }
         .in_current_span()

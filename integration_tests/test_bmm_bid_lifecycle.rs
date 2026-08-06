@@ -25,8 +25,8 @@ use bip300301_enforcer_lib::{
         self,
         common::{ConsensusHex, ReverseHex},
         mainchain::{
-            BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, GetChainTipRequest,
-            GetInfoRequest, SendTransactionRequest, send_transaction_request,
+            BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, GetBalanceRequest,
+            GetChainTipRequest, GetInfoRequest, SendTransactionRequest, send_transaction_request,
         },
     },
     types::BmmCommitment,
@@ -995,10 +995,17 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
         err.message,
     );
     // The caller asked about a bid, so the answer has to be about the bid and
-    // its balance -- not about whichever builder happened to fail first.
+    // its funds -- not about whichever builder happened to fail first.
+    //
+    // Which of the two phrasings comes back depends on whether a tracked bid
+    // exists to replace. Without one the wallet answers from its spendable
+    // balance; with one that balance understates what the replacement can
+    // spend, so the question goes to BDK, which weighs the recovered inputs
+    // along with everything else and names the shortfall itself.
     let message = err.message.clone().unwrap_or_default();
     anyhow::ensure!(
-        message.contains("exceeds the wallet's spendable balance"),
+        message.contains("exceeds the wallet's spendable balance")
+            || message.contains("Insufficient funds"),
         "an unaffordable bid must say so plainly; got {message:?}",
     );
     tracing::info!(message = %message, "Unaffordable bid rejected clearly");
@@ -1038,6 +1045,56 @@ async fn test_bmm_bid_lifecycle_task(mut post_setup: PostSetup) -> anyhow::Resul
         %self_mined_block,
         "Self-mined block carried the bid its coinbase commits to"
     );
+
+    // ---- Raising a bid must be judged on what the raise can spend ----
+    // A replacement recovers the inputs of the bid it replaces, so the
+    // wallet's *spendable* balance is the wrong yardstick: the money funding
+    // the previous bid has already left it. Bid well over half of what is
+    // spendable and the remaining change alone cannot cover a raise -- but
+    // the raise reuses the original input, so it is affordable, and a balance
+    // check that does not know that rejects a bid the wallet can pay.
+    let balance = post_setup
+        .wallet_service_client
+        .get_balance(GetBalanceRequest::default())
+        .await?
+        .into_owned();
+    // Confirmed only: `pending_sats` counts immature coinbases, which cannot
+    // fund anything, and the wallet's spendable balance is at least this.
+    let spendable = balance.confirmed_sats;
+    anyhow::ensure!(
+        spendable > 0,
+        "expected a confirmed balance before the large-bid phase, got {balance:?}"
+    );
+    let (prev_bytes, height) = get_tip_info(&mut post_setup).await?;
+    let h_star_large = sidechain_block_hash(0xC1);
+    let large_bid = spendable / 100 * 60;
+    let large_txid = create_bid(
+        &mut post_setup,
+        height,
+        &prev_bytes,
+        &h_star_large,
+        large_bid,
+    )
+    .await?;
+    let () = assert_in_mempool(&post_setup, &large_txid, "large opening bid").await?;
+    let raised_bid = spendable / 100 * 85;
+    let raised_txid = create_bid(
+        &mut post_setup,
+        height,
+        &prev_bytes,
+        &h_star_large,
+        raised_bid,
+    )
+    .await
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "raising a bid from {large_bid} to {raised_bid} sats was rejected, though the \
+             replacement recovers the {large_bid}-sat bid's own input to pay it: {err}"
+        )
+    })?;
+    let () = assert_in_mempool(&post_setup, &raised_txid, "raised large bid").await?;
+    let () = assert_not_in_mempool(&post_setup, &large_txid, "replaced large bid").await?;
+    tracing::info!(%raised_txid, large_bid, raised_bid, "Raise judged on what it can spend");
 
     let () = crate::test_bmm_stale_bid_rejected::stale_bid_rejected_body(&mut post_setup).await?;
 
