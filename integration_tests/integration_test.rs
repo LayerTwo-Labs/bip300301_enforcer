@@ -966,6 +966,19 @@ pub fn tests(
         },
         crate::test_inactive_drivechain_output::test_inactive_slot_drivechain_output,
     ));
+    // Needs a mempool and the GBT server: the point is that the enforcer's own
+    // block template picks up an inactive-slot BMM request.
+    async_trials.push(new_trial_with_setup(
+        "inactive_slot_bmm_request".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_inactive_slot_bmm_request::test_inactive_slot_bmm_request,
+    ));
     async_trials.push(new_trial_with_setup(
         "consecutive_deposits".to_string(),
         TestSetupComponents {
