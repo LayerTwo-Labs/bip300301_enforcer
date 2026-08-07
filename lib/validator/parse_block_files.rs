@@ -139,6 +139,8 @@ pub struct BlockFileParser {
     file_path: PathBuf,
     reader: XorReader,
     network: Network,
+    /// Overrides the stock per-network magic
+    magic_override: Option<[u8; 4]>,
 }
 
 fn magic_for_network(network: Network) -> [u8; 4] {
@@ -156,6 +158,7 @@ impl BlockFileParser {
         xor_key: Option<XorKey>,
         file_path: PathBuf,
         network: Network,
+        magic_override: Option<[u8; 4]>,
     ) -> Result<Self, std::io::Error> {
         let file = File::open(file_path.clone())?;
 
@@ -169,7 +172,14 @@ impl BlockFileParser {
                 offset: 0,
             },
             network,
+            magic_override,
         })
+    }
+
+    /// The message-start bytes every block in this file must be prefixed with
+    fn expected_magic(&self) -> [u8; 4] {
+        self.magic_override
+            .unwrap_or_else(|| magic_for_network(self.network))
     }
 
     /// Set the offset of the reader.
@@ -220,7 +230,7 @@ impl BlockFileParser {
             return Ok(None);
         }
 
-        let expected_magic = magic_for_network(self.network);
+        let expected_magic = self.expected_magic();
         if magic != expected_magic {
             let known_networks = [
                 bitcoin::Network::Bitcoin,
@@ -229,9 +239,10 @@ impl BlockFileParser {
                 bitcoin::Network::Signet,
             ];
 
-            if let Some(network) = known_networks
-                .iter()
-                .find(|net| net.magic().to_bytes() == magic)
+            if self.magic_override.is_none()
+                && let Some(network) = known_networks
+                    .iter()
+                    .find(|net| net.magic().to_bytes() == magic)
             {
                 return Err(ParseBlockFileError::InvalidNetwork {
                     found: *network,
@@ -359,6 +370,7 @@ pub struct BlockDirectoryParser {
     dir_path: PathBuf,
     xor_key: Option<XorKey>,
     network: Network,
+    magic_override: Option<[u8; 4]>,
 
     // The file we're currently reading
     file_index: u32,
@@ -368,7 +380,11 @@ pub struct BlockDirectoryParser {
 }
 
 impl BlockDirectoryParser {
-    pub fn new(dir_path: PathBuf, network: Network) -> Result<Self, BlockDirectoryParserError> {
+    pub fn new(
+        dir_path: PathBuf,
+        network: Network,
+        magic_override: Option<[u8; 4]>,
+    ) -> Result<Self, BlockDirectoryParserError> {
         let xor_key = std::fs::read(dir_path.join("xor.dat")).map_err(|e| {
             BlockDirectoryParserError::ReadXorKey {
                 path: dir_path.join("xor.dat"),
@@ -395,6 +411,7 @@ impl BlockDirectoryParser {
             dir_path,
             xor_key,
             network,
+            magic_override,
             file_index: 0,
             current_parser: None,
         })
@@ -414,6 +431,7 @@ impl BlockDirectoryParser {
                 self.xor_key,
                 self.dir_path.join(format!("blk{:05}.dat", self.file_index)),
                 self.network,
+                self.magic_override,
             )?;
             self.current_parser = Some(parser);
         }
@@ -448,8 +466,13 @@ impl BlockDirectoryParser {
                     return Ok(None);
                 }
 
-                let parser = BlockFileParser::new(self.xor_key, file_path, self.network)
-                    .map_err(ParseBlockFileError::Io)?;
+                let parser = BlockFileParser::new(
+                    self.xor_key,
+                    file_path,
+                    self.network,
+                    self.magic_override,
+                )
+                .map_err(ParseBlockFileError::Io)?;
                 self.current_parser = Some(parser);
             }
         }
@@ -845,7 +868,7 @@ mod tests {
             .unwrap()
             .write_all(&bytes)
             .unwrap();
-        let mut parser = BlockFileParser::new(None, path, Network::Regtest).unwrap();
+        let mut parser = BlockFileParser::new(None, path, Network::Regtest, None).unwrap();
         assert!(parser.next_block().is_err());
     }
 
@@ -863,7 +886,7 @@ mod tests {
             .unwrap()
             .write_all(&bytes)
             .unwrap();
-        let mut parser = BlockFileParser::new(None, path, Network::Regtest).unwrap();
+        let mut parser = BlockFileParser::new(None, path, Network::Regtest, None).unwrap();
         assert!(matches!(
             parser.next_block(),
             Err(ParseBlockFileError::BlockSizeTooLarge { size }) if size == u32::MAX
@@ -907,7 +930,7 @@ mod tests {
 
         let xor_key = [0xf1, 0x64, 0xb4, 0xf3, 0xa7, 0x9d, 0x73, 0x04];
 
-        let mut parser = BlockFileParser::new(Some(xor_key), path, Network::Regtest)
+        let mut parser = BlockFileParser::new(Some(xor_key), path, Network::Regtest, None)
             .expect("failed to create parser");
 
         let parsed_blocks = parser.all_blocks().expect("failed to parse blocks");
@@ -962,8 +985,8 @@ mod tests {
 
         let xor_key = None;
 
-        let mut parser =
-            BlockFileParser::new(xor_key, path, Network::Regtest).expect("failed to create parser");
+        let mut parser = BlockFileParser::new(xor_key, path, Network::Regtest, None)
+            .expect("failed to create parser");
 
         let parsed_blocks = parser.all_blocks().expect("failed to parse blocks");
         assert_eq!(parsed_blocks.len(), 6);
@@ -1006,6 +1029,85 @@ mod tests {
         assert_eq!(
             block_from_offset.header.block_hash(),
             parsed_blocks[2].header.block_hash()
+        );
+    }
+
+    /// The eCash drynet4 build rebrands the P2P magic, so its block files are
+    /// prefixed with `eca5d434` on regtest rather than the stock `fabfb5da`.
+    /// The fixture is a real `blk00000.dat` from that build (6 blocks, trimmed
+    /// of Core's 16 MiB preallocation), so this covers the actual on-disk bytes
+    /// rather than a hand-built approximation of them.
+    #[test]
+    fn parses_drynet4_block_file_with_magic_override() {
+        const DRYNET4_REGTEST_MAGIC: [u8; 4] = [0xec, 0xa5, 0xd4, 0x34];
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("validator/testdata/drynet4-blk00000.dat");
+
+        // Without the override the stock regtest magic is expected, so the very
+        // first entry is rejected — this is the drynet4 CI failure in miniature.
+        let mut stock = BlockFileParser::new(None, path.clone(), Network::Regtest, None)
+            .expect("failed to create parser");
+        assert!(
+            matches!(
+                stock.next_block(),
+                Err(ParseBlockFileError::InvalidMagic { found, expected, offset: 0 })
+                    if found == DRYNET4_REGTEST_MAGIC && expected == REGTEST_MAGIC
+            ),
+            "expected an InvalidMagic error naming both magics"
+        );
+
+        // With it, the file parses.
+        let mut parser =
+            BlockFileParser::new(None, path, Network::Regtest, Some(DRYNET4_REGTEST_MAGIC))
+                .expect("failed to create parser");
+        let parsed_blocks = parser.all_blocks().expect("failed to parse blocks");
+        assert_eq!(parsed_blocks.len(), 6);
+
+        // drynet4 keeps the stock regtest genesis, so the first block hash is
+        // the same one the stock-magic fixtures above start from. That the
+        // hashes come out valid at all is what shows the bodies were read at
+        // the right offsets, not just that a 4 byte comparison passed.
+        let hashes: Vec<_> = parsed_blocks
+            .iter()
+            .map(|block| block.header.block_hash().to_string())
+            .collect();
+        assert_eq!(
+            hashes,
+            vec![
+                "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
+                "2cd78956c677f440d390231b96c5c26a03e20716af154db1af5c00ecf302a4bf",
+                "79ae853fa583459d786ea473cdc319d060bb8635e746184a25e961aba06531c3",
+                "04556cadf7e795ae9d538128f442bea1e5969ca0c2f3fd3438c3af6b18678964",
+                "511ec89755094aaa7b047624479a34219dd3d24e6572f9a620134cb031a60943",
+                "2ce34554bfbc65e49f157fefcd4707722c26fe92b8ae99f7f91341910c96c1a8",
+            ]
+        );
+
+        // Same regtest genesis coinbase as the other fixtures.
+        let tx_data = parsed_blocks[0]
+            .parse_tx_data()
+            .expect("failed to parse tx data");
+        assert_eq!(tx_data.len(), 1);
+        assert_eq!(
+            tx_data[0].compute_txid().to_string(),
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+        );
+    }
+
+    /// The override is what the drynet4 preset supplies, so the two must agree
+    /// on the mainnet-chain magic. A preset carrying the wrong bytes would fail
+    /// to parse a real drynet4 node's block files.
+    #[test]
+    fn drynet4_preset_carries_the_forks_magic() {
+        assert_eq!(
+            crate::types::NetworkParams::drynet4().network_magic,
+            Some([0xec, 0xa5, 0xd4, 0x04]),
+        );
+        // Every other preset keeps the stock magic for its chain.
+        assert_eq!(crate::types::NetworkParams::drynet3().network_magic, None);
+        assert_eq!(
+            crate::types::NetworkParams::for_network(Network::Bitcoin).network_magic,
+            None
         );
     }
 

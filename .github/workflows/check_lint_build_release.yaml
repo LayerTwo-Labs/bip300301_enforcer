@@ -186,8 +186,9 @@ jobs:
           # off those fields, not off which entry they are. `grpc_checks`
           # marks the one entry that also runs the flavor-independent gRPC
           # reflection checks.
+          DRYNET_MAGIC=$(./scripts/setup_integration_tests.sh --print-drynet-magic)
           ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
-          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\"}"
+          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\",\"regtest_magic\":\"$DRYNET_MAGIC\"}"
           for v in $VERSIONS; do
             ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
           done
@@ -388,14 +389,25 @@ jobs:
           # them as artifacts when a test fails.
           export TMPDIR="$RUNNER_TEMP/it-logs"
           mkdir -p "$TMPDIR"
+          # A build with custom P2P magic gets is unable to hand-shake with 
+          # stock Bitcoin Core on any network, so peer_bmm_request is skipped.
+          export BITCOIND_REGTEST_MAGIC='${{ matrix.regtest_magic }}'
+          SKIP_ARGS=()
+          if [ -n "$BITCOIND_REGTEST_MAGIC" ]; then
+            echo "skipped: peer_bmm_request (build rebrands the P2P magic)"
+            SKIP_ARGS+=(--skip peer_bmm_request)
+          fi
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=0
-            cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip
+            cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip \
+              ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
           else
             export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=1
-            cargo run --example integration_tests
+            # `--` is required even when SKIP_ARGS is empty: without it cargo
+            # parses a leading --skip as its own flag and exits.
+            cargo run --example integration_tests -- ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
           fi
 
       # Did the run end up with a chain worth caching? A run that never needed

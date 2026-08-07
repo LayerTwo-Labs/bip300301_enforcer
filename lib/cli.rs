@@ -248,6 +248,13 @@ fn parse_bitcoin_address_unchecked(
     bitcoin::Address::from_str(s).map_err(|err| format!("invalid bitcoin address: {err}"))
 }
 
+fn parse_network_magic(s: &str) -> Result<[u8; 4], String> {
+    let bytes = hex::decode(s).map_err(|err| format!("invalid hex: {err}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("expected 4 bytes (8 hex chars), got {}", s.len() / 2))
+}
+
 #[derive(Clone, Args)]
 pub struct MiningConfig {
     /// Path to the Python mining script from Bitcoin Core. If not set,
@@ -305,8 +312,10 @@ pub enum NetworkPreset {
     Drynet1,
     /// Dry run forknet v2: mainnet fork at block 957600. Hours-scale thresholds
     Drynet2,
-    /// Dry run forknet v2: mainnet fork at block 957600. Hours-scale thresholds
+    /// Dry run forknet v3: mainnet fork at block 957600. Hours-scale thresholds
     Drynet3,
+    /// Dry run forknet v4: mainnet fork at block 961632. Hours-scale thresholds
+    Drynet4,
     /// Integration-test-only preset: SHORT thresholds with BIP300/301
     /// activating at height 10, so tests can exercise the activation-height
     /// machinery on a fresh chain. Hidden from --help
@@ -320,6 +329,7 @@ impl NetworkPreset {
             Self::Drynet1 => NetworkParams::drynet1(),
             Self::Drynet2 => NetworkParams::drynet2(),
             Self::Drynet3 => NetworkParams::drynet3(),
+            Self::Drynet4 => NetworkParams::drynet4(),
             Self::TestActivation => NetworkParams::test_activation(),
         }
     }
@@ -453,6 +463,13 @@ pub struct Config {
     /// node's reported network.
     #[arg(long, value_enum)]
     pub network_preset: Option<NetworkPreset>,
+    /// P2P message-start bytes as hex, e.g. `eca5d404`. Overrides the value
+    /// from `--network-preset`.
+    //
+    // Hidden because a preset is the intended way to get this. This CLI opt is
+    // only needed for tests and dev purposes.
+    #[arg(long, value_parser = parse_network_magic, hide = true)]
+    pub network_magic: Option<[u8; 4]>,
     /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
     /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
@@ -762,11 +779,83 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory as _, parser::ValueSource};
+    use clap::{CommandFactory as _, Parser as _, ValueEnum as _, parser::ValueSource};
 
     use super::{
-        Config, REDACTED, SecretString, UNSET, is_secret_arg, redact_embedded_credentials,
+        Config, NetworkPreset, REDACTED, SecretString, UNSET, is_secret_arg,
+        redact_embedded_credentials,
     };
+
+    /// Each preset's `--network-preset` spelling reaches the parameters it
+    /// names, activation height included.
+    #[test]
+    fn network_presets_parse_to_their_params() {
+        let params = |value: &str| {
+            Config::try_parse_from(["bip300301_enforcer", &format!("--network-preset={value}")])
+                .unwrap_or_else(|err| panic!("--network-preset={value} did not parse: {err}"))
+                .network_preset
+                .expect("--network-preset was given")
+                .params()
+        };
+        assert_eq!(params("drynet1").bip300_activation_height, 955_584);
+        assert_eq!(params("drynet2").bip300_activation_height, 957_600);
+        assert_eq!(params("drynet3").bip300_activation_height, 957_600);
+        // drynet4 forks mainnet later than drynet3; see drivechain.dev/config.
+        assert_eq!(params("drynet4").bip300_activation_height, 961_632);
+    }
+
+    /// `--network-magic` overrides whatever the preset carries, since a forked
+    /// build rebrands the magic on every network while a preset only names one
+    /// chain — running drynet4 on regtest needs bytes no preset supplies.
+    #[test]
+    fn network_magic_flag_overrides_the_preset() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["bip300301_enforcer"];
+            argv.extend_from_slice(args);
+            Config::try_parse_from(argv)
+        };
+
+        // drynet4's regtest bytes, which differ from the preset's mainnet ones.
+        let cli =
+            parse(&["--network-preset=drynet4", "--network-magic=eca5d434"]).expect("should parse");
+        assert_eq!(cli.network_magic, Some([0xec, 0xa5, 0xd4, 0x34]));
+        assert_eq!(
+            cli.network_preset.unwrap().params().network_magic,
+            Some([0xec, 0xa5, 0xd4, 0x04]),
+            "the preset still carries its own value; main.rs is what prefers the flag"
+        );
+
+        // Usable without a preset at all — that is the regtest case.
+        assert_eq!(
+            parse(&["--network-magic=fabfb5da"])
+                .expect("should parse")
+                .network_magic,
+            Some([0xfa, 0xbf, 0xb5, 0xda])
+        );
+
+        // Wrong length and non-hex are rejected rather than silently padded.
+        assert!(parse(&["--network-magic=eca5d4"]).is_err());
+        assert!(parse(&["--network-magic=eca5d40400"]).is_err());
+        assert!(parse(&["--network-magic=nothex!!"]).is_err());
+    }
+
+    /// Presets share thresholds and even fork heights with each other, but
+    /// never a datadir suffix: that suffix is the only thing keeping one
+    /// preset's validator/wallet state out of another's, so a copy-pasted
+    /// one would silently mix two chains' databases.
+    #[test]
+    fn every_preset_has_a_distinct_datadir_suffix() {
+        let mut seen = std::collections::HashMap::new();
+        for preset in NetworkPreset::value_variants() {
+            let suffix = preset
+                .params()
+                .datadir_suffix
+                .unwrap_or_else(|| panic!("{preset:?} must namespace its datadir"));
+            if let Some(previous) = seen.insert(suffix, preset) {
+                panic!("{preset:?} and {previous:?} both use datadir suffix `{suffix}`");
+            }
+        }
+    }
 
     /// The annotation itself: typing a field `SecretString` is what makes the
     /// dump redact it, and typing it anything else is what makes the dump

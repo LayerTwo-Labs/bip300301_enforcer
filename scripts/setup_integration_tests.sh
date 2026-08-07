@@ -36,8 +36,13 @@ PATCHED_REVISION="latest"
 # `DRYNET_DEFAULT_REVISION="..."` shape. Override with the DRYNET_REVISION
 # env var (`just test-it --bitcoind drynetN` does this) to fetch a
 # different tag.
-DRYNET_DEFAULT_REVISION="drynet3"
+DRYNET_DEFAULT_REVISION="drynet4"
 DRYNET_REVISION="${DRYNET_REVISION:-$DRYNET_DEFAULT_REVISION}"
+
+case "$DRYNET_REVISION" in
+    drynet4) DRYNET_REGTEST_MAGIC="eca5d434" ;;
+    *)       DRYNET_REGTEST_MAGIC="" ;;
+esac
 
 # Print the `--bitcoind` flavor of each CI matrix entry, one per line, and
 # exit. Lets run_integration_tests.sh (`--bitcoind all`) reuse this
@@ -51,6 +56,14 @@ if [ "${1:-}" = '--print-flavors' ]; then
     exit 0
 fi
 
+# Print the drynet build's regtest magic (empty if it uses the stock bytes) and
+# exit, so CI and run_integration_tests.sh read it from here rather than
+# repeating the literal. Honors DRYNET_REVISION like the rest of the script.
+if [ "${1:-}" = '--print-drynet-magic' ]; then
+    echo "$DRYNET_REGTEST_MAGIC"
+    exit 0
+fi
+
 PATCHED_DIR="$DEPS_DIR/bitcoin-patched-$PATCHED_REVISION"
 DRYNET_DIR="$DEPS_DIR/bitcoin-ecash-$DRYNET_REVISION"
 UNPATCHED_DIR="$DEPS_DIR/bitcoin-stock-$BITCOIN_VERSION"
@@ -59,6 +72,16 @@ ELECTRS_DIR="$DEPS_DIR/electrs-$ELECTRS_VERSION"
 # Pre-mined signet chain, reused across runs. Not built here (it needs the
 # integration-test binary); `just test-it` mines it on first use.
 SIGNET_CHAIN_DIR="$DEPS_DIR/signet-chain"
+# The chain is a datadir written by one specific bitcoind, and its block files
+# carry that build's magic. bitcoin-patched and stock derive the same magic from
+# the signet challenge, so they can share a chain. A build that rebrands the
+# magic cannot read theirs and needs its own. CI keys its signet-chain cache 
+# by bitcoind build for this same reason.
+if [ -n "$DRYNET_REGTEST_MAGIC" ]; then
+    DRYNET_SIGNET_CHAIN_DIR="$SIGNET_CHAIN_DIR-$DRYNET_REVISION"
+else
+    DRYNET_SIGNET_CHAIN_DIR="$SIGNET_CHAIN_DIR"
+fi
 
 # `releases.drivechain.info` only publishes patched bitcoin for
 # x86_64-{linux,darwin,windows}. arm64 falls back to the x86_64 darwin
@@ -170,16 +193,19 @@ fi
 # mirroring the stock CI matrix entries.
 write_env_file() {
     local env_file="$1" bins_dir="$2" unpatched_dir="$3" has_drivechain="$4"
+    local regtest_magic="${5:-}"
+    local signet_chain_dir="${6:-$SIGNET_CHAIN_DIR}"
     cat > "$env_file" <<EOF
 BIP300301_ENFORCER='target/debug/bip300301_enforcer'
 BITCOIND='$bins_dir/bitcoind'
 BITCOIND_HAS_DRIVECHAIN='$has_drivechain'
+BITCOIND_REGTEST_MAGIC='$regtest_magic'
 BITCOIND_UNPATCHED='$unpatched_dir/bitcoind'
 BITCOIN_CLI='$bins_dir/bitcoin-cli'
 BITCOIN_UTIL='$bins_dir/bitcoin-util'
 ELECTRS='$ELECTRS_BIN'
 SIGNET_MINER='$SIGNET_REPO_DIR/contrib/signet/miner'
-SIGNET_CHAIN_DIR='$SIGNET_CHAIN_DIR'
+SIGNET_CHAIN_DIR='$signet_chain_dir'
 EOF
     echo "Wrote $env_file"
 }
@@ -187,7 +213,8 @@ EOF
 echo
 write_env_file "$REPO_ROOT/integrationtests.env" "$PATCHED_DIR" "$UNPATCHED_DIR" 1
 write_env_file "$REPO_ROOT/integrationtests.unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR" 0
-write_env_file "$REPO_ROOT/integrationtests.$DRYNET_REVISION.env" "$DRYNET_DIR" "$UNPATCHED_DIR" 1
+write_env_file "$REPO_ROOT/integrationtests.$DRYNET_REVISION.env" "$DRYNET_DIR" "$UNPATCHED_DIR" 1 \
+    "$DRYNET_REGTEST_MAGIC" "$DRYNET_SIGNET_CHAIN_DIR"
 for v in $ALL_BITCOIN_VERSIONS; do
     STOCK_DIR="$DEPS_DIR/bitcoin-stock-$v"
     write_env_file "$REPO_ROOT/integrationtests.stock-$v.env" "$STOCK_DIR" "$STOCK_DIR" 0

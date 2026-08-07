@@ -96,13 +96,22 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         wallet_electrum_http_port: 0,
     };
 
+    // A bitcoind build that rebrands the P2P magic writes its own bytes as the
+    // per-block prefix in blk*.dat, so the parser has to be told which to
+    // expect. Without this the drynet4 flavor cannot parse block files at all.
+    let mut enforcer_args = Vec::new();
+    if let Some(magic) = crate::setup::bitcoind_regtest_magic() {
+        tracing::info!("Node build uses a non-stock regtest magic: {magic}");
+        enforcer_args.push(format!("--network-magic={magic}"));
+    }
+
     tracing::info!("Starting enforcer");
-    let _enforcer_task = enforcer.spawn_command_with_args::<_, String, _, _, _>(
+    let _enforcer_task = enforcer.spawn_command_with_args(
         [(
             "RUST_LOG",
             "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
         )],
-        [],
+        enforcer_args,
         move |err| {
             let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
         },

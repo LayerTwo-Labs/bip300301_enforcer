@@ -85,7 +85,13 @@ case "$flavor" in
         # (BIP300 opcodes), matching the stock CI matrix entries.
         skip_patterns=('deposit_withdraw_roundtrip')
         ;;
-    drynet*) setup_env=("DRYNET_REVISION=$flavor") ;;
+    drynet*)
+        setup_env=("DRYNET_REVISION=$flavor")
+        if [ -n "$(DRYNET_REVISION="$flavor" \
+            "$REPO_ROOT/scripts/setup_integration_tests.sh" --print-drynet-magic)" ]; then
+            skip_patterns=('peer_bmm_request')
+        fi
+        ;;
     *)
         echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, or all)" >&2
         exit 1
