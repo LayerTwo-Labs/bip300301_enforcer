@@ -1244,7 +1244,7 @@ async fn main() -> Result<()> {
 
     // Resolve BIP300 thresholds + enforcement activation height: from the
     // explicit --network-preset if given, otherwise from the node's network.
-    let network_params = match cli.network_preset {
+    let mut network_params = match cli.network_preset {
         Some(preset) => {
             let params = preset.params();
             tracing::info!(
@@ -1257,6 +1257,17 @@ async fn main() -> Result<()> {
         }
         None => NetworkParams::for_network(info.chain),
     };
+    // An explicit `--network-magic` wins over the preset's: the preset names a
+    // chain (drynet4 runs on `main`), but a forked build rebrands the magic on
+    // every network it supports, so running one on regtest needs a value no
+    // preset can supply.
+    if let Some(magic) = cli.network_magic {
+        tracing::info!(
+            network_magic = %bitcoin::p2p::Magic::from_bytes(magic),
+            "Overriding network magic"
+        );
+        network_params.network_magic = Some(magic);
+    }
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which

@@ -179,7 +179,11 @@ pub fn sync_from_directory(
         index_path.display()
     );
 
-    let mut parser = parse_block_files::BlockDirectoryParser::new(main_blocks_dir, network)?;
+    let mut parser = parse_block_files::BlockDirectoryParser::new(
+        main_blocks_dir,
+        network,
+        handler.params.network_magic,
+    )?;
 
     let is_genesis_block =
         first_missing_block.to_raw_hash().as_byte_array() == network.chain_hash().as_bytes();

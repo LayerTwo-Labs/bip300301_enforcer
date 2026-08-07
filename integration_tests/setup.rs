@@ -869,6 +869,12 @@ impl BitcoindKind {
     }
 }
 
+pub fn bitcoind_regtest_magic() -> Option<String> {
+    std::env::var("BITCOIND_REGTEST_MAGIC")
+        .ok()
+        .filter(|magic| !magic.is_empty())
+}
+
 fn bitcoind_path(
     bin_paths: &BinPaths,
     bitcoind_kind: BitcoindKind,

@@ -99,6 +99,9 @@ pub struct NetworkParams {
     /// Datadir namespace suffix (e.g. `main-drynet1`), so preset state never
     /// collides with a non-preset enforcer datadir for the same chain.
     pub datadir_suffix: Option<&'static str>,
+    /// P2P message-start bytes.`None` means the stock magic for the
+    /// reported network.
+    pub network_magic: Option<[u8; 4]>,
 }
 
 impl NetworkParams {
@@ -109,6 +112,7 @@ impl NetworkParams {
             thresholds: Thresholds::for_network(network),
             bip300_activation_height: 0,
             datadir_suffix: None,
+            network_magic: None,
         }
     }
 
@@ -117,6 +121,7 @@ impl NetworkParams {
             thresholds: Thresholds::DRYNET1,
             bip300_activation_height: 955_584,
             datadir_suffix: Some("drynet1"),
+            network_magic: None,
         }
     }
 
@@ -127,6 +132,7 @@ impl NetworkParams {
             thresholds: Thresholds::DRYNET1,
             bip300_activation_height: 957_600,
             datadir_suffix: Some("drynet2"),
+            network_magic: None,
         }
     }
 
@@ -135,6 +141,20 @@ impl NetworkParams {
             thresholds: Thresholds::DRYNET1,
             bip300_activation_height: 957_600,
             datadir_suffix: Some("drynet3"),
+            network_magic: None,
+        }
+    }
+
+    /// Dry run v4: a later mainnet fork point than [`Self::drynet3`], same
+    /// hours-scale thresholds. Unlike the earlier drynets, this build rebrands
+    /// the P2P magic instead of reusing mainnet's `f9beb4d9`, so its block
+    /// files need the override.
+    pub const fn drynet4() -> Self {
+        Self {
+            thresholds: Thresholds::DRYNET1,
+            bip300_activation_height: 961_632,
+            datadir_suffix: Some("drynet4"),
+            network_magic: Some([0xec, 0xa5, 0xd4, 0x04]),
         }
     }
 
@@ -145,6 +165,7 @@ impl NetworkParams {
             thresholds: Thresholds::SHORT,
             bip300_activation_height: 10,
             datadir_suffix: Some("test-activation"),
+            network_magic: None,
         }
     }
 }
