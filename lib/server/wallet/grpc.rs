@@ -271,6 +271,11 @@ impl WalletService for crate::wallet::Wallet {
             unwrap_u64(fee_sats)
                 .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("fee_sats"))?,
         );
+        if fee > value {
+            return Err(ConnectError::invalid_argument(
+                "fee_sats must not be greater than value_sats",
+            ));
+        }
         if !self
             .is_sidechain_active(sidechain_number)
             .map_err(|err| err.builder().to_connect_error())?
