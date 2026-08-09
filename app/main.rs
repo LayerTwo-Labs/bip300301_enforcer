@@ -1109,8 +1109,10 @@ async fn main() -> Result<()> {
     let ts = tokio::time::Instant::now();
     let mut retries = 0;
     loop {
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
-        const MAX_RETRIES: u32 = 5;
+        // A Bitcoin Core node with a large datadir takes tens of seconds to
+        // open its REST interface
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+        const MAX_RETRIES: u32 = 180;
 
         match mainchain_rest_client.get_chain_info().await {
             Ok(_) => {
@@ -1135,7 +1137,7 @@ async fn main() -> Result<()> {
                     )));
                 }
                 retries += 1;
-                tracing::debug!(
+                tracing::info!(
                     err = %err,
                     "Mainchain REST server not ready yet, retrying ({retries}/{MAX_RETRIES})...",
                 );
