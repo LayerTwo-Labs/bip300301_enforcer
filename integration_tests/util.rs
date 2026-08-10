@@ -488,6 +488,53 @@ pub fn format_test_output_files(test_name: &str, files: &[FileWithConfig]) -> St
     output
 }
 
+/// PIDs of harness-spawned processes that are still running.
+///
+/// `kill_on_drop` handles every path where a destructor runs, but Rust runs no
+/// destructors on SIGINT or SIGTERM — so a Ctrl-C'd or `timeout`-killed run
+/// leaves bitcoind, electrs and the enforcer reparented and alive. They hold
+/// the harness's fixed port range indefinitely, and the next run's tests then
+/// stall at startup until they hit the per-test timeout, which looks like a
+/// mystery flake rather than a port conflict. Orphans surviving nine days were
+/// observed before this registry existed.
+///
+/// Best-effort by nature: a PID can already be gone by the time we signal it,
+/// which is harmless, and the guard removes entries as children exit so the
+/// window for PID reuse stays small.
+pub static LIVE_CHILDREN: std::sync::Mutex<std::collections::BTreeSet<u32>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+fn live_children() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<u32>> {
+    // A panicking test must not disable cleanup for the rest of the run.
+    LIVE_CHILDREN.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+/// Removes its PID from [`LIVE_CHILDREN`] however the spawning future ends —
+/// returned, cancelled, or unwound.
+struct ChildPidGuard(u32);
+
+impl Drop for ChildPidGuard {
+    fn drop(&mut self) {
+        live_children().remove(&self.0);
+    }
+}
+
+/// SIGKILL every child the harness still has running.
+///
+/// Called from the signal handler, where there is no runtime left to await on,
+/// so this is deliberately synchronous and ignores every error.
+pub fn kill_live_children() -> usize {
+    let pids: Vec<u32> = live_children().iter().copied().collect();
+    for pid in &pids {
+        drop(
+            std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status(),
+        );
+    }
+    pids.len()
+}
+
 /// Wrapper around `JoinHandle` that aborts the task on drop
 #[derive(Debug)]
 #[repr(transparent)]
@@ -549,6 +596,8 @@ where
     let mut cmd = tokio::process::Command::new(command.as_ref());
     cmd.envs(envs);
     cmd.args(args);
+    // Covers every path where a destructor runs: normal exit, task abort, and
+    // the per-test timeout. It cannot cover signals — see `LIVE_CHILDREN`.
     cmd.kill_on_drop(true);
     let command: String = command.as_ref().to_string_lossy().to_string();
     let stderr_fp = dir.join("stderr.txt");
@@ -586,6 +635,13 @@ where
                 return anyhow::anyhow!("Spawning command {command} failed: `{err:#}`");
             }
         };
+        // Held for as long as this future owns the child, so a signal handler
+        // can reach it. Dropped with the future, whether it completes or is
+        // cancelled.
+        let _pid_guard = cmd.id().map(|pid| {
+            live_children().insert(pid);
+            ChildPidGuard(pid)
+        });
 
         tracing::debug!("Waiting for `{command}` to finish");
         let exit_status = match cmd.wait().await {
