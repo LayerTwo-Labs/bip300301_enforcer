@@ -107,8 +107,52 @@ fn filter_matches(args: &libtest_mimic::Arguments, trial: &libtest_mimic::Trial)
     true
 }
 
+/// Kill harness-spawned processes on SIGINT/SIGTERM, then exit.
+///
+/// Without this, interrupting a run (Ctrl-C, `timeout`, a cancelled CI job)
+/// terminates the runner without unwinding, so no destructor runs and
+/// `kill_on_drop` never fires. bitcoind, electrs and the enforcer survive,
+/// holding the harness's fixed ports, and wedge later runs at startup.
+fn spawn_signal_cleanup() {
+    use bip300301_enforcer_integration_tests::util::kill_live_children;
+    use tokio::signal::unix::{SignalKind, signal};
+
+    tokio::spawn(async move {
+        let mut interrupt = match signal(SignalKind::interrupt()) {
+            Ok(stream) => stream,
+            Err(err) => {
+                tracing::warn!("no SIGINT handler; children may leak on Ctrl-C: {err}");
+                return;
+            }
+        };
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(err) => {
+                tracing::warn!("no SIGTERM handler; children may leak if killed: {err}");
+                return;
+            }
+        };
+        let signal_name = tokio::select! {
+            _ = interrupt.recv() => "SIGINT",
+            _ = terminate.recv() => "SIGTERM",
+        };
+        let killed = kill_live_children();
+        // stderr, not tracing: harness logs are off unless `--log-level` is
+        // passed, and silently reaping five processes on Ctrl-C is worse than
+        // one line of output.
+        #[expect(clippy::print_stderr)]
+        {
+            eprintln!("\n{signal_name}: killed {killed} harness child process(es)");
+        }
+        // Exit rather than unwinding: the runtime is mid-teardown and the
+        // children are already gone, so there is nothing left worth draining.
+        std::process::exit(130);
+    });
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    spawn_signal_cleanup();
     match run().await {
         Ok(code) => code,
         Err(err) => {
