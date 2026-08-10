@@ -67,7 +67,7 @@ pub enum MineGbtError {
     Var(#[from] Arc<VarError>),
 }
 
-async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, MineGbtError> {
+pub async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, MineGbtError> {
     use cusf_enforcer_mempool::server::RpcClient;
     let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
     gbt_request.capabilities.insert("coinbasetxn".to_owned());

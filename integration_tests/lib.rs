@@ -10,6 +10,7 @@ mod test_consecutive_deposits;
 mod test_file_based_block_parser;
 mod test_generate_to_address;
 mod test_inactive_drivechain_output;
+mod test_inactive_slot_bmm_request;
 mod test_invalid_block;
 mod test_no_secrets_in_logs;
 mod test_peer_bmm_request;
