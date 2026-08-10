@@ -518,6 +518,45 @@ async fn is_address_port_open(addr: &str) -> Result<bool, std::io::Error> {
     }
 }
 
+/// Ask the node to write a fresh mempool dump before we read it.
+///
+/// Core only dumps on shutdown or on request, so without this the file is as
+/// old as the node's last restart and would seed almost nothing. Best-effort in
+/// the same sense as the read itself: on failure we still try the file (a stale
+/// dump beats none), and a stale or absent one just means more RPC.
+///
+/// Note that `savemempool` writes to the node's OWN `<datadir>/<chain>/
+/// mempool.dat`. It takes no path and cannot be pointed elsewhere. So this
+/// only refreshes what `--node-mempool-dat` reads if that flag points at the
+/// node's real dump. Aiming it anywhere else still works, but the file is only
+/// as fresh as whoever last wrote it.
+///
+/// This holds the node's mempool lock for the duration (~0.5s for a 76k
+/// tx mainnet mempool), so it only runs when a path was configured.
+async fn refresh_mempool_dat<RpcClient>(rpc_client: &RpcClient)
+where
+    RpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
+{
+    let start = std::time::Instant::now();
+    match rpc_client
+        .request::<bitcoin_jsonrpsee::jsonrpsee::core::JsonValue, _>(
+            "savemempool",
+            bitcoin_jsonrpsee::jsonrpsee::rpc_params![],
+        )
+        .await
+    {
+        Ok(_) => {
+            tracing::debug!("node dumped its mempool to disk in {:?}", start.elapsed());
+        }
+        Err(err) => {
+            tracing::warn!(
+                "node would not dump its mempool, \
+                 reading whatever is already on disk: {err}"
+            );
+        }
+    }
+}
+
 /// Initialize a mempool sync. Returns the sync handle plus a receiver that
 /// fires if the background sync task hits an error. Caller should
 /// race the receiver against the shutdown signal
@@ -525,6 +564,7 @@ async fn sync_mempool<Enforcer, RpcClient>(
     mut enforcer: Enforcer,
     rpc_client: RpcClient,
     zmq_addr_sequence: &str,
+    mempool_dat: Option<&Path>,
     cancel: CancellationToken,
 ) -> Result<
     (
@@ -556,10 +596,16 @@ where
         }
     }
 
+    // Refresh before reading, or the dump is as old as the node's last restart.
+    if mempool_dat.is_some() {
+        refresh_mempool_dat(&rpc_client).await;
+    }
+
     let init_sync_mempool_future = cusf_enforcer_mempool::mempool::init_sync_mempool(
         &mut enforcer,
         rpc_client,
         zmq_addr_sequence,
+        mempool_dat,
         Box::pin(cancel.cancelled_owned()).fuse(),
     )
     .inspect_ok(|_| tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete"))
@@ -668,6 +714,7 @@ async fn run_validator_mempool_task(
     validator: Validator,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     zmq_addr_sequence: String,
+    mempool_dat: Option<PathBuf>,
     cancel: CancellationToken,
 ) -> Result<(), miette::Report> {
     tracing::info!("mempool sync task w/validator: starting");
@@ -677,6 +724,7 @@ async fn run_validator_mempool_task(
         validator,
         mainchain_client,
         &zmq_addr_sequence,
+        mempool_dat.as_deref(),
         cancel.clone(),
     )
     .await
@@ -782,6 +830,7 @@ async fn run_block_producer_mempool_task<BP>(
     gbt: Option<GbtConfig>,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     zmq_addr_sequence: String,
+    mempool_dat: Option<PathBuf>,
     cancel: CancellationToken,
 ) -> Result<(), miette::Report>
 where
@@ -792,6 +841,7 @@ where
         producer,
         mainchain_client.clone(),
         &zmq_addr_sequence,
+        mempool_dat.as_deref(),
         cancel.clone(),
     )
     .await
@@ -861,7 +911,15 @@ async fn run_wallet_mempool_task(
         None
     };
 
-    run_block_producer_mempool_task(wallet, gbt, mainchain_client, zmq_addr_sequence, cancel).await
+    run_block_producer_mempool_task(
+        wallet,
+        gbt,
+        mainchain_client,
+        zmq_addr_sequence,
+        cli.node_blocks_dir_opts.mempool_dat.clone(),
+        cancel,
+    )
+    .await
 }
 
 fn report_sync_state(validator: &Validator, state_file: &Path) -> Result<SyncStateSummary> {
@@ -1521,9 +1579,16 @@ async fn main() -> Result<()> {
                 });
             }
             (true, Either::Left(validator)) => {
+                let mempool_dat = cli.node_blocks_dir_opts.mempool_dat.clone();
                 tasks.spawn(async move {
-                    let res =
-                        run_validator_mempool_task(validator, mainchain_client, zmq, cancel).await;
+                    let res = run_validator_mempool_task(
+                        validator,
+                        mainchain_client,
+                        zmq,
+                        mempool_dat,
+                        cancel,
+                    )
+                    .await;
                     ("validator mempool task", res)
                 });
             }
@@ -1545,12 +1610,14 @@ async fn main() -> Result<()> {
                 } else {
                     None
                 };
+                let mempool_dat = cli.node_blocks_dir_opts.mempool_dat.clone();
                 tasks.spawn(async move {
                     let res = run_block_producer_mempool_task(
                         producer,
                         gbt,
                         mainchain_client,
                         zmq,
+                        mempool_dat,
                         cancel,
                     )
                     .await;

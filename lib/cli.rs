@@ -280,6 +280,11 @@ pub struct NodeBlocksDirConfig {
     /// Path to the Bitcoin Core blocks directory.
     #[arg(long = "node-blocks-dir")]
     pub dir: Option<PathBuf>,
+    /// Path to the node's `mempool.dat`. When set, the initial mempool sync
+    /// reads transactions from this file instead of fetching every one of them
+    /// over RPC, and falls back to RPC for whatever the file cannot supply.
+    #[arg(long = "node-mempool-dat")]
+    pub mempool_dat: Option<PathBuf>,
 }
 
 #[derive(Args, Clone)]

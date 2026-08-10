@@ -886,6 +886,20 @@ pub fn tests(
         },
         crate::test_file_based_block_parser::test_file_based_block_parser,
     )]);
+    // `new_trial` for the same reason as the block-file parser above: the path
+    // it needs lives in a temp dir that does not exist until setup runs, so the
+    // enforcer has to be spawned by the test itself.
+    async_trials.extend([new_trial(
+        "mempool_dat_sync".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_mempool_dat_sync::test_mempool_dat_sync,
+    )]);
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
     // GetBlockTemplate mode mines from templates served by the enforcer's own

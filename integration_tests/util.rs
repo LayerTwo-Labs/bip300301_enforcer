@@ -866,6 +866,8 @@ pub struct Enforcer {
     /// Recipient of the block reward in served block templates.
     pub coinbase_recipient: Option<String>,
     pub node_blocks_dir: Option<PathBuf>,
+    /// Seed the initial mempool sync from the node's `mempool.dat`.
+    pub node_mempool_dat: Option<PathBuf>,
     pub node_rpc_user: String,
     pub node_rpc_pass: String,
     pub node_rpc_port: u16,
@@ -903,6 +905,10 @@ impl Enforcer {
 
         if let Some(node_blocks_dir) = &self.node_blocks_dir {
             default_args.push(format!("--node-blocks-dir={}", node_blocks_dir.display()));
+        }
+
+        if let Some(node_mempool_dat) = &self.node_mempool_dat {
+            default_args.push(format!("--node-mempool-dat={}", node_mempool_dat.display()));
         }
 
         if self.enable_wallet {
