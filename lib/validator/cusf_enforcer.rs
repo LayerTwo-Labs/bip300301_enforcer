@@ -473,12 +473,18 @@ impl CusfEnforcer for Validator {
                     )
                     .map_err(db::Error::from)?;
                 rwtxn.commit()?;
-                // Size in bytes of a BMM accept output
-                const BMM_ACCEPT_OUTPUT_SIZE: i64 = {
+
+                /// Weight, in wu, of the BMM accept (M7) coinbase output that block
+                /// production appends for an accepted BMM request (M8).
+                /// The M7 txout is pure non-witness data, so its weight is
+                /// `size * WITNESS_SCALE_FACTOR`, where the size in bytes is
+                /// `value (8) + script_pubkey length prefix (1) + script_pubkey (39)`.
+                const BMM_ACCEPT_OUTPUT_WEIGHT: i64 = {
                     let spk_size: i64 = 39;
-                    spk_size + 1 + 8
+                    (8 + 1 + spk_size) * bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR as i64
                 };
-                (conflicts_with, BMM_ACCEPT_OUTPUT_SIZE)
+
+                (conflicts_with, BMM_ACCEPT_OUTPUT_WEIGHT)
             } else {
                 (HashSet::new(), 0)
             };
@@ -521,5 +527,36 @@ pub(crate) fn get_ctips_after(
     {
         Ok(ctips) => Ok(Ok(ctips?)),
         Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miette::IntoDiagnostic as _;
+
+    use crate::{
+        messages::CoinbaseBuilder,
+        types::{BmmCommitment, SidechainNumber},
+    };
+
+    /// `TxAcceptAction::weight_tweak` is specified in weight units, so the
+    /// tweak reported for an M8 must be the weight of the M7 accept output
+    /// that block production will append for it, not its size in bytes.
+    #[test]
+    fn bmm_accept_output_weight_matches_produced_txout() -> miette::Result<()> {
+        let mut coinbase_txouts = Vec::new();
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts).into_diagnostic()?;
+        coinbase_builder
+            .bmm_accept(SidechainNumber(0), BmmCommitment([0; 32]))
+            .into_diagnostic()?;
+        let coinbase_txouts_suffix = coinbase_builder.build_extension().into_diagnostic()?;
+        let [bmm_accept_txout] = coinbase_txouts_suffix.as_slice() else {
+            return Err(miette::miette!(
+                "expected exactly one BMM accept txout, got {}",
+                coinbase_txouts_suffix.len()
+            ));
+        };
+        assert_eq!(192, bmm_accept_txout.weight().to_wu() as i64);
+        Ok(())
     }
 }
