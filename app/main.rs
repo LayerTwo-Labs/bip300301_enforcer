@@ -636,25 +636,28 @@ where
     Ok((mempool, err_rx))
 }
 
+/// Returns `Ok(None)` on clean shutdown, `Ok(Some(err))` if the sync task
+/// reported an error, and `Err` if the task exited without reporting one.
 async fn wait_for_error_or_shutdown<E>(
     cancel: CancellationToken,
     err_rx: oneshot::Receiver<E>,
-) -> Result<(), miette::Report>
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
+) -> Result<Option<E>, miette::Report> {
     tokio::select! {
         biased;
-        () = cancel.cancelled() => Ok(()),
+        () = cancel.cancelled() => Ok(None),
         recv = err_rx => match recv {
-            Ok(err) => Err(miette::Report::from_err(err)),
+            Ok(err) => Ok(Some(err)),
             Err(oneshot::Canceled) if !cancel.is_cancelled() => {
                 Err(miette!("mempool sync task exited unexpectedly"))
             }
-            Err(oneshot::Canceled) => Ok(()),
+            Err(oneshot::Canceled) => Ok(None),
         }
     }
 }
+
+/// Pause between mempool re-syncs, so a node that is dropping ZMQ messages
+/// continuously is not hammered.
+const MEMPOOL_RESYNC_DELAY: Duration = Duration::from_secs(1);
 
 async fn get_zmq_addr_sequence(
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
@@ -729,11 +732,15 @@ async fn run_validator_mempool_task(
     )
     .await
     .map_err(miette::Report::from_err)?;
-    wait_for_error_or_shutdown(cancel, err_rx).await
+    match wait_for_error_or_shutdown(cancel, err_rx).await? {
+        Some(err) => Err(miette::Report::from_err(err)),
+        None => Ok(()),
+    }
 }
 
 /// Everything the block template server needs, beyond the producer itself and
 /// the connection to the node.
+#[derive(Clone)]
 struct GbtConfig {
     /// Recipient of the block reward in served templates.
     mining_reward_address: bitcoin::Address,
@@ -834,40 +841,68 @@ async fn run_block_producer_mempool_task<BP>(
     cancel: CancellationToken,
 ) -> Result<(), miette::Report>
 where
-    BP: CusfBlockProducer + Send + Sync + 'static,
+    BP: CusfBlockProducer + Clone + Send + Sync + 'static,
     error::MempoolTask<BP>: Into<miette::Report>,
 {
-    let (mempool, err_rx) = sync_mempool(
-        producer,
-        mainchain_client.clone(),
-        &zmq_addr_sequence,
-        mempool_dat.as_deref(),
-        cancel.clone(),
-    )
-    .await
-    .map_err(miette::Report::from_err)?;
+    // Re-sync rather than exit on a recoverable sync failure. A ZMQ sequence
+    // gap blocks the stream permanently, but a fresh sync clears it.
+    loop {
+        let sync = sync_mempool(
+            producer.clone(),
+            mainchain_client.clone(),
+            &zmq_addr_sequence,
+            mempool_dat.as_deref(),
+            cancel.clone(),
+        )
+        .await;
+        let (mempool, err_rx) = match sync {
+            Ok(synced) => synced,
+            Err(err) if err.is_resyncable() && !cancel.is_cancelled() => {
+                tracing::warn!(
+                    err = %ErrorChain::new(&err),
+                    "initial mempool sync failed recoverably, re-syncing",
+                );
+                tokio::time::sleep(MEMPOOL_RESYNC_DELAY).await;
+                continue;
+            }
+            Err(err) => return Err(miette::Report::from_err(err)),
+        };
 
-    let (server_handle, _mempool) = match gbt {
-        Some(gbt) => {
-            let handle =
-                spawn_block_template_server(gbt, mempool, mainchain_client.clone()).await?;
-            (Some(handle), None)
+        let (server_handle, _mempool) = match gbt.clone() {
+            Some(gbt) => {
+                let handle =
+                    spawn_block_template_server(gbt, mempool, mainchain_client.clone()).await?;
+                (Some(handle), None)
+            }
+            None => (None, Some(mempool)),
+        };
+
+        let err = wait_for_error_or_shutdown(cancel.clone(), err_rx).await;
+
+        // Always stop the server before looping: the next iteration rebinds
+        // the same address
+        if let Some(server_handle) = server_handle {
+            tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
+
+            // This should never fail. The only failure mode is the server
+            // already being stopped, and we have full control over that.
+            if let Err(err) = server_handle.stop() {
+                tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
+            }
         }
-        None => (None, Some(mempool)),
-    };
 
-    let result = wait_for_error_or_shutdown(cancel, err_rx).await;
-
-    if let Some(server_handle) = server_handle {
-        tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
-
-        // This should never fail. The only failure mode is the server
-        // already being stopped, and we have full control over that.
-        if let Err(err) = server_handle.stop() {
-            tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
+        match err? {
+            None => return Ok(()),
+            Some(err) if err.is_resyncable() && !cancel.is_cancelled() => {
+                tracing::warn!(
+                    err = %ErrorChain::new(&err),
+                    "mempool sync failed recoverably, re-syncing",
+                );
+                tokio::time::sleep(MEMPOOL_RESYNC_DELAY).await;
+            }
+            Some(err) => return Err(miette::Report::from_err(err)),
         }
     }
-    result
 }
 
 async fn run_wallet_mempool_task(

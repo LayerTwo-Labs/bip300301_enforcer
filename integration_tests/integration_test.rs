@@ -26,7 +26,7 @@ use crate::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
         wait_for_pending_proposal, wait_for_tx_in_mempool,
     },
-    test_peer_bmm_request, test_unconfirmed_transactions,
+    test_peer_bmm_request, test_unconfirmed_transactions, test_zmq_sequence_gap,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
 
@@ -859,6 +859,24 @@ pub fn tests(
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
+    async_trials.push(new_trial_with_setup_opts(
+        "zmq_sequence_gap".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts {
+            bitcoind_args: test_zmq_sequence_gap::BITCOIND_ARGS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ..Default::default()
+        },
+        test_zmq_sequence_gap::test_zmq_sequence_gap,
+    ));
     async_trials.push(peer_bmm_request_trial);
     async_trials.push(new_trial_with_setup_opts(
         "activation_height".to_string(),

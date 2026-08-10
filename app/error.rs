@@ -2,7 +2,10 @@
 
 use std::net::SocketAddr;
 
-use cusf_enforcer_mempool::mempool::{InitialSyncMempoolError, SyncTaskError};
+use cusf_enforcer_mempool::{
+    cusf_enforcer::InitialSyncError,
+    mempool::{InitialSyncMempoolError, SyncTaskError},
+};
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -42,4 +45,27 @@ where
     },
     #[error("ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}")]
     ZmqNotReachable { zmq_addr_sequence: String },
+}
+
+impl<Enforcer> MempoolTask<Enforcer>
+where
+    Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
+{
+    /// Whether a fresh mempool sync can clear this.
+    ///
+    /// bitcoind drops ZMQ notifications once the publisher's high-water mark
+    /// is reached. The sync task rightly refuses to continue across the gap
+    /// since a dropped message means its mempool view is stale. Only a re-sync
+    /// clears it, and re-syncing is strictly better than exiting the process and
+    /// taking the gRPC and block template servers down with it.
+    pub fn is_resyncable(&self) -> bool {
+        let (Self::SyncTask(inner) | Self::InitialSync(inner)) = self else {
+            return false;
+        };
+        matches!(
+            inner,
+            SyncTaskError::SequenceStream(_)
+                | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_))
+        )
+    }
 }
