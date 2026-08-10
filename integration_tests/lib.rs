@@ -20,4 +20,5 @@ mod test_unconfirmed_transactions;
 mod test_wallet_large_gap_sync;
 mod test_wallet_less_block_template;
 mod test_wallet_reorg_multi_block;
+mod test_zmq_sequence_gap;
 pub mod util;
