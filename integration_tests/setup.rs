@@ -532,6 +532,57 @@ pub async fn wait_for_tx_in_mempool(
     .await
 }
 
+/// Concatenate the enforcer's rolling log files.
+///
+/// Not `stdout.txt`: that only holds the run the harness spawned most recently,
+/// whereas the rolling log in the data dir spans restarts — which is what a
+/// test asserting across a restart needs.
+///
+/// Errors if there is no content yet, so callers polling for a line get a
+/// "not yet" rather than silently matching against an empty string.
+pub fn read_enforcer_log(enforcer_dir: &std::path::Path) -> anyhow::Result<String> {
+    let log_dir = enforcer_dir.join("logs");
+    let mut combined = String::new();
+    for entry in std::fs::read_dir(&log_dir)? {
+        let path = entry?.path();
+        if path.is_file() {
+            combined.push_str(&std::fs::read_to_string(&path)?);
+        }
+    }
+    anyhow::ensure!(
+        !combined.is_empty(),
+        "no enforcer log content found in {}",
+        log_dir.display()
+    );
+    Ok(combined)
+}
+
+/// Poll the enforcer's log until `pred` matches, returning the log that
+/// satisfied it.
+///
+/// A failed read counts as "not yet": the log directory does not exist until
+/// the enforcer has started, and a test may begin polling before that.
+pub async fn wait_for_enforcer_log<Pred>(
+    enforcer_dir: &std::path::Path,
+    what: &str,
+    mut pred: Pred,
+) -> anyhow::Result<String>
+where
+    Pred: FnMut(&str) -> bool,
+{
+    wait_until(what, || {
+        // The read is synchronous, so do it here and hand `wait_until` a ready
+        // future; a read error propagates as a failed check, which it treats as
+        // "not yet" and reports if the deadline runs out.
+        let matched = read_enforcer_log(enforcer_dir).map(|log| pred(&log));
+        async move { matched }
+    })
+    .await?;
+    // Re-read rather than threading the matched contents out of the closure.
+    // The log is append-only, so this can only be a superset of what matched.
+    read_enforcer_log(enforcer_dir)
+}
+
 /// Wait until a sidechain proposal for `sidechain_number` has been persisted by
 /// the block producer, so that the next block it builds carries the M1.
 ///
@@ -1160,6 +1211,7 @@ impl PostSetup {
             enable_block_template_server: matches!(mode, Mode::GetBlockTemplate),
             coinbase_recipient: (!enable_wallet).then(|| mining_address.to_string()),
             node_blocks_dir: None,
+            node_mempool_dat: None,
             node_rpc_user: bitcoind.rpc_user,
             node_rpc_pass: bitcoind.rpc_pass,
             node_rpc_port: bitcoind.rpc_port,
@@ -1293,6 +1345,7 @@ impl PostSetup {
             enable_block_template_server: matches!(self.mode, Mode::GetBlockTemplate),
             coinbase_recipient: None,
             node_blocks_dir: None,
+            node_mempool_dat: None,
             node_rpc_user: self
                 .bitcoin_cli
                 .rpc_user

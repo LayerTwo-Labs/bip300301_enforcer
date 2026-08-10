@@ -25,7 +25,7 @@ use tokio::time::sleep;
 
 use crate::{
     integration_test::{fund_enforcer, wait_for_wallet_sync},
-    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts},
+    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, read_enforcer_log},
     util::BinPaths,
 };
 
@@ -88,28 +88,6 @@ async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
     }
 }
 
-/// Concatenate the enforcer's rolling log files.
-///
-/// The enforcer's `stdout.txt` only holds the run the harness spawned most
-/// recently, whereas the rolling log in the data dir spans the restart, which
-/// is the run this test needs to make assertions about.
-fn read_enforcer_log(post_setup: &PostSetup) -> anyhow::Result<String> {
-    let log_dir = post_setup.directories.enforcer_dir.join("logs");
-    let mut combined = String::new();
-    for entry in std::fs::read_dir(&log_dir)? {
-        let path = entry?.path();
-        if path.is_file() {
-            combined.push_str(&std::fs::read_to_string(&path)?);
-        }
-    }
-    anyhow::ensure!(
-        !combined.is_empty(),
-        "no enforcer log content found in {}",
-        log_dir.display()
-    );
-    Ok(combined)
-}
-
 pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let pre_setup = PreSetup::new(bin_paths.clone(), Network::Regtest)?;
@@ -166,7 +144,7 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
          but confirmed_sats did not grow: {balance_after:?} (was {balance_before:?})"
     );
 
-    let enforcer_log = read_enforcer_log(&post_setup)?;
+    let enforcer_log = read_enforcer_log(&post_setup.directories.enforcer_dir)?;
     anyhow::ensure!(
         enforcer_log.contains(CHECKPOINT_LOG),
         "expected the wallet to close a {GAP_BLOCKS}-block gap with a checkpoint and full \
