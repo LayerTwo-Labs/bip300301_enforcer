@@ -37,6 +37,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true }
 uuid = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
+
 [features]
 default = ["rustls"]
 openssl = ["bip300301_enforcer_lib/openssl"]

@@ -577,6 +577,12 @@ where
     let (err_tx, err_rx) = oneshot::channel();
     let mempool =
         cusf_enforcer_mempool::mempool::MempoolSync::new(enforcer, synced, |err| async move {
+            // The sync task reports an intentional shutdown as an error.
+            // Dropping the sender without sending keeps that out of the error
+            // channel, so a clean shutdown is never reported as a failure.
+            if matches!(err, cusf_enforcer_mempool::mempool::SyncTaskError::Shutdown) {
+                return;
+            }
             let err = error::MempoolTask::SyncTask(err);
             let _send_err: Result<(), _> = err_tx.send(err);
         });
@@ -592,9 +598,13 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     tokio::select! {
+        biased;
         () = cancel.cancelled() => Ok(()),
         recv = err_rx => match recv {
             Ok(err) => Err(miette::Report::from_err(err)),
+            Err(oneshot::Canceled) if !cancel.is_cancelled() => {
+                Err(miette!("mempool sync task exited unexpectedly"))
+            }
             Err(oneshot::Canceled) => Ok(()),
         }
     }
@@ -1705,4 +1715,52 @@ async fn main() -> Result<()> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::channel::oneshot;
+    use tokio_util::sync::CancellationToken;
+
+    use super::wait_for_error_or_shutdown;
+
+    /// The mempool sync task holds the error sender for as long as it lives, so
+    /// losing the sender without an error means the task is gone and the
+    /// mempool is no longer synced. Reporting that as a clean result makes the
+    /// supervisor at the bottom of `main` log `finished cleanly` and exit 0, so
+    /// a `Restart=on-failure` unit never brings the node back.
+    #[tokio::test]
+    async fn dropped_error_sender_is_not_a_clean_shutdown() {
+        let cancel = CancellationToken::new();
+        let (err_tx, err_rx) = oneshot::channel::<std::io::Error>();
+        drop(err_tx);
+        assert!(
+            wait_for_error_or_shutdown(cancel, err_rx).await.is_err(),
+            "a sync task that vanished must not be reported as a clean shutdown"
+        );
+    }
+
+    /// Cancellation is the intentional shutdown, and still succeeds.
+    #[tokio::test]
+    async fn cancellation_is_a_clean_shutdown() {
+        let cancel = CancellationToken::new();
+        let (_err_tx, err_rx) = oneshot::channel::<std::io::Error>();
+        cancel.cancel();
+        assert!(wait_for_error_or_shutdown(cancel, err_rx).await.is_ok());
+    }
+
+    /// On an intentional shutdown the sync task drops the sender without
+    /// sending, so both arms are ready at once. Cancellation wins, and the
+    /// lost sender must not be reported as a failure.
+    #[tokio::test]
+    async fn cancellation_wins_over_a_dropped_error_sender() {
+        let cancel = CancellationToken::new();
+        let (err_tx, err_rx) = oneshot::channel::<std::io::Error>();
+        cancel.cancel();
+        drop(err_tx);
+        assert!(
+            wait_for_error_or_shutdown(cancel, err_rx).await.is_ok(),
+            "a cancelled sync task dropping its sender is a clean shutdown"
+        );
+    }
 }
