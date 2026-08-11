@@ -1736,6 +1736,29 @@ impl BlockHandler<'_> {
         Ok(None)
     }
 
+    /// Check that `missing_blocks` still describes exactly the blocks that are
+    /// left to connect, ie. that the next block to sync is a child of the
+    /// current tip, or that the tip is `main_tip` if nothing is left.
+    fn missing_blocks_connect_to_tip(
+        &self,
+        missing_blocks: &[BlockHash],
+        main_tip: BlockHash,
+    ) -> Result<bool, error::Sync> {
+        let dbs = self.dbs;
+        let rotxn = dbs.read_txn()?;
+        let tip = dbs
+            .current_chain_tip
+            .try_get(&rotxn, &())?
+            .unwrap_or_else(BlockHash::all_zeros);
+        match missing_blocks.last() {
+            Some(next_block) => {
+                let header_info = dbs.block_hashes.get_header_info(&rotxn, next_block)?;
+                Ok(header_info.prev_block_hash == tip)
+            }
+            None => Ok(tip == main_tip),
+        }
+    }
+
     // MUST be called after `sync_headers`.
     #[tracing::instrument(skip_all)]
     async fn sync_blocks<MainRpcClient>(
@@ -1834,6 +1857,16 @@ impl BlockHandler<'_> {
                 }
                 Err(e) => {
                     tracing::error!("Error syncing blocks from blocks dir: {e:#}");
+                    // Syncing from the blocks dir is best-effort: Core is not
+                    // expected to have flushed all blocks to disk, so the
+                    // JSON-RPC sync below finishes the job. That is only sound
+                    // as long as `missing_blocks` still describes exactly what
+                    // is left to sync. If it doesn't, falling through would
+                    // silently skip past a gap, so bail out instead.
+                    if !self.missing_blocks_connect_to_tip(&missing_blocks, main_tip)? {
+                        tracing::error!("blocks dir sync left a gap in the missing blocks");
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -3798,6 +3831,59 @@ mod tests {
             diff.0.get(&sc),
             Some(diff::AckBundleAction::Upvote { m6id, .. }) if *m6id == leader
         ));
+        Ok(())
+    }
+
+    // ── missing_blocks_connect_to_tip ──
+
+    /// Blocks are popped off the missing blocks queue before they are durably
+    /// committed, so a failed blocks dir sync can leave the queue describing
+    /// less than what is actually left to sync. The JSON-RPC sync must not
+    /// silently continue past such a gap.
+    #[test]
+    fn missing_blocks_connect_to_tip_detects_gap() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let header0 = test_block_header(BlockHash::all_zeros());
+        let header1 = test_block_header(header0.block_hash());
+        let header2 = test_block_header(header1.block_hash());
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(header0, 0), (header1, 1), (header2, 2)])
+                .into_diagnostic()?;
+            dbs.current_chain_tip
+                .put(&mut rwtxn, &(), &header0.block_hash())
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+        let handler = test_handler(&dbs);
+        let main_tip = header2.block_hash();
+
+        // The queue is a stack with the next expected block last, so the
+        // intact queue ends with the tip's child.
+        let intact = [header2.block_hash(), header1.block_hash()];
+        assert!(
+            handler
+                .missing_blocks_connect_to_tip(&intact, main_tip)
+                .expect("checking an intact queue must succeed")
+        );
+
+        // `header1` was dropped from the queue without being connected.
+        let with_gap = [header2.block_hash()];
+        assert!(
+            !handler
+                .missing_blocks_connect_to_tip(&with_gap, main_tip)
+                .expect("checking a gapped queue must succeed"),
+            "a queue that skips the tip's child must be reported as a gap"
+        );
+
+        // Empty queue, but the tip never reached `main_tip`.
+        assert!(
+            !handler
+                .missing_blocks_connect_to_tip(&[], main_tip)
+                .expect("checking an empty queue must succeed"),
+            "an empty queue below the target tip must be reported as a gap"
+        );
         Ok(())
     }
 }
