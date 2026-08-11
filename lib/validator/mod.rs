@@ -33,7 +33,8 @@ mod task;
 #[cfg(test)]
 mod test_utils;
 
-use self::dbs::{Dbs, PendingM6ids};
+use self::dbs::Dbs;
+pub(crate) use self::dbs::PendingM6ids;
 pub use self::sync_state_summary::{
     CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
 };
@@ -356,6 +357,8 @@ pub enum GetPendingWithdrawalsError {
     #[error(transparent)]
     DbGet(#[from] db::error::Get),
     #[error(transparent)]
+    DbIter(#[from] db::error::Iter),
+    #[error(transparent)]
     ReadTxn(#[from] env::error::ReadTxn),
 }
 
@@ -363,6 +366,7 @@ impl ToStatus for GetPendingWithdrawalsError {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
+            Self::DbIter(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
         }
     }
@@ -780,6 +784,22 @@ impl Validator {
                     .map(Ok)
                     .transpose_into_fallible())
             })
+            .collect()?;
+        Ok(res)
+    }
+
+    /// Pending withdrawal bundles for every active sidechain.
+    pub fn get_all_pending_withdrawals(
+        &self,
+    ) -> Result<HashMap<SidechainNumber, PendingM6ids>, GetPendingWithdrawalsError> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
+            .active_sidechains
+            .pending_m6ids()
+            .iter(&rotxn)
+            .map_err(db::error::Iter::from)?
+            .map_err(db::error::Iter::from)
             .collect()?;
         Ok(res)
     }

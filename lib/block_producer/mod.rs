@@ -14,8 +14,8 @@ use tracing::instrument;
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    types::{BlindedM6, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
-    validator::Validator,
+    types::{BlindedM6, M6id, PendingM6idInfo, SidechainNumber, WithdrawalBundleEventKind},
+    validator::{PendingM6ids, Validator},
 };
 
 mod coinbase;
@@ -295,6 +295,31 @@ impl CusfBlockProducer for BlockProducer {
     }
 }
 
+/// Upper bound on the pending bundles the finalized suffix can pay out.
+///
+/// The suffix reservation is computed from live state, but the finalized suffix
+/// is computed from the state after the coinbase and prefix txs are connected,
+/// where the coinbase M4 upvote can have lifted a bundle from
+/// `vote_count == withdrawal_bundle_inclusion_threshold` to `threshold + 1`.
+/// Reserving from live state would then miss that M6 entirely, and since the
+/// reserved weight is subtracted from the weight limit before mempool txs are
+/// selected, the assembled block could exceed the limit. The coinbase upvotes
+/// at most once per sidechain, so bumping every vote count by one bounds the
+/// suffix from above.
+fn pending_m6ids_upper_bound(
+    pending_m6ids: HashMap<SidechainNumber, PendingM6ids>,
+) -> HashMap<SidechainNumber, PendingM6ids> {
+    pending_m6ids
+        .into_iter()
+        .map(|(sidechain_id, mut pending)| {
+            for m6id_info in pending.values_mut() {
+                m6id_info.vote_count = m6id_info.vote_count.saturating_add(1);
+            }
+            (sidechain_id, pending)
+        })
+        .collect()
+}
+
 impl BlockProducer {
     async fn initial_block_template_inner<const COINBASE_TXN: bool>(
         &self,
@@ -372,7 +397,11 @@ impl BlockProducer {
                 };
                 (slot_number.into(), fake_ctip)
             }));
-            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
+            let pending_m6ids =
+                pending_m6ids_upper_bound(self.validator().get_all_pending_withdrawals()?);
+            let fake_suffix_txs = self
+                .generate_suffix_txs(&fake_ctips, &pending_m6ids)
+                .await?;
             template
                 .suffix_txs
                 .extend(fake_suffix_txs.into_iter().map(|tx| {
@@ -473,14 +502,21 @@ impl BlockProducer {
                         .chain(template.prefix_txs.iter().map(|(tx, _)| tx.clone()))
                         .collect(),
                 };
-                let ctips = crate::validator::cusf_enforcer::get_ctips_after(
+                // The suffix must be built against the state the validator will
+                // be in once it has connected the coinbase and prefix txs,
+                // rather than against its current tip: a withdrawal bundle that
+                // a prefix tx already pays out is no longer pending, and must
+                // not be paid out a second time.
+                let state = crate::validator::cusf_enforcer::get_sidechain_state_after(
                     &self.inner.validator,
                     &block,
                 )?
                 .map_err(|reason| {
                     error::FinalizeBlockTemplateInner::InitialBlockTemplate { reason }
                 })?;
-                let suffix_txs = self.generate_suffix_txs(&ctips).await?;
+                let suffix_txs = self
+                    .generate_suffix_txs(&state.ctips, &state.pending_m6ids)
+                    .await?;
                 template
                     .suffix_txs
                     .extend(suffix_txs.into_iter().map(|tx| (tx, bitcoin::Amount::ZERO)));
@@ -488,5 +524,59 @@ impl BlockProducer {
             }
             BoolWit::False(_wit) => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use bitcoin::{Txid, hashes::Hash as _};
+
+    use super::pending_m6ids_upper_bound;
+    use crate::{
+        types::{M6id, NetworkParams, PendingM6idInfo, SidechainNumber},
+        validator::PendingM6ids,
+    };
+
+    /// A bundle that live state excludes, but that a single coinbase M4 upvote
+    /// would include, must still be reserved: the finalized suffix is built
+    /// from the post-coinbase state, and the mempool weight limit is reduced by
+    /// the reserved weight before txs are selected.
+    #[test]
+    fn pending_m6ids_upper_bound_covers_coinbase_upvote() {
+        let threshold = NetworkParams::for_network(bitcoin::Network::Regtest)
+            .thresholds
+            .withdrawal_bundle_inclusion_threshold;
+        let sidechain_id = SidechainNumber(0);
+        let m6id = M6id(Txid::from_byte_array([0x11; 32]));
+        let pending = PendingM6ids::from_iter([(
+            m6id,
+            PendingM6idInfo {
+                vote_count: threshold,
+                proposal_height: 0,
+            },
+        )]);
+        let upper_bound =
+            pending_m6ids_upper_bound(HashMap::from_iter([(sidechain_id, pending.clone())]));
+        assert!(pending[&m6id].vote_count <= threshold);
+        assert!(upper_bound[&sidechain_id][&m6id].vote_count > threshold);
+    }
+
+    /// Bumping must not overflow a bundle that has already accumulated the
+    /// maximum vote count.
+    #[test]
+    fn pending_m6ids_upper_bound_saturates() {
+        let sidechain_id = SidechainNumber(0);
+        let m6id = M6id(Txid::from_byte_array([0x22; 32]));
+        let pending = PendingM6ids::from_iter([(
+            m6id,
+            PendingM6idInfo {
+                vote_count: u16::MAX,
+                proposal_height: 0,
+            },
+        )]);
+        let upper_bound = pending_m6ids_upper_bound(HashMap::from_iter([(sidechain_id, pending)]));
+        assert_eq!(upper_bound[&sidechain_id][&m6id].vote_count, u16::MAX);
     }
 }

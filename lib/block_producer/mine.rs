@@ -110,7 +110,8 @@ impl BlockProducer {
             CoinbaseTxnOrValue::Txn(_) => Vec::new(),
             CoinbaseTxnOrValue::ValueSats(_) => {
                 let ctips = self.validator().get_ctips()?;
-                self.generate_suffix_txs(&ctips).await?
+                let pending_m6ids = self.validator().get_all_pending_withdrawals()?;
+                self.generate_suffix_txs(&ctips, &pending_m6ids).await?
             }
         };
 

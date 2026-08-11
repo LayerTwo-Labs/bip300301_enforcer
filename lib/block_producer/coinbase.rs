@@ -7,16 +7,20 @@ use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
     messages::{CoinbaseBuilder, M4AckBundles},
     types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    validator::PendingM6ids,
 };
 
 impl BlockProducer {
-    /// Bundle proposals we've stored, joined with the validator's view of each
-    /// one. Proposals for a sidechain that isn't active are dropped: per BIP300
-    /// M3, a bundle proposed for an inactive slot is just an ordinary script (a
-    /// no-op), so there is nothing to gain by proposing it. Those can sneak in by
-    /// activating a sidechain and then reorging it out of existence.
+    /// Bundle proposals we've stored, joined with `pending_m6ids`: the caller
+    /// picks which consensus state the join is against, since a block producer
+    /// must build against the state its own validator will see when it connects
+    /// what we produce. Proposals for a sidechain that isn't active are dropped:
+    /// per BIP300 M3, a bundle proposed for an inactive slot is just an ordinary
+    /// script (a no-op), so there is nothing to gain by proposing it. Those can
+    /// sneak in by activating a sidechain and then reorging it out of existence.
     pub(crate) async fn get_bundle_proposals(
         &self,
+        pending_m6ids: &HashMap<SidechainNumber, PendingM6ids>,
     ) -> Result<HashMap<SidechainNumber, BundleProposals>, error::GetBundleProposals> {
         let bundle_proposals = self.db().get_bundle_proposals().await?;
         let active_sidechain_numbers: HashSet<SidechainNumber> = self
@@ -33,10 +37,13 @@ impl BlockProducer {
                 if !active_sidechain_numbers.contains(&sidechain_id) {
                     return Ok(None);
                 }
-                let pending_m6ids = self.validator().get_pending_withdrawals(&sidechain_id)?;
+                let pending = pending_m6ids.get(&sidechain_id);
                 let res: Vec<_> = m6ids
                     .into_iter()
-                    .map(|(m6id, blinded_m6)| (m6id, blinded_m6, pending_m6ids.get(&m6id).copied()))
+                    .map(|(m6id, blinded_m6)| {
+                        let m6id_info = pending.and_then(|pending| pending.get(&m6id)).copied();
+                        (m6id, blinded_m6, m6id_info)
+                    })
                     .collect();
                 if res.is_empty() {
                     Ok(None)
@@ -213,7 +220,8 @@ impl BlockProducer {
             );
             coinbase_builder.bmm_accept(sidechain_number, bmm_hash)?;
         }
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
+        let pending_m6ids = self.validator().get_all_pending_withdrawals()?;
+        for (sidechain_id, m6ids) in self.get_bundle_proposals(&pending_m6ids).await? {
             for (m6id, _blinded_m6, m6id_info) in m6ids {
                 if m6id_info.is_none() {
                     coinbase_builder.propose_bundle(sidechain_id, m6id)?;
@@ -228,17 +236,16 @@ impl BlockProducer {
             let upvotes = active_sidechains
                 .into_iter()
                 .map(|sidechain| {
-                    if self
-                        .validator()
-                        .get_pending_withdrawals(&sidechain.proposal.sidechain_number)?
-                        .is_empty()
+                    if pending_m6ids
+                        .get(&sidechain.proposal.sidechain_number)
+                        .is_none_or(|pending| pending.is_empty())
                     {
-                        Ok(M4AckBundles::ABSTAIN_ONE_BYTE)
+                        M4AckBundles::ABSTAIN_ONE_BYTE
                     } else {
-                        Ok(0)
+                        0
                     }
                 })
-                .collect::<Result<_, crate::validator::GetPendingWithdrawalsError>>()?;
+                .collect();
             coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
         }
         let () = coinbase_builder.build()?;
@@ -263,13 +270,20 @@ impl BlockProducer {
     /// Generate the M6 suffix txs for a new block. These are fully determined by
     /// the approved bundle and the CTIP: treasury outputs are anyone-can-spend
     /// and consensus-gated, so an M6 is constructed, never signed.
+    ///
+    /// `ctips` and `pending_m6ids` MUST describe the same consensus state, and
+    /// that state must be the one the validator will be in when it connects the
+    /// suffix: a bundle that the rest of the block already pays out is no longer
+    /// pending, and paying it twice yields two M6s with the same m6id, the
+    /// second of which our own `connect_block` rejects.
     pub(crate) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
+        pending_m6ids: &HashMap<SidechainNumber, PendingM6ids>,
     ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
         let thresholds = self.validator().network_params().thresholds;
         let mut res = Vec::new();
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
+        for (sidechain_id, m6ids) in self.get_bundle_proposals(pending_m6ids).await? {
             let mut ctip = None;
             for (_m6id, blinded_m6, m6id_info) in m6ids {
                 let Some(m6id_info) = m6id_info else { continue };
