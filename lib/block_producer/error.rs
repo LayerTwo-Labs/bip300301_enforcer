@@ -207,6 +207,8 @@ pub enum SelectBlockTxs {
     GetBlockTemplate(#[from] GetBlockTemplate),
     #[error(transparent)]
     GetCtips(#[from] crate::validator::GetCtipsError),
+    #[error(transparent)]
+    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
     #[error("failed to decode transaction `{txid}` from the block template")]
     DecodeTemplateTransaction {
         txid: bitcoin::Txid,
@@ -231,6 +233,7 @@ impl ToStatus for SelectBlockTxs {
             Self::GenerateSuffixTxs(err) => err.builder(),
             Self::GetBlockTemplate(err) => err.builder(),
             Self::GetCtips(err) => err.builder(),
+            Self::GetPendingWithdrawals(err) => err.builder(),
             Self::DecodeTemplateTransaction { .. } => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
             }
@@ -504,6 +507,8 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     GenerateSuffixTxs(#[from] GenerateSuffixTxs),
     #[error("Failed to read the ACK-all-proposals setting")]
     GetAckAllProposals(#[source] rusqlite::Error),
+    #[error(transparent)]
+    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
     #[error("the `coinbasetxn` GBT capability is required")]
     NoCoinbaseTxn,
 }
@@ -533,7 +538,7 @@ pub(in crate::block_producer) enum FinalizeBlockTemplateInner {
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GenerateSuffixTxs),
     #[error(transparent)]
-    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
+    GetSidechainStateAfter(#[from] crate::validator::cusf_enforcer::GetSidechainStateAfterError),
     #[error(transparent)]
     GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
     #[error(transparent)]
