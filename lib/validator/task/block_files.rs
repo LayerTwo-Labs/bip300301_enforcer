@@ -77,6 +77,18 @@ const MAX_BLOCK_CACHE_SIZE: usize = 5000;
 const MAX_ITERATIONS_WITHOUT_MATCH: usize = 5000;
 const BLOCKS_DIR_CONNECT_BATCH_SIZE: usize = 2000;
 
+/// Hand blocks that were staged into `pending_blocks`, but never durably
+/// committed, back to `missing_blocks`.
+///
+/// `missing_blocks` is a stack with the next expected block last, so the
+/// unconnected blocks are restored in reverse: the earliest staged block ends
+/// up as the next expected.
+fn restore_pending_blocks(missing_blocks: &mut Vec<BlockHash>, pending_blocks: &[Block]) {
+    for block in pending_blocks.iter().rev() {
+        missing_blocks.push(block.block_hash());
+    }
+}
+
 /// Connect a batch of pending blocks. Returns `true` if the whole batch
 /// connected and file sync may continue.
 fn connect_pending_blocks(
@@ -99,12 +111,9 @@ fn connect_pending_blocks(
         .position(|block| block.block_hash() == rejected_block)
         .expect("rejected block must be in the batch it was reported for");
 
-    // `missing_blocks` is a stack with the next expected block last, so
-    // restore the unconnected tail in reverse: the rejected block ends up
-    // as the next expected.
-    for block in pending_blocks[rejected_idx..].iter().rev() {
-        missing_blocks.push(block.block_hash());
-    }
+    // Restore the unconnected tail, so that the rejected block ends up as the
+    // next expected.
+    restore_pending_blocks(missing_blocks, &pending_blocks[rejected_idx..]);
     *total_handled_blocks += rejected_idx;
     pending_blocks.clear();
     Ok(false)
@@ -161,11 +170,45 @@ fn process_cached_blocks(
 /// rejected block and everything after it in `missing_blocks`. The JSON-RPC
 /// sync will then re-encounter the rejection and stop the overall sync with
 /// a warning.
+///
+/// On error, blocks that were staged but not committed are restored to
+/// `missing_blocks`, so that it always describes exactly what is left to sync.
 #[tracing::instrument(skip_all)]
 pub fn sync_from_directory(
     handler: &BlockHandler<'_>,
     event_tx: &async_broadcast::Sender<Event>,
     missing_blocks: &mut Vec<BlockHash>,
+    main_blocks_dir: PathBuf,
+    cancel: CancellationToken,
+) -> Result<u32, error::Sync> {
+    let mut pending_blocks: Vec<Block> = vec![];
+    let res = sync_from_directory_inner(
+        handler,
+        event_tx,
+        missing_blocks,
+        &mut pending_blocks,
+        main_blocks_dir,
+        cancel,
+    );
+    // Blocks are popped off `missing_blocks` when they are staged into
+    // `pending_blocks`, ie. before they are durable. If we bailed out with a
+    // batch still staged, hand it back to the caller: it falls through to the
+    // JSON-RPC sync, which would otherwise skip straight past the gap.
+    if !pending_blocks.is_empty() {
+        tracing::debug!(
+            "restoring {} uncommitted blocks to the missing blocks queue",
+            pending_blocks.len()
+        );
+        restore_pending_blocks(missing_blocks, &pending_blocks);
+    }
+    res
+}
+
+fn sync_from_directory_inner(
+    handler: &BlockHandler<'_>,
+    event_tx: &async_broadcast::Sender<Event>,
+    missing_blocks: &mut Vec<BlockHash>,
+    pending_blocks: &mut Vec<Block>,
     main_blocks_dir: PathBuf,
     cancel: CancellationToken,
 ) -> Result<u32, error::Sync> {
@@ -217,8 +260,6 @@ pub fn sync_from_directory(
     let mut block_cache = BlockCache::new(MAX_BLOCK_CACHE_SIZE);
     let mut iterations_without_match = 0_usize;
 
-    let mut pending_blocks: Vec<Block> = vec![];
-
     let target_end_height = dbs.block_hashes.height().get(
         &*dbs.read_txn()?,
         missing_blocks.first().expect("missing blocks is empty"),
@@ -248,7 +289,7 @@ pub fn sync_from_directory(
                     handler,
                     event_tx,
                     missing_blocks,
-                    &mut pending_blocks,
+                    pending_blocks,
                     &mut total_handled_blocks,
                 )?;
             }
@@ -322,7 +363,7 @@ pub fn sync_from_directory(
                     handler,
                     event_tx,
                     missing_blocks,
-                    &mut pending_blocks,
+                    pending_blocks,
                     &mut total_handled_blocks,
                 )?
             {
@@ -335,7 +376,7 @@ pub fn sync_from_directory(
                 event_tx,
                 &mut block_cache,
                 missing_blocks,
-                &mut pending_blocks,
+                pending_blocks,
                 &mut total_handled_blocks,
             )? {
                 break;
@@ -369,7 +410,7 @@ pub fn sync_from_directory(
                         handler,
                         event_tx,
                         missing_blocks,
-                        &mut pending_blocks,
+                        pending_blocks,
                         &mut total_handled_blocks,
                     )?;
                 }
@@ -400,7 +441,7 @@ pub fn sync_from_directory(
             handler,
             event_tx,
             missing_blocks,
-            &mut pending_blocks,
+            pending_blocks,
             &mut total_handled_blocks,
         )?;
     }
@@ -413,4 +454,71 @@ pub fn sync_from_directory(
     );
 
     Ok(total_handled_blocks as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{Block, BlockHash, hashes::Hash as _};
+
+    use super::restore_pending_blocks;
+    use crate::validator::test_utils::test_block_header;
+
+    fn test_block(prev_blockhash: BlockHash) -> Block {
+        Block {
+            header: test_block_header(prev_blockhash),
+            txdata: vec![],
+        }
+    }
+
+    #[test]
+    fn restores_uncommitted_blocks_as_next_expected() {
+        let block0 = test_block(BlockHash::all_zeros());
+        let block1 = test_block(block0.block_hash());
+        let block2 = test_block(block1.block_hash());
+        let tail = test_block(block2.block_hash());
+
+        // `missing_blocks` is a stack with the next expected block last, so
+        // `tail` is all that is left once `block0..=block2` are staged.
+        let mut missing_blocks = vec![tail.block_hash()];
+        let pending_blocks = vec![block0, block1, block2];
+
+        restore_pending_blocks(&mut missing_blocks, &pending_blocks);
+
+        assert_eq!(
+            missing_blocks,
+            vec![
+                tail.block_hash(),
+                pending_blocks[2].block_hash(),
+                pending_blocks[1].block_hash(),
+                pending_blocks[0].block_hash(),
+            ]
+        );
+    }
+
+    /// A rejected block is reported after the prefix before it has been
+    /// committed, so only `pending_blocks[rejected_idx..]` may be restored:
+    /// re-queueing the committed prefix would sync it twice.
+    #[test]
+    fn restores_only_the_tail_from_the_rejected_block() {
+        let block0 = test_block(BlockHash::all_zeros());
+        let block1 = test_block(block0.block_hash());
+        let block2 = test_block(block1.block_hash());
+        let tail = test_block(block2.block_hash());
+
+        let mut missing_blocks = vec![tail.block_hash()];
+        let pending_blocks = [block0, block1, block2];
+        // `block1` was rejected, so `block0` is committed and stays connected.
+        let rejected_idx = 1;
+
+        restore_pending_blocks(&mut missing_blocks, &pending_blocks[rejected_idx..]);
+
+        assert_eq!(
+            missing_blocks,
+            vec![
+                tail.block_hash(),
+                pending_blocks[2].block_hash(),
+                pending_blocks[1].block_hash(),
+            ]
+        );
+    }
 }
