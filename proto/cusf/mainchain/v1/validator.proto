@@ -110,6 +110,9 @@ service ValidatorService {
   rpc GetTwoWayPegData(GetTwoWayPegDataRequest) returns (GetTwoWayPegDataResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+  rpc GetWithdrawalBundleProposals(GetWithdrawalBundleProposalsRequest) returns (GetWithdrawalBundleProposalsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
@@ -326,6 +329,18 @@ message GetTwoWayPegDataResponse {
     BlockInfo block_info = 2;
   }
   repeated ResponseItem blocks = 1;
+}
+
+message GetWithdrawalBundleProposalsRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+}
+message GetWithdrawalBundleProposalsResponse {
+  message ResponseItem {
+    cusf.common.v1.ConsensusHex m6id = 1;
+    google.protobuf.UInt32Value vote_count = 2;
+    google.protobuf.UInt32Value proposal_height = 3;
+  }
+  repeated ResponseItem proposals = 1;
 }
 
 message SubscribeEventsRequest {
