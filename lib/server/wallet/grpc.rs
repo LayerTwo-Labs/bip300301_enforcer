@@ -1,7 +1,7 @@
 use std::{collections::HashMap, str::FromStr};
 
 use bdk_wallet::bip39::Mnemonic;
-use bitcoin::{Address, Amount, hashes::Hash as _};
+use bitcoin::{Address, Amount, amount::CheckedSum as _, hashes::Hash as _};
 use buffa::MessageField;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 
@@ -470,6 +470,23 @@ impl WalletService for crate::wallet::Wallet {
             .into_option()
             .map(|fee_rate| fee_rate.try_into())
             .transpose()?;
+
+        // An absolute fee larger than the total being sent is a caller error. Only
+        // checkable when the destinations account for the whole spend: a send with
+        // no destinations has no destination value, and a drain spends the entire
+        // wallet balance rather than the requested amounts.
+        // Advisory only: an absolute fee can legitimately exceed a small payment
+        // during a fee spike, and the caller opted into the absolute fee policy.
+        if let Some(crate::types::FeePolicy::Absolute(fee)) = &fee_policy
+            && !destinations_validated.is_empty()
+            && drain_wallet_to.is_none()
+            && let Some(total) = destinations_validated.values().copied().checked_sum()
+            && *fee > total
+        {
+            tracing::warn!(
+                "absolute fee is greater than the total destination amount: {fee} > {total}"
+            );
+        }
 
         let op_return_message = op_return_message
             .into_option()
