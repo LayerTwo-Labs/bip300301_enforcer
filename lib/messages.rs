@@ -78,7 +78,7 @@ pub struct M2AckSidechain {
 }
 
 impl M2AckSidechain {
-    pub const TAG: [u8; 4] = [0xD6, 0xE1, 0xC5, 0xDF];
+    pub const TAG: [u8; 4] = [0xD6, 0xE1, 0xC5, 0xBF];
 
     fn parse(input: &[u8]) -> IResult<&[u8], Self> {
         let (input, sidechain_number) = take(1usize)(input)?;
@@ -987,6 +987,32 @@ mod tests {
 
     use super::*;
     use crate::types::SidechainProposal;
+
+    /// BIP 300 assigns M2 the fixed four-byte header D6 E1 C5 BF. Parse a
+    /// raw wire-form message so a future constant change cannot silently make
+    /// M2 ACKs invisible to the enforcer.
+    #[test]
+    fn m2_parses_bip300_wire_tag() -> miette::Result<()> {
+        let description_hash = sha256d::Hash::from_byte_array([0xAB; 32]);
+        let raw = [
+            &[0xD6, 0xE1, 0xC5, 0xBF][..],
+            &[7],
+            description_hash.as_byte_array(),
+        ]
+        .concat();
+        let data = PushBytesBuf::try_from(raw).into_diagnostic()?;
+        let script = ScriptBuf::new_op_return(data);
+
+        let (rest, message) = CoinbaseMessage::parse(&script)
+            .map_err(|err| miette::miette!("raw BIP300 M2 did not parse: {err}"))?;
+        assert!(rest.is_empty());
+        let CoinbaseMessage::M2AckSidechain(m2) = message else {
+            panic!("expected M2 message");
+        };
+        assert_eq!(m2.sidechain_number, SidechainNumber(7));
+        assert_eq!(m2.description_hash, description_hash);
+        Ok(())
+    }
 
     #[test]
     fn test_parse_m8_bmm_request() {
