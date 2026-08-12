@@ -23,8 +23,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     messages::{
-        CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
-        M4AckBundles, M7BmmAccept, compute_m6id, parse_m8_tx, parse_op_drivechain,
+        CoinbaseMessage, CoinbaseMessages, CoinbaseMessagesError, M1ProposeSidechain,
+        M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept, compute_m6id, parse_m8_tx,
+        parse_op_drivechain,
     },
     proto::mainchain::HeaderSyncProgress,
     types::{
@@ -1103,6 +1104,10 @@ impl BlockHandler<'_> {
         let mut coinbase_messages = CoinbaseMessages::default();
         // map of sidechain proposals to first vout
         let mut m1_sidechain_proposals = HashMap::new();
+        // BIP 300 only treats an M2 as valid when it matches an M1 from an
+        // ancestor block. Track those M2s while parsing the coinbase, before
+        // processing can mutate the proposal database.
+        let mut valid_m2_proposal_to_vout = HashMap::new();
         for (vout, output) in coinbase.output.iter().enumerate() {
             let message = match CoinbaseMessage::parse(&output.script_pubkey) {
                 Ok((rest, message)) => {
@@ -1131,6 +1136,27 @@ impl BlockHandler<'_> {
                 m1_sidechain_proposals
                     .entry((*sidechain_number, description_hash))
                     .or_insert(vout as u32);
+            }
+            if let CoinbaseMessage::M2AckSidechain(M2AckSidechain {
+                sidechain_number,
+                description_hash,
+            }) = &message
+            {
+                let proposal_id = SidechainProposalId {
+                    sidechain_number: *sidechain_number,
+                    description_hash: *description_hash,
+                };
+                if dbs
+                    .proposal_id_to_sidechain
+                    .contains_key(rwtxn, &proposal_id)?
+                    && let Some(index) = valid_m2_proposal_to_vout.insert(proposal_id, vout)
+                {
+                    return Err(CoinbaseMessagesError::DuplicateM2 {
+                        index,
+                        slot: *sidechain_number,
+                    }
+                    .into());
+                }
             }
             coinbase_messages.push(message, vout)?;
         }
@@ -3051,6 +3077,163 @@ mod tests {
                      not reject the block: {e:#}"
                 )
             })?;
+        Ok(())
+    }
+
+    /// A well-formed M2 that does not match an ancestor M1 is an ordinary
+    /// script. It must not make a later valid M2 for the same slot look like a
+    /// duplicate and cause the block to be rejected.
+    #[test]
+    fn connect_block_allows_unknown_m2_before_valid_m2_for_same_slot() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let slot = SidechainNumber(1);
+        let proposal = test_sidechain(slot.0, 0);
+        let proposal_id = proposal.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &proposal_id, &proposal)
+            .into_diagnostic()?;
+
+        let unknown_m2: ScriptBuf = M2AckSidechain {
+            sidechain_number: slot,
+            description_hash: bitcoin::hashes::sha256d::Hash::all_zeros(),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let valid_m2: ScriptBuf = M2AckSidechain {
+            sidechain_number: slot,
+            description_hash: proposal_id.description_hash,
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: unknown_m2,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: valid_m2,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 1)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+        let updated = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .into_diagnostic()?;
+        assert_eq!(updated.status.vote_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn connect_block_allows_distinct_valid_m2s_for_same_slot() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let slot = SidechainNumber(1);
+        let first = test_sidechain(slot.0, 0);
+        let mut second = first.clone();
+        second.proposal.description = SidechainDescription(b"second proposal".to_vec());
+        let first_id = first.proposal.compute_id();
+        let second_id = second.proposal.compute_id();
+        for (id, proposal) in [(first_id, first), (second_id, second)] {
+            dbs.proposal_id_to_sidechain
+                .put(&mut rwtxn, &id, &proposal)
+                .into_diagnostic()?;
+        }
+        let m2_output = |id: SidechainProposalId| -> Result<TxOut> {
+            Ok(TxOut {
+                script_pubkey: M2AckSidechain {
+                    sidechain_number: id.sidechain_number,
+                    description_hash: id.description_hash,
+                }
+                .try_into()
+                .into_diagnostic()?,
+                value: Amount::ZERO,
+            })
+        };
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: vec![m2_output(first_id)?, m2_output(second_id)?],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 1)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+        for id in [first_id, second_id] {
+            let updated = dbs
+                .proposal_id_to_sidechain
+                .get(&rwtxn, &id)
+                .into_diagnostic()?;
+            assert_eq!(updated.status.vote_count, 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn connect_block_rejects_duplicate_valid_m2() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let proposal = test_sidechain(1, 0);
+        let proposal_id = proposal.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &proposal_id, &proposal)
+            .into_diagnostic()?;
+        let m2_script = || -> Result<ScriptBuf> {
+            M2AckSidechain {
+                sidechain_number: proposal_id.sidechain_number,
+                description_hash: proposal_id.description_hash,
+            }
+            .try_into()
+            .into_diagnostic()
+        };
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m2_script()?,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m2_script()?,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 1)])
+            .into_diagnostic()?;
+
+        let err = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .expect_err("duplicate valid M2 must reject the block");
+        assert!(matches!(
+            err,
+            error::ConnectBlock::CoinbaseMessages(CoinbaseMessagesError::DuplicateM2 {
+                index: 1,
+                slot: SidechainNumber(1),
+            })
+        ));
         Ok(())
     }
 
