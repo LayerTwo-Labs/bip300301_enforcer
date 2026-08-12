@@ -22,6 +22,9 @@ pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>)>;
 /// accumulate undo rows forever.
 const BMM_REQUESTS_UNDO_RETAINED_BLOCKS: i64 = 100;
 
+/// As [`BMM_REQUESTS_UNDO_RETAINED_BLOCKS`], for deleted sidechain ACKs.
+const SIDECHAIN_ACKS_UNDO_RETAINED_BLOCKS: i64 = 100;
+
 /// The drivechain policy database.
 pub struct Db {
     conn: tokio::sync::Mutex<Connection>,
@@ -111,6 +114,12 @@ impl Db {
                  ack_all_proposals BOOLEAN NOT NULL);
                  INSERT INTO block_producer_settings (id, ack_all_proposals)
                  VALUES (0, TRUE);",
+            ),
+            M::up(
+                "CREATE TABLE sidechain_acks_undo
+                (block_hash BLOB NOT NULL,
+                 number INTEGER NOT NULL,
+                 data_hash BLOB NOT NULL);",
             ),
         ]);
 
@@ -436,6 +445,41 @@ impl Db {
         snapshot_and_delete_bmm_requests(&mut connection, prev_blockhash, block_hash)
     }
 
+    /// Delete the stale sidechain ACKs settled by `block_hash`, snapshotting
+    /// them into `sidechain_acks_undo` so a reorg of that block can put the
+    /// operator's ACK intent back (see [`Self::restore_sidechain_acks`]).
+    pub(crate) async fn delete_stale_sidechain_acks(
+        &self,
+        block_hash: &bitcoin::BlockHash,
+        acks: &[SidechainAck],
+    ) -> Result<(), rusqlite::Error> {
+        if acks.is_empty() {
+            return Ok(());
+        }
+        let mut connection = self.conn.lock().await;
+        snapshot_and_delete_sidechain_acks(&mut connection, block_hash, acks)
+    }
+
+    /// Restore the sidechain ACKs deleted when `block_hash` was connected.
+    /// Called when that block is disconnected by a reorg, which can re-pend the
+    /// proposals those ACKs were for.
+    pub(crate) async fn restore_sidechain_acks(
+        &self,
+        block_hash: &bitcoin::BlockHash,
+    ) -> Result<(), rusqlite::Error> {
+        let restored = {
+            let mut connection = self.conn.lock().await;
+            restore_sidechain_acks_from_undo(&mut connection, block_hash)?
+        };
+        if restored > 0 {
+            tracing::info!(
+                %block_hash,
+                "restored {restored} sidechain ACK(s) from disconnected block",
+            );
+        }
+        Ok(())
+    }
+
     /// Restore the BMM requests that were consumed when `block_hash` was
     /// generated, moving them back out of `bmm_requests_undo`. Called when
     /// `block_hash` is disconnected by a reorg, so the operator's queued BMM
@@ -456,6 +500,65 @@ impl Db {
         }
         Ok(())
     }
+}
+
+/// Snapshot `acks` into `sidechain_acks_undo` keyed by `block_hash` and delete
+/// them from `sidechain_acks`, within a single transaction. Undo rows beyond
+/// the most recent `SIDECHAIN_ACKS_UNDO_RETAINED_BLOCKS` blocks are pruned so
+/// the table stays bounded.
+fn snapshot_and_delete_sidechain_acks(
+    connection: &mut Connection,
+    block_hash: &bitcoin::BlockHash,
+    acks: &[SidechainAck],
+) -> Result<(), rusqlite::Error> {
+    let tx = connection.transaction()?;
+    for ack in acks {
+        tx.execute(
+            "INSERT INTO sidechain_acks_undo (block_hash, number, data_hash) \
+             VALUES (?1, ?2, ?3);",
+            (
+                block_hash.as_byte_array(),
+                ack.sidechain_number.0,
+                ack.description_hash.as_byte_array(),
+            ),
+        )?;
+        tx.execute(
+            "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2;",
+            (ack.sidechain_number.0, ack.description_hash.as_byte_array()),
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM sidechain_acks_undo \
+         WHERE block_hash NOT IN ( \
+             SELECT block_hash FROM sidechain_acks_undo \
+             GROUP BY block_hash \
+             ORDER BY MAX(rowid) DESC \
+             LIMIT ?1 \
+         );",
+        [SIDECHAIN_ACKS_UNDO_RETAINED_BLOCKS],
+    )?;
+    tx.commit()
+}
+
+/// Restore the ACKs snapshotted for `block_hash` back into `sidechain_acks`,
+/// removing them from `sidechain_acks_undo`. Returns the number of rows
+/// restored.
+fn restore_sidechain_acks_from_undo(
+    connection: &mut Connection,
+    block_hash: &bitcoin::BlockHash,
+) -> Result<usize, rusqlite::Error> {
+    let tx = connection.transaction()?;
+    let restored = tx.execute(
+        "INSERT OR IGNORE INTO sidechain_acks (number, data_hash) \
+         SELECT number, data_hash FROM sidechain_acks_undo WHERE block_hash = ?;",
+        [block_hash.as_byte_array()],
+    )?;
+    tx.execute(
+        "DELETE FROM sidechain_acks_undo WHERE block_hash = ?;",
+        [block_hash.as_byte_array()],
+    )?;
+    tx.commit()?;
+    Ok(restored)
 }
 
 /// Drop the legacy `wallet_seeds` table once it no longer holds a seed. This
@@ -550,6 +653,69 @@ fn restore_bmm_requests_from_undo(
     )?;
     tx.commit()?;
     Ok(restored)
+}
+
+#[cfg(test)]
+mod sidechain_acks_undo_tests {
+    use bitcoin::{
+        BlockHash,
+        hashes::{Hash as _, sha256d},
+    };
+
+    use super::Db;
+    use crate::types::{SidechainAck, SidechainNumber};
+
+    /// An ACK dropped because its proposal left the validator's pending set is
+    /// restored when the block that settled it is disconnected, so the operator
+    /// keeps ACKing a re-pended slot.
+    #[tokio::test]
+    async fn sidechain_ack_restored_when_settling_block_disconnected() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db = Db::new(dir.path()).unwrap();
+        let slot = SidechainNumber(7);
+        let description_hash = sha256d::Hash::from_byte_array([0x33; 32]);
+        let block_hash = BlockHash::from_byte_array([0x44; 32]);
+        db.ack_sidechain(slot, description_hash).await.unwrap();
+
+        let ack = SidechainAck {
+            sidechain_number: slot,
+            description_hash,
+        };
+        db.delete_stale_sidechain_acks(&block_hash, &[ack])
+            .await
+            .unwrap();
+        assert!(db.get_sidechain_acks().await.unwrap().is_empty());
+
+        db.restore_sidechain_acks(&block_hash).await.unwrap();
+        let restored = db.get_sidechain_acks().await.unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].sidechain_number, slot);
+        assert_eq!(restored[0].description_hash, description_hash);
+    }
+
+    /// Restoring a block that deleted nothing is a no-op.
+    #[tokio::test]
+    async fn restoring_an_unrelated_block_restores_nothing() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db = Db::new(dir.path()).unwrap();
+        let slot = SidechainNumber(7);
+        let description_hash = sha256d::Hash::from_byte_array([0x33; 32]);
+        db.ack_sidechain(slot, description_hash).await.unwrap();
+        db.delete_stale_sidechain_acks(
+            &BlockHash::from_byte_array([0x44; 32]),
+            &[SidechainAck {
+                sidechain_number: slot,
+                description_hash,
+            }],
+        )
+        .await
+        .unwrap();
+
+        db.restore_sidechain_acks(&BlockHash::from_byte_array([0x55; 32]))
+            .await
+            .unwrap();
+        assert!(db.get_sidechain_acks().await.unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]
