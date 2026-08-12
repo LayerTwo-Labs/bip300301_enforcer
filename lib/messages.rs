@@ -501,21 +501,14 @@ impl CoinbaseMessages {
                     sidechain_number: sidechain_proposal.sidechain_number,
                     description_hash: sidechain_proposal.description.sha256d_hash(),
                 };
-                match self
-                    .m1_sidechain_proposal_id_to_index
+                // BIP 300 does not invalidate a block for a repeated M1. Keep
+                // the first vout for builder queries and let the proposal
+                // handler ignore the repeat without resetting its vote count.
+                self.m1_sidechain_proposal_id_to_index
                     .entry(sidechain_proposal_id)
-                {
-                    hash_map::Entry::Occupied(entry) => Err(CoinbaseMessagesError::DuplicateM1 {
-                        index: *entry.get(),
-                        slot: sidechain_proposal_id.sidechain_number,
-                        sidechain_description_hash: sidechain_proposal_id.description_hash,
-                    }),
-                    hash_map::Entry::Vacant(entry) => {
-                        entry.insert(vout);
-                        self.messages.push((msg, vout));
-                        Ok(())
-                    }
-                }
+                    .or_insert(vout);
+                self.messages.push((msg, vout));
+                Ok(())
             }
             CoinbaseMessage::M2AckSidechain(m2) => {
                 match self.m2_ack_slot_to_index.entry(m2.sidechain_number) {

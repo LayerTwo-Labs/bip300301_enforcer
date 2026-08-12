@@ -2767,6 +2767,59 @@ mod tests {
         Ok(())
     }
 
+    /// Repeating an M1 in the same coinbase is not a block-invalid condition.
+    /// The first proposal is retained and the repeat must not reset its age or
+    /// create a second proposal event.
+    #[test]
+    fn connect_block_ignores_duplicate_m1_in_same_coinbase() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let proposal = SidechainProposal {
+            sidechain_number: SidechainNumber(4),
+            description: SidechainDescription(b"duplicate-m1".to_vec()),
+        };
+        let proposal_id = proposal.compute_id();
+        let m1_script: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: proposal.sidechain_number,
+            description: proposal.description.clone(),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m1_script.clone(),
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m1_script,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let event = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+        let sidechain = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .into_diagnostic()?;
+        assert_eq!(sidechain.status.vote_count, 0);
+        let Event::ConnectBlock { block_info, .. } = event else {
+            panic!("expected connect-block event");
+        };
+        assert_eq!(block_info.events.len(), 1);
+        Ok(())
+    }
+
     // ── handle_m2 ──
 
     /// Regression: activating a proposal into an already-used slot overwrites
