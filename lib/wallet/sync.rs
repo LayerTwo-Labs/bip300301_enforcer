@@ -4,7 +4,6 @@ use std::time::SystemTime;
 
 use async_lock::RwLockWriteGuard;
 use bdk_chain::bdk_core;
-use bdk_electrum::electrum_client::ElectrumApi;
 use bdk_esplora::EsploraAsyncExt as _;
 use futures::TryFutureExt;
 use tokio::time::Instant;
@@ -44,6 +43,12 @@ impl SyncWriteGuard<'_> {
 }
 
 const ESPLORA_PARALLEL_REQUESTS: usize = 25;
+
+/// Number of consecutive unused addresses that a full scan must observe before
+/// considering a keychain exhausted. Larger than the BIP44 gap limit of 20,
+/// since a recovered seed may have been used by a wallet that hands out
+/// addresses without requiring them to be used.
+const STOP_GAP: usize = 200;
 
 impl WalletInner {
     pub(in crate::wallet) async fn get_tip(&self) -> Result<bdk_core::BlockId, error::NotUnlocked> {
@@ -247,32 +252,6 @@ impl WalletInner {
         }))
     }
 
-    async fn address_has_txs(
-        &self,
-        chain_source_client: &ChainSourceClient,
-        address: &bitcoin::Address,
-    ) -> miette::Result<bool, error::full_scan::CheckAddressTransactions> {
-        let res = match chain_source_client {
-            ChainSourceClient::Electrum(electrum_client) => !electrum_client
-                .inner
-                .script_get_history(&address.script_pubkey())
-                .map_err(|err| error::full_scan::CheckAddressTransactions {
-                    address: address.clone(),
-                    source: err.into(),
-                })?
-                .is_empty(),
-            ChainSourceClient::Esplora(esplora_client) => !esplora_client
-                .get_address_txs(address, None)
-                .map_err(|err| error::full_scan::CheckAddressTransactions {
-                    address: address.clone(),
-                    source: err.into(),
-                })
-                .await?
-                .is_empty(),
-        };
-        Ok(res)
-    }
-
     async fn get_chain_checkpoint(
         &self,
         local_chain: &bdk_chain::local_chain::LocalChain,
@@ -325,7 +304,6 @@ impl WalletInner {
         Ok(checkpoint)
     }
 
-    // TODO: is this actually correct? Need help from the Rust grownups!
     #[expect(clippy::significant_drop_tightening, reason = "false positive")]
     pub(in crate::wallet) async fn full_scan(
         &self,
@@ -346,90 +324,48 @@ impl WalletInner {
             .read_wallet_upgradable()
             .await
             .map_err(error::FullScan::WalletNotUnlocked)?;
-        let mut reveal_map = std::collections::HashMap::new();
 
-        for (keychain, _) in wallet_read.spk_index().keychains() {
-            let mut last_used_index = 0;
-            let step = 1000;
-
-            // First find upper bound by incrementing by 1000 until we find unused
-            loop {
-                let address = wallet_read.peek_address(keychain, last_used_index);
-                let has_txs = self.address_has_txs(chain_source_client, &address).await?;
-
-                if !has_txs {
-                    break;
-                }
-                last_used_index += step;
-            }
-
-            // Now binary search between last_used_index - step and last_used_index
-            let mut high = last_used_index;
-            let mut low = last_used_index.saturating_sub(step);
-
-            while low < high {
-                let mid = low + (high - low) / 2;
-                let address = wallet_read.peek_address(keychain, mid);
-                let has_txs = self.address_has_txs(chain_source_client, &address).await?;
-
-                if !has_txs {
-                    high = mid;
-                } else {
-                    low = mid + 1;
-                }
-            }
-
-            tracing::info!(
-                "Found last used address at index {} for keychain {:?}: {} (next: {})",
-                low.saturating_sub(1),
-                keychain,
-                wallet_read.peek_address(keychain, low.saturating_sub(1)),
-                wallet_read.peek_address(keychain, low)
-            );
-
-            reveal_map.insert(keychain, low);
-        }
-
-        // Now upgrade to write lock and reveal all addresses
-        let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
-
-        for (keychain, index) in reveal_map {
-            // Reveal the addresses, so that when we persist later the wallet
-            // will know which index we're at.
-            let _addresses =
-                wallet_write.with_mut(|wallet| wallet.reveal_addresses_to(keychain, index));
-        }
-
-        let local_chain = wallet_write.local_chain();
-        let checkpoint = self.get_chain_checkpoint(local_chain, None).await?;
-        let request = wallet_write
-            .start_sync_with_revealed_spks()
-            .chain_tip(checkpoint);
+        let checkpoint = {
+            let local_chain = wallet_read.local_chain();
+            self.get_chain_checkpoint(local_chain, None).await?
+        };
+        // Scan every keychain from index 0, stopping only once `STOP_GAP`
+        // consecutive unused addresses have been seen. Addresses are not
+        // necessarily used in index order, so searching for the first unused
+        // index, and revealing/syncing only up to it, misses addresses that are
+        // funded after a gap.
+        // Keeping already revealed SPKs, wallet txids and wallet UTXOs up to
+        // date remains the job of `sync`.
+        let request = wallet_read.start_full_scan().chain_tip(checkpoint);
 
         let update = match chain_source_client {
             ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 100;
                 const FETCH_PREV_TXOUTS: bool = true;
                 electrum_client
-                    .sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
+                    .full_scan(request, STOP_GAP, BATCH_SIZE, FETCH_PREV_TXOUTS)
                     .map_err(error::ChainSourceClient::Electrum)?
             }
 
             ChainSourceClient::Esplora(esplora_client) => {
                 esplora_client
-                    .sync(request, ESPLORA_PARALLEL_REQUESTS)
+                    .full_scan(request, STOP_GAP, ESPLORA_PARALLEL_REQUESTS)
                     .map_err(|err| error::ChainSourceClient::Esplora(*err))
                     .await?
             }
         };
 
         tracing::info!(
-            "wallet full scan complete in {:?}",
+            "wallet full scan complete in {:?}, last active indexes: {:?}",
             start.elapsed().unwrap_or_default(),
+            update.last_active_indices,
         );
 
         start = SystemTime::now();
 
+        // Applying the update reveals addresses up to the last active index of
+        // each keychain, so that the persist below records which index we're at.
+        let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
         let mut bdk_db = self.bdk_db.lock().await;
 
         wallet_write
