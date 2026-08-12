@@ -475,6 +475,9 @@ pub(in crate::validator) enum Sync {
     #[fatal(false)]
     Decode(#[from] bitcoin::consensus::encode::Error),
     #[error(transparent)]
+    #[fatal(false)]
+    DeserializeHex(#[from] bitcoin::consensus::encode::FromHexError),
+    #[error(transparent)]
     #[fatal(true)]
     DisconnectBlock(#[from] DisconnectBlock),
     #[error(transparent)]

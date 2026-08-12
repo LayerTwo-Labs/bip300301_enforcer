@@ -14,6 +14,7 @@ mod test_invalid_block;
 mod test_mempool_dat_sync;
 mod test_no_secrets_in_logs;
 mod test_peer_bmm_request;
+mod test_rest_disabled;
 mod test_seed_migration;
 mod test_sidechain_ack_policy;
 mod test_unconfirmed_transactions;

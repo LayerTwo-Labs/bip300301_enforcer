@@ -1213,7 +1213,7 @@ async fn main() -> Result<()> {
 
     let ts = tokio::time::Instant::now();
     let mut retries = 0;
-    loop {
+    let mainchain_rest_client = loop {
         // A Bitcoin Core node with a large datadir takes tens of seconds to
         // open its REST interface
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1225,10 +1225,13 @@ async fn main() -> Result<()> {
                     "verified mainchain REST server is enabled in {:?}",
                     ts.elapsed()
                 );
-                break;
+                break Some(mainchain_rest_client);
             }
-            Err(err @ MainRestClientError::RestServerNotEnabled) => {
-                return Err(miette::Report::from_err(err));
+            Err(MainRestClientError::RestServerNotEnabled) => {
+                tracing::warn!(
+                    "Bitcoin Core REST server is disabled; falling back to JSON-RPC header sync"
+                );
+                break None;
             }
             // Bitcoin Core responds 503 on the REST interface while warming
             // up. Tolerate this, the same way we tolerate RPC_IN_WARMUP on
@@ -1255,8 +1258,10 @@ async fn main() -> Result<()> {
                 return Err(wrapped);
             }
         }
+    };
+    if mainchain_rest_client.is_some() {
+        tracing::info!("verified mainchain REST server at `{raw_url}` is available");
     }
-    tracing::info!("verified mainchain REST server at `{raw_url}` is available");
 
     let mainchain_client = rpc_client::create_client(&cli.node_rpc_opts)?;
     tracing::info!(
