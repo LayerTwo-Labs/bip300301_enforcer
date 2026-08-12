@@ -13,7 +13,7 @@ use either::Either;
 use futures::channel::mpsc;
 
 use crate::{
-    integration_test::{activate_sidechain, propose_sidechain},
+    integration_test::{activate_sidechain, deposit, fund_enforcer, propose_sidechain},
     mine::mine_generateblocks_check,
     setup::{DummySidechain, PostSetup, Sidechain as _},
 };
@@ -104,7 +104,7 @@ async fn mine_block_and_collect_proposed_m6ids(
 
 pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
-    let mut _sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
+    let mut sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
     propose_sidechain::<DummySidechain>(&mut post_setup).await?;
     activate_sidechain::<DummySidechain>(&mut post_setup).await?;
 
@@ -117,6 +117,50 @@ pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> 
 
     // Serialize the way Bitcoin Core / a sidechain does (legacy, NOT segwit).
     let transaction_bytes = serialize_zero_input_legacy(&blinded_tx);
+
+    // An active slot does not necessarily have a treasury yet: nothing has been
+    // deposited at this point, so slot 0 has no CTIP and an M6 built from this
+    // bundle would have no treasury output to spend. Reject at ingestion rather
+    // than store a proposal that can never be acted on. These are the exact
+    // bytes the enforcer accepts once the treasury exists below, so the
+    // rejection can only come from the missing CTIP.
+    let no_ctip_result = post_setup
+        .wallet_service_client
+        .broadcast_withdrawal_bundle(BroadcastWithdrawalBundleRequest {
+            sidechain_id: bip300301_enforcer_lib::proto::wrap_u32(0),
+            transaction: buffa::MessageField::some(buffa_types::google::protobuf::BytesValue {
+                value: transaction_bytes.clone(),
+                ..Default::default()
+            }),
+        })
+        .await;
+    let status = no_ctip_result.err().ok_or_else(|| {
+        anyhow::anyhow!(
+            "BroadcastWithdrawalBundle accepted a bundle for an active sidechain without a CTIP"
+        )
+    })?;
+    anyhow::ensure!(
+        status.code == connectrpc::ErrorCode::FailedPrecondition,
+        "expected FailedPrecondition for a sidechain without a CTIP, got: {status}"
+    );
+    anyhow::ensure!(
+        status.to_string().contains("no treasury UTXO"),
+        "expected the rejection to identify the missing treasury UTXO, got: {status}"
+    );
+
+    // A withdrawal bundle is meaningful only after the active sidechain has a
+    // treasury UTXO. Establish one before exercising the positive storage and
+    // M3 round-trip below.
+    fund_enforcer::<DummySidechain>(&mut post_setup).await?;
+    let sidechain_address = sidechain.get_deposit_address().await?;
+    deposit(
+        &mut post_setup,
+        &mut sidechain,
+        &sidechain_address,
+        Amount::from_sat(1_000_000),
+        Amount::from_sat(10_000),
+    )
+    .await?;
 
     // Verify the fixture against Bitcoin Core itself: Core must parse these bytes
     // in legacy form (`iswitness=false`) and must agree with rust-bitcoin on the txid,

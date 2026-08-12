@@ -20,9 +20,10 @@ use bip300301_enforcer_lib::{
     types::SidechainNumber,
 };
 use bitcoin::{Amount, BlockHash, Txid};
+use futures::channel::mpsc;
 
 use crate::{
-    integration_test::{propose_sidechain, propose_sidechain_for_slot},
+    integration_test::{deposit, fund_enforcer, propose_sidechain, propose_sidechain_for_slot},
     mine::mine,
     setup::{DummySidechain, PostSetup, Sidechain as _},
     test_blinded_m6_roundtrip::{make_blinded_m6, serialize_zero_input_legacy},
@@ -105,6 +106,9 @@ async fn bundle_vote_count(post_setup: &mut PostSetup, m6id: Txid) -> anyhow::Re
 }
 
 pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
+    let mut sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
+
     // Black box: learn the network's BIP300 constants over RPC, like any
     // client, rather than hardcoding the enforcer's regtest thresholds.
     let constants = post_setup
@@ -213,6 +217,19 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
         sidechains_active(&mut post_setup).await? == 1,
         "sidechain did not activate despite an explicit ACK"
     );
+
+    // Withdrawal-bundle policy is meaningful only after the active sidechain
+    // has a treasury UTXO. Establish one before testing its M3/M4 votes.
+    fund_enforcer::<DummySidechain>(&mut post_setup).await?;
+    let sidechain_address = sidechain.get_deposit_address().await?;
+    deposit(
+        &mut post_setup,
+        &mut sidechain,
+        &sidechain_address,
+        Amount::from_sat(1_000_000),
+        Amount::from_sat(10_000),
+    )
+    .await?;
 
     // The case enabled by suppressing the M4 only for M2s that can activate a
     // new slot, rather than for any M2: a withdrawal bundle gathers votes in
