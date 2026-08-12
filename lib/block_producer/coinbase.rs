@@ -5,8 +5,11 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 
 use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
-    messages::{CoinbaseBuilder, M4AckBundles},
-    types::{AmountUnderflowError, Ctip, SidechainAck, SidechainNumber, SidechainProposal},
+    messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
+    types::{
+        AmountUnderflowError, Ctip, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
+        SidechainProposalId,
+    },
 };
 
 impl BlockProducer {
@@ -86,6 +89,63 @@ impl BlockProducer {
             );
             false
         }
+    }
+
+    /// An M4 carries exactly one vote per active sidechain, as seen *after* the
+    /// M2s in the same coinbase have been applied. An ACK that activates an unused slot grows the active
+    /// set by one, which would invalidate an M4 sized against the current one.
+    /// Returns `true` if any M2 in this coinbase might activate an unused slot,
+    /// in which case the M4 must be omitted.
+    ///
+    /// `next_height` is the height of the block under construction, from
+    /// which each proposal's age is computed, mirroring the validator's M2
+    /// handling at connect time.
+    fn m2s_may_activate_unused_slot(
+        &self,
+        coinbase_messages: &CoinbaseMessages,
+        active_sidechains: &[Sidechain],
+        next_height: u32,
+    ) -> Result<bool, crate::validator::GetSidechainsError> {
+        if coinbase_messages.m2_ack_slots().is_empty() {
+            return Ok(false);
+        }
+        let active_slots: HashSet<SidechainNumber> = active_sidechains
+            .iter()
+            .map(|sidechain| sidechain.proposal.sidechain_number)
+            .collect();
+
+        let mut unused_slot_acks = HashSet::new();
+        for (message, _vout) in coinbase_messages.iter() {
+            let CoinbaseMessage::M2AckSidechain(m2) = message else {
+                continue;
+            };
+            // Only ACKs for slots that are not already active can grow the
+            // active set
+            if active_slots.contains(&m2.sidechain_number) {
+                continue;
+            }
+            unused_slot_acks.insert(SidechainProposalId {
+                sidechain_number: m2.sidechain_number,
+                description_hash: m2.description_hash,
+            });
+        }
+        if unused_slot_acks.is_empty() {
+            return Ok(false);
+        }
+        let thresholds = self.validator().network_params().thresholds;
+        let res = self
+            .validator()
+            .get_sidechains()?
+            .into_iter()
+            .any(|(proposal_id, sidechain)| {
+                let proposal_age = next_height.saturating_sub(sidechain.status.proposal_height);
+                unused_slot_acks.contains(&proposal_id)
+                    && thresholds.activates_unused_slot(
+                        sidechain.status.vote_count.saturating_add(1),
+                        proposal_age,
+                    )
+            });
+        Ok(res)
     }
 
     /// Extend coinbase txouts for a new block with our drivechain messages:
@@ -220,13 +280,28 @@ impl BlockProducer {
                 }
             }
         }
+        // One read of the active set, shared by the activation check and the
+        // M4 below, so that the M4 is sized against the same active set the
+        // check ran against.
+        let active_sidechains = self.validator().get_active_sidechains()?;
+        // The height of the block under construction, for the proposal age
+        // window in the activation check below.
+        let next_height = self
+            .validator()
+            .get_header_info(&mainchain_tip)?
+            .height
+            .saturating_add(1);
         // Ack bundles
         // TODO: Exclusively ack bundles that are known to us
-        // TODO: ack bundles when M2 messages are present
-        if ack_all_proposals && coinbase_builder.messages().m2_ack_slots().is_empty() {
-            let active_sidechains = self.validator().get_active_sidechains()?;
+        if ack_all_proposals
+            && !self.m2s_may_activate_unused_slot(
+                coinbase_builder.messages(),
+                &active_sidechains,
+                next_height,
+            )?
+        {
             let upvotes = active_sidechains
-                .into_iter()
+                .iter()
                 .map(|sidechain| {
                     if self
                         .validator()

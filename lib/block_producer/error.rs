@@ -69,6 +69,8 @@ pub enum GenerateCoinbaseTxouts {
     #[error("transparent")]
     GetBundleProposals(#[from] GetBundleProposals),
     #[error(transparent)]
+    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    #[error(transparent)]
     GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
     #[error(transparent)]
     GetSidechains(#[from] crate::validator::GetSidechainsError),
@@ -83,6 +85,7 @@ impl ToStatus for GenerateCoinbaseTxouts {
         match self {
             Self::CoinbaseMessages(err) => err.builder(),
             Self::GetBundleProposals(err) => err.builder(),
+            Self::GetHeaderInfo(err) => err.builder(),
             Self::GetPendingWithdrawals(err) => err.builder(),
             Self::GetSidechains(err) => err.builder(),
             Self::PushBytes(err) => StatusBuilder::new(err),

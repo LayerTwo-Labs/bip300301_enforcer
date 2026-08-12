@@ -13,6 +13,7 @@ use bip300301_enforcer_lib::{
             ListSidechainDepositTransactionsRequest, block_info, withdrawal_bundle_event,
         },
     },
+    types::SidechainNumber,
 };
 use bitcoin::Amount;
 use either::Either;
@@ -150,11 +151,17 @@ where
     )
 }
 
-pub async fn propose_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
+/// Propose a sidechain for `sidechain_number`, and mine one block to carry
+/// the M1. `S` is only used to subscribe to block events while mining, so the
+/// proposed slot does not have to be `S::SIDECHAIN_NUMBER`.
+pub async fn propose_sidechain_for_slot<S>(
+    post_setup: &mut PostSetup,
+    sidechain_number: SidechainNumber,
+) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
-    tracing::info!("Proposing sidechain");
+    tracing::info!("Proposing sidechain for slot {}", sidechain_number.0);
     let create_sidechain_proposal_request = {
         let v0 = proto::mainchain::sidechain_declaration::V0 {
             title: proto::wrap_string("sidechain"),
@@ -166,7 +173,7 @@ where
             sidechain_declaration: Some(v0.into()),
         };
         CreateSidechainProposalRequest {
-            sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
+            sidechain_id: proto::wrap_u32(sidechain_number.0.into()),
             declaration: buffa::MessageField::some(declaration),
         }
     };
@@ -176,11 +183,8 @@ where
         .await?;
     // The proposal must be persisted before we mine, or the coinbase won't
     // carry the M1.
-    let () = wait_for_pending_proposal(
-        &post_setup.block_producer_service_client,
-        S::SIDECHAIN_NUMBER,
-    )
-    .await?;
+    let () = wait_for_pending_proposal(&post_setup.block_producer_service_client, sidechain_number)
+        .await?;
     tracing::debug!("Mining 1 block");
     let () = mine::<S>(post_setup, 1, Some(true)).await?;
     let Some(_) = create_sidechain_proposal_resp.message().await? else {
@@ -188,15 +192,32 @@ where
     };
     tracing::debug!("Proposed sidechain");
     tracing::debug!("Checking sidechain proposals");
-    let sidechain_proposals_resp = post_setup
+    let matching_proposals = post_setup
         .validator_service_client
         .get_sidechain_proposals(GetSidechainProposalsRequest::default())
         .await?
-        .into_owned();
-    if sidechain_proposals_resp.sidechain_proposals.len() != 1 {
-        anyhow::bail!("Expected 1 sidechain proposal")
+        .into_owned()
+        .sidechain_proposals
+        .into_iter()
+        .filter(|proposal| {
+            proto::unwrap_u32(proposal.sidechain_number.clone())
+                == Some(u32::from(sidechain_number.0))
+        })
+        .count();
+    if matching_proposals != 1 {
+        anyhow::bail!(
+            "Expected 1 sidechain proposal for slot {}, got {matching_proposals}",
+            sidechain_number.0
+        )
     }
     Ok(())
+}
+
+pub async fn propose_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
+    propose_sidechain_for_slot::<S>(post_setup, S::SIDECHAIN_NUMBER).await
 }
 
 pub async fn activate_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
