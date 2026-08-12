@@ -83,6 +83,15 @@ impl Thresholds {
             _ => Self::SHORT,
         }
     }
+
+    /// BIP300 M2: whether a proposal with `vote_count` ACKs at
+    /// `proposal_age` blocks since its M1 activates into a currently unused
+    /// sidechain slot. The vote threshold must be strictly exceeded; the age
+    /// window is inclusive.
+    pub const fn activates_unused_slot(&self, vote_count: u16, proposal_age: u32) -> bool {
+        vote_count > self.unused_sidechain_slot_activation_threshold
+            && proposal_age <= self.unused_sidechain_slot_proposal_max_age as u32
+    }
 }
 
 /// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for dry-run
@@ -1090,7 +1099,24 @@ mod tests {
 
     use miette::Diagnostic as _;
 
-    use crate::types::{BlindedM6, SidechainDeclaration, SidechainNumber, SidechainProposal};
+    use crate::types::{
+        BlindedM6, SidechainDeclaration, SidechainNumber, SidechainProposal, Thresholds,
+    };
+
+    #[test]
+    fn unused_slot_activation_boundary() {
+        // The validator activates on this predicate, and the block producer
+        // suppresses an M4 whenever an M2 in the same coinbase could satisfy
+        // it, so both boundaries matter: the vote threshold must be strictly
+        // exceeded, and the age window is inclusive.
+        let thresholds = Thresholds::SHORT;
+        let vote_threshold = thresholds.unused_sidechain_slot_activation_threshold;
+        let max_age = thresholds.unused_sidechain_slot_proposal_max_age as u32;
+        assert!(!thresholds.activates_unused_slot(vote_threshold, 1));
+        assert!(thresholds.activates_unused_slot(vote_threshold + 1, 1));
+        assert!(thresholds.activates_unused_slot(vote_threshold + 1, max_age));
+        assert!(!thresholds.activates_unused_slot(vote_threshold + 1, max_age + 1));
+    }
 
     fn proposal(description: Vec<u8>) -> SidechainProposal {
         SidechainProposal {

@@ -260,10 +260,8 @@ impl BlockHandler<'_> {
                 && sidechain_proposal_age <= thresholds.used_sidechain_slot_proposal_max_age as u32
         } || {
             !sidechain_slot_is_used
-                && sidechain.status.vote_count
-                    > thresholds.unused_sidechain_slot_activation_threshold
-                && sidechain_proposal_age
-                    <= thresholds.unused_sidechain_slot_proposal_max_age as u32
+                && thresholds
+                    .activates_unused_slot(sidechain.status.vote_count, sidechain_proposal_age)
         };
 
         let effect = if new_sidechain_activated {
