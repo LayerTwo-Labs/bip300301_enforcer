@@ -110,6 +110,21 @@ impl WalletService for crate::wallet::Wallet {
             Ok(true) => (),
             Err(err) => return Err(internal_err(err)),
         }
+        // Likewise reject bundles for an active slot that has no CTIP: with no
+        // treasury UTXO there is nothing for an M6 to spend, so the bundle could
+        // never become a valid withdrawal. NB: as with the active-slot gate
+        // above, this cannot cover a CTIP that a reorg removes *after* a bundle
+        // is stored. In that state block building fails with `MissingCtip` once
+        // the bundle clears the inclusion threshold.
+        match self.validator().try_get_ctip(sidechain_id) {
+            Ok(None) => {
+                return Err(ConnectError::failed_precondition(format!(
+                    "cannot accept a withdrawal bundle for sidechain {sidechain_id}: no treasury UTXO"
+                )));
+            }
+            Ok(Some(_)) => (),
+            Err(err) => return Err(internal_err(err)),
+        }
         let transaction_bytes: Vec<u8> = transaction
             .into_option()
             .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("transaction"))?
