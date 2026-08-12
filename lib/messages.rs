@@ -486,6 +486,12 @@ impl CoinbaseMessages {
             .map(|(_, vout)| *vout)
     }
 
+    pub fn m7_bmm_accept_slot_commitment(&self, slot: &SidechainNumber) -> Option<BmmCommitment> {
+        self.m7_slot_to_commitment_index
+            .get(slot)
+            .map(|(commitment, _)| *commitment)
+    }
+
     pub fn m7_bmm_accepts(&self) -> HashMap<SidechainNumber, BmmCommitment> {
         self.m7_slot_to_commitment_index
             .iter()

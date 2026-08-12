@@ -33,7 +33,7 @@ use bitcoin_jsonrpsee::{
 use crate::{
     bins::{self, CommandExt as _},
     block_producer::{BlockProducer, error},
-    messages::CoinbaseBuilder,
+    messages::{CoinbaseBuilder, CoinbaseMessagesError},
 };
 
 fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
@@ -62,6 +62,103 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
 }
 
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
+
+/// Reconcile the txs selected for a new block with the M7 BMM accepts already
+/// in the coinbase: accept the BMM request of every M8 whose slot is not yet
+/// spoken for, and drop every M8 that our own validator would reject. There are
+/// three such cases, and the template this runs on comes from Bitcoin Core,
+/// which knows none of the enforcer's M8 policy, so none of them are filtered
+/// already:
+///
+/// * an M8 whose slot the coinbase already commits to a different sidechain
+///   block hash (`HandleM8::NotAcceptedByMiners`). An M7 for an operator BMM
+///   request cannot be replaced by the mempool's.
+/// * an M8 that does not build on this block's parent
+///   (`HandleM8::BmmRequestExpired`). Every pending bid in Bitcoin Core's
+///   mempool goes stale the moment a block is found, so this is the common
+///   case.
+/// * a second M8 for a slot already spoken for, which would make
+///   `connect_block` reject the whole block with
+///   `ConnectBlock::MultipleBmmRequests`.
+///
+/// Dropping a tx orphans its in-block descendants: an M8 bid is an ordinary
+/// funded tx with a change output, and a re-bid chained onto the previous bid's
+/// change is the normal shape. Leaving the descendant behind makes `submitblock`
+/// fail with `bad-txns-inputs-missingorspent`, so descendants of dropped txs are
+/// dropped as well. Template txs are topologically ordered, so a single forward
+/// pass is enough.
+///
+/// The `getblocktemplate` path performs the equivalent filtering by excluding
+/// those txids from the template.
+fn reconcile_bmm_requests(
+    coinbase_builder: &mut CoinbaseBuilder<'_>,
+    mainchain_tip: BlockHash,
+    transactions: Vec<Transaction>,
+) -> Result<Vec<Transaction>, CoinbaseMessagesError> {
+    let mut res = Vec::with_capacity(transactions.len());
+    let mut included_slots = HashSet::new();
+    // Txids excluded below, plus the descendants they orphan.
+    let mut dropped = HashSet::<Txid>::new();
+    for tx in transactions {
+        if tx
+            .input
+            .iter()
+            .any(|input| dropped.contains(&input.previous_output.txid))
+        {
+            let txid = tx.compute_txid();
+            tracing::warn!(%txid, "Excluding tx: spends an excluded tx");
+            dropped.insert(txid);
+            continue;
+        }
+        let Some(bmm_request) = crate::messages::parse_m8_tx(&tx) else {
+            res.push(tx);
+            continue;
+        };
+        if bmm_request.prev_mainchain_block_hash != mainchain_tip {
+            let txid = tx.compute_txid();
+            tracing::warn!(
+                %txid,
+                sidechain_number = %bmm_request.sidechain_number,
+                "Excluding BMM request: built on a different mainchain block",
+            );
+            dropped.insert(txid);
+            continue;
+        }
+        let accepted = coinbase_builder
+            .messages()
+            .m7_bmm_accept_slot_commitment(&bmm_request.sidechain_number);
+        if let Some(commitment) = accepted
+            && commitment != bmm_request.sidechain_block_hash
+        {
+            let txid = tx.compute_txid();
+            tracing::warn!(
+                %txid,
+                sidechain_number = %bmm_request.sidechain_number,
+                "Excluding BMM request: coinbase accepts a different hash for this slot",
+            );
+            dropped.insert(txid);
+            continue;
+        }
+        if !included_slots.insert(bmm_request.sidechain_number) {
+            let txid = tx.compute_txid();
+            tracing::warn!(
+                %txid,
+                sidechain_number = %bmm_request.sidechain_number,
+                "Excluding BMM request: this slot is already taken by another BMM request",
+            );
+            dropped.insert(txid);
+            continue;
+        }
+        if accepted.is_none() {
+            coinbase_builder.bmm_accept(
+                bmm_request.sidechain_number,
+                bmm_request.sidechain_block_hash,
+            )?;
+        }
+        res.push(tx);
+    }
+    Ok(res)
+}
 
 impl BlockProducer {
     async fn fetch_block_template(
@@ -611,19 +708,8 @@ impl BlockProducer {
             .await?;
         let transactions = self.select_block_txs(mainchain_tip).await?;
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
-        for tx in &transactions {
-            if let Some(bmm_request) = crate::messages::parse_m8_tx(tx)
-                && coinbase_builder
-                    .messages()
-                    .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                    .is_none()
-            {
-                coinbase_builder.bmm_accept(
-                    bmm_request.sidechain_number,
-                    bmm_request.sidechain_block_hash,
-                )?;
-            }
-        }
+        let transactions =
+            reconcile_bmm_requests(&mut coinbase_builder, mainchain_tip, transactions)?;
         let () = coinbase_builder.build()?;
 
         tracing::info!(
@@ -640,5 +726,210 @@ impl BlockProducer {
             .await
             .map_err(error::GenerateBlock::DeleteBmmRequests)?;
         Ok(block_hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use bitcoin::{
+        Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, hashes::Hash as _,
+    };
+
+    use super::reconcile_bmm_requests;
+    use crate::{
+        messages::{CoinbaseBuilder, M8BmmRequest},
+        types::{BmmCommitment, SidechainNumber},
+    };
+
+    /// The mainchain tip the block being built extends.
+    fn tip() -> BlockHash {
+        BlockHash::from_byte_array([0xAA; 32])
+    }
+
+    /// The tip an M8 that went stale when the current tip was found builds on.
+    fn stale_tip() -> BlockHash {
+        BlockHash::from_byte_array([0xBB; 32])
+    }
+
+    /// A distinct wallet UTXO to fund a BMM bid with.
+    fn funding(n: u8) -> OutPoint {
+        OutPoint {
+            txid: Txid::from_byte_array([n; 32]),
+            vout: 0,
+        }
+    }
+
+    /// The change output of `tx`, which a re-bid chains onto.
+    fn change_of(tx: &Transaction) -> OutPoint {
+        OutPoint {
+            txid: tx.compute_txid(),
+            vout: 1,
+        }
+    }
+
+    /// An M8 bid: the request at output 0, funded by `funding`, with a change
+    /// output at index 1.
+    fn build_m8_tx(
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: BmmCommitment,
+        prev_mainchain_block_hash: BlockHash,
+        funding: OutPoint,
+    ) -> Transaction {
+        let script_pubkey = M8BmmRequest::script_pubkey(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+        )
+        .expect("failed to build M8 script");
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: funding,
+                ..TxIn::default()
+            }],
+            output: vec![
+                TxOut {
+                    script_pubkey,
+                    value: Amount::ZERO,
+                },
+                TxOut {
+                    script_pubkey: ScriptBuf::new(),
+                    value: Amount::ZERO,
+                },
+            ],
+        }
+    }
+
+    /// An ordinary tx spending `previous_output`.
+    fn build_plain_tx(previous_output: OutPoint) -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output,
+                ..TxIn::default()
+            }],
+            output: vec![TxOut {
+                script_pubkey: ScriptBuf::new(),
+                value: Amount::ZERO,
+            }],
+        }
+    }
+
+    /// A mempool M8 that commits to a different hash than the M7 the coinbase
+    /// already carries for that slot must be dropped, as our own validator
+    /// rejects the whole block for it.
+    #[test]
+    fn conflicting_bmm_request_is_excluded() {
+        let slot = SidechainNumber(0);
+        let other_slot = SidechainNumber(1);
+        let ours = BmmCommitment([0x11; 32]);
+        let theirs = BmmCommitment([0x22; 32]);
+        // The coinbase as `extend_coinbase_txouts` leaves it: an M7 accepting
+        // the BMM request stored in our own DB.
+        let mut coinbase_txouts = Vec::new();
+        {
+            let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts).unwrap();
+            coinbase_builder.bmm_accept(slot, ours).unwrap();
+            coinbase_builder.build().unwrap();
+        }
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts).unwrap();
+        let transactions = vec![
+            build_m8_tx(slot, theirs, tip(), funding(1)),
+            build_m8_tx(slot, ours, tip(), funding(2)),
+            build_m8_tx(other_slot, theirs, tip(), funding(3)),
+        ];
+        let res =
+            reconcile_bmm_requests(&mut coinbase_builder, tip(), transactions.clone()).unwrap();
+        assert_eq!(res, &transactions[1..]);
+        // The unused slot is accepted, ours is left untouched.
+        assert_eq!(
+            coinbase_builder.messages().m7_bmm_accepts(),
+            HashMap::from([(slot, ours), (other_slot, theirs)]),
+        );
+    }
+
+    /// An M8 that does not build on the block's parent is rejected by
+    /// `handle_m8` with `BmmRequestExpired`, so it must not be mined. Every
+    /// pending bid in Bitcoin Core's mempool is in this state as soon as a block
+    /// is found.
+    #[test]
+    fn expired_bmm_request_is_excluded() {
+        let slot = SidechainNumber(0);
+        let stale = BmmCommitment([0x11; 32]);
+        let fresh = BmmCommitment([0x22; 32]);
+        let mut coinbase_txouts = Vec::new();
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts).unwrap();
+        let transactions = vec![
+            build_m8_tx(slot, stale, stale_tip(), funding(1)),
+            build_m8_tx(slot, fresh, tip(), funding(2)),
+        ];
+        let res =
+            reconcile_bmm_requests(&mut coinbase_builder, tip(), transactions.clone()).unwrap();
+        assert_eq!(res, &transactions[1..]);
+        // The expired request must not have claimed the slot in the coinbase.
+        assert_eq!(
+            coinbase_builder.messages().m7_bmm_accepts(),
+            HashMap::from([(slot, fresh)]),
+        );
+    }
+
+    /// Two mempool M8s for the same slot carrying the same commitment both pass
+    /// `handle_m8`, and `connect_block` then rejects the block with
+    /// `MultipleBmmRequests`. Only the first may be mined.
+    #[test]
+    fn duplicate_bmm_request_for_slot_is_excluded() {
+        let slot = SidechainNumber(0);
+        let commitment = BmmCommitment([0x11; 32]);
+        let mut coinbase_txouts = Vec::new();
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts).unwrap();
+        let transactions = vec![
+            build_m8_tx(slot, commitment, tip(), funding(1)),
+            build_m8_tx(slot, commitment, tip(), funding(2)),
+        ];
+        let res =
+            reconcile_bmm_requests(&mut coinbase_builder, tip(), transactions.clone()).unwrap();
+        assert_eq!(res, &transactions[..1]);
+        assert_eq!(
+            coinbase_builder.messages().m7_bmm_accepts(),
+            HashMap::from([(slot, commitment)]),
+        );
+    }
+
+    /// Dropping an M8 orphans anything chained onto its change output. A re-bid
+    /// funded by the previous bid's change is the normal shape, and leaving it
+    /// in makes `submitblock` fail with `bad-txns-inputs-missingorspent`.
+    #[test]
+    fn descendants_of_excluded_bmm_request_are_excluded() {
+        let slot = SidechainNumber(0);
+        let other_slot = SidechainNumber(1);
+        // Went stale when the current tip was found ...
+        let expired = build_m8_tx(slot, BmmCommitment([0x11; 32]), stale_tip(), funding(1));
+        // ... and the re-bid chained onto its change output, which is valid on
+        // its own but orphaned without its parent.
+        let rebid = build_m8_tx(slot, BmmCommitment([0x22; 32]), tip(), change_of(&expired));
+        // A non-M8 descendant is orphaned just the same.
+        let grandchild = build_plain_tx(change_of(&rebid));
+        // An independently funded bid for another slot is unaffected.
+        let unrelated = build_m8_tx(other_slot, BmmCommitment([0x33; 32]), tip(), funding(2));
+        let mut coinbase_txouts = Vec::new();
+        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_txouts).unwrap();
+        let transactions = vec![
+            expired,
+            rebid,
+            grandchild,
+            unrelated.clone(),
+            build_plain_tx(change_of(&unrelated)),
+        ];
+        let res =
+            reconcile_bmm_requests(&mut coinbase_builder, tip(), transactions.clone()).unwrap();
+        assert_eq!(res, &transactions[3..]);
+        assert_eq!(
+            coinbase_builder.messages().m7_bmm_accepts(),
+            HashMap::from([(other_slot, BmmCommitment([0x33; 32]))]),
+        );
     }
 }
