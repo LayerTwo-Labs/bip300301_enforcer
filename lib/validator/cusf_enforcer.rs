@@ -382,7 +382,7 @@ impl CusfEnforcer for Validator {
         let sync_future = handler
             .sync_to_tip(
                 &self.mainchain_client,
-                &self.mainchain_rest_client,
+                self.mainchain_rest_client.as_ref(),
                 self.mainchain_blocks_dir.clone(),
                 tip,
                 task::SyncSignals {

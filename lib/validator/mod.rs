@@ -414,16 +414,18 @@ pub struct Validator {
     events_tx: BroadcastSender<Event>,
     header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
-    mainchain_rest_client: MainRestClient,
+    mainchain_rest_client: Option<MainRestClient>,
     mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
     network_params: NetworkParams,
 }
 
 impl Validator {
+    /// `mainchain_rest_client` is `None` when Core is running without its REST
+    /// interface; header sync then falls back to batched JSON-RPC.
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
-        mainchain_rest_client: MainRestClient,
+        mainchain_rest_client: Option<MainRestClient>,
         mainchain_blocks_dir: Option<PathBuf>,
         data_dir: &Path,
         network: bitcoin::Network,
@@ -828,7 +830,7 @@ mod ctip_sequence_number_tests {
             MainRestClient::new(url::Url::parse("http://127.0.0.1:1").expect("valid url"));
         Validator::new(
             mainchain_client,
-            mainchain_rest_client,
+            Some(mainchain_rest_client),
             None,
             dir,
             bitcoin::Network::Regtest,

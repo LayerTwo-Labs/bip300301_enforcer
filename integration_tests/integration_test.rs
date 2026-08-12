@@ -914,6 +914,22 @@ pub fn tests(
         },
         crate::test_activation_height::test_activation_height,
     ));
+    async_trials.push(new_trial_with_setup_opts(
+        crate::test_rest_disabled::TEST_NAME.to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts {
+            bitcoind_args: vec!["-norest".to_owned()],
+            enforcer_wallet: crate::setup::EnforcerWallet::Disabled,
+            ..Default::default()
+        },
+        crate::test_rest_disabled::test_rest_disabled_header_sync,
+    ));
     async_trials.extend([new_trial(
         "file_based_block_parser".to_string(),
         TestSetupComponents {

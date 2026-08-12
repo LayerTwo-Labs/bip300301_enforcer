@@ -1414,10 +1414,49 @@ where
     }
 }
 
+/// Validate that the two JSON-RPC batches describe one contiguous segment of
+/// the active chain. Bitcoin Core executes each request in a batch separately,
+/// so a reorg can otherwise mix hashes from different active chains.
+fn validate_rpc_header_batch(
+    start_block_hash: BlockHash,
+    start_height: u32,
+    block_hashes: Vec<BlockHash>,
+    raw_headers: Vec<String>,
+) -> Result<Vec<(bitcoin::block::Header, BlockHash, u32)>, error::Sync> {
+    if block_hashes.first().copied() != Some(start_block_hash) {
+        return Err(error::Sync::BlockNotInActiveChain {
+            block_hash: start_block_hash,
+        });
+    }
+
+    let mut validated = Vec::with_capacity(block_hashes.len());
+    let mut previous_block_hash = None;
+    for (offset, (block_hash, raw_header)) in block_hashes.into_iter().zip(raw_headers).enumerate()
+    {
+        let offset = u32::try_from(offset).expect("header batches contain at most 2000 entries");
+        let expected_height = start_height
+            .checked_add(offset)
+            .expect("a header batch cannot extend beyond the mainchain tip");
+
+        let header: bitcoin::block::Header =
+            bitcoin::consensus::encode::deserialize_hex(&raw_header)?;
+        if header.block_hash() != block_hash
+            || previous_block_hash
+                .is_some_and(|previous_block_hash| header.prev_blockhash != previous_block_hash)
+        {
+            return Err(error::Sync::BlockNotInActiveChain { block_hash });
+        }
+
+        previous_block_hash = Some(block_hash);
+        validated.push((header, block_hash, expected_height));
+    }
+    Ok(validated)
+}
+
 #[tracing::instrument(skip_all)]
 async fn sync_headers<MainRpcClient>(
     dbs: &Dbs,
-    main_rest_client: &MainRestClient,
+    main_rest_client: Option<&MainRestClient>,
     main_rpc_client: &MainRpcClient,
     main_tip: BlockHash,
     progress_tx: &tokio::sync::watch::Sender<HeaderSyncProgress>,
@@ -1490,9 +1529,85 @@ where
         let headers_needed = (main_tip_height - current_height) + 1;
         let batch_size = std::cmp::min(HEADER_FETCH_BATCH_SIZE, headers_needed as usize);
         // Fetch a batch of headers
-        let headers = main_rest_client
-            .get_block_headers(&current_block_hash, batch_size)
-            .await?;
+        let headers = if let Some(main_rest_client) = main_rest_client {
+            main_rest_client
+                .get_block_headers(&current_block_hash, batch_size)
+                .await?
+        } else {
+            // REST is optional. Fetch each RPC stage as a batch so
+            // REST-disabled Core nodes retain the same round-trip shape as
+            // the REST path instead of making one request per header.
+            let mut get_block_hash_batch = BatchRequestBuilder::new();
+            for offset in 0..batch_size {
+                let offset =
+                    u32::try_from(offset).expect("header batches contain at most 2000 entries");
+                let height = current_height
+                    .checked_add(offset)
+                    .expect("a header batch cannot extend beyond the mainchain tip");
+                let mut params = ArrayParams::new();
+                params
+                    .insert(height as usize)
+                    .expect("failed to insert block height");
+                get_block_hash_batch
+                    .insert("getblockhash", params)
+                    .map_err(error::Sync::JsonSerialize)?;
+            }
+            let block_hashes: Vec<BlockHash> = match main_rpc_client
+                .batch_request(get_block_hash_batch)
+                .boxed()
+                .await
+                .map_err(|err| error::Sync::JsonRpc {
+                    method: "getblockhash (batched)".to_owned(),
+                    source: err,
+                })?
+                .ok()
+            {
+                Ok(hashes) => hashes.copied().collect(),
+                Err(errors) => {
+                    return Err(error::Sync::BatchJsonRpc {
+                        errors: errors.map(|error| error.message().to_owned()).collect(),
+                    });
+                }
+            };
+            let mut get_block_header_batch = BatchRequestBuilder::new();
+            for block_hash in &block_hashes {
+                let mut params = ArrayParams::new();
+                params
+                    .insert(block_hash.to_string())
+                    .expect("failed to insert block hash");
+                // Request the raw 80-byte header rather than the verbose JSON
+                // object. Core computes chainwork, confirmations and nTx for
+                // the verbose form, which is a real per-header cost when
+                // syncing an IBD-sized range.
+                params.insert(false).expect("failed to insert verbosity");
+                get_block_header_batch
+                    .insert("getblockheader", params)
+                    .map_err(error::Sync::JsonSerialize)?;
+            }
+            let raw_headers: Vec<String> = match main_rpc_client
+                .batch_request(get_block_header_batch)
+                .boxed()
+                .await
+                .map_err(|err| error::Sync::JsonRpc {
+                    method: "getblockheader (batched)".to_owned(),
+                    source: err,
+                })?
+                .ok()
+            {
+                Ok(headers) => headers.cloned().collect(),
+                Err(errors) => {
+                    return Err(error::Sync::BatchJsonRpc {
+                        errors: errors.map(|error| error.message().to_owned()).collect(),
+                    });
+                }
+            };
+            validate_rpc_header_batch(
+                current_block_hash,
+                current_height,
+                block_hashes,
+                raw_headers,
+            )?
+        };
 
         match headers.last() {
             Some((_, last_block_hash, last_block_height)) => {
@@ -1914,7 +2029,7 @@ impl BlockHandler<'_> {
     pub(in crate::validator) async fn sync_to_tip<MainClient>(
         &self,
         main_rpc_client: &MainClient,
-        main_rest_client: &MainRestClient,
+        main_rest_client: Option<&MainRestClient>,
         main_blocks_dir: Option<PathBuf>,
         main_tip: BlockHash,
         signals: SyncSignals,
@@ -2055,6 +2170,127 @@ mod tests {
 
     fn dummy_block_hash(byte: u8) -> BlockHash {
         BlockHash::from_byte_array([byte; 32])
+    }
+
+    /// Build a contiguous header chain as the RPC fallback sees it: the block
+    /// hashes from the `getblockhash` batch, and the raw hex headers from the
+    /// `getblockheader <hash> false` batch.
+    fn rpc_header_chain(len: usize) -> (Vec<BlockHash>, Vec<bitcoin::block::Header>) {
+        let mut previous_block_hash = BlockHash::all_zeros();
+        let mut block_hashes = Vec::with_capacity(len);
+        let mut headers = Vec::with_capacity(len);
+        for offset in 0..len {
+            let mut header = test_block_header(previous_block_hash);
+            header.nonce = u32::try_from(offset).expect("test chain is short");
+            previous_block_hash = header.block_hash();
+            block_hashes.push(previous_block_hash);
+            headers.push(header);
+        }
+        (block_hashes, headers)
+    }
+
+    fn raw_headers(headers: &[bitcoin::block::Header]) -> Vec<String> {
+        headers
+            .iter()
+            .map(bitcoin::consensus::encode::serialize_hex)
+            .collect()
+    }
+
+    #[test]
+    fn rpc_header_batch_accepts_a_contiguous_segment() {
+        let start_height = 42;
+        let (block_hashes, headers) = rpc_header_chain(3);
+        let start_block_hash = block_hashes[0];
+
+        let validated = validate_rpc_header_batch(
+            start_block_hash,
+            start_height,
+            block_hashes.clone(),
+            raw_headers(&headers),
+        )
+        .expect("a contiguous header segment must be accepted");
+
+        assert_eq!(
+            validated,
+            headers
+                .into_iter()
+                .zip(block_hashes)
+                .enumerate()
+                .map(|(offset, (header, block_hash))| (
+                    header,
+                    block_hash,
+                    start_height + offset as u32
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn rpc_header_batch_rejects_a_stale_start_hash() {
+        let (block_hashes, headers) = rpc_header_chain(2);
+        let start_block_hash = dummy_block_hash(0x42);
+        let err =
+            validate_rpc_header_batch(start_block_hash, 42, block_hashes, raw_headers(&headers))
+                .expect_err("the requested starting hash must still be active");
+        assert!(matches!(
+            err,
+            error::Sync::BlockNotInActiveChain { block_hash }
+                if block_hash == start_block_hash
+        ));
+    }
+
+    #[test]
+    fn rpc_header_batch_rejects_a_mismatched_computed_hash() {
+        let (block_hashes, mut headers) = rpc_header_chain(2);
+        let start_block_hash = block_hashes[0];
+        headers[1].nonce = headers[1].nonce.wrapping_add(1);
+        let err = validate_rpc_header_batch(
+            start_block_hash,
+            42,
+            block_hashes.clone(),
+            raw_headers(&headers),
+        )
+        .expect_err("the serialized header must hash to the requested block");
+        assert!(matches!(
+            err,
+            error::Sync::BlockNotInActiveChain { block_hash }
+                if block_hash == block_hashes[1]
+        ));
+    }
+
+    #[test]
+    fn rpc_header_batch_rejects_broken_parent_adjacency() {
+        let (mut block_hashes, mut headers) = rpc_header_chain(2);
+        let start_block_hash = block_hashes[0];
+        headers[1].prev_blockhash = dummy_block_hash(0x42);
+        // Keep the requested hash consistent with the returned header, so that
+        // adjacency is the only broken invariant.
+        block_hashes[1] = headers[1].block_hash();
+        let err = validate_rpc_header_batch(
+            start_block_hash,
+            42,
+            block_hashes.clone(),
+            raw_headers(&headers),
+        )
+        .expect_err("each header must descend from the preceding response");
+        assert!(matches!(
+            err,
+            error::Sync::BlockNotInActiveChain { block_hash }
+                if block_hash == block_hashes[1]
+        ));
+    }
+
+    #[test]
+    fn rpc_header_batch_rejects_a_malformed_header() {
+        let (block_hashes, _) = rpc_header_chain(1);
+        let err = validate_rpc_header_batch(
+            block_hashes[0],
+            42,
+            block_hashes,
+            vec!["not hex".to_owned()],
+        )
+        .expect_err("a header that does not deserialize must be rejected");
+        assert!(matches!(err, error::Sync::DeserializeHex(_)));
     }
 
     // ── handle_m8 ──
