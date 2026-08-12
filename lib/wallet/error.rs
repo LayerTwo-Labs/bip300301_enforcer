@@ -578,23 +578,12 @@ pub mod full_scan {
     };
 
     #[derive(Debug, Diagnostic, Error)]
-    #[diagnostic(code(check_address_transactions))]
-    #[error("failed to check for bitcoin address transactions")]
-    pub struct CheckAddressTransactions {
-        pub(in crate::wallet) address: bitcoin::Address,
-        pub(in crate::wallet) source: ChainSourceClient,
-    }
-
-    #[derive(Debug, Diagnostic, Error)]
     pub enum Error {
         #[error(transparent)]
         WalletNotUnlocked(#[from] NotUnlocked),
 
         #[error(transparent)]
         ChainSourceClient(#[from] ChainSourceClient),
-
-        #[error(transparent)]
-        CheckAddressTransactions(#[from] CheckAddressTransactions),
 
         #[error(transparent)]
         ListHeaders(#[from] crate::validator::ListHeadersError),
