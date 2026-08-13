@@ -33,8 +33,27 @@ use bitcoin_jsonrpsee::{
 use crate::{
     bins::{self, CommandExt as _},
     block_producer::{BlockProducer, error},
+    errors::ErrorChain,
     messages::CoinbaseBuilder,
 };
+
+/// BMM request cleanup happens after the block has been submitted and observed
+/// by the validator. Keep the mined block as the operation's result even if the
+/// best-effort cleanup fails, so callers are not invited to retry an operation
+/// that has already happened.
+fn finish_bmm_request_cleanup(
+    block_hash: BlockHash,
+    result: Result<(), rusqlite::Error>,
+) -> BlockHash {
+    if let Err(err) = result {
+        tracing::error!(
+            %block_hash,
+            "failed to delete BMM requests for mined block: {:#}",
+            ErrorChain::new(&err),
+        );
+    }
+    block_hash
+}
 
 fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
     const L2L_SIGNET_CHALLENGE: &[u8] = b"00141551188e5153533b4fdd555449e640d9cc129456";
@@ -635,10 +654,26 @@ impl BlockProducer {
         let block_hash = self
             .mine(coinbase_spk, &coinbase_outputs, transactions)
             .await?;
-        self.db()
+        let cleanup_result = self
+            .db()
             .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await
-            .map_err(error::GenerateBlock::DeleteBmmRequests)?;
-        Ok(block_hash)
+            .await;
+        Ok(finish_bmm_request_cleanup(block_hash, cleanup_result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{BlockHash, hashes::Hash as _};
+
+    use super::finish_bmm_request_cleanup;
+
+    #[test]
+    fn cleanup_failure_preserves_mined_block_result() {
+        let block_hash = BlockHash::from_byte_array([0x42; 32]);
+        assert_eq!(
+            finish_bmm_request_cleanup(block_hash, Err(rusqlite::Error::InvalidQuery)),
+            block_hash
+        );
     }
 }
