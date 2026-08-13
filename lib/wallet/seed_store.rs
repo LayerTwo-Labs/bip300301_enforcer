@@ -203,8 +203,20 @@ fn write_seed_file(path: &Path, seed_file: &SeedFile) -> Result<(), std::io::Err
     let contents = serde_json::to_vec_pretty(seed_file).expect("seed file serialization is total");
     let tmp_path = path.with_extension("json.tmp");
     {
+        // The 0600 only takes effect when the open actually creates the file.
+        // An existing temp file must never be reused. A leftover from a
+        // crashed write, or one planted by another process, would otherwise
+        // decide the seed's permissions, or redirect the write through a
+        // symlink. Unlink first, then create exclusively — if anything races
+        // us back onto the path, `create_new` fails instead of writing the
+        // seed somewhere it does not belong.
+        match std::fs::remove_file(&tmp_path) {
+            Ok(()) => (),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => (),
+            Err(err) => return Err(err),
+        }
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt as _;
@@ -653,6 +665,45 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A world-readable temp file left over from a crashed write (or planted)
+    /// must not become the seed file's permissions.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stale_temp_file_does_not_widen_seed_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = temp_dir("stale-tmp");
+        let tmp_path = dir.join("seed.json.tmp");
+        std::fs::write(&tmp_path, b"stale").unwrap();
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let store = SeedStore::new(&dir).unwrap();
+        let mnemonic = Mnemonic::parse_in(Language::English, TEST_MNEMONIC).unwrap();
+        store
+            .insert_seed(Seed::Plaintext(&mnemonic), None)
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(dir.join("seed.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "stale temp file must not be reused");
+        assert_eq!(
+            store
+                .read_mnemonic()
+                .await
+                .unwrap()
+                .unwrap()
+                .left()
+                .unwrap()
+                .to_string(),
+            TEST_MNEMONIC,
+            "the stale contents must not survive into the seed file"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
