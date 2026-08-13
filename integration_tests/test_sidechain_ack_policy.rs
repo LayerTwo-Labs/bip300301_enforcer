@@ -300,6 +300,95 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
         proto::unwrap_u32(other_slot_proposal.vote_count.clone()) == Some(1),
         "the other slot's proposal was not ACKed: `{other_slot_proposal:?}`"
     );
+    let other_slot_description_hash = other_slot_proposal.description_sha256d_hash.clone();
+
+    // The converse case: a block whose M2 *does* activate a new slot. The
+    // active-slot list an M4 is indexed against grows within that block, so
+    // the producer must omit the M4, and the votes in the following block must
+    // land on the same sidechains the validator resolves them to.
+
+    // Drive the other slot's proposal to one ACK short of activation with
+    // ack-all off, so the M2s keep coming from the explicit ACK while no M4 is
+    // emitted. Leaving the M4 off here also keeps the bundle below the
+    // inclusion threshold: this test never deposits, so an approved bundle
+    // would have no CTIP to spend.
+    let () = post_setup
+        .block_producer_service_client
+        .set_ack_all_proposals(SetAckAllProposalsRequest { ack_all: false })
+        .await
+        .map(|_| ())?;
+    let () = post_setup
+        .block_producer_service_client
+        .set_sidechain_ack(SetSidechainAckRequest {
+            sidechain_number: proto::wrap_u32(OTHER_SLOT.0.into()),
+            description_sha256d_hash: other_slot_description_hash,
+            ack: true,
+        })
+        .await
+        .map(|_| ())?;
+    tracing::info!("Mining the other slot's proposal to one ACK short of activation");
+    let () = mine::<DummySidechain>(&mut post_setup, blocks_to_activate - 2, Some(false)).await?;
+    anyhow::ensure!(
+        sidechains_active(&mut post_setup).await? == 1,
+        "the other slot activated before its final ACK"
+    );
+    anyhow::ensure!(
+        bundle_vote_count(&mut post_setup, bundle_m6id).await? == 2,
+        "the bundle gathered votes from blocks that carry no M4"
+    );
+
+    let () = post_setup
+        .block_producer_service_client
+        .set_ack_all_proposals(SetAckAllProposalsRequest { ack_all: true })
+        .await
+        .map(|_| ())?;
+    tracing::info!("Mining the activating block: its M2 grows the active set, so it carries no M4");
+    let () = mine::<DummySidechain>(&mut post_setup, 1, Some(true)).await?;
+    anyhow::ensure!(
+        sidechains_active(&mut post_setup).await? == 2,
+        "the other slot did not activate on its final ACK"
+    );
+    let coinbase_messages = tip_coinbase_messages(&mut post_setup).await?;
+    anyhow::ensure!(
+        coinbase_messages.iter().any(|message| matches!(
+            message,
+            CoinbaseMessage::M2AckSidechain(m2) if m2.sidechain_number == OTHER_SLOT
+        )),
+        "expected the activating M2 for slot {OTHER_SLOT} in the coinbase"
+    );
+    anyhow::ensure!(
+        !coinbase_messages
+            .iter()
+            .any(|message| matches!(message, CoinbaseMessage::M4AckBundles(_))),
+        "expected no M4 in a coinbase whose M2 activates a new slot"
+    );
+    anyhow::ensure!(
+        bundle_vote_count(&mut post_setup, bundle_m6id).await? == 2,
+        "the bundle gathered a vote from a block that carries no M4"
+    );
+
+    // With both slots active, the freshly activated slot sorts *after* the
+    // bundle's slot and has no pending bundle of its own, so it is a trailing
+    // abstain and the producer omits it. This is the shortened-array case:
+    // a one-element M4 against a two-slot active list, which the validator
+    // must resolve to the bundle's slot with the omitted slot abstaining.
+    tracing::info!("Mining with both slots active: the M4 must omit the trailing abstain");
+    let () = mine::<DummySidechain>(&mut post_setup, 1, Some(true)).await?;
+    let coinbase_messages = tip_coinbase_messages(&mut post_setup).await?;
+    anyhow::ensure!(
+        coinbase_messages.iter().any(|message| matches!(
+            message,
+            CoinbaseMessage::M4AckBundles(M4AckBundles::OneByte { upvotes })
+                if upvotes.as_slice() == [0u8].as_slice()
+        )),
+        "expected a shortened M4 covering only the bundle's slot: `{coinbase_messages:?}`"
+    );
+    // Had the votes been shifted by the activation, the upvote at index 0
+    // would have landed on the newly activated slot instead.
+    anyhow::ensure!(
+        bundle_vote_count(&mut post_setup, bundle_m6id).await? == 3,
+        "the bundle did not gather the vote at its own index"
+    );
 
     drop(post_setup);
     Ok(())

@@ -300,7 +300,7 @@ impl BlockProducer {
                 next_height,
             )?
         {
-            let upvotes = active_sidechains
+            let mut upvotes = active_sidechains
                 .iter()
                 .map(|sidechain| {
                     if self
@@ -313,7 +313,18 @@ impl BlockProducer {
                         Ok(0)
                     }
                 })
-                .collect::<Result<_, crate::validator::GetPendingWithdrawalsError>>()?;
+                .collect::<Result<Vec<u8>, crate::validator::GetPendingWithdrawalsError>>()?;
+            // BIP300 M4: a vote array may cover fewer slots than are active,
+            // and the trailing slots it omits abstain implicitly. Dropping the
+            // trailing abstains saves a byte per slot, and keeps the shortened
+            // array on the path our own blocks take through validation rather
+            // than only in tests.
+            //
+            // Only *trailing* abstains can go: an abstain with any later vote
+            // after it still has to hold that later vote's index in place.
+            while upvotes.last() == Some(&M4AckBundles::ABSTAIN_ONE_BYTE) {
+                upvotes.pop();
+            }
             coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
         }
         let () = coinbase_builder.build()?;

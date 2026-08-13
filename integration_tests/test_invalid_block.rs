@@ -6,12 +6,9 @@ use bip300301_enforcer_lib::{
     types::{BmmCommitment, SidechainDescription, op_drivechain_script},
 };
 use bitcoin::{
-    Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
-    TxMerkleNode, TxOut, Txid, Witness,
-    block::Header,
-    consensus::encode::{deserialize_hex, serialize_hex},
+    Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid,
+    consensus::encode::serialize_hex,
     hashes::{Hash as _, sha256d},
-    script::{Builder as ScriptBuilder, PushBytesBuf},
     transaction::Version,
 };
 use futures::channel::mpsc;
@@ -20,6 +17,7 @@ use serde::Deserialize;
 use crate::{
     block_verdict::{Expect, assert_enforcer_verdict, wait_for_enforcer_height},
     bmm_block::{submit_block_with_bmm_accepts, wait_past_mtp},
+    custom_coinbase::{submit_block_with_coinbase_outputs, zero_value},
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{DummySidechain, PostSetup, Sidechain},
 };
@@ -471,120 +469,5 @@ async fn submit_invalid_block(
     post_setup: &PostSetup,
     case: &BadBlockCase,
 ) -> anyhow::Result<BlockHash> {
-    let template_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblocktemplate", [r#"{"rules":["segwit"]}"#])
-        .run_utf8()
-        .await?;
-    let template: BlockTemplate = serde_json::from_str(&template_json)?;
-    anyhow::ensure!(
-        template.transactions.is_empty(),
-        "test assumes empty mempool for witness-commitment shortcut; \
-         got {} extra tx(s) in template",
-        template.transactions.len()
-    );
-
-    const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
-    let coinbase_input = TxIn {
-        previous_output: OutPoint::null(),
-        script_sig: ScriptBuilder::new()
-            .push_int(template.height as i64)
-            .into_script(),
-        sequence: Sequence::MAX,
-        witness: Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
-    };
-
-    // All-zero witness merkle root because the coinbase wtxid is 0x00..00 (BIP141).
-    let witness_commitment = Block::compute_witness_commitment(
-        &bitcoin::WitnessMerkleNode::all_zeros(),
-        &WITNESS_RESERVED_VALUE,
-    );
-    let witness_commit_script = {
-        const WITNESS_COMMITMENT_HEADER: [u8; 4] = [0xaa, 0x21, 0xa9, 0xed];
-        let mut payload = PushBytesBuf::from(WITNESS_COMMITMENT_HEADER);
-        payload.extend_from_slice(witness_commitment.as_byte_array())?;
-        ScriptBuf::new_op_return(payload)
-    };
-
-    let mut outputs = vec![
-        TxOut {
-            script_pubkey: post_setup.mining_address.script_pubkey(),
-            value: Amount::from_sat(template.coinbasevalue),
-        },
-        TxOut {
-            script_pubkey: witness_commit_script,
-            value: Amount::ZERO,
-        },
-    ];
-    outputs.extend((case.extra_coinbase_outputs)()?);
-    let coinbase = Transaction {
-        version: Version::TWO,
-        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-        input: vec![coinbase_input],
-        output: outputs,
-    };
-
-    let merkle_root = TxMerkleNode::from(coinbase.compute_txid().to_raw_hash());
-    let header = Header {
-        version: bitcoin::block::Version::from_consensus(template.version),
-        prev_blockhash: template.previousblockhash,
-        merkle_root,
-        time: std::cmp::max(template.curtime, template.mintime),
-        bits: template.bits,
-        nonce: 0,
-    };
-    let header_hex = post_setup
-        .bitcoin_util()?
-        .command::<String, _, _, _, _>([], "grind", [serialize_hex(&header)])
-        .run_utf8()
-        .await?;
-    let header: Header = deserialize_hex(header_hex.trim())?;
-
-    let block = Block {
-        header,
-        txdata: vec![coinbase],
-    };
-    let block_hash = block.block_hash();
-    let submit_resp = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "submitblock", [serialize_hex(&block)])
-        .run_utf8()
-        .await?;
-    anyhow::ensure!(
-        submit_resp.is_empty(),
-        "submitblock unexpectedly rejected: `{submit_resp}`"
-    );
-
-    Ok(block_hash)
-}
-
-fn zero_value(script_pubkey: ScriptBuf) -> TxOut {
-    TxOut {
-        script_pubkey,
-        value: Amount::ZERO,
-    }
-}
-
-/// Block-template fields we read from bitcoind's `getblocktemplate`. The test
-/// talks to bitcoind directly (not via the enforcer's GBT proxy) because the
-/// proxy is disabled in `Mode::NoMempool`.
-#[derive(Deserialize)]
-struct BlockTemplate {
-    previousblockhash: BlockHash,
-    version: i32,
-    #[serde(deserialize_with = "deserialize_bits")]
-    bits: CompactTarget,
-    height: u32,
-    coinbasevalue: u64,
-    mintime: u32,
-    curtime: u32,
-    #[serde(default)]
-    transactions: Vec<serde_json::Value>,
-}
-
-fn deserialize_bits<'de, D: serde::Deserializer<'de>>(de: D) -> Result<CompactTarget, D::Error> {
-    let hex = String::deserialize(de)?;
-    u32::from_str_radix(&hex, 16)
-        .map(CompactTarget::from_consensus)
-        .map_err(serde::de::Error::custom)
+    submit_block_with_coinbase_outputs(post_setup, (case.extra_coinbase_outputs)()?).await
 }
