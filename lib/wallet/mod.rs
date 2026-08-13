@@ -1384,6 +1384,9 @@ impl Wallet {
 
         if let Some(op_return_message) = params.op_return_message {
             let op_return_output = Self::create_op_return_output(op_return_message)?;
+            // BIP300/BIP301 messages are only read from output 0, and BDK
+            // shuffles outputs by default.
+            builder.ordering(bdk_wallet::TxOrdering::Untouched);
             builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
 
             tracing::debug!("Added OP_RETURN output in {:?}", timestamp.elapsed());
@@ -1934,5 +1937,54 @@ impl Wallet {
         password: Option<&str>,
     ) -> Result<(), error::CreateNewWallet> {
         self.inner.create_new_wallet(mnemonic, password).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use bdk_wallet::{
+        bitcoin::{Amount, ScriptBuf, script::PushBytesBuf},
+        test_utils::get_funded_wallet_wpkh,
+    };
+
+    use super::{CreateTransactionParams, M8BmmRequest, Wallet};
+
+    /// A BMM request only counts as an M8 when its OP_RETURN sits at output 0,
+    /// and a shuffle lands it there half the time, so one build proves nothing.
+    #[test]
+    fn op_return_is_always_output_zero() {
+        const ROUNDS: usize = 64;
+
+        let message = [
+            &M8BmmRequest::TAG[..],
+            &[13],
+            &[0x11; 32][..],
+            &[0x22; 32][..],
+        ]
+        .concat();
+        let expected = ScriptBuf::new_op_return(PushBytesBuf::try_from(message.clone()).unwrap());
+
+        for _ in 0..ROUNDS {
+            let (mut wallet, _) = get_funded_wallet_wpkh();
+
+            let psbt = Wallet::build_send_psbt(
+                &mut wallet,
+                HashMap::new(),
+                CreateTransactionParams {
+                    op_return_message: Some(message.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            let outputs = psbt.unsigned_tx.output;
+            assert_eq!(outputs.len(), 2, "want an OP_RETURN and change");
+            assert_eq!(outputs[0].script_pubkey, expected);
+            assert_eq!(outputs[0].value, Amount::ZERO);
+            M8BmmRequest::parse(&outputs[0].script_pubkey.to_bytes())
+                .expect("output 0 must parse as an M8 BMM request");
+        }
     }
 }

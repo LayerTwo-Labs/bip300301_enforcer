@@ -72,6 +72,7 @@ rustls = ["bdk_electrum/use-rustls"]
 rustls-ring = ["bdk_electrum/use-rustls-ring"]
 
 [dev-dependencies]
+bdk_wallet = { workspace = true, features = ["test-utils"] }
 temp-dir = { workspace = true }
 
 [lints]
