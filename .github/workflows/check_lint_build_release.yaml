@@ -196,9 +196,53 @@ jobs:
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
           echo "$MATRIX"
 
+  build-integration-binaries:
+    name: Build integration-test binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Must happen /after/ the checkout step, to pick up the toolchain from
+      # rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup install
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu
+
+      # Build the two flavor-independent executables once. The matrix jobs
+      # only vary the Bitcoin Core binary and can all run these same builds.
+      - name: Build integration-test binaries
+        run: |
+          cargo build --locked \
+            --package bip300301_enforcer \
+            --bin bip300301_enforcer
+          cargo build --locked \
+            --package bip300301_enforcer_integration_tests \
+            --example integration_tests
+
+      - name: Stage integration-test binaries
+        run: |
+          mkdir -p "$RUNNER_TEMP/integration-test-binaries"
+          cp target/debug/bip300301_enforcer \
+            "$RUNNER_TEMP/integration-test-binaries/"
+          cp target/debug/examples/integration_tests \
+            "$RUNNER_TEMP/integration-test-binaries/"
+
+      - name: Upload integration-test binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-binaries
+          path: ${{ runner.temp }}/integration-test-binaries
+          retention-days: 1
+          if-no-files-found: error
+
   integration-test:
     name: Integration test (${{ matrix.name }})
-    needs: compute-integration-matrix
+    needs: [compute-integration-matrix, build-integration-binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -284,19 +328,15 @@ jobs:
 
       - uses: actions/checkout@v7
 
-      # `rustup` is already installed on GitHub Actions runners, so
-      # this reads the content from our `rust-toolchain.toml` file.
-      # Must happen /after/ the checkout step.
-      - name: Install Rust toolchain
-        run: rustup install
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+      - name: Download integration-test binaries
+        uses: actions/download-artifact@v8
         with:
-          shared-key: x86_64-unknown-linux-gnu
+          name: integration-test-binaries
+          path: ${{ runner.temp }}/integration-test-binaries
 
-      - name: Build (debug)
-        run: cargo build
+      # upload-artifact does not preserve executable permissions.
+      - name: Make integration-test binaries executable
+        run: chmod +x "$RUNNER_TEMP"/integration-test-binaries/*
 
       # A signet chain can only be extended by real proof-of-work, and no
       # coinbase is spendable until it is 100 blocks deep — so mining one per
@@ -355,7 +395,7 @@ jobs:
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
           export BITCOIND='../bitcoin-bins/bitcoind'
-          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          export BIP300301_ENFORCER="$RUNNER_TEMP/integration-test-binaries/bip300301_enforcer"
           ./scripts/verify_reflection.sh
 
       - name: Run integration tests
@@ -376,7 +416,8 @@ jobs:
         # here while rejecting deposits with -26 "scriptpubkey" in
         # production, where chain=main forbids the flag.
         run: |
-          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          export BIP300301_ENFORCER="$RUNNER_TEMP/integration-test-binaries/bip300301_enforcer"
+          INTEGRATION_TEST_RUNNER="$RUNNER_TEMP/integration-test-binaries/integration_tests"
           export BITCOIND='../bitcoin-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-bins/bitcoin-cli'
           export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
@@ -400,14 +441,12 @@ jobs:
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=0
-            cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip \
+            "$INTEGRATION_TEST_RUNNER" --skip deposit_withdraw_roundtrip \
               ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
           else
             export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=1
-            # `--` is required even when SKIP_ARGS is empty: without it cargo
-            # parses a leading --skip as its own flag and exits.
-            cargo run --example integration_tests -- ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
+            "$INTEGRATION_TEST_RUNNER" ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
           fi
 
       # Did the run end up with a chain worth caching? A run that never needed

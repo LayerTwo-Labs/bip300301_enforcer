@@ -1,9 +1,25 @@
 ARG RUST_VERSION=1
 
-FROM rust:${RUST_VERSION}-slim-bookworm AS builder
+FROM rust:${RUST_VERSION}-slim-bookworm AS chef
+RUN cargo install cargo-chef --locked --version 0.1.73
 WORKDIR /workspace
+
+# cargo-chef turns the workspace manifests into a stable dependency recipe.
+# Source-only changes leave the `cook` layer below reusable.
+FROM chef AS planner
 COPY . .
-RUN cargo build --locked --release
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN cargo chef cook --locked --release \
+    --package bip300301_enforcer \
+    --bin bip300301_enforcer \
+    --recipe-path recipe.json
+COPY . .
+RUN cargo build --locked --release \
+    --package bip300301_enforcer \
+    --bin bip300301_enforcer
 
 # Runtime stage
 FROM debian:bookworm-slim
