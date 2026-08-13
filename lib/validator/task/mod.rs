@@ -1323,7 +1323,7 @@ impl BlockHandler<'_> {
     pub(in crate::validator) fn disconnect_block(
         &self,
         rwtxn: &mut RwTxn,
-        event_tx: &Sender<Event>,
+        events: &mut Vec<Event>,
         block_hash: BlockHash,
     ) -> Result<(), error::DisconnectBlock> {
         let dbs = self.dbs;
@@ -1352,9 +1352,15 @@ impl BlockHandler<'_> {
         } else {
             dbs.current_chain_tip.delete(rwtxn, &())?;
         }
-        let event = Event::DisconnectBlock { block_hash };
-        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+        events.push(Event::DisconnectBlock { block_hash });
         Ok(())
+    }
+}
+
+/// Broadcast events for state that has already been committed.
+pub(in crate::validator) fn broadcast_events(event_tx: &Sender<Event>, events: Vec<Event>) {
+    for event in events {
+        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
     }
 }
 
@@ -1740,13 +1746,29 @@ where
 }
 
 impl BlockHandler<'_> {
+    /// Handle and commit a block batch, then broadcast events for the committed
+    /// prefix. A non-fatal rejected block commits the preceding valid blocks;
+    /// fatal errors and commit failures broadcast nothing.
+    pub(in crate::validator) fn handle_block_batch_and_commit(
+        &self,
+        mut rwtxn: RwTxn<'_>,
+        blocks: &[Block],
+        event_tx: &Sender<Event>,
+    ) -> Result<Option<BlockHash>, error::Sync> {
+        let mut events = Vec::new();
+        let rejected_block = self.handle_block_batch(&mut rwtxn, blocks, &mut events)?;
+        rwtxn.commit()?;
+        broadcast_events(event_tx, events);
+        Ok(rejected_block)
+    }
+
     /// Returns `Some(block_hash)` if a rejected block was encountered.
     //  Returns `None` if every block in the batch connected successfully.
-    pub(in crate::validator) fn handle_block_batch<'a>(
+    fn handle_block_batch<'a>(
         &self,
         rwtxn: &mut RwTxn<'a>,
         blocks: &[Block],
-        event_tx: &Sender<Event>,
+        events: &mut Vec<Event>,
     ) -> Result<Option<BlockHash>, error::Sync> {
         let dbs = self.dbs;
         let start = Instant::now();
@@ -1832,9 +1854,7 @@ impl BlockHandler<'_> {
                     );
                 }
             }
-            // Events should only ever be sent after committing DB txs, see
-            // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-            let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+            events.push(event);
         }
 
         tracing::info!(
@@ -1907,15 +1927,17 @@ impl BlockHandler<'_> {
                     tracing::info!(
                         "Disconnecting tip {current_enforcer_tip} -> {last_common_ancestor}"
                     );
+                    let mut events = Vec::new();
                     while current_enforcer_tip != last_common_ancestor {
                         let () =
-                            self.disconnect_block(&mut rwtxn, event_tx, current_enforcer_tip)?;
+                            self.disconnect_block(&mut rwtxn, &mut events, current_enforcer_tip)?;
                         current_enforcer_tip = dbs
                             .current_chain_tip
                             .try_get(&rwtxn, &())?
                             .unwrap_or_else(BlockHash::all_zeros);
                     }
                     rwtxn.commit()?;
+                    broadcast_events(event_tx, events);
                 } else {
                     rwtxn.abort();
                 }
@@ -1994,9 +2016,8 @@ impl BlockHandler<'_> {
             let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
             total_blocks_fetched += blocks.len();
 
-            let mut rwtxn = dbs.write_txn()?;
-            let rejected_block = self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
-            rwtxn.commit()?;
+            let rwtxn = dbs.write_txn()?;
+            let rejected_block = self.handle_block_batch_and_commit(rwtxn, &blocks, event_tx)?;
             if let Some(rejected_block) = rejected_block {
                 tracing::warn!(
                     %rejected_block,
@@ -2561,6 +2582,122 @@ mod tests {
     }
 
     #[test]
+    fn fatal_batch_error_broadcasts_no_events() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let block_a = build_test_block(BlockHash::all_zeros(), TestBlockParts::default());
+        let block_b = build_test_block(block_a.block_hash(), TestBlockParts::default());
+
+        // Only the first header is present. Looking up the second block's
+        // height fails after the first block has already been applied to the
+        // write transaction.
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(block_a.header, 0)])
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+
+        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let rwtxn = dbs.write_txn().into_diagnostic()?;
+        let result =
+            test_handler(&dbs).handle_block_batch_and_commit(rwtxn, &[block_a, block_b], &event_tx);
+
+        assert!(result.is_err(), "the missing header must fail the batch");
+        assert!(
+            event_rx.try_recv().is_err(),
+            "an aborted batch must not broadcast events"
+        );
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        assert!(
+            dbs.current_chain_tip
+                .try_get(&rotxn, &())
+                .into_diagnostic()?
+                .is_none(),
+            "the first block must roll back with the failed batch"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_batch_broadcasts_committed_prefix() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let sidechain_number = SidechainNumber(1);
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.active_sidechains
+                .put_sidechain(&mut rwtxn, &sidechain_number, &test_sidechain(1, 0))
+                .into_diagnostic()?;
+            dbs.active_sidechains
+                .put_ctip(
+                    &mut rwtxn,
+                    sidechain_number,
+                    &Ctip {
+                        outpoint: OutPoint {
+                            txid: Txid::from_byte_array([0x11; 32]),
+                            vout: 0,
+                        },
+                        value: Amount::from_sat(5_000),
+                    },
+                )
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+
+        let block_a = build_test_block(BlockHash::all_zeros(), TestBlockParts::default());
+        let block_a_hash = block_a.block_hash();
+        let block_b = build_test_block(
+            block_a_hash,
+            TestBlockParts {
+                // This does not spend the tracked CTIP, so the block is
+                // rejected as non-fatal after block_a has been applied.
+                extra_txs: vec![build_m5_deposit_tx(
+                    sidechain_number,
+                    OutPoint::default(),
+                    Amount::from_sat(5_000),
+                    Amount::from_sat(1_000),
+                )],
+                ..Default::default()
+            },
+        );
+        let block_b_hash = block_b.block_hash();
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(block_a.header, 0), (block_b.header, 1)])
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+
+        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let rwtxn = dbs.write_txn().into_diagnostic()?;
+        let rejected_block = test_handler(&dbs)
+            .handle_block_batch_and_commit(rwtxn, &[block_a, block_b], &event_tx)
+            .into_diagnostic()?;
+
+        assert_eq!(rejected_block, Some(block_b_hash));
+        let event = event_rx.try_recv().into_diagnostic()?;
+        assert!(matches!(
+            event,
+            Event::ConnectBlock { header_info, .. }
+                if header_info.block_hash == block_a_hash
+        ));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "the rejected block and unprocessed tail must not emit events"
+        );
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        assert_eq!(
+            dbs.current_chain_tip
+                .try_get(&rotxn, &())
+                .into_diagnostic()?,
+            Some(block_a_hash),
+            "the valid prefix must be committed before its event is broadcast"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
@@ -2578,7 +2715,7 @@ mod tests {
                 .is_none()
         );
 
-        let (event_tx, _) = async_broadcast::broadcast(16);
+        let mut events = Vec::new();
         let handler = test_handler(&dbs);
         let _event = handler
             .connect_block(&mut rwtxn, &block)
@@ -2591,8 +2728,12 @@ mod tests {
         );
 
         handler
-            .disconnect_block(&mut rwtxn, &event_tx, block_hash)
+            .disconnect_block(&mut rwtxn, &mut events, block_hash)
             .into_diagnostic()?;
+        assert!(matches!(
+            events.as_slice(),
+            [Event::DisconnectBlock { block_hash: event_hash }] if *event_hash == block_hash
+        ));
         assert!(
             dbs.current_chain_tip
                 .try_get(&rwtxn, &())

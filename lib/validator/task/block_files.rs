@@ -4,7 +4,6 @@ use std::{
 };
 
 use bitcoin::{Block, BlockHash, hashes::Hash};
-use sneed::RwTxn;
 use tokio_util::sync::CancellationToken;
 
 use super::BlockHandler;
@@ -98,9 +97,8 @@ fn connect_pending_blocks(
     pending_blocks: &mut Vec<Block>,
     total_handled_blocks: &mut usize,
 ) -> Result<bool, error::Sync> {
-    let mut rwtxn: RwTxn<'_> = handler.dbs.write_txn()?;
-    let rejected_block = handler.handle_block_batch(&mut rwtxn, pending_blocks, event_tx)?;
-    rwtxn.commit()?;
+    let rwtxn = handler.dbs.write_txn()?;
+    let rejected_block = handler.handle_block_batch_and_commit(rwtxn, pending_blocks, event_tx)?;
     let Some(rejected_block) = rejected_block else {
         *total_handled_blocks += pending_blocks.len();
         pending_blocks.clear();
