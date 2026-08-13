@@ -7,7 +7,7 @@ version.workspace = true
 
 [dependencies]
 aes-gcm = { workspace = true, features = ["std"] }
-argon2 = { workspace = true, features = ["std"] }
+argon2 = { workspace = true, features = ["std", "zeroize"] }
 async-broadcast = { workspace = true }
 async-lock = { workspace = true }
 bdk_chain = { workspace = true }
@@ -63,6 +63,7 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 transitive = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+zeroize = { workspace = true }
 
 [features]
 default = ["rustls"]

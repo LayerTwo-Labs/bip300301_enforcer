@@ -10,6 +10,7 @@ use bdk_wallet::{
     keys::{GeneratableKey, GeneratedKey, bip39::WordCount},
     miniscript::miniscript,
 };
+use zeroize::Zeroizing;
 
 use crate::wallet::error;
 
@@ -25,9 +26,12 @@ pub(crate) fn new_mnemonic() -> Result<Mnemonic, bdk_wallet::bip39::Error> {
     Mnemonic::parse(words)
 }
 
-fn stretch_password(password: &str, key_salt: &[u8]) -> Result<[u8; 32], error::StretchPassword> {
-    let mut key_bytes = [0u8; 32];
-    Argon2::default().hash_password_into(password.as_bytes(), key_salt, &mut key_bytes)?;
+fn stretch_password(
+    password: &str,
+    key_salt: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, error::StretchPassword> {
+    let mut key_bytes = Zeroizing::new([0u8; 32]);
+    Argon2::default().hash_password_into(password.as_bytes(), key_salt, &mut key_bytes[..])?;
     Ok(key_bytes)
 }
 
@@ -54,12 +58,15 @@ impl EncryptedMnemonic {
         rand::rngs::SysRng.try_fill_bytes(&mut key_salt)?;
 
         let key_bytes = stretch_password(password, &key_salt)?;
-        let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+        let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..]);
 
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let cipher = Aes256Gcm::new(key);
 
-        let ciphered_data = cipher.encrypt(&nonce, mnemonic.to_string().as_bytes())?;
+        // `Mnemonic`'s `Display` hands out the seed words, so the copy it
+        // allocates has to be wiped once the ciphertext exists.
+        let plaintext = Zeroizing::new(mnemonic.to_string());
+        let ciphered_data = cipher.encrypt(&nonce, plaintext.as_bytes())?;
 
         Ok(Self {
             initialization_vector: nonce.to_vec(),
@@ -72,13 +79,15 @@ impl EncryptedMnemonic {
         let nonce = Nonce::from_slice(self.initialization_vector.as_ref());
 
         let key_bytes = stretch_password(password, self.key_salt.as_ref())?;
-        let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+        let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..]);
 
         let cipher = Aes256Gcm::new(key);
 
-        let plaintext = cipher.decrypt(nonce, self.ciphertext_mnemonic.as_ref())?;
+        let plaintext = Zeroizing::new(cipher.decrypt(nonce, self.ciphertext_mnemonic.as_ref())?);
 
-        let raw_mnemonic = String::from_utf8(plaintext)?;
+        // `from_utf8` reuses the buffer it is handed, so wiping the `String`
+        // wipes that copy, and `plaintext` wipes the one it was cloned from.
+        let raw_mnemonic = Zeroizing::new(String::from_utf8(plaintext.to_vec())?);
 
         Mnemonic::from_str(&raw_mnemonic).map_err(|err| error::ParseMnemonic::from(err).into())
     }
