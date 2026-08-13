@@ -1374,96 +1374,94 @@ impl Wallet {
             .collect()
     }
 
+    fn build_send_psbt(
+        wallet: &mut bdk_wallet::Wallet,
+        destinations: HashMap<bitcoin::Address, Amount>,
+        params: CreateTransactionParams,
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateSendPsbt> {
+        let mut timestamp = Instant::now();
+        let mut builder = wallet.build_tx();
+
+        if let Some(op_return_message) = params.op_return_message {
+            let op_return_output = Self::create_op_return_output(op_return_message)?;
+            builder.add_recipient(op_return_output.script_pubkey, op_return_output.value);
+
+            tracing::debug!("Added OP_RETURN output in {:?}", timestamp.elapsed());
+            timestamp = Instant::now();
+        }
+
+        let destinations_len = destinations.len();
+
+        // Add outputs for each destination address
+        for (address, value) in destinations {
+            builder.add_recipient(address.script_pubkey(), value);
+        }
+
+        tracing::debug!(
+            "Added {} destinations in {:?}",
+            destinations_len,
+            timestamp.elapsed()
+        );
+        timestamp = Instant::now();
+
+        if let Some(drain_wallet_to) = params.drain_wallet_to {
+            tracing::debug!("Draining wallet to {}", drain_wallet_to);
+            builder
+                .drain_to(drain_wallet_to.script_pubkey())
+                .drain_wallet();
+        }
+
+        if !params.required_utxos.is_empty() {
+            builder
+                // TODO: this does not work at all for wallets past a certain scale....
+                // 25s pr. UTXO for a wallet with 40k UTXOs in total
+                .add_utxos(&params.required_utxos)
+                .map_err(|err| match err {
+                    bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
+                        error::CreateSendPsbt::UnknownUTXO(outpoint)
+                    }
+                })?;
+
+            builder.manually_selected_only();
+
+            tracing::debug!(
+                "Added {} required UTXOs in {:?}",
+                params.required_utxos.len(),
+                timestamp.elapsed()
+            );
+            timestamp = Instant::now();
+        }
+
+        match params.fee_policy {
+            Some(crate::types::FeePolicy::Absolute(fee)) => {
+                builder.fee_absolute(fee);
+            }
+            Some(crate::types::FeePolicy::Rate(rate)) => {
+                builder.fee_rate(rate);
+            }
+            None => (),
+        }
+
+        tracing::debug!("Set fee policy in {:?}", timestamp.elapsed());
+        timestamp = Instant::now();
+
+        builder
+            .finish()
+            .inspect(|_| {
+                tracing::debug!("Finished transaction builder in {:?}", timestamp.elapsed());
+            })
+            .map_err(error::CreateSendPsbt::CreateTx)
+    }
+
     async fn create_send_psbt(
         &self,
         destinations: HashMap<bitcoin::Address, Amount>,
         params: CreateTransactionParams,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateSendPsbt> {
-        let mut timestamp = Instant::now();
-        let psbt = {
-            let mut wallet_write = self.inner.write_wallet().await?;
-            tokio::task::block_in_place(|| {
-                wallet_write.with_mut(|wallet| {
-                    let mut builder = wallet.build_tx();
-
-                    if let Some(op_return_message) = params.op_return_message {
-                        let op_return_output = Self::create_op_return_output(op_return_message)?;
-                        builder
-                            .add_recipient(op_return_output.script_pubkey, op_return_output.value);
-
-                        tracing::debug!("Added OP_RETURN output in {:?}", timestamp.elapsed());
-                        timestamp = Instant::now();
-                    }
-
-                    let destinations_len = destinations.len();
-
-                    // Add outputs for each destination address
-                    for (address, value) in destinations {
-                        builder.add_recipient(address.script_pubkey(), value);
-                    }
-
-                    tracing::debug!(
-                        "Added {} destinations in {:?}",
-                        destinations_len,
-                        timestamp.elapsed()
-                    );
-                    timestamp = Instant::now();
-
-                    if let Some(drain_wallet_to) = params.drain_wallet_to {
-                        tracing::debug!("Draining wallet to {}", drain_wallet_to);
-                        builder
-                            .drain_to(drain_wallet_to.script_pubkey())
-                            .drain_wallet();
-                    }
-
-                    if !params.required_utxos.is_empty() {
-                        builder
-                            // TODO: this does not work at all for wallets past a certain scale....
-                            // 25s pr. UTXO for a wallet with 40k UTXOs in total
-                            .add_utxos(&params.required_utxos)
-                            .map_err(|err| match err {
-                                bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
-                                    error::CreateSendPsbt::UnknownUTXO(outpoint)
-                                }
-                            })?;
-
-                        builder.manually_selected_only();
-
-                        tracing::debug!(
-                            "Added {} required UTXOs in {:?}",
-                            params.required_utxos.len(),
-                            timestamp.elapsed()
-                        );
-                        timestamp = Instant::now();
-                    }
-
-                    match params.fee_policy {
-                        Some(crate::types::FeePolicy::Absolute(fee)) => {
-                            builder.fee_absolute(fee);
-                        }
-                        Some(crate::types::FeePolicy::Rate(rate)) => {
-                            builder.fee_rate(rate);
-                        }
-                        None => (),
-                    }
-
-                    tracing::debug!("Set fee policy in {:?}", timestamp.elapsed());
-                    timestamp = Instant::now();
-
-                    builder
-                        .finish()
-                        .inspect(|_| {
-                            tracing::debug!(
-                                "Finished transaction builder in {:?}",
-                                timestamp.elapsed()
-                            );
-                        })
-                        .map_err(error::CreateSendPsbt::CreateTx)
-                })
-            })?
-        };
-
-        Ok(psbt)
+        let mut wallet_write = self.inner.write_wallet().await?;
+        tokio::task::block_in_place(|| {
+            wallet_write.with_mut(|wallet| Self::build_send_psbt(wallet, destinations, params))
+        })
     }
 
     /// Creates a transaction, sends it, and returns the TXID.
