@@ -105,6 +105,23 @@ where
         })
 }
 
+/// Resolve the message-start bytes used by Bitcoin Core's block files.
+///
+/// An explicit CLI override remains the escape hatch for rebranded node
+/// builds. Otherwise a signet challenge is authoritative: Bitcoin Core
+/// derives that chain's magic from the challenge, so the stock signet magic
+/// is only correct for the standard challenge. Non-signet presets retain
+/// their configured magic.
+fn resolve_block_file_network_magic(
+    preset_magic: Option<[u8; 4]>,
+    explicit_magic: Option<[u8; 4]>,
+    signet_challenge: Option<&bitcoin::Script>,
+) -> Option<[u8; 4]> {
+    explicit_magic
+        .or_else(|| signet_challenge.map(|challenge| compute_signet_magic(challenge).to_bytes()))
+        .or(preset_magic)
+}
+
 #[derive(Clone, Debug)]
 struct RequestIdMaker;
 
@@ -1354,58 +1371,6 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Resolve BIP300 thresholds + enforcement activation height: from the
-    // explicit --network-preset if given, otherwise from the node's network.
-    let mut network_params = match cli.network_preset {
-        Some(preset) => {
-            let params = preset.params();
-            tracing::info!(
-                ?preset,
-                bip300_activation_height = params.bip300_activation_height,
-                thresholds = ?params.thresholds,
-                "Applying network parameter preset"
-            );
-            params
-        }
-        None => NetworkParams::for_network(info.chain),
-    };
-    // An explicit `--network-magic` wins over the preset's: the preset names a
-    // chain (drynet4 runs on `main`), but a forked build rebrands the magic on
-    // every network it supports, so running one on regtest needs a value no
-    // preset can supply.
-    if let Some(magic) = cli.network_magic {
-        tracing::info!(
-            network_magic = %bitcoin::p2p::Magic::from_bytes(magic),
-            "Overriding network magic"
-        );
-        network_params.network_magic = Some(magic);
-    }
-
-    // Both wallet data and validator data are stored under the same root
-    // directory. Add a subdirectories to clearly indicate which
-    // is which. Presets get their own namespace (e.g. `main-drynet1`)
-    let chain_dir_name = match network_params.datadir_suffix {
-        Some(suffix) => format!("{}-{}", info.chain, suffix),
-        None => info.chain.to_string(),
-    };
-    let validator_data_dir = cli.data_dir.join("validator").join(&chain_dir_name);
-    let wallet_data_dir = cli.data_dir.join("wallet").join(&chain_dir_name);
-
-    // Ensure that the data directories exists
-    for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
-        std::fs::create_dir_all(data_dir).into_diagnostic()?;
-    }
-
-    let validator = Validator::new(
-        mainchain_client.clone(),
-        mainchain_rest_client,
-        cli.node_blocks_dir_opts.dir.clone(),
-        &validator_data_dir,
-        info.chain,
-        network_params,
-    )
-    .into_diagnostic()?;
-
     let signet_challenge = if info.chain == bitcoin::Network::Signet {
         let block_template = get_block_template(&mainchain_client, info.chain).await?;
         let Some(signet_challenge) = block_template.signet_challenge else {
@@ -1442,6 +1407,70 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // Resolve BIP300 thresholds + enforcement activation height: from the
+    // explicit --network-preset if given, otherwise from the node's network.
+    let mut network_params = match cli.network_preset {
+        Some(preset) => {
+            let params = preset.params();
+            tracing::info!(
+                ?preset,
+                bip300_activation_height = params.bip300_activation_height,
+                thresholds = ?params.thresholds,
+                "Applying network parameter preset"
+            );
+            params
+        }
+        None => NetworkParams::for_network(info.chain),
+    };
+    // An explicit `--network-magic` wins over every other source. On signet,
+    // derive the block-file prefix from the node's challenge; on other
+    // networks, retain the selected preset's optional override.
+    network_params.network_magic = resolve_block_file_network_magic(
+        network_params.network_magic,
+        cli.network_magic,
+        signet_challenge.as_deref(),
+    );
+    if let Some(magic) = cli.network_magic {
+        tracing::info!(
+            network_magic = %bitcoin::p2p::Magic::from_bytes(magic),
+            "Overriding network magic"
+        );
+    } else if signet_challenge.is_some() {
+        tracing::info!(
+            network_magic = %bitcoin::p2p::Magic::from_bytes(
+                network_params
+                    .network_magic
+                    .expect("a signet challenge always derives network magic")
+            ),
+            "Derived network magic from signet challenge"
+        );
+    }
+
+    // Both wallet data and validator data are stored under the same root
+    // directory. Add a subdirectories to clearly indicate which
+    // is which. Presets get their own namespace (e.g. `main-drynet1`)
+    let chain_dir_name = match network_params.datadir_suffix {
+        Some(suffix) => format!("{}-{}", info.chain, suffix),
+        None => info.chain.to_string(),
+    };
+    let validator_data_dir = cli.data_dir.join("validator").join(&chain_dir_name);
+    let wallet_data_dir = cli.data_dir.join("wallet").join(&chain_dir_name);
+
+    // Ensure that the data directories exists
+    for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
+        std::fs::create_dir_all(data_dir).into_diagnostic()?;
+    }
+
+    let validator = Validator::new(
+        mainchain_client.clone(),
+        mainchain_rest_client,
+        cli.node_blocks_dir_opts.dir.clone(),
+        &validator_data_dir,
+        info.chain,
+        network_params,
+    )
+    .into_diagnostic()?;
 
     // The block reward recipient for served templates. Parsed network-agnostically
     // by clap, so check it against the network the node actually reports.
@@ -1828,10 +1857,47 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::ScriptBuf;
     use futures::channel::oneshot;
     use tokio_util::sync::CancellationToken;
 
-    use super::wait_for_error_or_shutdown;
+    use super::{resolve_block_file_network_magic, wait_for_error_or_shutdown};
+
+    #[test]
+    fn derives_block_file_magic_from_signet_challenge() {
+        let challenge = ScriptBuf::from_bytes(vec![0x51]);
+        let derived = bip300301_enforcer_lib::p2p::compute_signet_magic(&challenge).to_bytes();
+
+        assert_eq!(
+            resolve_block_file_network_magic(
+                Some([0x01, 0x02, 0x03, 0x04]),
+                None,
+                Some(&challenge),
+            ),
+            Some(derived),
+            "the challenge is authoritative over a preset on signet"
+        );
+    }
+
+    #[test]
+    fn explicit_block_file_magic_overrides_signet_derivation() {
+        let challenge = ScriptBuf::from_bytes(vec![0x51]);
+        let explicit = [0xaa, 0xbb, 0xcc, 0xdd];
+
+        assert_eq!(
+            resolve_block_file_network_magic(None, Some(explicit), Some(&challenge)),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn retains_preset_magic_without_a_signet_challenge() {
+        let preset = [0x01, 0x02, 0x03, 0x04];
+        assert_eq!(
+            resolve_block_file_network_magic(Some(preset), None, None),
+            Some(preset)
+        );
+    }
 
     /// The mempool sync task holds the error sender for as long as it lives, so
     /// losing the sender without an error means the task is gone and the

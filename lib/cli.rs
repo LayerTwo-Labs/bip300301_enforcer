@@ -469,7 +469,7 @@ pub struct Config {
     #[arg(long, value_enum)]
     pub network_preset: Option<NetworkPreset>,
     /// P2P message-start bytes as hex, e.g. `eca5d404`. Overrides the value
-    /// from `--network-preset`.
+    /// from `--network-preset` and automatic signet-challenge derivation.
     //
     // Hidden because a preset is the intended way to get this. This CLI opt is
     // only needed for tests and dev purposes.
@@ -809,9 +809,9 @@ mod tests {
         assert_eq!(params("drynet4").bip300_activation_height, 961_632);
     }
 
-    /// `--network-magic` overrides whatever the preset carries, since a forked
-    /// build rebrands the magic on every network while a preset only names one
-    /// chain — running drynet4 on regtest needs bytes no preset supplies.
+    /// `--network-magic` overrides every automatic/configured source, since a
+    /// forked build may rebrand the magic independently of the network preset
+    /// or signet challenge.
     #[test]
     fn network_magic_flag_overrides_the_preset() {
         let parse = |args: &[&str]| {
