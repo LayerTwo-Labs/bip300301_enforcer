@@ -47,7 +47,7 @@ use crate::{
     validator::{self, Validator},
     wallet::{
         error::WalletInitialization,
-        mnemonic::{EncryptedMnemonic, new_mnemonic},
+        mnemonic::{EncryptedMnemonic, KdfParams, new_mnemonic},
         seed_store::{Seed, SeedStore},
         util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
     },
@@ -460,7 +460,8 @@ impl WalletInner {
         match password {
             Some(password) => {
                 tracing::info!("create new wallet: persisting encrypted mnemonic");
-                let encrypted = EncryptedMnemonic::encrypt(&mnemonic, password)?;
+                let encrypted =
+                    EncryptedMnemonic::encrypt(&mnemonic, password, KdfParams::CURRENT)?;
                 self.seed_store
                     .insert_seed(Seed::Encrypted(&encrypted), birthday_height)
                     .await?;

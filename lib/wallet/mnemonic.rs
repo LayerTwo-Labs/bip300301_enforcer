@@ -4,7 +4,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, AeadCore, KeyInit, OsRng},
 };
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use bdk_wallet::{
     bip39::{Language, Mnemonic},
     keys::{GeneratableKey, GeneratedKey, bip39::WordCount},
@@ -26,12 +26,46 @@ pub(crate) fn new_mnemonic() -> Result<Mnemonic, bdk_wallet::bip39::Error> {
     Mnemonic::parse(words)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct KdfParams {
+    pub memory_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+}
+
+impl KdfParams {
+    /// What seeds encrypted before the cost was recorded used.
+    pub(in crate::wallet) const LEGACY: Self = Self {
+        memory_kib: 19 * 1024,
+        iterations: 2,
+        parallelism: 1,
+    };
+
+    /// What newly encrypted seeds use.
+    pub(in crate::wallet) const CURRENT: Self = Self {
+        memory_kib: 64 * 1024,
+        iterations: 3,
+        parallelism: 1,
+    };
+}
+
 fn stretch_password(
     password: &str,
     key_salt: &[u8],
+    kdf: KdfParams,
 ) -> Result<Zeroizing<[u8; 32]>, error::StretchPassword> {
     let mut key_bytes = Zeroizing::new([0u8; 32]);
-    Argon2::default().hash_password_into(password.as_bytes(), key_salt, &mut key_bytes[..])?;
+    let params = Params::new(
+        kdf.memory_kib,
+        kdf.iterations,
+        kdf.parallelism,
+        Some(key_bytes.len()),
+    )?;
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params).hash_password_into(
+        password.as_bytes(),
+        key_salt,
+        &mut key_bytes[..],
+    )?;
     Ok(key_bytes)
 }
 
@@ -41,6 +75,8 @@ pub(crate) struct EncryptedMnemonic {
     pub initialization_vector: Vec<u8>,
     pub ciphertext_mnemonic: Vec<u8>,
     pub key_salt: Vec<u8>,
+    /// The cost that `key_salt` was stretched with
+    pub kdf: KdfParams,
 }
 
 // Encryption/decryption is based off of this blog post, with the addition of the argon2 key stretch.
@@ -49,6 +85,7 @@ impl EncryptedMnemonic {
     pub(crate) fn encrypt(
         mnemonic: &Mnemonic,
         password: &str,
+        kdf: KdfParams,
     ) -> Result<Self, error::EncryptMnemonic> {
         use rand::TryRng;
 
@@ -57,7 +94,7 @@ impl EncryptedMnemonic {
         let mut key_salt = [0u8; 16];
         rand::rngs::SysRng.try_fill_bytes(&mut key_salt)?;
 
-        let key_bytes = stretch_password(password, &key_salt)?;
+        let key_bytes = stretch_password(password, &key_salt, kdf)?;
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..]);
 
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -72,13 +109,14 @@ impl EncryptedMnemonic {
             initialization_vector: nonce.to_vec(),
             ciphertext_mnemonic: ciphered_data,
             key_salt: key_salt.to_vec(),
+            kdf,
         })
     }
 
     pub(crate) fn decrypt(&self, password: &str) -> Result<Mnemonic, error::DecryptMnemonic> {
         let nonce = Nonce::from_slice(self.initialization_vector.as_ref());
 
-        let key_bytes = stretch_password(password, self.key_salt.as_ref())?;
+        let key_bytes = stretch_password(password, self.key_salt.as_ref(), self.kdf)?;
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..]);
 
         let cipher = Aes256Gcm::new(key);
@@ -108,7 +146,8 @@ mod tests {
     #[test]
     fn encrypt_decrypt_roundtrip() {
         let mnemonic = new_mnemonic().unwrap();
-        let encrypted = EncryptedMnemonic::encrypt(&mnemonic, "hunter2").unwrap();
+        let encrypted =
+            EncryptedMnemonic::encrypt(&mnemonic, "hunter2", KdfParams::CURRENT).unwrap();
         let decrypted = encrypted.decrypt("hunter2").unwrap();
         assert_eq!(mnemonic.to_string(), decrypted.to_string());
     }
@@ -116,15 +155,53 @@ mod tests {
     #[test]
     fn decrypt_with_wrong_password_fails() {
         let mnemonic = new_mnemonic().unwrap();
-        let encrypted = EncryptedMnemonic::encrypt(&mnemonic, "correct").unwrap();
+        let encrypted =
+            EncryptedMnemonic::encrypt(&mnemonic, "correct", KdfParams::CURRENT).unwrap();
         assert!(encrypted.decrypt("wrong").is_err());
+    }
+
+    #[test]
+    fn fresh_ciphertexts_use_the_current_kdf_cost() {
+        assert_ne!(
+            KdfParams::CURRENT,
+            KdfParams::LEGACY,
+            "CURRENT must actually raise the cost over the old default"
+        );
+        let mnemonic = new_mnemonic().unwrap();
+        let encrypted = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::CURRENT).unwrap();
+        assert_eq!(encrypted.kdf, KdfParams::CURRENT);
+    }
+
+    /// A seed encrypted under the pre-bump cost must keep opening, and must
+    /// only open under the cost it was written with — proof that the stored
+    /// params are what drives the stretch, not a hardcoded constant.
+    #[test]
+    fn legacy_kdf_cost_still_decrypts() {
+        let mnemonic = new_mnemonic().unwrap();
+        let legacy = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::LEGACY).unwrap();
+        assert_eq!(legacy.kdf, KdfParams::LEGACY);
+        assert_eq!(
+            legacy.decrypt("pw").unwrap().to_string(),
+            mnemonic.to_string()
+        );
+
+        let mismatched = EncryptedMnemonic {
+            initialization_vector: legacy.initialization_vector,
+            ciphertext_mnemonic: legacy.ciphertext_mnemonic,
+            key_salt: legacy.key_salt,
+            kdf: KdfParams::CURRENT,
+        };
+        assert!(
+            mismatched.decrypt("pw").is_err(),
+            "the recorded cost must be load-bearing"
+        );
     }
 
     #[test]
     fn encrypting_same_input_twice_yields_fresh_salt_and_iv() {
         let mnemonic = new_mnemonic().unwrap();
-        let a = EncryptedMnemonic::encrypt(&mnemonic, "pw").unwrap();
-        let b = EncryptedMnemonic::encrypt(&mnemonic, "pw").unwrap();
+        let a = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::CURRENT).unwrap();
+        let b = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::CURRENT).unwrap();
         assert_ne!(a.key_salt, b.key_salt);
         assert_ne!(a.initialization_vector, b.initialization_vector);
         assert_ne!(a.ciphertext_mnemonic, b.ciphertext_mnemonic);
