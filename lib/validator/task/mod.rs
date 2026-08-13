@@ -1531,7 +1531,7 @@ where
         // Fetch a batch of headers
         let headers = if let Some(main_rest_client) = main_rest_client {
             main_rest_client
-                .get_block_headers(&current_block_hash, batch_size)
+                .get_block_headers(&current_block_hash, current_height, batch_size)
                 .await?
         } else {
             // REST is optional. Fetch each RPC stage as a batch so
