@@ -13,16 +13,15 @@ use bip300301_enforcer_lib::{
             ListSidechainDepositTransactionsRequest, block_info, withdrawal_bundle_event,
         },
     },
-    types::SidechainNumber,
+    types::{SidechainNumber, Thresholds},
 };
 use bitcoin::Amount;
-use either::Either;
 use futures::{FutureExt as _, channel::mpsc};
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
-    mine::{mine, mine_check_block_events, mine_generateblocks_check, mine_signet_check},
+    mine::{mine, mine_check_block_events, mine_signet_check},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
         wait_for_pending_proposal, wait_for_tx_in_mempool,
@@ -454,7 +453,7 @@ where
 }
 
 // returns M6id and event
-fn expect_withdrawal_bundle_event(
+pub(crate) fn expect_withdrawal_bundle_event(
     event: &block_info::Event,
 ) -> anyhow::Result<(&ConsensusHex, &withdrawal_bundle_event::event::Event)> {
     let block_info::event::Event::WithdrawalBundle(wbe) = event
@@ -476,6 +475,62 @@ fn expect_withdrawal_bundle_event(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("withdrawal bundle event missing oneof"))?;
     Ok((event_m6id, inner_event))
+}
+
+/// Mine blocks until an approved-but-unpayable withdrawal bundle expires,
+/// asserting that every block in the window still connects and that the bundle
+/// produces no event beyond its initial submission and final failure --
+/// notably no payout, which would be consensus-invalid.
+///
+/// This is the shared tail of the unpayable-bundle tests. The enforcer
+/// (re-)proposes the stored bundle in the first block (age 0) and, with
+/// ack-all on, upvotes it each block after that, so it crosses the inclusion
+/// threshold while it cannot be paid out and stays pending until its age
+/// exceeds `withdrawal_bundle_max_age`, with the failure event landing one
+/// block later. Every one of these blocks still has to be produced: only a
+/// connected block can retire the bundle, so a block builder that fails on it
+/// instead of skipping it wedges block production permanently.
+pub(crate) async fn mine_until_unpayable_bundle_expires<S>(
+    post_setup: &mut PostSetup,
+    m6id_hex: &ConsensusHex,
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
+    // Proposal block + max-age blocks of aging + the block whose connect emits
+    // the failure event. Non-mainnet networks all use the `SHORT` thresholds.
+    let blocks_to_expiry = u32::from(Thresholds::SHORT.withdrawal_bundle_max_age) + 2;
+    let mut saw_expiry = false;
+    mine_check_block_events::<_, S>(
+        post_setup,
+        blocks_to_expiry,
+        Some(true),
+        |seq, block_info| {
+            for event in &block_info.events {
+                let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
+                anyhow::ensure!(
+                    event_m6id == m6id_hex,
+                    "unexpected withdrawal bundle event for a different m6id: {event_m6id:?}"
+                );
+                match event {
+                    withdrawal_bundle_event::event::Event::Submitted(_) if seq == 0 => (),
+                    withdrawal_bundle_event::event::Event::Failed(_) => saw_expiry = true,
+                    event => anyhow::bail!(
+                        "unexpected withdrawal bundle event in block {seq} while the unpayable \
+                         bundle was pending: {event:?}"
+                    ),
+                }
+            }
+            Ok(())
+        },
+    )
+    .await?;
+    anyhow::ensure!(
+        saw_expiry,
+        "the bundle never expired, so this never exercised the window in which it was approved \
+         but unpayable"
+    );
+    Ok(())
 }
 
 const WITHDRAW_AMOUNT_0: Amount = Amount::from_sat(18_000_000);
@@ -644,16 +699,16 @@ where
 /// bundle structure but does not bound it against the treasury (which is unknown
 /// at submission time). Once the enforcer's own miner upvotes the bundle past the
 /// withdrawal-bundle inclusion threshold, every block-template build runs the
-/// treasury subtraction `treasury - fee - payout`. Before the fix this was an
-/// unchecked `Amount` subtraction that panicked, aborting block production; the
-/// fix routes it through `Wallet::new_treasury_value`, which returns an
-/// `AmountUnderflowError` instead.
+/// treasury subtraction `treasury - fee - payout`. That subtraction was once an
+/// unchecked `Amount` subtraction that panicked; then a hard error, which still
+/// stopped the node from producing any block at all until the bundle expired.
 ///
-/// This drives the full path — broadcast an over-value bundle, then mine until
-/// the enforcer's auto-upvote pushes it past the threshold — and asserts that
-/// block production surfaces a clean amount-underflow error and the enforcer
-/// stays responsive, rather than crashing.
-async fn withdrawal_bundle_treasury_underflow_is_graceful<S>(
+/// Such a bundle can never be paid out — an M6 spending more than the CTIP is
+/// consensus-invalid — so the block producer skips it and carries on. This
+/// drives the full path: broadcast an over-value bundle, mine until the
+/// enforcer's auto-upvote pushes it past the threshold, and assert that blocks
+/// keep being produced across that window and the bundle expires unpaid.
+async fn withdrawal_bundle_exceeding_treasury_is_skipped<S>(
     post_setup: &mut PostSetup,
 ) -> anyhow::Result<()>
 where
@@ -677,41 +732,14 @@ where
         })
         .await?;
 
-    // The enforcer auto-proposes the stored bundle and, with `ack_all_proposals`,
-    // upvotes it each block. Once `vote_count` crosses the inclusion threshold the
-    // next `GenerateToAddress` builds a block whose suffix txs run the treasury
-    // subtraction, which must fail with an amount-underflow rather than panicking.
-    // After the crossing no block is produced, so the failure is sticky; cap the
-    // loop generously above the regtest threshold.
-    const MAX_BLOCKS: u32 = 16;
-    let mut underflow_status = None;
-    for _ in 0..MAX_BLOCKS {
-        match mine_generateblocks_check(post_setup, 1, Some(true), |_| {
-            Ok::<(), std::convert::Infallible>(())
-        })
-        .await
-        {
-            Ok(()) => continue,
-            Err(Either::Left(status)) => {
-                underflow_status = Some(status);
-                break;
-            }
-            Err(Either::Right(never)) => match never {},
-        }
-    }
-    let status = underflow_status.ok_or_else(|| {
-        anyhow::anyhow!(
-            "expected `GenerateToAddress` to fail once the over-value bundle crossed the \
-             withdrawal-bundle inclusion threshold, but mined {MAX_BLOCKS} blocks without error"
-        )
-    })?;
-    anyhow::ensure!(
-        status.to_string().to_lowercase().contains("underflow"),
-        "expected an amount-underflow error from block production, got: {status}"
-    );
+    // Once the auto-upvotes push the bundle past the inclusion threshold,
+    // every block-template build reaches the treasury subtraction for a bundle
+    // it cannot pay.
+    let m6id_hex = ConsensusHex::encode(&over_value_bundle.compute_txid());
+    mine_until_unpayable_bundle_expires::<S>(post_setup, &m6id_hex).await?;
 
-    // The fix returns the error gracefully, so the enforcer must still be serving.
-    // Before the fix the treasury subtraction panicked instead.
+    // Nothing above touches the enforcer if it died, so confirm it is serving:
+    // this subtraction once panicked, taking the process with it.
     let _tip = post_setup
         .validator_service_client
         .get_chain_tip(GetChainTipRequest::default())
@@ -719,7 +747,7 @@ where
         .map_err(|err| {
             anyhow::anyhow!("enforcer unresponsive after over-value bundle (possible crash): {err}")
         })?;
-    tracing::info!("Enforcer rejected the over-value withdrawal bundle gracefully");
+    tracing::info!("Enforcer skipped the over-value withdrawal bundle and kept producing blocks");
     Ok(())
 }
 
@@ -789,7 +817,7 @@ where
     // auto-upvotes bundle proposals; the GBT/signet modes build templates
     // externally and so cannot drive a bundle past the inclusion threshold here.
     if let MiningMode::GenerateBlocks = post_setup.mode.mining_mode() {
-        let () = withdrawal_bundle_treasury_underflow_is_graceful::<S>(post_setup).await?;
+        let () = withdrawal_bundle_exceeding_treasury_is_skipped::<S>(post_setup).await?;
         tracing::info!("Over-value withdrawal bundle handled gracefully");
     }
     Ok(sidechain)

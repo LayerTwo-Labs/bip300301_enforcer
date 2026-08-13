@@ -8,8 +8,8 @@ use serde::Deserialize;
 use thiserror::Error;
 
 pub use crate::block_producer::error::{
-    BitcoinCoreRPC, FinalizeBlockTemplate, GenerateCoinbaseTxouts, GenerateSuffixTxs,
-    GetBundleProposals, InitDbConnection, InitialBlockTemplate,
+    BitcoinCoreRPC, FinalizeBlockTemplate, GenerateCoinbaseTxouts, GetBundleProposals,
+    InitDbConnection, InitialBlockTemplate,
 };
 use crate::{
     proto::{StatusBuilder, ToStatus},

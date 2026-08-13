@@ -36,7 +36,7 @@ use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
 use tokio::{
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     time::{Duration, sleep, timeout},
 };
 
@@ -319,13 +319,25 @@ pub async fn wait_for_port(
     }
 }
 
-/// Inverse of [`wait_for_port`]: wait until nothing is listening on a port
-/// anymore. `AbortOnDrop`'s `Drop` impl only calls `JoinHandle::abort`, which
-/// schedules cancellation but doesn't guarantee the underlying child process
-/// (and the port it holds) is actually gone by the time `drop` returns -- so
-/// a kill immediately followed by a respawn on the same port can race the
-/// old process's teardown. Poll for the port to actually free up instead of
+/// Inverse of [`wait_for_port`]: wait until a port can be bound again.
+/// `AbortOnDrop`'s `Drop` impl only calls `JoinHandle::abort`, which schedules
+/// cancellation but doesn't guarantee the underlying child process (and the
+/// port it holds) is actually gone by the time `drop` returns -- so a kill
+/// immediately followed by a respawn on the same port can race the old
+/// process's teardown. Poll for the port to actually free up instead of
 /// guessing at a fixed delay.
+///
+/// This binds rather than connecting, because binding is the question the
+/// caller actually has: can the process I am about to spawn take this port?
+/// Every child here binds a specific `127.0.0.1` address, so the bind fails
+/// while one still holds the port and succeeds once it is gone.
+///
+/// A connect probe cannot tell our child from an unrelated process listening on
+/// the *wildcard* address, which answers connections to `127.0.0.1` forever and
+/// so hangs the wait until it times out. That is not hypothetical: BSD
+/// `SO_REUSEADDR` semantics let a specific bind coexist with a wildcard one, so
+/// a port held that way still looks free to `reserve-port` and does get handed
+/// out. A container publishing `0.0.0.0:8090` is enough to do it.
 pub async fn wait_for_port_free(
     host: &str,
     port: u16,
@@ -339,9 +351,14 @@ pub async fn wait_for_port_free(
 
     let task = async {
         loop {
-            match TcpStream::connect(target_addr).await {
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return,
-                _ => {
+            match TcpListener::bind(target_addr).await {
+                // Hand it straight back: the caller is about to spawn something
+                // that needs to bind it.
+                Ok(listener) => {
+                    drop(listener);
+                    return;
+                }
+                Err(_) => {
                     tracing::trace!(
                         "Port {port} on {host} still held, waiting for it to free up..."
                     );

@@ -39,6 +39,23 @@ async fn enforcer_tip(post_setup: &PostSetup) -> anyhow::Result<(BlockHash, u32)
     Ok((hash, info.height))
 }
 
+/// Wait until the enforcer's validated tip *is* `tip_hash`.
+///
+/// Unlike [`wait_for_enforcer_height`], this also covers the chain getting
+/// shorter: after an `invalidateblock` the enforcer is briefly still on the
+/// abandoned tip, which is *higher* than the one it must roll back to, so a
+/// height comparison would report success before the disconnect had happened.
+pub async fn wait_for_enforcer_tip_hash(
+    post_setup: &PostSetup,
+    tip_hash: BlockHash,
+) -> anyhow::Result<()> {
+    wait_until(&format!("the enforcer's tip to be {tip_hash}"), || async {
+        let (enforcer_tip_hash, _height) = enforcer_tip(post_setup).await?;
+        Ok(enforcer_tip_hash == tip_hash)
+    })
+    .await
+}
+
 /// Wait until the enforcer has validated the chain up to `height`.
 ///
 /// Mining RPCs return once *bitcoind* has the blocks; the enforcer connects

@@ -8,7 +8,7 @@ use crate::{
     messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
     types::{
         AmountUnderflowError, BlindedM6, Ctip, Sidechain, SidechainAck, SidechainNumber,
-        SidechainProposal, SidechainProposalId,
+        SidechainProposal, SidechainProposalId, Thresholds,
     },
 };
 
@@ -375,32 +375,91 @@ impl BlockProducer {
     /// Generate the M6 suffix txs for a new block. These are fully determined by
     /// the approved bundle and the CTIP: treasury outputs are anyone-can-spend
     /// and consensus-gated, so an M6 is constructed, never signed.
+    ///
+    /// Fails only while *reading* the bundles to pay out. The payout rules
+    /// themselves cannot fail: a bundle that cannot be paid is skipped, so that
+    /// one unpayable bundle does not stop the node from producing blocks. See
+    /// [`Self::suffix_txs_for_proposals`].
     pub(crate) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
-    ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
+    ) -> Result<Vec<Transaction>, error::GetBundleProposals> {
         let thresholds = self.validator().network_params().thresholds;
+        let bundle_proposals = self.get_bundle_proposals().await?;
+        Ok(Self::suffix_txs_for_proposals(
+            bundle_proposals,
+            ctips,
+            &thresholds,
+        ))
+    }
+
+    /// The M6 suffix implied by `bundle_proposals` and the treasury state the
+    /// suffix will be built against. Split out from
+    /// [`Self::generate_suffix_txs`] so the payout rules are exercisable without
+    /// a validator or a DB.
+    ///
+    /// Infallible by construction: a bundle that cannot be paid out is skipped,
+    /// never fatal. The suffix is the *rest* of a block that is being built, so
+    /// refusing to produce one over a single unpayable bundle stops the node
+    /// from producing blocks at all -- and only a connected block can retire the
+    /// bundle that is blocking it.
+    fn suffix_txs_for_proposals(
+        bundle_proposals: HashMap<SidechainNumber, BundleProposals>,
+        ctips: &HashMap<SidechainNumber, Ctip>,
+        thresholds: &Thresholds,
+    ) -> Vec<Transaction> {
         let mut res = Vec::new();
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
+        for (sidechain_id, m6ids) in bundle_proposals {
             let mut ctip = None;
-            for (_m6id, blinded_m6, m6id_info) in m6ids {
+            for (m6id, blinded_m6, m6id_info) in m6ids {
                 let Some(m6id_info) = m6id_info else { continue };
-                if m6id_info.vote_count > thresholds.withdrawal_bundle_inclusion_threshold {
-                    let current_ctip = if let Some(ctip) = ctip {
-                        ctip
-                    } else {
-                        *ctips
-                            .get(&sidechain_id)
-                            .ok_or_else(|| error::GenerateSuffixTxs::MissingCtip { sidechain_id })?
-                    };
-                    let (m6, successor_ctip) =
-                        Self::finalize_m6(sidechain_id, current_ctip, blinded_m6)?;
-                    ctip = Some(successor_ctip);
-                    res.push(m6);
+                if m6id_info.vote_count <= thresholds.withdrawal_bundle_inclusion_threshold {
+                    continue;
                 }
+                let current_ctip = if let Some(ctip) = ctip {
+                    ctip
+                } else if let Some(ctip) = ctips.get(&sidechain_id) {
+                    *ctip
+                } else {
+                    // An approved bundle for a sidechain with no treasury has
+                    // nothing to spend, so it cannot be paid out. Skip the
+                    // sidechain and let the bundle age out instead. Failing here
+                    // would abort the entire suffix, so one unpayable bundle
+                    // would take every other sidechain's payouts -- and this
+                    // node's block production -- down with it, and no block
+                    // could ever connect to retire the bundle.
+                    tracing::warn!(
+                        %sidechain_id,
+                        %m6id,
+                        "skipping an approved withdrawal bundle: sidechain has no CTIP"
+                    );
+                    break;
+                };
+                // A bundle that pays out more than the treasury holds can never
+                // be included -- the only way finalizing it can fail. Skip just
+                // this bundle and let it age out: a smaller one behind it is
+                // still payable. (The missing-CTIP arm `break`s instead, but
+                // only to warn once per sidechain -- with no treasury nothing
+                // behind it could pay out either, so the output is the same.)
+                let (fee, payout) = (*blinded_m6.fee(), *blinded_m6.payout());
+                let Ok((m6, successor_ctip)) =
+                    Self::finalize_m6(sidechain_id, current_ctip, blinded_m6)
+                else {
+                    tracing::warn!(
+                        %sidechain_id,
+                        %m6id,
+                        %fee,
+                        %payout,
+                        treasury = %current_ctip.value,
+                        "skipping an approved withdrawal bundle: payout and fee exceed the treasury"
+                    );
+                    continue;
+                };
+                ctip = Some(successor_ctip);
+                res.push(m6);
             }
         }
-        Ok(res)
+        res
     }
 }
 
@@ -414,10 +473,11 @@ mod tests {
     };
 
     use crate::{
-        block_producer::BlockProducer,
+        block_producer::{BlockProducer, BundleProposals},
         types::{
-            AmountUnderflowError, BlindedM6, Ctip, SidechainAck, SidechainDescription,
-            SidechainNumber, SidechainProposal, op_drivechain_script,
+            AmountUnderflowError, BlindedM6, Ctip, PendingM6idInfo, SidechainAck,
+            SidechainDescription, SidechainNumber, SidechainProposal, Thresholds,
+            op_drivechain_script,
         },
     };
 
@@ -426,6 +486,161 @@ mod tests {
             sidechain_number,
             description: SidechainDescription(description.to_vec()),
         }
+    }
+
+    const THRESHOLDS: Thresholds = Thresholds::SHORT;
+    const TREASURY_VALUE: Amount = Amount::from_sat(1_000_000);
+    const FEE_SATS: u64 = 1_000;
+    const PAYOUT: Amount = Amount::from_sat(50_000);
+
+    /// A single bundle proposal with enough votes to be paid out.
+    fn approved_bundle() -> BundleProposals {
+        approved_bundle_paying(PAYOUT)
+    }
+
+    /// [`approved_bundle`], for a chosen payout. Distinct payouts give distinct
+    /// m6ids, so several can be pending for one sidechain at once.
+    fn approved_bundle_paying(payout: Amount) -> BundleProposals {
+        let fee_output = TxOut {
+            value: Amount::ZERO,
+            script_pubkey: Builder::new()
+                .push_opcode(OP_RETURN)
+                .push_slice(FEE_SATS.to_be_bytes())
+                .into_script(),
+        };
+        let payout_output = TxOut {
+            value: payout,
+            script_pubkey: ScriptBuf::from_bytes([vec![0x00, 0x14], vec![0x11; 20]].concat()),
+        };
+        let tx = bitcoin::Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(), // a blinded M6 has no inputs
+            output: vec![fee_output, payout_output],
+        };
+        let blinded_m6 = BlindedM6::try_from(Cow::Owned(tx))
+            .expect("test fixture is not a valid blinded M6")
+            .into_owned();
+        let info = PendingM6idInfo {
+            vote_count: THRESHOLDS.withdrawal_bundle_inclusion_threshold + 1,
+            proposal_height: 1,
+        };
+        vec![(blinded_m6.compute_m6id(), blinded_m6, Some(info))]
+    }
+
+    fn ctip(byte: u8) -> Ctip {
+        Ctip {
+            outpoint: OutPoint {
+                txid: Txid::from_byte_array([byte; 32]),
+                vout: 0,
+            },
+            value: TREASURY_VALUE,
+        }
+    }
+
+    /// A bundle whose sidechain has no treasury cannot be paid out, but it must
+    /// not stop the block: erroring out here aborts the whole suffix, which
+    /// wedges block production entirely (and then no block can connect to retire
+    /// the offending bundle).
+    #[test]
+    fn suffix_txs_skip_a_sidechain_without_a_ctip() {
+        const NO_CTIP: SidechainNumber = SidechainNumber(0);
+        const WITH_CTIP: SidechainNumber = SidechainNumber(1);
+        let bundle_proposals =
+            HashMap::from_iter([(NO_CTIP, approved_bundle()), (WITH_CTIP, approved_bundle())]);
+        let ctips = HashMap::from_iter([(WITH_CTIP, ctip(1))]);
+
+        let suffix_txs =
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &THRESHOLDS);
+
+        // The payable sidechain still gets its M6, spending its own CTIP.
+        assert_eq!(suffix_txs.len(), 1);
+        assert_eq!(
+            suffix_txs[0]
+                .input
+                .first()
+                .expect("an M6 spends the treasury")
+                .previous_output,
+            ctip(1).outpoint
+        );
+    }
+
+    /// The same, with nothing left to pay out: an empty suffix, not an error.
+    #[test]
+    fn suffix_txs_are_empty_when_no_sidechain_has_a_ctip() {
+        let bundle_proposals = HashMap::from_iter([(SidechainNumber(0), approved_bundle())]);
+        let suffix_txs =
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &HashMap::new(), &THRESHOLDS);
+        assert!(suffix_txs.is_empty());
+    }
+
+    /// A bundle whose payout and fee exceed the treasury can never be included
+    /// -- an M6 spending more than the CTIP is consensus-invalid -- so it is
+    /// skipped *alone*, rather than aborting the suffix: the payable bundles
+    /// around it still go through, and the one behind it chains onto the CTIP
+    /// the one before it advanced.
+    #[test]
+    fn suffix_txs_skip_only_the_bundle_exceeding_the_treasury() {
+        const SIDECHAIN: SidechainNumber = SidechainNumber(0);
+        const SECOND_PAYOUT: Amount = Amount::from_sat(30_000);
+        // Payable against the treasury the block starts with, but not against
+        // what remains of it once the first bundle is paid: skipping has to be
+        // judged against the advanced CTIP, not the initial one.
+        let overdrawing_payout = TREASURY_VALUE - PAYOUT;
+        let mut bundles = approved_bundle_paying(PAYOUT);
+        bundles.extend(approved_bundle_paying(overdrawing_payout));
+        bundles.extend(approved_bundle_paying(SECOND_PAYOUT));
+        let bundle_proposals = HashMap::from_iter([(SIDECHAIN, bundles)]);
+        let ctips = HashMap::from_iter([(SIDECHAIN, ctip(0))]);
+
+        let suffix_txs =
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &THRESHOLDS);
+
+        let [first_m6, second_m6] = suffix_txs.as_slice() else {
+            panic!("expected exactly the two payable M6s, got {suffix_txs:?}");
+        };
+        let fee = Amount::from_sat(FEE_SATS);
+        // The first payable bundle spends the initial CTIP and leaves the
+        // reduced treasury at vout 0, as BIP300 M6 requires.
+        assert_eq!(
+            first_m6
+                .input
+                .first()
+                .expect("an M6 spends the treasury")
+                .previous_output,
+            ctip(0).outpoint
+        );
+        let advanced_treasury = TREASURY_VALUE - PAYOUT - fee;
+        assert_eq!(first_m6.output[0].value, advanced_treasury);
+        assert!(
+            first_m6.output.iter().any(|output| output.value == PAYOUT),
+            "the first surviving M6 is not the first payable bundle: {first_m6:?}"
+        );
+        // The skip leaves the advanced CTIP intact: the second payable bundle
+        // chains directly onto the first M6's treasury output, untouched by the
+        // overdrawing bundle between them.
+        assert_eq!(
+            second_m6
+                .input
+                .first()
+                .expect("an M6 spends the treasury")
+                .previous_output,
+            OutPoint {
+                txid: first_m6.compute_txid(),
+                vout: 0,
+            }
+        );
+        assert_eq!(
+            second_m6.output[0].value,
+            advanced_treasury - SECOND_PAYOUT - fee
+        );
+        assert!(
+            second_m6
+                .output
+                .iter()
+                .any(|output| output.value == SECOND_PAYOUT),
+            "the second surviving M6 is not the second payable bundle: {second_m6:?}"
+        );
     }
 
     #[test]

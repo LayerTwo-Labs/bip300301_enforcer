@@ -7,7 +7,6 @@ use crate::{
     errors::ErrorChain,
     messages::CoinbaseMessagesError,
     proto::{StatusBuilder, ToStatus},
-    types::SidechainNumber,
     validator::Validator,
 };
 
@@ -90,26 +89,6 @@ impl ToStatus for GenerateCoinbaseTxouts {
             Self::GetSidechains(err) => err.builder(),
             Self::PushBytes(err) => StatusBuilder::new(err),
             Self::Rusqlite(_) => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GenerateSuffixTxs {
-    #[error(transparent)]
-    GetBundleProposals(#[from] GetBundleProposals),
-    #[error(transparent)]
-    M6(#[from] crate::types::AmountUnderflowError),
-    #[error("Missing ctip for sidechain {sidechain_id}")]
-    MissingCtip { sidechain_id: SidechainNumber },
-}
-
-impl ToStatus for GenerateSuffixTxs {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::GetBundleProposals(err) => err.builder(),
-            Self::M6(err) => err.builder(),
-            Self::MissingCtip { .. } => StatusBuilder::new(self),
         }
     }
 }
@@ -205,7 +184,7 @@ impl ToStatus for GetBlockTemplate {
 #[derive(Debug, Diagnostic, Error)]
 pub enum SelectBlockTxs {
     #[error(transparent)]
-    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
+    GenerateSuffixTxs(#[from] GetBundleProposals),
     #[error(transparent)]
     GetBlockTemplate(#[from] GetBlockTemplate),
     #[error(transparent)]
@@ -500,7 +479,7 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     #[error(transparent)]
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
     #[error(transparent)]
-    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
+    GenerateSuffixTxs(#[from] GetBundleProposals),
     #[error("Failed to read the ACK-all-proposals setting")]
     GetAckAllProposals(#[source] rusqlite::Error),
     #[error("the `coinbasetxn` GBT capability is required")]
@@ -530,7 +509,7 @@ pub(in crate::block_producer) enum FinalizeBlockTemplateInner {
     #[error("Failed to generate coinbase txouts suffix")]
     GenerateSuffixCoinbaseTxouts(#[source] bitcoin::script::PushBytesError),
     #[error(transparent)]
-    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
+    GenerateSuffixTxs(#[from] GetBundleProposals),
     #[error(transparent)]
     GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
     #[error(transparent)]

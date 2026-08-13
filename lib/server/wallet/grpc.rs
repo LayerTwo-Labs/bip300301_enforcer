@@ -114,8 +114,8 @@ impl WalletService for crate::wallet::Wallet {
         // treasury UTXO there is nothing for an M6 to spend, so the bundle could
         // never become a valid withdrawal. NB: as with the active-slot gate
         // above, this cannot cover a CTIP that a reorg removes *after* a bundle
-        // is stored. In that state block building fails with `MissingCtip` once
-        // the bundle clears the inclusion threshold.
+        // is stored. In that state the block producer skips the bundle when
+        // building the M6 suffix and it ages out unpaid.
         match self.validator().try_get_ctip(sidechain_id) {
             Ok(None) => {
                 return Err(ConnectError::failed_precondition(format!(
