@@ -1,19 +1,28 @@
 use std::borrow::Cow;
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _, messages::CoinbaseMessage,
-    proto::mainchain::BroadcastWithdrawalBundleRequest, types::BlindedM6,
+    bins::CommandExt as _,
+    messages::CoinbaseMessage,
+    proto::{
+        common::ConsensusHex,
+        mainchain::{BroadcastWithdrawalBundleRequest, GetCtipRequest},
+    },
+    types::BlindedM6,
 };
 use bitcoin::{
-    Amount, Block, ScriptBuf, Transaction, TxOut, blockdata::locktime::absolute::LockTime,
-    consensus::Encodable, hashes::Hash as _, opcodes::all::OP_RETURN, script::Builder,
-    transaction::Version,
+    Amount, Block, BlockHash, ScriptBuf, Transaction, TxOut,
+    blockdata::locktime::absolute::LockTime, consensus::Encodable, hashes::Hash as _,
+    opcodes::all::OP_RETURN, script::Builder, transaction::Version,
 };
 use either::Either;
 use futures::channel::mpsc;
 
 use crate::{
-    integration_test::{activate_sidechain, deposit, fund_enforcer, propose_sidechain},
+    block_verdict::wait_for_enforcer_tip_hash,
+    integration_test::{
+        activate_sidechain, deposit, fund_enforcer, mine_until_unpayable_bundle_expires,
+        propose_sidechain,
+    },
     mine::mine_generateblocks_check,
     setup::{DummySidechain, PostSetup, Sidechain as _},
 };
@@ -65,6 +74,40 @@ pub(crate) fn serialize_zero_input_legacy(tx: &Transaction) -> Vec<u8> {
     buf
 }
 
+async fn chain_height(post_setup: &PostSetup) -> anyhow::Result<u32> {
+    Ok(post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?)
+}
+
+async fn block_hash_at(post_setup: &PostSetup, height: u32) -> anyhow::Result<BlockHash> {
+    Ok(post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "getblockhash", [height.to_string()])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?)
+}
+
+/// The sidechain's current treasury UTXO, if it has one.
+async fn ctip(post_setup: &mut PostSetup) -> anyhow::Result<Option<u64>> {
+    let resp = post_setup
+        .validator_service_client
+        .get_ctip(GetCtipRequest {
+            sidechain_number: bip300301_enforcer_lib::proto::wrap_u32(
+                DummySidechain::SIDECHAIN_NUMBER.0.into(),
+            ),
+        })
+        .await?
+        .into_owned();
+    Ok(resp.ctip.into_option().map(|ctip| ctip.value))
+}
+
 async fn mine_block_and_collect_proposed_m6ids(
     post_setup: &mut PostSetup,
 ) -> anyhow::Result<Vec<[u8; 32]>> {
@@ -107,6 +150,11 @@ pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> 
     let mut sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
     propose_sidechain::<DummySidechain>(&mut post_setup).await?;
     activate_sidechain::<DummySidechain>(&mut post_setup).await?;
+
+    // The height the sidechain is active but unfunded at. The final section of
+    // this test rolls the chain back here to strand the stored bundle without a
+    // treasury; everything the funding and deposit below add is undone.
+    let active_unfunded_height = chain_height(&post_setup).await?;
 
     let blinded_tx = make_blinded_m6(1_000, Amount::from_sat(50_000));
 
@@ -234,5 +282,40 @@ pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> 
         status.code == connectrpc::ErrorCode::FailedPrecondition,
         "expected FailedPrecondition rejecting an inactive-slot bundle, got: {status}"
     );
+
+    // A stored bundle whose sidechain loses its treasury must not stop the
+    // block producer.
+    //
+    // Rolling the chain back to the active-but-unfunded height strands exactly
+    // that state: the enforcer's funding coinbases go with it, and a
+    // disconnected coinbase can never be re-mined, so the deposit that created
+    // the treasury is evicted rather than re-confirmed. The sidechain stays
+    // active (it activated before the funding) and the bundle stays in the block
+    // producer's own DB, which is not chain state. No ingestion-time check can
+    // cover this: the treasury existed when the bundle was accepted.
+    let rollback_to = block_hash_at(&post_setup, active_unfunded_height).await?;
+    let first_invalid = block_hash_at(&post_setup, active_unfunded_height + 1).await?;
+    tracing::info!(
+        %first_invalid,
+        %rollback_to,
+        "invalidating the funding and deposit under the stored bundle"
+    );
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "invalidateblock", [first_invalid.to_string()])
+        .run_utf8()
+        .await?;
+    wait_for_enforcer_tip_hash(&post_setup, rollback_to).await?;
+    anyhow::ensure!(
+        ctip(&mut post_setup).await?.is_none(),
+        "sidechain still has a treasury UTXO after its deposit was reorged out"
+    );
+
+    // The bundle crosses the inclusion threshold with no treasury to pay it
+    // from. Before the fix the first template built after the crossing failed
+    // with a missing-CTIP error, and since only a connected block can retire
+    // the bundle, nothing could ever clear it.
+    let m6id_hex = ConsensusHex::encode(&m6id);
+    mine_until_unpayable_bundle_expires::<DummySidechain>(&mut post_setup, &m6id_hex).await?;
     Ok(())
 }
