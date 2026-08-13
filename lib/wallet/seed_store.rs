@@ -15,7 +15,10 @@ use either::Either;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::wallet::{error, mnemonic::EncryptedMnemonic};
+use crate::wallet::{
+    error,
+    mnemonic::{EncryptedMnemonic, KdfParams},
+};
 
 /// A seed to persist: either plaintext, or encrypted under a password.
 pub(in crate::wallet) enum Seed<'a> {
@@ -41,7 +44,50 @@ enum StoredSeed {
         ciphertext_mnemonic: Vec<u8>,
         #[serde(with = "hex::serde")]
         key_salt: Vec<u8>,
+        /// Absent on seeds written before the cost was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kdf: Option<StoredKdfParams>,
     },
+}
+
+/// The Argon2id cost a seed was encrypted under, as stored in `seed.json`.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct StoredKdfParams {
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+}
+
+impl From<KdfParams> for StoredKdfParams {
+    fn from(
+        KdfParams {
+            memory_kib,
+            iterations,
+            parallelism,
+        }: KdfParams,
+    ) -> Self {
+        Self {
+            memory_kib,
+            iterations,
+            parallelism,
+        }
+    }
+}
+
+impl From<StoredKdfParams> for KdfParams {
+    fn from(
+        StoredKdfParams {
+            memory_kib,
+            iterations,
+            parallelism,
+        }: StoredKdfParams,
+    ) -> Self {
+        Self {
+            memory_kib,
+            iterations,
+            parallelism,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -90,10 +136,12 @@ impl SeedStore {
                 initialization_vector,
                 ciphertext_mnemonic,
                 key_salt,
+                kdf,
             } => Either::Right(EncryptedMnemonic {
                 initialization_vector,
                 ciphertext_mnemonic,
                 key_salt,
+                kdf: kdf.map_or(KdfParams::LEGACY, KdfParams::from),
             }),
         };
         Ok(Some(seed))
@@ -129,6 +177,7 @@ impl SeedStore {
                     initialization_vector: encrypted.initialization_vector.clone(),
                     ciphertext_mnemonic: encrypted.ciphertext_mnemonic.clone(),
                     key_salt: encrypted.key_salt.clone(),
+                    kdf: Some(encrypted.kdf.into()),
                 },
             },
         };
@@ -287,6 +336,7 @@ fn read_legacy_seed(conn: &Connection) -> Result<Option<StoredSeed>, error::Init
                 initialization_vector,
                 ciphertext_mnemonic,
                 key_salt,
+                kdf: None,
             }))
         }
         // Don't print the actual contents, just indicate which values are set.
@@ -307,7 +357,7 @@ fn read_legacy_seed(conn: &Connection) -> Result<Option<StoredSeed>, error::Init
 mod tests {
     use bdk_wallet::bip39::{Language, Mnemonic};
 
-    use super::{Seed, SeedStore, error};
+    use super::{EncryptedMnemonic, KdfParams, Seed, SeedStore, error};
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -603,6 +653,73 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An encrypted seed records the cost it was stretched with, and a seed
+    /// file written before that field existed reads back as the legacy cost
+    /// and still decrypts.
+    #[tokio::test]
+    async fn encrypted_seed_round_trips_its_kdf_cost() {
+        let mnemonic = Mnemonic::parse_in(Language::English, TEST_MNEMONIC).unwrap();
+
+        let dir = temp_dir("kdf-current");
+        let store = SeedStore::new(&dir).unwrap();
+        let encrypted = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::CURRENT).unwrap();
+        store
+            .insert_seed(Seed::Encrypted(&encrypted), None)
+            .await
+            .unwrap();
+        let read = store
+            .read_mnemonic()
+            .await
+            .unwrap()
+            .unwrap()
+            .right()
+            .expect("seed was encrypted");
+        assert_eq!(read.kdf, KdfParams::CURRENT, "the cost must round-trip");
+        assert_eq!(read.decrypt("pw").unwrap().to_string(), TEST_MNEMONIC);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Now a seed exactly as an older build left it: stretched with the
+        // old cost, and with no `kdf` field to say so.
+        let dir = temp_dir("kdf-legacy");
+        let store = SeedStore::new(&dir).unwrap();
+        let legacy = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::LEGACY).unwrap();
+        store
+            .insert_seed(Seed::Encrypted(&legacy), None)
+            .await
+            .unwrap();
+        let path = dir.join("seed.json");
+        let mut seed_file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            seed_file["seed"]
+                .as_object_mut()
+                .unwrap()
+                .remove("kdf")
+                .is_some(),
+            "the field under test must be present to begin with"
+        );
+        std::fs::write(&path, serde_json::to_vec_pretty(&seed_file).unwrap()).unwrap();
+
+        let read = store
+            .read_mnemonic()
+            .await
+            .unwrap()
+            .unwrap()
+            .right()
+            .expect("seed was encrypted");
+        assert_eq!(
+            read.kdf,
+            KdfParams::LEGACY,
+            "an absent cost must mean the pre-bump default"
+        );
+        assert_eq!(
+            read.decrypt("pw").unwrap().to_string(),
+            TEST_MNEMONIC,
+            "a wallet created before the bump must still unlock"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
