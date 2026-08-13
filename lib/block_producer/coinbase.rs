@@ -7,8 +7,8 @@ use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
     messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
     types::{
-        AmountUnderflowError, Ctip, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
-        SidechainProposalId,
+        AmountUnderflowError, BlindedM6, Ctip, Sidechain, SidechainAck, SidechainNumber,
+        SidechainProposal, SidechainProposalId,
     },
 };
 
@@ -351,6 +351,27 @@ impl BlockProducer {
             .ok_or(AmountUnderflowError)
     }
 
+    /// Finalize a blinded M6 against `ctip` and return the transaction together
+    /// with its successor CTIP. BIP300 requires the replacement treasury output
+    /// at index zero.
+    fn finalize_m6(
+        sidechain_id: SidechainNumber,
+        ctip: Ctip,
+        blinded_m6: BlindedM6<'_>,
+    ) -> Result<(Transaction, Ctip), AmountUnderflowError> {
+        let new_value =
+            Self::new_treasury_value(ctip.value, *blinded_m6.fee(), *blinded_m6.payout())?;
+        let m6 = blinded_m6.into_m6(sidechain_id, ctip.outpoint, ctip.value)?;
+        let successor = Ctip {
+            outpoint: OutPoint {
+                txid: m6.compute_txid(),
+                vout: 0,
+            },
+            value: new_value,
+        };
+        Ok((m6, successor))
+    }
+
     /// Generate the M6 suffix txs for a new block. These are fully determined by
     /// the approved bundle and the CTIP: treasury outputs are anyone-can-spend
     /// and consensus-gated, so an M6 is constructed, never signed.
@@ -365,23 +386,16 @@ impl BlockProducer {
             for (_m6id, blinded_m6, m6id_info) in m6ids {
                 let Some(m6id_info) = m6id_info else { continue };
                 if m6id_info.vote_count > thresholds.withdrawal_bundle_inclusion_threshold {
-                    let Ctip { outpoint, value } = if let Some(ctip) = ctip {
+                    let current_ctip = if let Some(ctip) = ctip {
                         ctip
                     } else {
                         *ctips
                             .get(&sidechain_id)
                             .ok_or_else(|| error::GenerateSuffixTxs::MissingCtip { sidechain_id })?
                     };
-                    let new_value =
-                        Self::new_treasury_value(value, *blinded_m6.fee(), *blinded_m6.payout())?;
-                    let m6 = blinded_m6.into_m6(sidechain_id, outpoint, value)?;
-                    ctip = Some(Ctip {
-                        outpoint: OutPoint {
-                            txid: m6.compute_txid(),
-                            vout: (m6.output.len() - 1) as u32,
-                        },
-                        value: new_value,
-                    });
+                    let (m6, successor_ctip) =
+                        Self::finalize_m6(sidechain_id, current_ctip, blinded_m6)?;
+                    ctip = Some(successor_ctip);
                     res.push(m6);
                 }
             }
@@ -392,15 +406,18 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{borrow::Cow, collections::HashMap};
 
-    use bitcoin::Amount;
+    use bitcoin::{
+        Amount, OutPoint, ScriptBuf, Transaction, TxOut, Txid, absolute::LockTime,
+        hashes::Hash as _, opcodes::all::OP_RETURN, script::Builder, transaction::Version,
+    };
 
     use crate::{
         block_producer::BlockProducer,
         types::{
-            AmountUnderflowError, SidechainAck, SidechainDescription, SidechainNumber,
-            SidechainProposal,
+            AmountUnderflowError, BlindedM6, Ctip, SidechainAck, SidechainDescription,
+            SidechainNumber, SidechainProposal, op_drivechain_script,
         },
     };
 
@@ -433,6 +450,73 @@ mod tests {
             BlockProducer::new_treasury_value(value, fee, payout).unwrap(),
             Amount::from_sat(39_000)
         );
+    }
+
+    fn test_blinded_m6(fee: u64, payout: u64) -> BlindedM6<'static> {
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: vec![
+                TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: Builder::new()
+                        .push_opcode(OP_RETURN)
+                        .push_slice(fee.to_be_bytes())
+                        .into_script(),
+                },
+                TxOut {
+                    value: Amount::from_sat(payout),
+                    script_pubkey: ScriptBuf::new(),
+                },
+            ],
+        };
+        BlindedM6::try_from(Cow::Owned(tx)).unwrap()
+    }
+
+    #[test]
+    fn successive_m6s_spend_predecessor_treasury_output_zero() {
+        let sidechain_id = SidechainNumber(7);
+        let initial_ctip = Ctip {
+            outpoint: OutPoint {
+                txid: Txid::all_zeros(),
+                vout: 3,
+            },
+            value: Amount::from_sat(200_000),
+        };
+
+        let (first_m6, first_successor) =
+            BlockProducer::finalize_m6(sidechain_id, initial_ctip, test_blinded_m6(1_000, 50_000))
+                .unwrap();
+        let first_txid = first_m6.compute_txid();
+        assert_eq!(
+            first_m6.output[0].script_pubkey,
+            op_drivechain_script(sidechain_id)
+        );
+        assert_eq!(
+            first_successor.outpoint,
+            OutPoint {
+                txid: first_txid,
+                vout: 0
+            }
+        );
+        assert_eq!(first_successor.value, Amount::from_sat(149_000));
+
+        let (second_m6, second_successor) = BlockProducer::finalize_m6(
+            sidechain_id,
+            first_successor,
+            test_blinded_m6(2_000, 25_000),
+        )
+        .unwrap();
+        assert_eq!(second_m6.input[0].previous_output, first_successor.outpoint);
+        assert_eq!(
+            second_successor.outpoint,
+            OutPoint {
+                txid: second_m6.compute_txid(),
+                vout: 0,
+            }
+        );
+        assert_eq!(second_successor.value, Amount::from_sat(122_000));
     }
 
     #[test]
