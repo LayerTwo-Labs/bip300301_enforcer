@@ -444,8 +444,6 @@ impl ToStatus for GenerateSignetBlock {
 pub enum GenerateBlock {
     #[error(transparent)]
     CoinbaseBuilder(#[from] CoinbaseMessagesError),
-    #[error("failed to delete BMM requests")]
-    DeleteBmmRequests(#[source] rusqlite::Error),
     #[error(transparent)]
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
     #[error(transparent)]
@@ -471,9 +469,7 @@ impl ToStatus for GenerateBlock {
             Self::Mine(err) => err.builder(),
             Self::SelectBlockTxs(err) => err.builder(),
             Self::TryGetMainchainTip(err) => err.builder(),
-            Self::DeleteBmmRequests(_) | Self::PushBytesBuf(_) | Self::ValidatorNotSynced => {
-                StatusBuilder::new(self)
-            }
+            Self::PushBytesBuf(_) | Self::ValidatorNotSynced => StatusBuilder::new(self),
         }
     }
 }
