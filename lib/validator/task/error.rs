@@ -106,9 +106,21 @@ pub(in crate::validator) enum HandleM4Votes {
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
-    #[error("Invalid votes: expected {expected}, but found {len}")]
+    #[error("Invalid votes: expected at most {active_sidechains}, but found {len}")]
     #[fatal(false)]
-    InvalidVotes { expected: usize, len: usize },
+    TooManyVotes {
+        active_sidechains: usize,
+        len: usize,
+    },
+    #[error(
+        "Invalid votes: found {len} for {active_sidechains} active sidechains, but an M2 earlier in this coinbase activated a new sidechain slot. \
+         A vote array that omits trailing slots is ambiguous once the active-slot list has grown within the block"
+    )]
+    #[fatal(false)]
+    ShortVotesAfterSlotActivation {
+        active_sidechains: usize,
+        len: usize,
+    },
     #[error(
         "No pending withdrawal for sidechain `{}` at index `{}`",
         .sidechain_number,

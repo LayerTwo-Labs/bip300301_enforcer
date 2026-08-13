@@ -368,17 +368,39 @@ impl BlockHandler<'_> {
     /// Core M4 upvote resolver: for each active sidechain, interprets the vote
     /// value (index into pending bundles, ABSTAIN `0xFFFF`, or ALARM `0xFFFE`).
     ///
+    /// The vote array may cover fewer slots than are active. The trailing
+    /// slots it omits abstain implicitly. Only an array longer than the
+    /// active-slot list is invalid.
+    ///
+    /// `slot_activated` reports whether an M2 earlier in the same coinbase
+    /// already activated a previously unused slot — see
+    /// [`error::HandleM4Votes::ShortVotesAfterSlotActivation`].
+    ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
     fn handle_m4_votes(
         &self,
         rotxn: &RoTxn,
         upvotes: &[u16],
+        slot_activated: bool,
     ) -> Result<diff::AckBundles, error::HandleM4Votes> {
         let dbs = self.dbs;
         let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
-        if upvotes.len() != active_sidechains.len() {
-            return Err(error::HandleM4Votes::InvalidVotes {
-                expected: active_sidechains.len(),
+        if upvotes.len() > active_sidechains.len() {
+            return Err(error::HandleM4Votes::TooManyVotes {
+                active_sidechains: active_sidechains.len(),
+                len: upvotes.len(),
+            });
+        }
+        // `active_sidechains` is ordered by slot number, and an activation
+        // earlier in this coinbase inserts the new slot at its numeric
+        // position -- ahead of every higher-numbered slot. Truncation is only
+        // meaningful relative to a known list, so a short array here cannot be
+        // told apart from one the miner sized against the pre-activation list,
+        // whose votes would then land on the wrong sidechains. Require a vote
+        // per active slot instead, which is unambiguous either way.
+        if slot_activated && upvotes.len() != active_sidechains.len() {
+            return Err(error::HandleM4Votes::ShortVotesAfterSlotActivation {
+                active_sidechains: active_sidechains.len(),
                 len: upvotes.len(),
             });
         }
@@ -555,12 +577,17 @@ impl BlockHandler<'_> {
     /// OneByte (0x01), TwoBytes (0x02), LeadingBy50 (0x03), RepeatPrevious
     /// (0x00).
     ///
+    /// `slot_activated` is forwarded to [`Self::handle_m4_votes`]; the
+    /// versions that carry no vote array derive their targets from the active
+    /// set directly, so it does not apply to them.
+    ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
     fn handle_m4_ack_bundles(
         &self,
         rotxn: &RoTxn,
         prev_block_hash: BlockHash,
         m4: &M4AckBundles,
+        slot_activated: bool,
     ) -> Result<diff::AckBundles, error::HandleM4AckBundles> {
         match m4 {
             M4AckBundles::LeadingBy50 => self
@@ -576,7 +603,7 @@ impl BlockHandler<'_> {
                         vote => vote as u16,
                     })
                     .collect();
-                self.handle_m4_votes(rotxn, &upvotes)
+                self.handle_m4_votes(rotxn, &upvotes, slot_activated)
                     .map_err(error::HandleM4AckBundles::from)
             }
             M4AckBundles::TwoBytes { upvotes } => {
@@ -585,7 +612,7 @@ impl BlockHandler<'_> {
                 if upvotes.iter().all(|v| *v <= 253) {
                     return Err(error::HandleM4AckBundles::TwoBytesWithinByteRange);
                 }
-                self.handle_m4_votes(rotxn, upvotes)
+                self.handle_m4_votes(rotxn, upvotes, slot_activated)
                     .map_err(error::HandleM4AckBundles::from)
             }
         }
@@ -871,6 +898,10 @@ impl BlockHandler<'_> {
     /// Dispatches a single coinbase OP_RETURN message to its handler. M1/M2/M3/M4
     /// are BIP 300; M7 is BIP 301.
     ///
+    /// `slot_activated` reports whether an earlier message in this same
+    /// coinbase activated a previously unused sidechain slot; only the M4
+    /// handler needs it.
+    ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md>
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m7-bmm-accept>
     #[expect(clippy::result_large_err)]
@@ -881,6 +912,7 @@ impl BlockHandler<'_> {
         prev_block_hash: BlockHash,
         accepted_bmm_requests: &mut BmmCommitments,
         message: CoinbaseMessage,
+        slot_activated: bool,
     ) -> Result<(Option<CoinbaseMessageEvent>, Option<diff::CoinbaseMsg>), error::ConnectBlock>
     {
         match message {
@@ -935,7 +967,8 @@ impl BlockHandler<'_> {
                 Ok((Some(event), Some(diff::CoinbaseMsg::ProposeBundle(diff))))
             }
             CoinbaseMessage::M4AckBundles(m4) => {
-                let diff = self.handle_m4_ack_bundles(rotxn, prev_block_hash, &m4)?;
+                let diff =
+                    self.handle_m4_ack_bundles(rotxn, prev_block_hash, &m4, slot_activated)?;
                 let diff = if diff.0.is_empty() {
                     None
                 } else {
@@ -1135,6 +1168,11 @@ impl BlockHandler<'_> {
         let mut events = Vec::<BlockEvent>::new();
         let mut coinbase_msg_diffs = diff::DiffBuilder::new(rwtxn, dbs, height);
         let m4_exists = coinbase_messages.m4_exists();
+        // Whether an M2 already handled in this coinbase activated a
+        // previously unused slot, growing the active-slot list the M4 is
+        // indexed against. Diffs are applied message by message, so only the
+        // messages before the M4 can have moved it.
+        let mut slot_activated = false;
         for (message, _vout) in coinbase_messages {
             let (event, diff) = coinbase_msg_diffs.rotxn(|rotxn, _dbs| {
                 self.handle_coinbase_message(
@@ -1143,6 +1181,7 @@ impl BlockHandler<'_> {
                     parent,
                     &mut accepted_bmm_requests,
                     message,
+                    slot_activated,
                 )
             })?;
             match event {
@@ -1162,6 +1201,14 @@ impl BlockHandler<'_> {
                 None => (),
             };
             if let Some(diff) = diff {
+                if let diff::CoinbaseMsg::AckSidechainProposal(ack) = &diff
+                    && matches!(
+                        ack.effect,
+                        diff::ack_sidechain_proposal::Effect::SlotActivation
+                    )
+                {
+                    slot_activated = true;
+                }
                 let () = coinbase_msg_diffs.apply(diff)?;
             }
         }
@@ -1171,7 +1218,7 @@ impl BlockHandler<'_> {
                 let upvotes =
                     vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
                 let m4 = M4AckBundles::OneByte { upvotes };
-                let diff = self.handle_m4_ack_bundles(rotxn, parent, &m4)?;
+                let diff = self.handle_m4_ack_bundles(rotxn, parent, &m4, slot_activated)?;
                 Ok::<_, error::ConnectBlock>(diff)
             })?;
             if !diff.0.is_empty() {
@@ -3408,7 +3455,7 @@ mod tests {
             .into_diagnostic()?;
 
         let diff = test_handler(&dbs)
-            .handle_m4_votes(&rwtxn, &[M4AckBundles::ABSTAIN_TWO_BYTES])
+            .handle_m4_votes(&rwtxn, &[M4AckBundles::ABSTAIN_TWO_BYTES], false)
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
 
@@ -3417,9 +3464,28 @@ mod tests {
             .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
             .into_diagnostic()?;
         let diff = test_handler(&dbs)
-            .handle_m4_votes(&rwtxn, &[0])
+            .handle_m4_votes(&rwtxn, &[0], false)
             .into_diagnostic()?;
         assert!(diff.0.contains_key(&sc));
+
+        // BIP 300 permits the vote array to omit trailing active slots; those
+        // slots abstain implicitly. The same one-element array now covers only
+        // the first of two active slots.
+        let trailing = SidechainNumber(2);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &trailing, &test_sidechain(trailing.0, 0))
+            .into_diagnostic()?;
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &trailing, test_m6id(0xBB), 0)
+            .into_diagnostic()?;
+        let diff = test_handler(&dbs)
+            .handle_m4_votes(&rwtxn, &[0], false)
+            .into_diagnostic()?;
+        assert!(diff.0.contains_key(&sc));
+        assert!(
+            !diff.0.contains_key(&trailing),
+            "an omitted trailing slot must abstain, not receive a vote"
+        );
         Ok(())
     }
 
@@ -3445,7 +3511,7 @@ mod tests {
             .into_diagnostic()?;
 
         let diff = test_handler(&dbs)
-            .handle_m4_votes(&rwtxn, &[M4AckBundles::ALARM_TWO_BYTES])
+            .handle_m4_votes(&rwtxn, &[M4AckBundles::ALARM_TWO_BYTES], false)
             .into_diagnostic()?;
         assert!(diff.0.contains_key(&sc));
         Ok(())
@@ -3461,20 +3527,195 @@ mod tests {
             .into_diagnostic()?;
 
         let err = test_handler(&dbs)
-            .handle_m4_votes(&rwtxn, &[0, 0])
-            .expect_err("wrong vote count must error");
+            .handle_m4_votes(&rwtxn, &[0, 0], false)
+            .expect_err("more votes than active sidechains must error");
         assert!(matches!(
             err,
-            error::HandleM4Votes::InvalidVotes {
-                expected: 1,
+            error::HandleM4Votes::TooManyVotes {
+                active_sidechains: 1,
                 len: 2
             }
         ));
 
         let err = test_handler(&dbs)
-            .handle_m4_votes(&rwtxn, &[0])
+            .handle_m4_votes(&rwtxn, &[0], false)
             .expect_err("upvote with no pending must error");
         assert!(matches!(err, error::HandleM4Votes::UpvoteFailed { .. }));
+        Ok(())
+    }
+
+    /// Omitting trailing slots is only unambiguous while the active-slot list
+    /// is the one the miner sized the M4 against. Once an M2 in the same
+    /// coinbase has activated a slot, a short array must be rejected rather
+    /// than silently reinterpreted against the grown list.
+    #[test]
+    fn handle_m4_votes_rejects_short_array_after_slot_activation() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let activated = SidechainNumber(1);
+        let sc = SidechainNumber(2);
+        for sidechain_number in [activated, sc] {
+            dbs.active_sidechains
+                .put_sidechain(
+                    &mut rwtxn,
+                    &sidechain_number,
+                    &test_sidechain(sidechain_number.0, 0),
+                )
+                .into_diagnostic()?;
+        }
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc, test_m6id(0xAA), 0)
+            .into_diagnostic()?;
+
+        let err = test_handler(&dbs)
+            .handle_m4_votes(&rwtxn, &[0], true)
+            .expect_err("a short vote array after a slot activation must error");
+        assert!(matches!(
+            err,
+            error::HandleM4Votes::ShortVotesAfterSlotActivation {
+                active_sidechains: 2,
+                len: 1
+            }
+        ));
+        assert!(!err.is_fatal());
+
+        // A vote per active slot is unambiguous, and still accepted.
+        let diff = test_handler(&dbs)
+            .handle_m4_votes(&rwtxn, &[M4AckBundles::ABSTAIN_TWO_BYTES, 0], true)
+            .into_diagnostic()?;
+        assert!(diff.0.contains_key(&sc));
+        assert!(!diff.0.contains_key(&activated));
+        Ok(())
+    }
+
+    /// Slot `5` active and holding a pending bundle, plus a proposal for the
+    /// lower slot `1` that is one ack short of activating. The returned block
+    /// carries that ack ahead of an M4 with `upvotes`, so the activation is
+    /// applied before the votes are resolved and the active-slot list the M4
+    /// indexes into grows a new *first* entry.
+    fn build_slot_activation_m4_block(
+        dbs: &Dbs,
+        rwtxn: &mut RwTxn,
+        height: u32,
+        upvotes: Vec<u8>,
+    ) -> Result<Block> {
+        let active = SidechainNumber(5);
+        dbs.active_sidechains
+            .put_sidechain(rwtxn, &active, &test_sidechain(active.0, 0))
+            .into_diagnostic()?;
+        dbs.active_sidechains
+            .put_pending_m6id(rwtxn, &active, test_m6id(0xAA), 0)
+            .into_diagnostic()?;
+
+        let mut proposal = test_sidechain(1, 0);
+        proposal.status.vote_count = NetworkParams::for_network(bitcoin::Network::Regtest)
+            .thresholds
+            .unused_sidechain_slot_activation_threshold;
+        let proposal_id = proposal.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(rwtxn, &proposal_id, &proposal)
+            .into_diagnostic()?;
+
+        let m2_script: ScriptBuf = M2AckSidechain {
+            sidechain_number: proposal_id.sidechain_number,
+            description_hash: proposal_id.description_hash,
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let m4_script: ScriptBuf = M4AckBundles::OneByte { upvotes }
+            .try_into()
+            .into_diagnostic()?;
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m2_script,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m4_script,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(rwtxn, &[(block.header, height)])
+            .into_diagnostic()?;
+        Ok(block)
+    }
+
+    /// BIP 300 M4: a shortened vote array in a coinbase that activates a
+    /// lower-numbered slot must invalidate the block. The activation inserts
+    /// that slot ahead of every higher-numbered one, so votes the miner sized
+    /// against the pre-activation list would land on the wrong sidechains.
+    #[test]
+    fn connect_block_rejects_short_m4_after_same_block_slot_activation() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        // One vote for what will be two active sidechains by the time the M4
+        // is handled.
+        let block = build_slot_activation_m4_block(&dbs, &mut rwtxn, 1, vec![0])?;
+
+        let err = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .expect_err("a short M4 in a block that activates a slot must be rejected");
+        assert!(matches!(
+            err,
+            error::ConnectBlock::M4AckBundles(error::HandleM4AckBundles::Votes(
+                error::HandleM4Votes::ShortVotesAfterSlotActivation {
+                    active_sidechains: 2,
+                    len: 1
+                }
+            ))
+        ));
+        assert!(!err.is_fatal());
+        Ok(())
+    }
+
+    /// The same coinbase with a vote per active slot is accepted, and the
+    /// votes are not shifted: index 1 is the pre-existing slot `5`, not the
+    /// slot `1` the M2 just activated.
+    #[test]
+    fn connect_block_accepts_full_m4_after_same_block_slot_activation() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let block = build_slot_activation_m4_block(
+            &dbs,
+            &mut rwtxn,
+            1,
+            vec![M4AckBundles::ABSTAIN_ONE_BYTE, 0],
+        )?;
+
+        let _event = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+
+        let active_sidechains = dbs
+            .active_sidechains
+            .numbers(&rwtxn)
+            .into_diagnostic()
+            .map_err(|err| miette::miette!("{err}"))?;
+        assert_eq!(
+            active_sidechains,
+            vec![SidechainNumber(1), SidechainNumber(5)],
+            "the M2 must have activated the lower slot ahead of the existing one"
+        );
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &SidechainNumber(5))
+            .into_diagnostic()?;
+        // Initial M3 ACK score of 1, plus the upvote at index 1. Had the votes
+        // been resolved against the pre-activation list, index 0's abstain
+        // would have covered slot 5 and left the count at 1.
+        assert_eq!(
+            pending[&test_m6id(0xAA)].vote_count,
+            2,
+            "the vote at index 1 must land on slot 5's bundle"
+        );
         Ok(())
     }
 
@@ -3505,7 +3746,7 @@ mod tests {
         // Upvote target (index 0). Spec: target +1; other_positive -1;
         // other_zero unchanged (saturating at 0).
         let diff = test_handler(&dbs)
-            .handle_m4_votes(&rwtxn, &[0])
+            .handle_m4_votes(&rwtxn, &[0], false)
             .into_diagnostic()?;
         let Some(diff::AckBundleAction::Upvote {
             m6id,
@@ -3559,7 +3800,7 @@ mod tests {
         // The single vote fits in one byte (≤ 253), so TwoBytes is wasteful.
         let m4 = M4AckBundles::TwoBytes { upvotes: vec![253] };
         let err = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4)
+            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4, false)
             .expect_err("TwoBytes with all elements ≤ 253 must be rejected");
         assert!(matches!(
             err,
@@ -3587,7 +3828,7 @@ mod tests {
             upvotes: vec![M4AckBundles::ALARM_TWO_BYTES],
         };
         let _diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4)
+            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4, false)
             .into_diagnostic()?;
         Ok(())
     }
@@ -3627,14 +3868,24 @@ mod tests {
         set_vote_count(&mut rwtxn, &dbs, &sc, leader, 60);
         set_vote_count(&mut rwtxn, &dbs, &sc, rival, 11);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty(), "lead of 49 should not trigger upvote");
 
         // Lead of exactly 50 → upvote leader
         set_vote_count(&mut rwtxn, &dbs, &sc, rival, 10);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -3645,7 +3896,12 @@ mod tests {
         set_vote_count(&mut rwtxn, &dbs, &sc, leader, 100);
         set_vote_count(&mut rwtxn, &dbs, &sc, rival, 100);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty(), "ties should not trigger upvote");
         Ok(())
@@ -3667,14 +3923,24 @@ mod tests {
         // vote_count 49, no rival → lead = 49 (vs implicit 0) → no upvote
         set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 49);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
 
         // vote_count 50 → lead = 50 → upvote
         set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 50);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -3690,7 +3956,12 @@ mod tests {
 
         // No sidechains → empty diff
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
 
@@ -3700,7 +3971,12 @@ mod tests {
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
             .into_diagnostic()?;
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
         Ok(())
@@ -3722,7 +3998,12 @@ mod tests {
 
         // Leader already at u16::MAX → no further upvote
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
         Ok(())
@@ -3793,7 +4074,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious, false)
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -3811,7 +4092,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), None);
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious, false)
             .into_diagnostic()?;
         assert!(
             diff.0.is_empty(),
@@ -3846,7 +4127,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious, false)
             .into_diagnostic()?;
         assert!(
             diff.0.is_empty(),
@@ -3902,7 +4183,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(stale));
 
         let rebuilt = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious, false)
             .into_diagnostic()?;
         let Some(diff::AckBundleAction::Upvote {
             m6id,
@@ -3956,7 +4237,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(stale));
 
         let rebuilt = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious, false)
             .into_diagnostic()?;
         let Some(diff::AckBundleAction::Alarm {
             positive_votes_proposals,
@@ -3986,6 +4267,7 @@ mod tests {
                 &rwtxn,
                 BlockHash::all_zeros(),
                 &M4AckBundles::RepeatPrevious,
+                false,
             )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
@@ -4024,7 +4306,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious, false)
             .into_diagnostic()?;
         assert!(
             diff.0.is_empty(),
@@ -4057,7 +4339,12 @@ mod tests {
         set_vote_count(&mut rwtxn, &dbs, &sc, tied_b, 60);
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+                false,
+            )
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
