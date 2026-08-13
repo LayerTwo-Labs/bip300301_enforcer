@@ -31,8 +31,10 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-latest-large
+            cache-suffix: linux-amd64
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+            cache-suffix: linux-arm64
     runs-on: ${{ matrix.runner }}
     # needed to push to GHCR
     permissions:
@@ -61,7 +63,7 @@ jobs:
       - name: Determine Rust version
         id: rust-version
         run: |
-          RUST_VERSION=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/{split($2,v,"."); print v[1]"."v[2]; exit}' rust-toolchain.toml)
+          RUST_VERSION=$(awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/{print $2; exit}' rust-toolchain.toml)
           echo "rust-version=$RUST_VERSION" >> $GITHUB_OUTPUT
 
       - name: Build (and maybe push) Docker image by digest
@@ -74,16 +76,22 @@ jobs:
           # a fork.
           # prettier-ignore
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-          # Caching Docker builds on CI is an eternally
-          # difficult task. From the official docs:
-          # "In most cases you want to use the inline cache exporter"
-          #
-          # https://docs.docker.com/build/ci/github-actions/cache/#inline-cache
-          #
-          # `:latest` is a multi-arch manifest list, so buildx resolves it
-          # to the cache image matching the platform being built.
-          cache-from: type=registry,ref=${{ env.IMAGE }}:latest
-          cache-to: type=inline
+          # The dedicated per-platform cache is exported with mode=max so it
+          # retains intermediate builder stages, including cargo-chef's
+          # dependency build. Keep :latest as a fallback while the new caches
+          # warm up. Fork PRs can read the public cache but cannot update it.
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.cache-suffix }}
+            type=registry,ref=${{ env.IMAGE }}:latest
+          cache-to: >-
+            ${{
+              (github.event_name != 'pull_request' ||
+                github.event.pull_request.head.repo.full_name ==
+            github.repository) &&
+              format('type=registry,ref={0}:buildcache-{1},mode=max', env.IMAGE,
+            matrix.cache-suffix) ||
+              ''
+            }}
           build-args:
             RUST_VERSION=${{ steps.rust-version.outputs.rust-version }}
 
