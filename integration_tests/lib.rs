@@ -1,5 +1,6 @@
 pub mod block_verdict;
 pub mod bmm_block;
+pub mod custom_coinbase;
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
@@ -11,6 +12,7 @@ mod test_file_based_block_parser;
 mod test_generate_to_address;
 mod test_inactive_drivechain_output;
 mod test_invalid_block;
+mod test_m4_vote_array;
 mod test_mempool_dat_sync;
 mod test_no_secrets_in_logs;
 mod test_peer_bmm_request;

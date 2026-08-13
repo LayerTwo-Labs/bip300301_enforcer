@@ -367,20 +367,21 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
         "the bundle gathered a vote from a block that carries no M4"
     );
 
-    // With both slots active, the M4 carries a vote per active slot, ordered
-    // by slot number: the bundle's slot first, then the freshly activated one,
-    // which has no pending bundle to vote on.
-    tracing::info!("Mining with both slots active: the M4 must cover both, in slot order");
+    // With both slots active, the freshly activated slot sorts *after* the
+    // bundle's slot and has no pending bundle of its own, so it is a trailing
+    // abstain and the producer omits it. This is the shortened-array case:
+    // a one-element M4 against a two-slot active list, which the validator
+    // must resolve to the bundle's slot with the omitted slot abstaining.
+    tracing::info!("Mining with both slots active: the M4 must omit the trailing abstain");
     let () = mine::<DummySidechain>(&mut post_setup, 1, Some(true)).await?;
     let coinbase_messages = tip_coinbase_messages(&mut post_setup).await?;
     anyhow::ensure!(
         coinbase_messages.iter().any(|message| matches!(
             message,
             CoinbaseMessage::M4AckBundles(M4AckBundles::OneByte { upvotes })
-                if upvotes.as_slice() == [0u8, M4AckBundles::ABSTAIN_ONE_BYTE].as_slice()
+                if upvotes.as_slice() == [0u8].as_slice()
         )),
-        "expected an M4 with one vote per active slot, upvoting only the bundle's slot: \
-         `{coinbase_messages:?}`"
+        "expected a shortened M4 covering only the bundle's slot: `{coinbase_messages:?}`"
     );
     // Had the votes been shifted by the activation, the upvote at index 0
     // would have landed on the newly activated slot instead.

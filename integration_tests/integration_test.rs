@@ -1014,6 +1014,17 @@ pub fn tests(
         crate::test_sidechain_ack_policy::test_sidechain_ack_policy,
     ));
     async_trials.push(new_trial_with_setup(
+        "m4_vote_array".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_m4_vote_array::test_m4_vote_array,
+    ));
+    async_trials.push(new_trial_with_setup(
         "invalid_block".to_string(),
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
