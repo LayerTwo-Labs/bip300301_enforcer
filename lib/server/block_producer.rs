@@ -120,6 +120,32 @@ fn stream_proposal_confirmations(
     })
 }
 
+/// Reject a BIP300 message RPC while the next block — the first one whose
+/// coinbase could carry the message — is still below the activation height,
+/// where the validator ignores it. `impossible` states what could otherwise
+/// never happen, e.g. "a sidechain proposal cannot confirm".
+fn ensure_bip300_activation_height_reached(
+    producer: &BlockProducer,
+    impossible: &str,
+) -> Result<(), ConnectError> {
+    let activation_height = producer
+        .validator()
+        .network_params()
+        .bip300_activation_height;
+    let next_block_height = producer
+        .validator()
+        .try_get_block_height()
+        .map_err(internal_err)?
+        .map_or(0, |tip_height| tip_height.saturating_add(1));
+
+    if next_block_height < activation_height {
+        return Err(ConnectError::failed_precondition(format!(
+            "BIP300 activates at block height {activation_height}! {impossible} before then"
+        )));
+    }
+    Ok(())
+}
+
 /// Shared implementation for `CreateSidechainProposal` and
 /// `SubmitSidechainProposal`: validates the request fields, creates a
 /// sidechain proposal (BIP300 M1), and persists it to the local database.
@@ -133,6 +159,8 @@ async fn create_and_persist_sidechain_proposal<Request>(
 where
     Request: buffa::MessageName,
 {
+    let () =
+        ensure_bip300_activation_height_reached(producer, "a sidechain proposal cannot confirm")?;
     let sidechain_id = parse_sidechain_id::<Request>(sidechain_id, "sidechain_id")?;
     let declaration: crate::types::SidechainDeclaration = declaration
         .into_option()
@@ -207,6 +235,8 @@ impl BlockProducerService for BlockProducer {
         _ctx: RequestContext,
         request: ServiceRequest<'_, SetSidechainAckRequest>,
     ) -> ServiceResult<SetSidechainAckResponse> {
+        let () =
+            ensure_bip300_activation_height_reached(self, "a sidechain ACK cannot take effect")?;
         let SetSidechainAckRequest {
             sidechain_number,
             description_sha256d_hash,
