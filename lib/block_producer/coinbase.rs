@@ -187,6 +187,27 @@ impl BlockProducer {
         mainchain_tip: BlockHash,
         coinbase_txouts: &mut Vec<TxOut>,
     ) -> Result<(), error::GenerateCoinbaseTxouts> {
+        // The height of the block under construction. Below the BIP300
+        // activation height the validator ignores every drivechain message,
+        // so there is nothing useful to add to the coinbase: in particular,
+        // pending sidechain proposals (e.g. rows persisted by a binary
+        // predating the RPC-level activation gate) are held back rather than
+        // mined into coinbases they can never register from.
+        let next_height = self
+            .validator()
+            .get_header_info(&mainchain_tip)?
+            .height
+            .saturating_add(1);
+        let activation_height = self.validator().network_params().bip300_activation_height;
+
+        if next_height < activation_height {
+            tracing::debug!(
+                "Skipping drivechain coinbase messages: BIP300 activates at block height \
+                 {activation_height} (next block height: {next_height})"
+            );
+            return Ok(());
+        }
+
         let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
         tracing::debug!(
             ack_all_proposals,
@@ -300,13 +321,6 @@ impl BlockProducer {
         // M4 below, so that the M4 is sized against the same active set the
         // check ran against.
         let active_sidechains = self.validator().get_active_sidechains()?;
-        // The height of the block under construction, for the proposal age
-        // window in the activation check below.
-        let next_height = self
-            .validator()
-            .get_header_info(&mainchain_tip)?
-            .height
-            .saturating_add(1);
         // Ack bundles
         // TODO: Exclusively ack bundles that are known to us
         if ack_all_proposals
