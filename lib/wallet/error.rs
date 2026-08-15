@@ -830,6 +830,8 @@ pub enum InitialSync {
 pub enum ConnectBlock {
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
+    #[error("failed to persist wallet after evicting BMM requests")]
+    PersistBmmEviction(#[source] SqliteError),
     #[error(transparent)]
     Validator(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
     #[error(transparent)]
@@ -988,8 +990,6 @@ pub(in crate::wallet) enum CreateBmmRequestInner {
     BroadcastUnsuccessful { txid: bitcoin::Txid },
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
-    #[error("rusqlite error")]
-    Rusqlite(#[from] rusqlite::Error),
     #[error("failed to sign BMM tx")]
     SignTx(#[from] WalletSignTransaction),
 }
@@ -1002,8 +1002,7 @@ impl ToStatus for CreateBmmRequestInner {
             Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::BroadcastNonstandardTx(_)
             | Self::BroadcastTxRpc(_)
-            | Self::BroadcastUnsuccessful { .. }
-            | Self::Rusqlite(_) => StatusBuilder::new(self),
+            | Self::BroadcastUnsuccessful { .. } => StatusBuilder::new(self),
         }
     }
 }

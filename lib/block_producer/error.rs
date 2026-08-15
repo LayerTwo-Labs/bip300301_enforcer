@@ -194,6 +194,11 @@ pub enum SelectBlockTxs {
         txid: bitcoin::Txid,
         source: bitcoin::consensus::encode::Error,
     },
+    #[error("negative fee `{fee}` for transaction `{txid}` from the block template")]
+    NegativeTemplateTransactionFee {
+        txid: bitcoin::Txid,
+        fee: bitcoin::SignedAmount,
+    },
     /// The block template was built on a different tip than the one the
     /// validator has caught up to. Building on the validator's tip while using
     /// the template's tx set produces a block Core rejects as `inconclusive`,
@@ -213,7 +218,8 @@ impl ToStatus for SelectBlockTxs {
             Self::GenerateSuffixTxs(err) => err.builder(),
             Self::GetBlockTemplate(err) => err.builder(),
             Self::GetCtips(err) => err.builder(),
-            Self::DecodeTemplateTransaction { .. } => {
+            Self::DecodeTemplateTransaction { .. }
+            | Self::NegativeTemplateTransactionFee { .. } => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
             }
             // Retryable: whichever side is behind just needs to catch up.

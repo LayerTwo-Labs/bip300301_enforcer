@@ -5,7 +5,7 @@
 //! signed by the Bitcoin Core node's wallet.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     num::NonZeroU32,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -35,7 +35,23 @@ use crate::{
     block_producer::{BlockProducer, error},
     errors::ErrorChain,
     messages::CoinbaseBuilder,
+    types::{BmmCommitment, SidechainNumber},
 };
+
+pub(in crate::block_producer) fn bmm_auction_winners(
+    bids: impl IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
+) -> HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> {
+    let mut winners = HashMap::new();
+    for (sidechain_number, commitment, txid, fee) in bids {
+        let winner = winners
+            .entry(sidechain_number)
+            .or_insert((commitment, txid, fee));
+        if fee > winner.2 {
+            *winner = (commitment, txid, fee);
+        }
+    }
+    winners
+}
 
 /// BMM request cleanup happens after the block has been submitted and observed
 /// by the validator. Keep the mined block as the operation's result even if the
@@ -103,7 +119,7 @@ impl BlockProducer {
     async fn select_block_txs(
         &self,
         mainchain_tip: BlockHash,
-    ) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
+    ) -> Result<Vec<(Transaction, Amount)>, error::SelectBlockTxs> {
         let template = self
             .fetch_block_template(vec!["segwit".to_string()])
             .await?;
@@ -129,7 +145,11 @@ impl BlockProducer {
             CoinbaseTxnOrValue::Txn(_) => Vec::new(),
             CoinbaseTxnOrValue::ValueSats(_) => {
                 let ctips = self.validator().get_ctips()?;
-                self.generate_suffix_txs(&ctips).await?
+                self.generate_suffix_txs(&ctips)
+                    .await?
+                    .into_iter()
+                    .map(|tx| (tx, Amount::ZERO))
+                    .collect()
             }
         };
 
@@ -139,24 +159,31 @@ impl BlockProducer {
                 bitcoin::consensus::deserialize(&template_tx.data).map_err(|err| {
                     error::SelectBlockTxs::DecodeTemplateTransaction { txid, source: err }
                 })?;
-            res.push(transaction);
+            let fee = template_tx.fee.to_unsigned().map_err(|_| {
+                error::SelectBlockTxs::NegativeTemplateTransactionFee {
+                    txid,
+                    fee: template_tx.fee,
+                }
+            })?;
+            res.push((transaction, fee));
         }
 
         Ok(res)
     }
 
-    /// Construct a coinbase tx paying out to `coinbase_spk`
+    /// Construct a coinbase tx paying out to `coinbase_spk`.
     fn finalize_coinbase(
         &self,
         best_block_height: u32,
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
+        fees: Amount,
     ) -> Transaction {
         let script_sig = bitcoin::blockdata::script::Builder::new()
             .push_int((best_block_height + 1) as i64)
             .push_opcode(OP_0)
             .into_script();
-        let value = get_block_value(best_block_height + 1, Amount::ZERO, Network::Regtest);
+        let value = get_block_value(best_block_height + 1, fees, Network::Regtest);
         let output = if value > Amount::ZERO {
             vec![TxOut {
                 script_pubkey: coinbase_spk,
@@ -190,13 +217,15 @@ impl BlockProducer {
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
+        fees: Amount,
     ) -> Result<Block, error::FinalizeBlock> {
         let best_block_hash = self.validator().get_mainchain_tip()?;
         let tip_header = self.validator().get_header_info(&best_block_hash)?;
         let best_block_height = tip_header.height;
         tracing::trace!(%best_block_hash, %best_block_height, "Found mainchain tip");
 
-        let coinbase_tx = self.finalize_coinbase(best_block_height, coinbase_spk, coinbase_outputs);
+        let coinbase_tx =
+            self.finalize_coinbase(best_block_height, coinbase_spk, coinbase_outputs, fees);
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
         // Keep block times strictly increasing so blocks mined faster than once
         // per second are not rejected as `time-too-old` (timestamp must exceed
@@ -244,10 +273,11 @@ impl BlockProducer {
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
+        fees: Amount,
     ) -> Result<BlockHash, error::Mine> {
         let transaction_count = transactions.len();
 
-        let mut block = self.finalize_block(coinbase_spk, coinbase_outputs, transactions)?;
+        let mut block = self.finalize_block(coinbase_spk, coinbase_outputs, transactions, fees)?;
         loop {
             block.header.nonce += 1;
             if block.header.validate_pow(block.header.target()).is_ok() {
@@ -628,31 +658,47 @@ impl BlockProducer {
         let () = self
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
-        let transactions = self.select_block_txs(mainchain_tip).await?;
+        let selected = self.select_block_txs(mainchain_tip).await?;
+        let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {
+            let request = crate::messages::parse_m8_tx(tx)?;
+            (request.prev_mainchain_block_hash == mainchain_tip).then(|| {
+                (
+                    request.sidechain_number,
+                    request.sidechain_block_hash,
+                    tx.compute_txid(),
+                    *fee,
+                )
+            })
+        }));
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
-        for tx in &transactions {
-            if let Some(bmm_request) = crate::messages::parse_m8_tx(tx)
-                && coinbase_builder
-                    .messages()
-                    .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                    .is_none()
-            {
-                coinbase_builder.bmm_accept(
-                    bmm_request.sidechain_number,
-                    bmm_request.sidechain_block_hash,
-                )?;
+        let mut fees = Amount::ZERO;
+        let mut transactions = Vec::with_capacity(selected.len());
+        for (tx, fee) in selected {
+            if let Some(request) = crate::messages::parse_m8_tx(&tx) {
+                let txid = tx.compute_txid();
+                if winners
+                    .get(&request.sidechain_number)
+                    .is_none_or(|(_, winner_txid, _)| *winner_txid != txid)
+                {
+                    continue;
+                }
+                coinbase_builder
+                    .bmm_accept(request.sidechain_number, request.sidechain_block_hash)?;
             }
+            fees += fee;
+            transactions.push(tx);
         }
         let () = coinbase_builder.build()?;
 
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),
             transactions = %transactions.len(),
+            %fees,
             "Mining block",
         );
 
         let block_hash = self
-            .mine(coinbase_spk, &coinbase_outputs, transactions)
+            .mine(coinbase_spk, &coinbase_outputs, transactions, fees)
             .await?;
         let cleanup_result = self
             .db()
@@ -664,9 +710,41 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::{BlockHash, hashes::Hash as _};
+    use bitcoin::{Amount, BlockHash, Txid, hashes::Hash as _};
 
-    use super::finish_bmm_request_cleanup;
+    use super::{bmm_auction_winners, finish_bmm_request_cleanup};
+    use crate::types::{BmmCommitment, SidechainNumber};
+
+    #[test]
+    fn highest_bmm_fee_wins_each_sidechain_slot() {
+        let slot = SidechainNumber(7);
+        let low_txid = Txid::from_byte_array([1; 32]);
+        let high_txid = Txid::from_byte_array([2; 32]);
+        let other_txid = Txid::from_byte_array([3; 32]);
+        let winners = bmm_auction_winners([
+            (
+                slot,
+                BmmCommitment([1; 32]),
+                low_txid,
+                Amount::from_sat(1_000),
+            ),
+            (
+                slot,
+                BmmCommitment([2; 32]),
+                high_txid,
+                Amount::from_sat(2_000),
+            ),
+            (
+                SidechainNumber(8),
+                BmmCommitment([3; 32]),
+                other_txid,
+                Amount::from_sat(500),
+            ),
+        ]);
+
+        assert_eq!(winners[&slot].1, high_txid);
+        assert_eq!(winners[&SidechainNumber(8)].1, other_txid);
+    }
 
     #[test]
     fn cleanup_failure_preserves_mined_block_result() {

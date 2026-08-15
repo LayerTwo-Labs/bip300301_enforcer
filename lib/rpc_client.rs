@@ -104,6 +104,7 @@ const MAX_BURN_AMOUNT: f64 = 21_000_000.0;
 async fn broadcast_transaction_with_tolerance<RpcClient>(
     rpc_client: &RpcClient,
     tx: &bdk_wallet::bitcoin::Transaction,
+    max_fee_rate: Option<f64>,
     tolerate_rejection: impl FnOnce(i32, &str) -> bool,
 ) -> Result<Option<bitcoin::Txid>, ClientError>
 where
@@ -111,7 +112,7 @@ where
 {
     let encoded_tx = bitcoin::consensus::encode::serialize_hex(tx);
     match rpc_client
-        .send_raw_transaction(encoded_tx, None, Some(MAX_BURN_AMOUNT))
+        .send_raw_transaction(encoded_tx, max_fee_rate, Some(MAX_BURN_AMOUNT))
         .await
     {
         Ok(txid) => {
@@ -142,6 +143,32 @@ pub async fn broadcast_transaction<RpcClient>(
 where
     RpcClient: MainClient + Sync,
 {
+    broadcast_transaction_with_max_fee_rate(rpc_client, tx, None).await
+}
+
+/// [`broadcast_transaction`], with Bitcoin Core's RPC fee-rate cap
+/// (`maxfeerate`) disabled. For transactions whose fee is a deliberate
+/// payment rather than an estimate, such as BMM requests, where the bid is
+/// paid as the fee.
+pub async fn broadcast_transaction_no_fee_limit<RpcClient>(
+    rpc_client: &RpcClient,
+    tx: &bdk_wallet::bitcoin::Transaction,
+) -> Result<Option<bitcoin::Txid>, ClientError>
+where
+    RpcClient: MainClient + Sync,
+{
+    // `sendrawtransaction` interprets a `maxfeerate` of 0 as "no limit".
+    broadcast_transaction_with_max_fee_rate(rpc_client, tx, Some(0.0)).await
+}
+
+async fn broadcast_transaction_with_max_fee_rate<RpcClient>(
+    rpc_client: &RpcClient,
+    tx: &bdk_wallet::bitcoin::Transaction,
+    max_fee_rate: Option<f64>,
+) -> Result<Option<bitcoin::Txid>, ClientError>
+where
+    RpcClient: MainClient + Sync,
+{
     const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
         "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
     // Bitcoind v30.0 changed the error message
@@ -149,7 +176,7 @@ where
         "mempool-script-verify-flag-failed (NOPx reserved for soft-fork upgrades)";
     // We used to check the exact error message. Looks like this slightly
     // varies across versions. Therefore use a substring check.
-    broadcast_transaction_with_tolerance(rpc_client, tx, |_code, msg| {
+    broadcast_transaction_with_tolerance(rpc_client, tx, max_fee_rate, |_code, msg| {
         msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG)
             || msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0)
     })
@@ -172,7 +199,7 @@ pub async fn broadcast_transaction_tolerate_mempool_rejection<RpcClient>(
 where
     RpcClient: MainClient + Sync,
 {
-    broadcast_transaction_with_tolerance(rpc_client, tx, |code, _msg| {
+    broadcast_transaction_with_tolerance(rpc_client, tx, None, |code, _msg| {
         code == BITCOIN_CORE_RPC_TRANSACTION_REJECTED
     })
     .await

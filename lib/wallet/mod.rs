@@ -636,18 +636,6 @@ impl Wallet {
             .await
     }
 
-    async fn insert_new_bmm_request(
-        &self,
-        sidechain_number: SidechainNumber,
-        prev_blockhash: bdk_wallet::bitcoin::BlockHash,
-        side_block_hash: BmmCommitment,
-    ) -> Result<bool, rusqlite::Error> {
-        self.inner
-            .db()
-            .insert_new_bmm_request(sidechain_number, prev_blockhash, side_block_hash)
-            .await
-    }
-
     pub async fn sync_task(&self, cancel: CancellationToken) -> Result<(), miette::Report> {
         const SYNC_INTERVAL: Duration = Duration::from_secs(15);
         tracing::debug!(
@@ -1591,7 +1579,27 @@ impl Wallet {
     #[instrument(skip_all, err)]
     async fn sign_transaction(
         &self,
+        psbt: bdk_wallet::bitcoin::psbt::Psbt,
+    ) -> Result<bdk_wallet::bitcoin::Transaction, error::WalletSignTransaction> {
+        self.sign_transaction_inner(psbt, false).await
+    }
+
+    /// [`Self::sign_transaction`], without the PSBT fee-rate sanity limit.
+    /// A BMM bid is paid as the transaction fee, so it may deliberately
+    /// exceed any fee-rate threshold that guards ordinary transactions
+    /// against fat-fingered fees.
+    #[instrument(skip_all, err)]
+    async fn sign_bmm_request_transaction(
+        &self,
+        psbt: bdk_wallet::bitcoin::psbt::Psbt,
+    ) -> Result<bdk_wallet::bitcoin::Transaction, error::WalletSignTransaction> {
+        self.sign_transaction_inner(psbt, true).await
+    }
+
+    async fn sign_transaction_inner(
+        &self,
         mut psbt: bdk_wallet::bitcoin::psbt::Psbt,
+        skip_fee_rate_check: bool,
     ) -> Result<bdk_wallet::bitcoin::Transaction, error::WalletSignTransaction> {
         let mut timestamp = Instant::now();
 
@@ -1609,24 +1617,62 @@ impl Wallet {
         tracing::debug!("Signed transaction in {:?}", timestamp.elapsed());
         timestamp = Instant::now();
 
-        let tx = psbt
-            .extract_tx()
-            .map_err(error::WalletSignTransaction::ExtractTx)?;
+        let tx = if skip_fee_rate_check {
+            psbt.extract_tx_unchecked_fee_rate()
+        } else {
+            psbt.extract_tx()
+                .map_err(error::WalletSignTransaction::ExtractTx)?
+        };
 
         tracing::debug!("Extracted transaction in {:?}", timestamp.elapsed());
         Ok(tx)
     }
 
-    fn bmm_request_message(
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-    ) -> Result<bdk_wallet::bitcoin::ScriptBuf, bitcoin::script::PushBytesError> {
-        M8BmmRequest::script_pubkey(
-            sidechain_number,
-            sidechain_block_hash,
-            prev_mainchain_block_hash,
-        )
+    fn build_bmm_psbt(
+        wallet: &mut bdk_wallet::Wallet,
+        message: &PushBytesBuf,
+        bid_amount: bdk_wallet::bitcoin::Amount,
+        locktime: bdk_wallet::bitcoin::absolute::LockTime,
+    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, bdk_wallet::error::CreateTxError> {
+        let mut builder = wallet.build_tx();
+        // BIP301 requires the M8 OP_RETURN at output zero.
+        builder.ordering(bdk_wallet::TxOrdering::Untouched);
+        builder.nlocktime(locktime);
+        builder.add_data(message);
+        builder.fee_absolute(bid_amount);
+        builder.finish()
+    }
+
+    /// Evict every unconfirmed BMM request whose `prev_mainchain_block_hash`
+    /// is not `mainchain_tip` from the wallet's canonical set, returning the
+    /// evicted txids. Such requests can never confirm (BIP300 rejects an M8
+    /// whose prev hash is not the block's parent), but they linger in Bitcoin
+    /// Core's mempool, where chain-source syncs keep re-adopting them into
+    /// the wallet and locking their inputs. Callers must persist the wallet
+    /// afterwards, or the eviction is lost on restart.
+    fn evict_stale_bmm_requests(
+        wallet: &mut bdk_wallet::Wallet,
+        mainchain_tip: bitcoin::BlockHash,
+    ) -> Vec<bdk_wallet::bitcoin::Txid> {
+        let stale: Vec<bdk_wallet::bitcoin::Txid> = wallet
+            .transactions()
+            .filter(|wallet_tx| !wallet_tx.chain_position.is_confirmed())
+            .filter_map(|wallet_tx| {
+                let output = wallet_tx.tx_node.tx.output.first()?;
+                let script = output.script_pubkey.to_bytes();
+                let (_rest, m8) = M8BmmRequest::parse(&script).ok()?;
+                (m8.prev_mainchain_block_hash != mainchain_tip).then_some(wallet_tx.tx_node.txid)
+            })
+            .collect();
+        if !stale.is_empty() {
+            tracing::info!(stale_bmm_requests = ?stale, "evicting stale BMM requests from wallet");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            wallet.apply_evicted_txs(stale.iter().map(|txid| (*txid, now)));
+        }
+        stale
     }
 
     async fn build_bmm_tx(
@@ -1637,48 +1683,26 @@ impl Wallet {
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmTx> {
-        tracing::trace!("build_bmm_tx: constructing request message");
-        // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
-        let message = Self::bmm_request_message(
+        let message = M8BmmRequest::data(
             sidechain_number,
-            prev_mainchain_block_hash,
             sidechain_block_hash,
+            prev_mainchain_block_hash,
         )?;
 
-        let psbt = {
-            tracing::trace!("build_bmm_tx: acquiring wallet write lock");
-            let mut wallet_write = self.inner.write_wallet().await?;
-            tokio::task::block_in_place(|| {
-                wallet_write.with_mut(|wallet| {
-                    tracing::trace!("build_bmm_tx: creating transaction builder");
-                    let mut builder = wallet.build_tx();
-                    // OP_RETURN message MUST be first output
-                    builder.ordering(bdk_wallet::TxOrdering::Untouched);
-
-                    tracing::trace!("build_bmm_tx: adding locktime {locktime}");
-                    builder.nlocktime(locktime);
-
-                    tracing::trace!("build_bmm_tx: adding recipient");
-                    builder.add_recipient(message, bid_amount);
-
-                    tracing::trace!("build_bmm_tx: finishing transaction builder");
-                    let res = builder.finish();
-
-                    tracing::trace!("build_bmm_tx: built transaction");
-
-                    res
-                })
-            })?
-        };
+        let mut wallet_write = self.inner.write_wallet().await?;
+        let psbt = tokio::task::block_in_place(|| {
+            wallet_write
+                .with_mut(|wallet| Self::build_bmm_psbt(wallet, &message, bid_amount, locktime))
+        })?;
 
         Ok(psbt)
     }
 
-    /// Creates a BMM request transaction. Broadcasts via the p2p whitelist,
-    /// and via RPC to our own node (tolerating rejection due to non-standardness).
-    /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
-    /// request was not stored due to pre-existing request with the same
-    /// `sidechain_number` and `prev_mainchain_block_hash`.
+    /// Creates a BMM request transaction and broadcasts it via the p2p
+    /// whitelist and RPC to our own node.
+    /// The bid amount is paid as transaction fee, so miners collect it by
+    /// selecting the request rather than the requester burning it in the M8
+    /// output.
     pub async fn create_bmm_request(
         &self,
         sidechain_number: SidechainNumber,
@@ -1686,7 +1710,7 @@ impl Wallet {
         sidechain_block_hash: BmmCommitment,
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
-    ) -> Result<Option<bdk_wallet::bitcoin::Transaction>, error::CreateBmmRequest> {
+    ) -> Result<bdk_wallet::bitcoin::Transaction, error::CreateBmmRequest> {
         tracing::debug!("create_bmm_request: building transaction");
         let psbt = self
             .build_bmm_tx(
@@ -1697,23 +1721,9 @@ impl Wallet {
                 locktime,
             )
             .await?;
-        let tx = self.sign_transaction(psbt).await?;
+        let tx = self.sign_bmm_request_transaction(psbt).await?;
         tracing::info!("BMM request: PSBT signed successfully");
         let txid = tx.compute_txid();
-        let stored = self
-            .insert_new_bmm_request(
-                sidechain_number,
-                prev_mainchain_block_hash,
-                sidechain_block_hash,
-            )
-            .await?;
-        if stored {
-            tracing::info!("BMM request: inserted new bmm request into db");
-        } else {
-            tracing::warn!(
-                "BMM request: Ignored, request exists with same sidechain slot and previous block hash"
-            );
-        }
         let block_height = self
             .inner
             .validator()
@@ -1751,15 +1761,12 @@ impl Wallet {
         }
         // Submit to our own node via RPC as well. This must happen after the
         // p2p broadcast: if a peer received the tx via relay from our node
-        // first, the p2p broadcast to it would time out. Unpatched nodes may
-        // reject the BMM request as non-standard. That is tolerated.
+        // first, the p2p broadcast to it would time out. The bid is paid as
+        // the fee, so broadcast without Bitcoin Core's RPC fee-rate cap.
         tracing::debug!(%txid, "Broadcasting BMM request transaction to own node via RPC...");
-        match crate::rpc_client::broadcast_transaction_tolerate_mempool_rejection(
-            &self.inner.main_client,
-            &tx,
-        )
-        .await
-        .map_err(error::CreateBmmRequestInner::BroadcastTxRpc)?
+        match crate::rpc_client::broadcast_transaction_no_fee_limit(&self.inner.main_client, &tx)
+            .await
+            .map_err(error::CreateBmmRequestInner::BroadcastTxRpc)?
         {
             Some(_) => {
                 tracing::info!(%txid, "Broadcast BMM request transaction via RPC to own node");
@@ -1768,7 +1775,7 @@ impl Wallet {
                 tracing::info!(%txid, "Own node rejected BMM request transaction from its mempool");
             }
         }
-        if stored { Ok(Some(tx)) } else { Ok(None) }
+        Ok(tx)
     }
 
     pub async fn get_wallet_info(&self) -> Result<WalletInfo, error::NotUnlocked> {
@@ -1948,8 +1955,80 @@ mod tests {
         bitcoin::{Amount, ScriptBuf, script::PushBytesBuf},
         test_utils::get_funded_wallet_wpkh,
     };
+    use bitcoin::{BlockHash, hashes::Hash as _};
 
     use super::{CreateTransactionParams, M8BmmRequest, Wallet};
+    use crate::types::{BmmCommitment, SidechainNumber};
+
+    #[test]
+    fn bmm_bid_is_a_fee_not_a_burn() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        let bid = Amount::from_sat(10_000);
+        let message = M8BmmRequest::data(
+            SidechainNumber(13),
+            BmmCommitment([0x11; 32]),
+            BlockHash::from_byte_array([0x22; 32]),
+        )
+        .unwrap();
+
+        let psbt = Wallet::build_bmm_psbt(
+            &mut wallet,
+            &message,
+            bid,
+            bitcoin::absolute::LockTime::ZERO,
+        )
+        .unwrap();
+
+        assert_eq!(wallet.calculate_fee(&psbt.unsigned_tx).unwrap(), bid);
+        assert_eq!(psbt.unsigned_tx.output[0].value, Amount::ZERO);
+        M8BmmRequest::parse(&psbt.unsigned_tx.output[0].script_pubkey.to_bytes())
+            .expect("output zero must contain the M8 request");
+    }
+
+    /// A BMM request that no longer bids on the tip can never confirm, so
+    /// evicting it must free its inputs; a request still bidding on the tip
+    /// must be left alone.
+    #[test]
+    fn stale_bmm_request_is_evicted_and_frees_inputs() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        let tip = BlockHash::from_byte_array([0xAA; 32]);
+        let message =
+            M8BmmRequest::data(SidechainNumber(3), BmmCommitment([0x33; 32]), tip).unwrap();
+        let psbt = Wallet::build_bmm_psbt(
+            &mut wallet,
+            &message,
+            Amount::from_sat(1_000),
+            bitcoin::absolute::LockTime::ZERO,
+        )
+        .unwrap();
+        let tx = psbt.unsigned_tx.clone();
+        let txid = tx.compute_txid();
+        let spent: Vec<_> = tx.input.iter().map(|input| input.previous_output).collect();
+        assert!(!spent.is_empty());
+        wallet.apply_unconfirmed_txs([(tx, 100)]);
+        assert!(
+            wallet
+                .list_unspent()
+                .all(|utxo| !spent.contains(&utxo.outpoint)),
+            "an unconfirmed bid must spend its inputs"
+        );
+
+        assert!(
+            Wallet::evict_stale_bmm_requests(&mut wallet, tip).is_empty(),
+            "a bid on the current tip must not be evicted"
+        );
+        let moved_tip = BlockHash::from_byte_array([0xBB; 32]);
+        assert_eq!(
+            Wallet::evict_stale_bmm_requests(&mut wallet, moved_tip),
+            vec![txid]
+        );
+        assert!(
+            spent
+                .iter()
+                .all(|outpoint| wallet.list_unspent().any(|utxo| utxo.outpoint == *outpoint)),
+            "evicting the stale bid must free its inputs"
+        );
+    }
 
     /// A BMM request only counts as an M8 when its OP_RETURN sits at output 0,
     /// and a shuffle lands it there half the time, so one build proves nothing.

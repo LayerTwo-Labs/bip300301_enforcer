@@ -26,7 +26,8 @@ use crate::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
         wait_for_pending_proposal, wait_for_tx_in_mempool,
     },
-    test_peer_bmm_request, test_unconfirmed_transactions, test_zmq_sequence_gap,
+    test_bmm_bid_auction, test_peer_bmm_request, test_unconfirmed_transactions,
+    test_zmq_sequence_gap,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
 
@@ -927,6 +928,22 @@ pub fn tests(
         test_zmq_sequence_gap::test_zmq_sequence_gap,
     ));
     async_trials.push(peer_bmm_request_trial);
+    // Competing BMM bids, in both block production modes: the enforcer's own
+    // template server (GetBlockTemplate) and `GenerateToAddress` self-mining
+    // (Mempool).
+    async_trials.extend([Mode::GetBlockTemplate, Mode::Mempool].map(|mode| {
+        new_trial_with_setup(
+            format!("bmm_bid_auction (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            test_bmm_bid_auction::test_bmm_bid_auction,
+        )
+    }));
     async_trials.push(new_trial_with_setup_opts(
         "activation_height".to_string(),
         TestSetupComponents {

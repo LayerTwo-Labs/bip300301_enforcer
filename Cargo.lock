@@ -656,7 +656,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-jsonrpsee"
 version = "0.1.1"
-source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=cb6c0dbd21a069b5481eedb0268832df28a5aaf1#cb6c0dbd21a069b5481eedb0268832df28a5aaf1"
+source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=d32ba93d497c644394877aaa2a9f25185e7fca48#d32ba93d497c644394877aaa2a9f25185e7fca48"
 dependencies = [
  "base64 0.23.0",
  "bitcoin",
@@ -1156,7 +1156,7 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.4.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=cf025dd6fda6d8c6026a9e33b5ef9ff0e07b6ac3#cf025dd6fda6d8c6026a9e33b5ef9ff0e07b6ac3"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=b5fc29e6b20baf4e10d4a295a3eff860bb4c50b9#b5fc29e6b20baf4e10d4a295a3eff860bb4c50b9"
 dependencies = [
  "anyhow",
  "async-trait",

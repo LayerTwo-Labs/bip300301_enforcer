@@ -1,7 +1,6 @@
 //! Implementation of [`cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer`]
 
 use std::{
-    borrow::Borrow,
     collections::{HashMap, HashSet},
     future::Future,
 };
@@ -432,14 +431,7 @@ impl CusfEnforcer for Validator {
 
     type AcceptTxError = AcceptTxError;
 
-    fn accept_tx<TxRef>(
-        &mut self,
-        tx: &Transaction,
-        _tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
-    ) -> Result<TxAcceptAction, Self::AcceptTxError>
-    where
-        TxRef: Borrow<Transaction>,
-    {
+    fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
         let mut rwtxn = self.dbs.write_txn()?;
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means

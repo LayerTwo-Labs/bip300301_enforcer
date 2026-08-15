@@ -1,11 +1,10 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
     future::Future,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bitcoin::{BlockHash, Transaction, Txid};
+use bitcoin::{BlockHash, Transaction};
 use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
@@ -289,13 +288,31 @@ impl CusfEnforcer for Wallet {
             ConnectBlockAction::Accept { remove_mempool_txs } => {
                 let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
                 let mut wallet_write = self.inner.write_wallet().await?;
+                // Lock order: wallet before `bdk_db`, see the `bdk_db` field
+                // docs
+                let mut bdk_db = self.inner.bdk_db.lock().await;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                wallet_write.with_mut(|wallet| {
-                    wallet.apply_evicted_txs(remove_mempool_txs.iter().map(|txid| (*txid, now)))
-                })
+                let _changed: bool = wallet_write
+                    .with_mut(|wallet| {
+                        wallet
+                            .apply_evicted_txs(remove_mempool_txs.iter().map(|txid| (*txid, now)));
+                        // Sweep BMM requests the mempool machinery has not
+                        // tracked: any unconfirmed request not bidding on
+                        // this block can no longer confirm.
+                        let _stale = Wallet::evict_stale_bmm_requests(wallet, block.block_hash());
+                        // Persist, or a restart reloads the evicted requests
+                        // from the wallet DB and re-locks their inputs
+                        wallet.persist_async(&mut bdk_db)
+                    })
+                    .await
+                    .map_err(|err| {
+                        error::ConnectBlock::PersistBmmEviction(error::SqliteError::from(err))
+                    })?;
+                drop(bdk_db);
+                drop(wallet_write);
             }
             ConnectBlockAction::Reject => (),
         }
@@ -323,15 +340,11 @@ impl CusfEnforcer for Wallet {
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
 
-    fn accept_tx<TxRef>(
+    fn accept_tx(
         &mut self,
         tx: &Transaction,
-        tx_inputs: &HashMap<Txid, TxRef>,
-    ) -> std::result::Result<TxAcceptAction, Self::AcceptTxError>
-    where
-        TxRef: std::borrow::Borrow<Transaction>,
-    {
-        let res = self.inner.validator().clone().accept_tx(tx, tx_inputs)?;
+    ) -> std::result::Result<TxAcceptAction, Self::AcceptTxError> {
+        let res = self.inner.validator().clone().accept_tx(tx)?;
         match res {
             TxAcceptAction::Accept { .. } => {
                 // TODO: Ideally we could push these updates to a channel, and
