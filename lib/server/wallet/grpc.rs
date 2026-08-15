@@ -227,13 +227,6 @@ impl WalletService for crate::wallet::Wallet {
             )
             .await
             .map_err(|err| err.builder().to_connect_error())
-            .and_then(|tx| {
-                tx.ok_or_else(|| {
-                    ConnectError::already_exists(
-                        "BMM request with same `sidechain_number` and `prev_bytes` already exists",
-                    )
-                })
-            })
             .inspect_err(|err| {
                 tracing::error!(
                     "Error creating BMM critical data transaction: {:#}",

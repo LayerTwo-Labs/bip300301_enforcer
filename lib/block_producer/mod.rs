@@ -108,6 +108,23 @@ impl BlockProducer {
         &self.inner.db
     }
 
+    /// The absolute fee of `txid` in the node's mempool, or `None` if the
+    /// entry is unavailable.
+    async fn bmm_bid_fee(&self, txid: Txid) -> Option<bitcoin::Amount> {
+        use bitcoin_jsonrpsee::MainClient as _;
+        match self.main_client().get_mempool_entry(txid).await {
+            Ok(entry) => Some(entry.fees.base),
+            Err(err) => {
+                tracing::debug!(
+                    %txid,
+                    "skipping BMM bid without a mempool entry: {:#}",
+                    ErrorChain::new(&err),
+                );
+                None
+            }
+        }
+    }
+
     pub fn last_gbt_error(&self) -> Option<String> {
         self.inner.last_gbt_error.read().clone()
     }
@@ -238,15 +255,8 @@ impl CusfEnforcer for BlockProducer {
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
 
-    fn accept_tx<TxRef>(
-        &mut self,
-        tx: &Transaction,
-        tx_inputs: &HashMap<Txid, TxRef>,
-    ) -> Result<TxAcceptAction, Self::AcceptTxError>
-    where
-        TxRef: std::borrow::Borrow<Transaction>,
-    {
-        self.inner.validator.clone().accept_tx(tx, tx_inputs)
+    fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
+        self.inner.validator.clone().accept_tx(tx)
     }
 }
 
@@ -338,27 +348,45 @@ impl BlockProducer {
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
         );
-        // Exclude M8 txs with different h*
+        // Settle the per-slot BMM auction before tx selection, with the same
+        // rule as self-mining (`bmm_auction_winners`): the highest absolute
+        // fee wins each slot, and every other bid is excluded from the
+        // template. Without this, generic tx selection would pick between
+        // conflicting bids by ancestor fee rate. Excluded bids drop together
+        // with their descendants when the template is built.
         {
-            let coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
-            let coinbase_m7_accepts = coinbase_builder.messages().m7_bmm_accepts();
             let seen_bmm_requests = self
                 .validator()
                 .get_seen_bmm_requests_for_parent_block(*parent_block_hash)?;
-            let exclude = {
-                let mut exclude = seen_bmm_requests;
-                exclude.retain(|sidechain_number, txids| {
-                    let Some(commitment) = coinbase_m7_accepts.get(sidechain_number) else {
-                        return false;
-                    };
-                    txids.remove(commitment);
-                    true
-                });
-                exclude
-                    .into_values()
-                    .flat_map(|txids| txids.into_values().flatten())
-            };
-            template.exclude_mempool_txs.extend(exclude);
+            let mut bids = Vec::new();
+            for (sidechain_number, requests) in &seen_bmm_requests {
+                for (commitment, txids) in requests {
+                    for txid in txids {
+                        // A bid may have left the mempool since it was seen
+                        // (e.g. replaced). It cannot win, and excluding it is
+                        // harmless.
+                        let Some(fee) = self.bmm_bid_fee(*txid).await else {
+                            continue;
+                        };
+                        bids.push((*sidechain_number, *commitment, *txid, fee));
+                    }
+                }
+            }
+            let winners = mine::bmm_auction_winners(bids);
+            template
+                .exclude_mempool_txs
+                .extend(
+                    seen_bmm_requests
+                        .into_iter()
+                        .flat_map(|(sidechain_number, requests)| {
+                            let winner_txid =
+                                winners.get(&sidechain_number).map(|(_, txid, _)| *txid);
+                            requests
+                                .into_values()
+                                .flatten()
+                                .filter(move |txid| Some(*txid) != winner_txid)
+                        }),
+                );
         }
         // Reserve suffix txs
         {

@@ -737,14 +737,15 @@ pub struct M8BmmRequest {
 impl M8BmmRequest {
     pub const TAG: [u8; 3] = [0x00, 0xBF, 0x00];
 
-    /// Build the OP_RETURN script for an M8 BMM request.
+    /// Build the data carried by an M8 BMM request.
     /// Argument order matches the on-wire layout:
     /// `TAG sidechain_number sidechain_block_hash prev_mainchain_block_hash`.
-    pub fn script_pubkey(
+    /// Docs: https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
+    pub fn data(
         sidechain_number: SidechainNumber,
         sidechain_block_hash: BmmCommitment,
         prev_mainchain_block_hash: BlockHash,
-    ) -> Result<ScriptBuf, bitcoin::script::PushBytesError> {
+    ) -> Result<PushBytesBuf, bitcoin::script::PushBytesError> {
         let message = [
             &Self::TAG[..],
             &[sidechain_number.into()],
@@ -752,8 +753,19 @@ impl M8BmmRequest {
             &prev_mainchain_block_hash.to_byte_array(),
         ]
         .concat();
-        let bytes = PushBytesBuf::try_from(message)?;
-        Ok(ScriptBuf::new_op_return(&bytes))
+        PushBytesBuf::try_from(message)
+    }
+
+    pub fn script_pubkey(
+        sidechain_number: SidechainNumber,
+        sidechain_block_hash: BmmCommitment,
+        prev_mainchain_block_hash: BlockHash,
+    ) -> Result<ScriptBuf, bitcoin::script::PushBytesError> {
+        Ok(ScriptBuf::new_op_return(Self::data(
+            sidechain_number,
+            sidechain_block_hash,
+            prev_mainchain_block_hash,
+        )?))
     }
 
     pub fn parse(input: &[u8]) -> IResult<&[u8], Self> {

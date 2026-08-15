@@ -241,6 +241,13 @@ impl WalletInner {
         // Upgrade wallet lock
         let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
         wallet_write.with_mut(|wallet| wallet.apply_update(update))?;
+        // The update re-adopts any stale BMM request that still sits in the
+        // chain source's mempool view, re-locking its inputs. Evict again
+        // before the update is committed.
+        if let Ok(mainchain_tip) = self.validator().get_mainchain_tip() {
+            let _stale = wallet_write
+                .with_mut(|wallet| super::Wallet::evict_stale_bmm_requests(wallet, mainchain_tip));
+        }
         tracing::debug!(
             "wallet sync complete in {:?}",
             start.elapsed().unwrap_or_default(),
@@ -368,11 +375,17 @@ impl WalletInner {
         let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
         let mut bdk_db = self.bdk_db.lock().await;
 
+        // A full scan re-adopts stale BMM requests still in the chain
+        // source's mempool view. Evict them again before persisting.
+        let mainchain_tip = self.validator().try_get_mainchain_tip().ok().flatten();
         wallet_write
             .with_mut(|wallet| {
-                wallet
-                    .apply_update(update)
-                    .map(|_| wallet.persist_async(&mut bdk_db))
+                wallet.apply_update(update).map(|_| {
+                    if let Some(mainchain_tip) = mainchain_tip {
+                        let _stale = super::Wallet::evict_stale_bmm_requests(wallet, mainchain_tip);
+                    }
+                    wallet.persist_async(&mut bdk_db)
+                })
             })
             .map_err(error::FullScan::CannotConnect)?
             .await

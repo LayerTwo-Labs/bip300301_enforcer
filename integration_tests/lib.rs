@@ -6,6 +6,7 @@ pub mod setup;
 pub mod signet_chain_params;
 mod test_activation_height;
 mod test_blinded_m6_roundtrip;
+mod test_bmm_bid_auction;
 mod test_consecutive_deposits;
 mod test_file_based_block_parser;
 mod test_generate_to_address;

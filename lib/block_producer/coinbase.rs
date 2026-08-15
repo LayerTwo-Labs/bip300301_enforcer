@@ -179,8 +179,7 @@ impl BlockProducer {
     }
 
     /// Extend coinbase txouts for a new block with our drivechain messages:
-    /// M1 (propose), M2 (ack), M3 (bundle propose), M4 (bundle votes) and
-    /// M7 (BMM accept).
+    /// M1 (propose), M2 (ack), M3 (bundle propose) and M4 (bundle votes).
     pub(crate) async fn extend_coinbase_txouts(
         &self,
         ack_all_proposals: bool,
@@ -294,22 +293,6 @@ impl BlockProducer {
             )?;
         }
 
-        let bmm_hashes = self.db().get_bmm_requests(&mainchain_tip).await?;
-        for (sidechain_number, bmm_hash) in bmm_hashes {
-            if coinbase_builder
-                .messages()
-                .m7_bmm_accept_slot_vout(&sidechain_number)
-                .is_some()
-            {
-                continue;
-            }
-            tracing::info!(
-                "Adding BMM accept for SC {} with hash: {}",
-                sidechain_number,
-                bmm_hash
-            );
-            coinbase_builder.bmm_accept(sidechain_number, bmm_hash)?;
-        }
         for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
             for (m6id, _blinded_m6, m6id_info) in m6ids {
                 if m6id_info.is_none() {
