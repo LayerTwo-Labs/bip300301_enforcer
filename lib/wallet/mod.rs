@@ -1597,27 +1597,6 @@ impl Wallet {
         Ok(utxos)
     }
 
-    #[expect(dead_code)]
-    async fn get_sidechain_ctip(
-        &self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>, miette::Report> {
-        let ctip = self.inner.validator().try_get_ctip(sidechain_number)?;
-
-        let sequence_number = self
-            .inner
-            .validator()
-            .get_ctip_sequence_number(sidechain_number)?
-            .unwrap();
-
-        if let Some(ctip) = ctip {
-            let value = ctip.value;
-            Ok(Some((ctip.outpoint, value, sequence_number)))
-        } else {
-            Ok(None)
-        }
-    }
-
     pub fn is_sidechain_active(
         &self,
         sidechain_number: SidechainNumber,
