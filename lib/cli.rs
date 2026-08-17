@@ -313,14 +313,10 @@ pub struct NodeRpcConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
 pub enum NetworkPreset {
-    /// Dry run forknet v1: mainnet fork at block 955584. Hours-scale thresholds
-    Drynet1,
-    /// Dry run forknet v2: mainnet fork at block 957600. Hours-scale thresholds
-    Drynet2,
-    /// Dry run forknet v3: mainnet fork at block 957600. Hours-scale thresholds
-    Drynet3,
     /// Dry run forknet v4: mainnet fork at block 961632. Hours-scale thresholds
     Drynet4,
+    /// Alphanet forknet: mainnet fork at block 963648. Hours-scale thresholds
+    Alphanet,
     /// Integration-test-only preset: SHORT thresholds with BIP300/301
     /// activating at height 10, so tests can exercise the activation-height
     /// machinery on a fresh chain. Hidden from --help
@@ -331,10 +327,8 @@ pub enum NetworkPreset {
 impl NetworkPreset {
     pub const fn params(self) -> NetworkParams {
         match self {
-            Self::Drynet1 => NetworkParams::drynet1(),
-            Self::Drynet2 => NetworkParams::drynet2(),
-            Self::Drynet3 => NetworkParams::drynet3(),
             Self::Drynet4 => NetworkParams::drynet4(),
+            Self::Alphanet => NetworkParams::alphanet(),
             Self::TestActivation => NetworkParams::test_activation(),
         }
     }
@@ -802,11 +796,8 @@ mod tests {
                 .expect("--network-preset was given")
                 .params()
         };
-        assert_eq!(params("drynet1").bip300_activation_height, 955_584);
-        assert_eq!(params("drynet2").bip300_activation_height, 957_600);
-        assert_eq!(params("drynet3").bip300_activation_height, 957_600);
-        // drynet4 forks mainnet later than drynet3; see drivechain.dev/config.
         assert_eq!(params("drynet4").bip300_activation_height, 961_632);
+        assert_eq!(params("alphanet").bip300_activation_height, 963_648);
     }
 
     /// `--network-magic` overrides every automatic/configured source, since a

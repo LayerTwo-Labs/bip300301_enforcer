@@ -1094,17 +1094,20 @@ mod tests {
         );
     }
 
-    /// The override is what the drynet4 preset supplies, so the two must agree
-    /// on the mainnet-chain magic. A preset carrying the wrong bytes would fail
-    /// to parse a real drynet4 node's block files.
+    /// The override is what the fork presets supply, so preset and build must
+    /// agree on the mainnet-chain magic. A preset carrying the wrong bytes
+    /// would fail to parse a real fork node's block files.
     #[test]
-    fn drynet4_preset_carries_the_forks_magic() {
+    fn fork_presets_carry_their_rebranded_magic() {
         assert_eq!(
             crate::types::NetworkParams::drynet4().network_magic,
             Some([0xec, 0xa5, 0xd4, 0x04]),
         );
-        // Every other preset keeps the stock magic for its chain.
-        assert_eq!(crate::types::NetworkParams::drynet3().network_magic, None);
+        assert_eq!(
+            crate::types::NetworkParams::alphanet().network_magic,
+            Some([0xec, 0xa5, 0xa1, 0x04]),
+        );
+        // Non-preset runs keep the stock magic for their chain.
         assert_eq!(
             crate::types::NetworkParams::for_network(Network::Bitcoin).network_magic,
             None

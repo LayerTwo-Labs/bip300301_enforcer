@@ -1449,7 +1449,7 @@ async fn main() -> Result<()> {
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which
-    // is which. Presets get their own namespace (e.g. `main-drynet1`)
+    // is which. Presets get their own namespace (e.g. `main-alphanet`)
     let chain_dir_name = match network_params.datadir_suffix {
         Some(suffix) => format!("{}-{}", info.chain, suffix),
         None => info.chain.to_string(),
