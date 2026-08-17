@@ -436,24 +436,34 @@ impl WalletInner {
     /// Warn if lock takes this long to acquire
     const LOCK_WARN_DURATION: Duration = Duration::from_secs(1);
 
-    async fn read_wallet(&self) -> Result<RwLockReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
+    /// Await a lock on the inner wallet, warning if acquisition takes longer
+    /// than [`Self::LOCK_WARN_DURATION`].
+    async fn acquire_lock_warn_slow<Guard>(
+        lock: impl std::future::Future<Output = Guard>,
+        what: &str,
+    ) -> Guard {
         use futures::future::{Either, select};
-        tracing::trace!("wallet: acquiring read lock");
-        let read_guard = match select(
-            self.bitcoin_wallet.read().boxed(),
-            tokio::time::sleep(Self::LOCK_WARN_DURATION).boxed(),
+        tracing::trace!("wallet: acquiring {what}");
+        match select(
+            std::pin::pin!(lock),
+            std::pin::pin!(tokio::time::sleep(Self::LOCK_WARN_DURATION)),
         )
         .await
         {
-            Either::Left((read_guard, _sleep)) => read_guard,
-            Either::Right(((), acquiring_read_lock)) => {
+            Either::Left((guard, _sleep)) => guard,
+            Either::Right(((), acquiring_lock)) => {
                 tracing::warn!(
-                    "wallet: waiting over {} to acquire read lock",
+                    "wallet: waiting over {} to acquire {what}",
                     jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap(),
                 );
-                acquiring_read_lock.await
+                acquiring_lock.await
             }
-        };
+        }
+    }
+
+    async fn read_wallet(&self) -> Result<RwLockReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
+        let read_guard =
+            Self::acquire_lock_warn_slow(self.bitcoin_wallet.read(), "read lock").await;
         RwLockReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
     }
 
@@ -461,53 +471,19 @@ impl WalletInner {
     async fn read_wallet_upgradable(
         &self,
     ) -> Result<RwLockUpgradableReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
-        use futures::future::{Either, select};
-        tracing::trace!("wallet: acquiring upgradable read lock");
-        let read_guard = match select(
-            self.bitcoin_wallet.upgradable_read().boxed(),
-            tokio::time::sleep(Self::LOCK_WARN_DURATION).boxed(),
+        let read_guard = Self::acquire_lock_warn_slow(
+            self.bitcoin_wallet.upgradable_read(),
+            "upgradable read lock",
         )
-        .await
-        {
-            Either::Left((read_guard, _sleep)) => read_guard,
-            Either::Right(((), acquiring_read_lock)) => {
-                tracing::warn!(
-                    "waiting over {} to acquire read lock",
-                    jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap(),
-                );
-                acquiring_read_lock.await
-            }
-        };
+        .await;
         RwLockUpgradableReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
     }
 
     async fn write_wallet(
         &self,
     ) -> Result<RwLockWriteGuardSome<'_, BdkWallet>, error::NotUnlocked> {
-        use futures::future::{Either, select};
-        let start = SystemTime::now();
-        let span = tracing::span!(tracing::Level::TRACE, "acquire_write_lock");
-        let _guard = span.enter();
-        tracing::trace!("acquiring write lock");
-        let write_guard = match select(
-            self.bitcoin_wallet.write().boxed(),
-            tokio::time::sleep(Self::LOCK_WARN_DURATION).boxed(),
-        )
-        .await
-        {
-            Either::Left((write_guard, _sleep)) => write_guard,
-            Either::Right(((), acquiring_write_lock)) => {
-                tracing::warn!(
-                    "waiting over {} to acquire write lock",
-                    jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap()
-                );
-                acquiring_write_lock.await
-            }
-        };
-        tracing::trace!(
-            "wallet: acquired write lock successfully in {:?}",
-            start.elapsed().unwrap_or_default()
-        );
+        let write_guard =
+            Self::acquire_lock_warn_slow(self.bitcoin_wallet.write(), "write lock").await;
         RwLockWriteGuardSome::new(write_guard).ok_or(error::NotUnlocked)
     }
 
