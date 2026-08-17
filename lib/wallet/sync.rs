@@ -122,13 +122,6 @@ impl WalletInner {
         }
     }
 
-    /// Whether a chain source is configured. Without one, the wallet can only
-    /// learn about its transactions from blocks connected one at a time,
-    /// so [`Self::full_scan`] is not available.
-    pub(in crate::wallet) fn has_chain_source(&self) -> bool {
-        !matches!(self.chain_source, super::ChainSource::Disabled)
-    }
-
     /// Fast-forward the wallet's local chain up to `up_to_height` (or the
     /// validator tip) by applying one checkpoint update built from validator
     /// headers, instead of connecting every missing block individually.
