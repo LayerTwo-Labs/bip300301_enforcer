@@ -487,6 +487,31 @@ impl WalletInner {
         RwLockWriteGuardSome::new(write_guard).ok_or(error::NotUnlocked)
     }
 
+    /// Apply an unconfirmed transaction to the wallet, marking the wallet
+    /// UTXOs it spends as spent, and persist. Returns whether anything
+    /// changed.
+    async fn apply_unconfirmed_tx(
+        &self,
+        tx: bdk_wallet::bitcoin::Transaction,
+    ) -> Result<bool, error::ApplyUnconfirmedTx> {
+        let last_seen = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Lock order: wallet before `bdk_db`, see the `bdk_db` field docs
+        let mut wallet_write = self.write_wallet().await?;
+        let mut bdk_db = self.bdk_db.lock().await;
+        let changed = wallet_write
+            .with_mut(|wallet| {
+                wallet.apply_unconfirmed_txs([(tx, last_seen)]);
+                wallet.persist_async(&mut bdk_db)
+            })
+            .await?;
+        drop(bdk_db);
+        drop(wallet_write);
+        Ok(changed)
+    }
+
     pub async fn create_new_wallet(
         &self,
         mnemonic: Option<Mnemonic>,
@@ -1131,21 +1156,7 @@ impl Wallet {
             // is marked spent. Otherwise a deposit created before this tx
             // confirms can reselect the same UTXO, which Bitcoin Core rejects
             // as an RBF replacement. Mirrors `send_wallet_transaction`.
-            let last_seen = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            let applied_changes = {
-                // Lock order: wallet before `bdk_db`, see the `bdk_db` field
-                // docs
-                let mut wallet_write = self.inner.write_wallet().await?;
-                let mut bdk_db_lock = self.inner.bdk_db.lock().await;
-                wallet_write
-                    .with_mut(|wallet| {
-                        wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
-                        wallet.persist_async(&mut bdk_db_lock)
-                    })
-                    .await?
-            };
+            let applied_changes = self.inner.apply_unconfirmed_tx(tx).await?;
             if applied_changes {
                 tracing::debug!(%txid, "Applied unconfirmed deposit transaction to wallet");
             } else {
@@ -1559,21 +1570,7 @@ impl Wallet {
         tracing::info!(%txid, "Broadcast send transaction in {:?}", timestamp.elapsed());
 
         // Apply the unconfirmed transaction to the wallet
-        let last_seen = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-
-        let applied_changes = {
-            // Lock order: wallet before `bdk_db`, see the `bdk_db` field docs
-            let mut wallet_write = self.inner.write_wallet().await?;
-            let mut bdk_db_lock = self.inner.bdk_db.lock().await;
-            wallet_write
-                .with_mut(|wallet| {
-                    wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
-                    wallet.persist_async(&mut bdk_db_lock)
-                })
-                .await?
-        };
+        let applied_changes = self.inner.apply_unconfirmed_tx(tx).await?;
 
         // We used to do a sanity check here that changes were applied. However,
         // `applied_changes` may be false if the transaction was already
