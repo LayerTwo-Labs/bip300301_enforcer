@@ -1603,15 +1603,6 @@ async fn main() -> Result<()> {
         None => get_zmq_addr_sequence(mainchain_client.clone()).await?,
     };
 
-    // Spawn the wallet's full scan before pushing anything into the
-    // JoinSet. It is blocking on the wallet's behalf and any error should
-    // short-circuit startup
-    if let Some(wallet) = enforcer_wallet(&enforcer)
-        && cli.wallet_opts.full_scan
-    {
-        wallet.full_scan().await?;
-    }
-
     // Task name -> task result
     let mut tasks: tokio::task::JoinSet<(&'static str, Result<(), miette::Report>)> =
         tokio::task::JoinSet::new();
