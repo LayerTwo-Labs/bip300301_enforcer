@@ -658,6 +658,24 @@ impl ToStatus for CreateDepositPsbt {
     }
 }
 
+/// Applying an unconfirmed transaction to the wallet and persisting it
+#[derive(Debug, Diagnostic, Error)]
+pub enum ApplyUnconfirmedTx {
+    #[error(transparent)]
+    NotUnlocked(#[from] NotUnlocked),
+    #[error("failed to persist wallet after applying unconfirmed tx")]
+    Persist(#[from] Persistence),
+}
+
+impl ToStatus for ApplyUnconfirmedTx {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::NotUnlocked(err) => err.builder(),
+            Self::Persist(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum CreateDeposit {
     #[error("failed to broadcast tx")]
@@ -674,9 +692,7 @@ pub enum CreateDeposit {
     #[error(transparent)]
     OutputAmountOverflow(#[from] crate::types::AmountOverflowError),
     #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    #[error(transparent)]
-    Persistence(#[from] Persistence),
+    ApplyUnconfirmedTx(#[from] ApplyUnconfirmedTx),
     #[error(transparent)]
     Psbt(#[from] CreateDepositPsbt),
     #[error(transparent)]
@@ -695,8 +711,7 @@ impl ToStatus for CreateDeposit {
             | Self::BroadcastUnsuccessful { .. }
             | Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
             Self::OutputAmountOverflow(err) => err.builder(),
-            Self::NotUnlocked(err) => err.builder(),
-            Self::Persistence(err) => StatusBuilder::new(err),
+            Self::ApplyUnconfirmedTx(err) => err.builder(),
             Self::Psbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
             Self::TryGetCtip(err) => err.builder(),
@@ -941,9 +956,7 @@ pub enum SendWalletTransaction {
     )]
     OpDrivechainNotSupported,
     #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    #[error(transparent)]
-    Persistence(#[from] Persistence),
+    ApplyUnconfirmedTx(#[from] ApplyUnconfirmedTx),
 }
 
 impl ToStatus for SendWalletTransaction {
@@ -952,8 +965,7 @@ impl ToStatus for SendWalletTransaction {
             Self::CreateSendPsbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
             Self::BroadcastTx(_) | Self::OpDrivechainNotSupported => StatusBuilder::new(self),
-            Self::NotUnlocked(err) => err.builder(),
-            Self::Persistence(err) => StatusBuilder::new(err),
+            Self::ApplyUnconfirmedTx(err) => err.builder(),
         }
     }
 }
