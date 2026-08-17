@@ -1240,6 +1240,7 @@ impl Wallet {
             }
 
             // Get input values using getrawtransaction
+            let mut prev_txouts = Vec::new();
             for input in inputs {
                 // Coinbase transactions have an empty prev output txid, which we'll be unable to fetch
                 if input.previous_output.txid == bitcoin::Txid::all_zeros() {
@@ -1269,15 +1270,20 @@ impl Wallet {
                 let prev_output =
                     bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)?;
 
-                let value = prev_output.output[input.previous_output.vout as usize].value;
-                if self.inner.read_wallet().await?.is_mine(
-                    prev_output.output[input.previous_output.vout as usize]
-                        .script_pubkey
-                        .clone(),
-                ) {
-                    sent += value;
+                let prev_txout = prev_output.output[input.previous_output.vout as usize].clone();
+                input_value += prev_txout.value;
+                prev_txouts.push(prev_txout);
+            }
+
+            // One wallet read covers every input of this tx, instead of
+            // re-acquiring the lock per input.
+            {
+                let wallet_read = self.inner.read_wallet().await?;
+                for prev_txout in prev_txouts {
+                    if wallet_read.is_mine(prev_txout.script_pubkey) {
+                        sent += prev_txout.value;
+                    }
                 }
-                input_value += value;
             }
 
             let fee = input_value
