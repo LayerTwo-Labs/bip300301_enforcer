@@ -732,20 +732,18 @@ impl Wallet {
             "wallet sync task: starting"
         );
 
-        // Needed so we can use `tokio::select!`
-        let shutdown_signal = cancel.cancelled();
-        futures::pin_mut!(shutdown_signal);
-
-        let mut sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
         loop {
             tokio::select! {
                 biased;  // Prioritize shutdown
 
-                _ = &mut shutdown_signal => {
+                () = cancel.cancelled() => {
                     tracing::info!("shutting down sync task");
                     return Ok(());
                 }
-                _ = &mut sleep => {
+                // A fresh sleep per iteration: the idle gap is measured from
+                // the end of the previous sync, so a sync that outlasts the
+                // interval never causes back-to-back runs.
+                () = tokio::time::sleep(SYNC_INTERVAL) => {
                     let tick = Uuid::new_v4().simple();
                     let span = tracing::span!(tracing::Level::DEBUG,
                         "wallet_sync",
@@ -761,7 +759,6 @@ impl Wallet {
                         tracing::error!("wallet sync error: {:#}", ErrorChain::new(&err));
                     }
                     drop(guard);
-                    sleep = tokio::time::sleep(SYNC_INTERVAL).boxed();
                 }
             }
         }
