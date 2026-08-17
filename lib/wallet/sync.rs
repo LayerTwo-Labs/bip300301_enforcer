@@ -9,12 +9,9 @@ use futures::TryFutureExt;
 use tokio::time::Instant;
 use tracing::instrument;
 
-use crate::{
-    cli::WalletSyncSource,
-    wallet::{
-        BdkWallet, ChainSourceClient, Persistence, WalletInner, error,
-        util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
-    },
+use crate::wallet::{
+    BdkWallet, ChainSourceClient, Persistence, WalletInner, error,
+    util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
 };
 
 /// Write-locked last_sync, wallet, and database
@@ -125,11 +122,11 @@ impl WalletInner {
         }
     }
 
-    /// Whether a chain source (Electrum/Esplora) is configured. Without one,
-    /// the wallet can only learn about its transactions from blocks connected
-    /// one at a time, so [`Self::full_scan`] is not available.
+    /// Whether a chain source is configured. Without one, the wallet can only
+    /// learn about its transactions from blocks connected one at a time,
+    /// so [`Self::full_scan`] is not available.
     pub(in crate::wallet) fn has_chain_source(&self) -> bool {
-        self.chain_source_client.is_some()
+        !matches!(self.chain_source, super::ChainSource::Disabled)
     }
 
     /// Fast-forward the wallet's local chain up to `up_to_height` (or the
@@ -203,13 +200,11 @@ impl WalletInner {
             outpoints = request.progress().outpoints_remaining,
             "Requesting sync via chain source"
         );
-        let Some(chain_source_client) = &self.chain_source_client else {
-            // This should be checked above, so we never get into this branch.
-            // However, handle it gracefully.
-            tracing::info!("no sync source client, aborting sync");
+        let Some(chain_source_client) = self.chain_source_client() else {
+            tracing::info!("no sync source client available, aborting sync");
             return Ok(None);
         };
-        let (chain_source, update) = match chain_source_client {
+        let (chain_source, update) = match chain_source_client.as_ref() {
             ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 5;
                 const FETCH_PREV_TXOUTS: bool = false;
@@ -317,13 +312,15 @@ impl WalletInner {
     ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
         tracing::info!("starting wallet full scan");
 
-        let Some(chain_source_client) = &self.chain_source_client else {
-            // This should be picked up earlier, by never invoking `full_scan` with
-            // a disabled sync source
-            return Err(error::FullScan::InvalidSyncSource {
-                sync_source: WalletSyncSource::Disabled,
-            });
-        };
+        // Errors when no chain source client is available: disabled by
+        // config, or the backend has not been reached yet. The caller checks
+        // availability first and falls back to block-by-block replay
+        // otherwise, so this is a backstop rather than a wait.
+        let chain_source_client =
+            self.chain_source_client()
+                .ok_or(error::FullScan::InvalidSyncSource {
+                    sync_source: self.config.wallet_opts.sync_source,
+                })?;
 
         let mut start = SystemTime::now();
 
@@ -345,7 +342,7 @@ impl WalletInner {
         // date remains the job of `sync`.
         let request = wallet_read.start_full_scan().chain_tip(checkpoint);
 
-        let update = match chain_source_client {
+        let update = match chain_source_client.as_ref() {
             ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 100;
                 const FETCH_PREV_TXOUTS: bool = true;

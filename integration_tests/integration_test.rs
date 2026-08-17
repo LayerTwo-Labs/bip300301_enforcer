@@ -24,7 +24,7 @@ use crate::{
     mine::{mine, mine_check_block_events, mine_signet_check},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
-        wait_for_pending_proposal, wait_for_tx_in_mempool,
+        wait_for_pending_proposal, wait_for_tx_in_mempool, wait_until,
     },
     test_bmm_bid_auction, test_peer_bmm_request, test_unconfirmed_transactions,
     test_zmq_sequence_gap,
@@ -148,6 +148,35 @@ where
         }) as TestFuture,
         comps.file_registry,
         comps.failure_collector,
+    )
+}
+
+/// For tests that need direct [`BinPaths`] (to respawn the enforcer or
+/// electrs mid-test) and therefore run their own setup, rather than going
+/// through [`new_trial_with_setup`].
+fn new_bespoke_trial<F, Fut>(
+    name: &'static str,
+    bin_paths: &BinPaths,
+    file_registry: &TestFileRegistry,
+    failure_collector: &TestFailureCollector,
+    test_fn: F,
+) -> TestTrial
+where
+    F: FnOnce(BinPaths) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    AsyncTrial::new(
+        name,
+        Box::pin({
+            let bin_paths = bin_paths.clone();
+            async move {
+                let test_future =
+                    test_fn(bin_paths).instrument(tracing::info_span!("test", name = %name));
+                catch_unwind(test_future).await
+            }
+        }) as TestFuture,
+        file_registry.clone(),
+        failure_collector.clone(),
     )
 }
 
@@ -288,6 +317,33 @@ pub async fn wait_for_wallet_sync(post_setup: &mut PostSetup) -> anyhow::Result<
         );
         sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Block until the validator's reported chain tip reaches bitcoind's height.
+pub async fn wait_for_validator_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
+    let target_height: u32 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    wait_until(
+        &format!("validator tip reaches height {target_height}"),
+        || async {
+            let tip_height = post_setup
+                .validator_service_client
+                .get_chain_tip(GetChainTipRequest::default())
+                .await?
+                .into_owned()
+                .block_header_info
+                .into_option()
+                .map(|info| info.height)
+                .unwrap_or(0);
+            Ok(tip_height >= target_height)
+        },
+    )
+    .await
 }
 
 /// How much to move into the enforcer wallet on signet when funding it from an
@@ -887,24 +943,16 @@ pub fn tests(
                 )
             });
 
-    let peer_bmm_request_trial: TestTrial = {
-        let name = test_peer_bmm_request::TEST_NAME;
-        AsyncTrial::new(
-            name,
-            Box::pin({
-                let bin_paths = bin_paths.clone();
-                let file_registry = file_registry.clone();
-                async move {
-                    let test_future =
-                        test_peer_bmm_request::test_peer_bmm_request(bin_paths, file_registry)
-                            .instrument(tracing::info_span!("test", name = %name));
-                    catch_unwind(test_future).await
-                }
-            }),
-            file_registry.clone(),
-            failure_collector.clone(),
-        )
-    };
+    let peer_bmm_request_trial: TestTrial = new_bespoke_trial(
+        test_peer_bmm_request::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        {
+            let file_registry = file_registry.clone();
+            move |bin_paths| test_peer_bmm_request::test_peer_bmm_request(bin_paths, file_registry)
+        },
+    );
     let mut async_trials = vec![];
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
@@ -1116,47 +1164,21 @@ pub fn tests(
         crate::test_no_secrets_in_logs::test_no_secrets_in_logs,
     ));
 
-    // Needs direct `bin_paths` (to respawn the enforcer mid-test), so it uses
-    // a bespoke trial rather than `new_trial_with_setup`.
-    async_trials.push({
-        let name = crate::test_wallet_large_gap_sync::TEST_NAME;
-        AsyncTrial::new(
-            name,
-            Box::pin({
-                let bin_paths = bin_paths.clone();
-                async move {
-                    let test_future =
-                        crate::test_wallet_large_gap_sync::test_wallet_large_gap_sync(bin_paths)
-                            .instrument(tracing::info_span!("test", name = %name));
-                    catch_unwind(test_future).await
-                }
-            }),
-            file_registry.clone(),
-            failure_collector.clone(),
-        )
-    });
+    async_trials.push(new_bespoke_trial(
+        crate::test_wallet_large_gap_sync::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_large_gap_sync::test_wallet_large_gap_sync,
+    ));
 
-    // Needs direct `bin_paths` (to respawn the enforcer/electrs mid-test),
-    // so it uses a bespoke trial rather than `new_trial_with_setup`.
-    async_trials.push({
-        let name = crate::test_wallet_reorg_multi_block::TEST_NAME;
-        AsyncTrial::new(
-            name,
-            Box::pin({
-                let bin_paths = bin_paths.clone();
-                async move {
-                    let test_future =
-                        crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block(
-                            bin_paths,
-                        )
-                        .instrument(tracing::info_span!("test", name = %name));
-                    catch_unwind(test_future).await
-                }
-            }),
-            file_registry.clone(),
-            failure_collector.clone(),
-        )
-    });
+    async_trials.push(new_bespoke_trial(
+        crate::test_wallet_reorg_multi_block::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block,
+    ));
 
     async_trials
 }

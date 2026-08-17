@@ -600,7 +600,7 @@ pub mod full_scan {
         #[error("unable to persist wallet post scan")]
         PersistWallet(#[source] SqliteError),
 
-        #[error("chain sync source does not support full scan: {:?}", .sync_source)]
+        #[error("no chain source client available for a full scan (sync source: {:?})", .sync_source)]
         #[diagnostic(code(invalid_sync_source))]
         InvalidSyncSource { sync_source: WalletSyncSource },
     }
