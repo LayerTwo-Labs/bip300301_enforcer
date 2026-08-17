@@ -1901,10 +1901,30 @@ impl Wallet {
         Ok(address)
     }
 
+    pub async fn unlock_existing_wallet(
+        &self,
+        password: &str,
+    ) -> Result<(), error::UnlockExistingWallet> {
+        self.inner.unlock_existing_wallet(password).await
+    }
+
+    // Creates a new wallet with a given mnemonic and encryption password.
+    // Note that the password is NOT a BIP39 passphrase, but is only used to
+    // encrypt the mnemonic in storage.
+    pub async fn create_wallet(
+        &self,
+        mnemonic: Option<Mnemonic>,
+        password: Option<&str>,
+    ) -> Result<(), error::CreateNewWallet> {
+        self.inner.create_new_wallet(mnemonic, password).await
+    }
+}
+
+impl WalletInner {
     /// Connect missing blocks to the BDK chain. Retries if we get a 'nested'
     /// alert from BDK, about further missing ancestors.
     async fn connect_missing_block(
-        &mut self,
+        &self,
         try_include_height: u32,
     ) -> std::result::Result<(), error::ConnectMissingBlock> {
         use bitcoin_jsonrpsee::{
@@ -1932,7 +1952,6 @@ impl Wallet {
                 Some(block) => block,
                 None => {
                     let block_hash = self
-                        .inner
                         .main_client
                         .getblockhash(*block_height as usize)
                         .await
@@ -1943,8 +1962,7 @@ impl Wallet {
                             })
                         })?;
                     block.insert(
-                        self.inner
-                            .main_client
+                        self.main_client
                             .get_block(block_hash, U8Witness::<0>)
                             .await
                             .map_err(|err| {
@@ -1958,7 +1976,7 @@ impl Wallet {
                 }
             };
             let block_hash = block.block_hash();
-            let infos = self.inner.validator().get_block_infos(&block_hash, 0)?;
+            let infos = self.validator().get_block_infos(&block_hash, 0)?;
             assert_eq!(infos.len(), 1);
             let (_header_info, block_info) = infos.head;
             tracing::debug!(
@@ -1967,7 +1985,6 @@ impl Wallet {
                 block_height,
             );
             match self
-                .inner
                 .handle_connect_block(block, *block_height, &block_info)
                 .await?
             {
@@ -2010,24 +2027,6 @@ impl Wallet {
         }
 
         Ok(())
-    }
-
-    pub async fn unlock_existing_wallet(
-        &self,
-        password: &str,
-    ) -> Result<(), error::UnlockExistingWallet> {
-        self.inner.unlock_existing_wallet(password).await
-    }
-
-    // Creates a new wallet with a given mnemonic and encryption password.
-    // Note that the password is NOT a BIP39 passphrase, but is only used to
-    // encrypt the mnemonic in storage.
-    pub async fn create_wallet(
-        &self,
-        mnemonic: Option<Mnemonic>,
-        password: Option<&str>,
-    ) -> Result<(), error::CreateNewWallet> {
-        self.inner.create_new_wallet(mnemonic, password).await
     }
 }
 
