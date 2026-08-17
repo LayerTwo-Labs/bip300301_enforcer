@@ -1122,6 +1122,27 @@ pub fn tests(
         },
         crate::test_invalid_block::test_invalid_block,
     ));
+    // Needs direct `bin_paths` (to respawn the enforcer mid-test), so it uses
+    // a bespoke trial rather than `new_trial_with_setup`.
+    async_trials.push({
+        let name = crate::test_invalid_block_during_sync::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                async move {
+                    let test_future =
+                        crate::test_invalid_block_during_sync::test_invalid_block_during_sync(
+                            bin_paths,
+                        )
+                        .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    });
     async_trials.push(new_trial_with_setup(
         "inactive_slot_drivechain_output".to_string(),
         TestSetupComponents {

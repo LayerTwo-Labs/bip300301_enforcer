@@ -1111,7 +1111,9 @@ fn verify_against_reference(
 /// progress and a blocks/sec summary. Shared by the bounded-sync CLI modes
 /// (`--exit-after-sync`, `--verify-consensus-state`, `--freeze-at-height`);
 /// `label` names the mode in log and error messages. Returns the validator's
-/// height once the sync completes.
+/// height once the sync completes. If a consensus-invalid block is encountered,
+/// it is invalidated on the node and the sync lands on the node's resulting
+/// tip instead of `goal_height`.
 async fn sync_to_height(
     validator: &mut Validator,
     goal_height: u32,
@@ -1119,8 +1121,6 @@ async fn sync_to_height(
     mainchain_client: &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     cancel: &CancellationToken,
 ) -> Result<Option<u32>, miette::Report> {
-    use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer as _;
-
     let start_height = validator.try_get_block_height().ok().flatten();
 
     if let Some(current) = start_height
@@ -1148,9 +1148,24 @@ async fn sync_to_height(
     );
 
     let started_at = tokio::time::Instant::now();
-    validator
-        .sync_to_tip(cancel.cancelled(), target_hash)
-        .await?;
+    // If the validator rejects a block as consensus-invalid along the way, the
+    // cusf-enforcer-mempool crate invalidates it on the node and re-syncs to
+    // the node's resulting tip, which may differ from the requested target.
+    let synced_tip = cusf_enforcer_mempool::cusf_enforcer::sync_to_tip(
+        validator,
+        mainchain_client,
+        cancel.cancelled(),
+        target_hash,
+    )
+    .await
+    .map_err(|err| miette::Report::from_err(err).wrap_err(format!("{label}: sync failed")))?;
+    if synced_tip != target_hash {
+        tracing::warn!(
+            %target_hash,
+            %synced_tip,
+            "{label}: synced to a different tip after invalidating consensus-invalid blocks",
+        );
+    }
     let elapsed = started_at.elapsed();
 
     let final_height = validator.try_get_block_height().ok().flatten();

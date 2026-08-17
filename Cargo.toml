@@ -94,7 +94,7 @@ rev = "d32ba93d497c644394877aaa2a9f25185e7fca48"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "b5fc29e6b20baf4e10d4a295a3eff860bb4c50b9"
+rev = "0bfedfae34ec6004ed8d9f03da1df4c50a8795df"
 
 [workspace.dependencies.educe]
 version = "0.7.4"

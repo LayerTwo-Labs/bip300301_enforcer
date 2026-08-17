@@ -98,15 +98,15 @@ fn connect_pending_blocks(
     total_handled_blocks: &mut usize,
 ) -> Result<bool, error::Sync> {
     let rwtxn = handler.dbs.write_txn()?;
-    let rejected_block = handler.handle_block_batch_and_commit(rwtxn, pending_blocks, event_tx)?;
-    let Some(rejected_block) = rejected_block else {
+    let invalid_block = handler.handle_block_batch_and_commit(rwtxn, pending_blocks, event_tx)?;
+    let Some(invalid_block) = invalid_block else {
         *total_handled_blocks += pending_blocks.len();
         pending_blocks.clear();
         return Ok(true);
     };
     let rejected_idx = pending_blocks
         .iter()
-        .position(|block| block.block_hash() == rejected_block)
+        .position(|block| block.block_hash() == invalid_block.block_hash)
         .expect("rejected block must be in the batch it was reported for");
 
     // Restore the unconnected tail, so that the rejected block ends up as the
@@ -166,8 +166,8 @@ fn process_cached_blocks(
 ///
 /// If the validator rejects a block, file sync stops early, leaving the
 /// rejected block and everything after it in `missing_blocks`. The JSON-RPC
-/// sync will then re-encounter the rejection and stop the overall sync with
-/// a warning.
+/// sync will then re-encounter the rejection and report the invalid block up
+/// to the cusf-enforcer-mempool crate, which invalidates it on the node.
 ///
 /// On error, blocks that were staged but not committed are restored to
 /// `missing_blocks`, so that it always describes exactly what is left to sync.

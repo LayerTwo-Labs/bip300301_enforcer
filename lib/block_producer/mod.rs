@@ -7,7 +7,9 @@ use cusf_enforcer_mempool::{
         initial_block_template,
         typewit::const_marker::{Bool, BoolWit},
     },
-    cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
+    cusf_enforcer::{
+        ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
+    },
 };
 use tracing::instrument;
 
@@ -184,13 +186,14 @@ impl BlockProducer {
 }
 
 impl CusfEnforcer for BlockProducer {
+    type InvalidBlockReason = <Validator as CusfEnforcer>::InvalidBlockReason;
     type SyncError = <Validator as CusfEnforcer>::SyncError;
 
     async fn sync_to_tip<Signal>(
         &mut self,
         shutdown_signal: Signal,
         tip_hash: BlockHash,
-    ) -> Result<(), Self::SyncError>
+    ) -> Result<(), SyncToTipError<Self::InvalidBlockReason, Self::SyncError>>
     where
         Signal: std::future::Future<Output = ()> + Send,
     {

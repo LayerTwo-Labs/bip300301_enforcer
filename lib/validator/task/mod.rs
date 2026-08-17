@@ -11,7 +11,7 @@ use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
     hashes::{Hash as _, sha256d},
 };
-use error_fatality::{Fatality as _, Split as _};
+use error_fatality::Split;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
@@ -44,6 +44,19 @@ use crate::{
 
 mod block_files;
 pub mod error;
+
+/// A block that the mainchain node accepted, but that the validator rejected
+/// as invalid per BIP300/301, encountered while syncing. Reported to the
+/// cusf-enforcer-mempool crate as `SyncToTipError::InvalidBlock`, so that it
+/// calls out to `invalidateblock` and re-syncs to the node's resulting tip.
+pub(in crate::validator) struct InvalidBlock {
+    pub block_hash: BlockHash,
+    /// Deliberately the non-fatal half of [`error::ConnectBlock`]: a fatal
+    /// failure (DB, env, ...) says nothing about the block's validity, so it
+    /// must not be representable here, where it would end up driving
+    /// `invalidateblock`.
+    pub reason: Box<<error::ConnectBlock as Split>::Jfyi>,
+}
 
 /// Bundles the consensus inputs that every BIP 300/301 handler needs: a
 /// reference to the validator's databases, the Bitcoin network we're running
@@ -1754,22 +1767,23 @@ impl BlockHandler<'_> {
         mut rwtxn: RwTxn<'_>,
         blocks: &[Block],
         event_tx: &Sender<Event>,
-    ) -> Result<Option<BlockHash>, error::Sync> {
+    ) -> Result<Option<InvalidBlock>, error::Sync> {
         let mut events = Vec::new();
-        let rejected_block = self.handle_block_batch(&mut rwtxn, blocks, &mut events)?;
+        let invalid_block = self.handle_block_batch(&mut rwtxn, blocks, &mut events)?;
         rwtxn.commit()?;
         broadcast_events(event_tx, events);
-        Ok(rejected_block)
+        Ok(invalid_block)
     }
 
-    /// Returns `Some(block_hash)` if a rejected block was encountered.
+    /// Returns `Some(InvalidBlock)` if a block was rejected as invalid. The
+    /// blocks before it in the batch are still connected.
     //  Returns `None` if every block in the batch connected successfully.
     fn handle_block_batch<'a>(
         &self,
         rwtxn: &mut RwTxn<'a>,
         blocks: &[Block],
         events: &mut Vec<Event>,
-    ) -> Result<Option<BlockHash>, error::Sync> {
+    ) -> Result<Option<InvalidBlock>, error::Sync> {
         let dbs = self.dbs;
         let start = Instant::now();
 
@@ -1793,15 +1807,20 @@ impl BlockHandler<'_> {
             // FIXME: handle disconnects
             let event = match self.connect_block(rwtxn, block) {
                 Ok(event) => event,
-                Err(err) if !err.is_fatal() => {
-                    tracing::info!(
-                        %block_hash,
-                        "encountered invalid block during batch sync: {:#}",
-                        crate::errors::ErrorChain::new(&err),
-                    );
-                    return Ok(Some(block_hash));
-                }
-                Err(err) => return Err(err.into()),
+                Err(err) => match err.split() {
+                    Ok(jfyi) => {
+                        tracing::info!(
+                            %block_hash,
+                            "encountered invalid block during batch sync: {:#}",
+                            crate::errors::ErrorChain::new(&jfyi),
+                        );
+                        return Ok(Some(InvalidBlock {
+                            block_hash,
+                            reason: Box::new(jfyi),
+                        }));
+                    }
+                    Err(fatal) => return Err(error::ConnectBlock::from(fatal).into()),
+                },
             };
 
             let connect_block_duration =
@@ -1892,6 +1911,8 @@ impl BlockHandler<'_> {
     }
 
     // MUST be called after `sync_headers`.
+    /// Returns `Some(InvalidBlock)` if a block was rejected as invalid. The
+    /// sync stops at the invalid block's parent.
     #[tracing::instrument(skip_all)]
     async fn sync_blocks<MainRpcClient>(
         &self,
@@ -1900,7 +1921,7 @@ impl BlockHandler<'_> {
         main_blocks_dir: Option<PathBuf>,
         main_tip: BlockHash,
         cancel: CancellationToken,
-    ) -> Result<(), error::Sync>
+    ) -> Result<Option<InvalidBlock>, error::Sync>
     where
         MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     {
@@ -1956,7 +1977,7 @@ impl BlockHandler<'_> {
 
         if missing_blocks.is_empty() {
             tracing::info!("No missing blocks, skipping sync");
-            return Ok(());
+            return Ok(None);
         }
 
         tracing::info!(
@@ -2017,13 +2038,13 @@ impl BlockHandler<'_> {
             total_blocks_fetched += blocks.len();
 
             let rwtxn = dbs.write_txn()?;
-            let rejected_block = self.handle_block_batch_and_commit(rwtxn, &blocks, event_tx)?;
-            if let Some(rejected_block) = rejected_block {
+            let invalid_block = self.handle_block_batch_and_commit(rwtxn, &blocks, event_tx)?;
+            if let Some(invalid_block) = invalid_block {
                 tracing::warn!(
-                    %rejected_block,
-                    "stopping batch sync early: a rejected block was encountered"
+                    block_hash = %invalid_block.block_hash,
+                    "stopping batch sync early: an invalid block was encountered"
                 );
-                return Ok(());
+                return Ok(Some(invalid_block));
             }
         }
 
@@ -2031,7 +2052,7 @@ impl BlockHandler<'_> {
             "Synced {total_blocks_fetched} blocks in {:?}",
             start.elapsed()
         );
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -2044,6 +2065,8 @@ pub struct SyncSignals {
 }
 
 impl BlockHandler<'_> {
+    /// Returns `Some(InvalidBlock)` if a block was rejected as invalid; the
+    /// sync stops at the invalid block's parent.
     pub(in crate::validator) async fn sync_to_tip<MainClient>(
         &self,
         main_rpc_client: &MainClient,
@@ -2051,7 +2074,7 @@ impl BlockHandler<'_> {
         main_blocks_dir: Option<PathBuf>,
         main_tip: BlockHash,
         signals: SyncSignals,
-    ) -> Result<(), error::Sync>
+    ) -> Result<Option<InvalidBlock>, error::Sync>
     where
         MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     {
@@ -2064,16 +2087,14 @@ impl BlockHandler<'_> {
             signals.cancel.clone(),
         )
         .await?;
-        let () = self
-            .sync_blocks(
-                &signals.event_tx,
-                main_rpc_client,
-                main_blocks_dir,
-                main_tip,
-                signals.cancel.clone(),
-            )
-            .await?;
-        Ok(())
+        self.sync_blocks(
+            &signals.event_tx,
+            main_rpc_client,
+            main_blocks_dir,
+            main_tip,
+            signals.cancel.clone(),
+        )
+        .await
     }
 }
 
@@ -2671,11 +2692,24 @@ mod tests {
 
         let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
         let rwtxn = dbs.write_txn().into_diagnostic()?;
-        let rejected_block = test_handler(&dbs)
+        let invalid_block = test_handler(&dbs)
             .handle_block_batch_and_commit(rwtxn, &[block_a, block_b], &event_tx)
-            .into_diagnostic()?;
+            .into_diagnostic()?
+            .expect("block_b must be reported as invalid");
 
-        assert_eq!(rejected_block, Some(block_b_hash));
+        assert_eq!(
+            invalid_block.block_hash, block_b_hash,
+            "the reported invalid block must be the offending one, so that the \
+             caller invalidates the right block on the node"
+        );
+        let reason = format!(
+            "{:#}",
+            crate::errors::ErrorChain::new(&*invalid_block.reason)
+        );
+        assert!(
+            reason.contains("Old Ctip for sidechain 1 is unspent"),
+            "the reported reason must describe the consensus violation, got `{reason}`"
+        );
         let event = event_rx.try_recv().into_diagnostic()?;
         assert!(matches!(
             event,
