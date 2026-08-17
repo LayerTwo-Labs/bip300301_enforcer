@@ -1520,6 +1520,10 @@ async fn main() -> Result<()> {
     // so the policy DB and the mining semaphore are the same either way.
     let rpc_producer = producer.clone();
 
+    // Retry task for a wallet sync backend that was unreachable at startup,
+    // spawned into the task set below.
+    let mut chain_source_init: Option<wallet::ChainSourceInitTask> = None;
+
     let enforcer: Enforcer = if cli.enable_wallet {
         // The wallet needs the txindex in order to operate. Will lead to obscure errors later
         // if we fail RPC requests due to the index not being there.
@@ -1545,7 +1549,7 @@ async fn main() -> Result<()> {
             .as_deref()
             .map(compute_signet_magic)
             .unwrap_or_else(|| info.chain.magic());
-        let wallet = Wallet::new(
+        let (wallet, wallet_chain_source_init) = Wallet::new(
             &wallet_data_dir,
             &cli,
             mainchain_client.clone(),
@@ -1553,6 +1557,7 @@ async fn main() -> Result<()> {
             magic,
         )
         .await?;
+        chain_source_init = wallet_chain_source_init;
 
         let (mnemonic, auto_create) = match (
             cli.wallet_opts.mnemonic_path.clone(),
@@ -1745,6 +1750,17 @@ async fn main() -> Result<()> {
                 ("wallet sync task", res)
             });
         }
+    }
+
+    if let Some(init_task) = chain_source_init {
+        let cancel = cancel.clone();
+        tasks.spawn(async move {
+            init_task.run(cancel.clone()).await;
+            // The first task to finish shuts the process down (see the
+            // select! below), so park until shutdown once the init resolves.
+            cancel.cancelled().await;
+            ("wallet chain source init task", Ok(()))
+        });
     }
 
     if exit_after_sync_mode {

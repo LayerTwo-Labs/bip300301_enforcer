@@ -21,6 +21,30 @@
 //! requiring them to be used -- so a scan that searches for the first unused
 //! index and stops there silently drops everything funded after the gap. Only
 //! a scan that keeps going for a stop gap past the last used index finds it.
+//!
+//! The gap is then crossed a second time with the sync backend dark. The
+//! checkpoint-and-scan path needs the chain source, but a missing backend
+//! must degrade the wallet, not park the enforcer: the wallet falls back to
+//! block-by-block replay, exactly as if no sync source were configured,
+//! while the enforcer keeps serving gRPC and enforcing new blocks, and the
+//! backend is still picked up in the background once it returns. The replay
+//! only recovers addresses the wallet has revealed -- money on unrevealed
+//! indices stays invisible until a scan -- which is the same trade-off
+//! `--wallet-sync-source disabled` already accepts.
+//!
+//! (The chain source client used to be initialized inline during wallet
+//! construction, inside a retry loop that only returned once the backend was
+//! reachable. Nothing else -- the validator sync, the gRPC server, the
+//! mempool task -- is spawned until the wallet exists, so a dark electrs held
+//! the whole process hostage: no port was ever bound, and the enforcer looked
+//! simply hung. The dark restarts here pin the fix: the gRPC port must open
+//! inside `restart_enforcer`'s wait.)
+//!
+//! Finally, a *small* gap is crossed with the backend still dark: within
+//! `MAX_BLOCK_BY_BLOCK_REPLAY` the wallet never wants the chain source in
+//! the first place -- it catches up by connecting blocks against Bitcoin
+//! Core alone, taking the replay path by choice rather than as a fallback,
+//! with no checkpoint and no fallback warn.
 
 use std::{str::FromStr as _, time::Duration};
 
@@ -39,8 +63,11 @@ use futures::channel::mpsc;
 use tokio::time::sleep;
 
 use crate::{
-    integration_test::{fund_enforcer, wait_for_wallet_sync},
-    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, read_enforcer_log},
+    integration_test::{fund_enforcer, wait_for_validator_tip, wait_for_wallet_sync},
+    setup::{
+        DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, read_enforcer_log,
+        wait_for_enforcer_log,
+    },
     util::BinPaths,
 };
 
@@ -66,17 +93,42 @@ const GAP_INDEX_BLOCKS: u32 = 10;
 /// The rest of the gap, paid to the wallet's next unused (revealed) address.
 const SEQUENTIAL_GAP_BLOCKS: u32 = GAP_BLOCKS - GAP_INDEX_BLOCKS;
 
+/// Mined after the enforcer restarts against a dark backend. Small: these are
+/// processed one `connect_block` at a time, and what they prove is that the
+/// block pipeline is running at all while the gap remains uncrossed.
+const LIVENESS_BLOCKS: u32 = 5;
+
+/// Mined behind the enforcer's back for the small-gap phase. Enough that the
+/// balance assertion sees movement, small enough to stay far inside
+/// `MAX_BLOCK_BY_BLOCK_REPLAY` so the wallet catches up by connecting blocks
+/// without ever wanting the chain source.
+const SMALL_GAP_BLOCKS: u32 = 10;
+
 /// Emitted by `sync_wallet_to_tip` when it takes the checkpoint path.
 const CHECKPOINT_LOG: &str = "checkpointing chain forward and running a full scan";
 
 /// Emitted once per block by the block-by-block path.
 const REPLAY_LOG: &str = "unable to connect block to bdk_chain";
 
+/// Emitted (warn) by `sync_wallet_to_tip` when it is too far behind to replay
+/// block-by-block but has no chain source client to checkpoint and scan with,
+/// and falls back to the replay anyway.
+const FALLBACK_LOG: &str = "no chain source is available";
+
+/// Emitted (warn) at startup when the first connection attempt to the sync
+/// backend fails with a transient error and the retrying moves to the
+/// background task.
+const BACKEND_UNREACHABLE_LOG: &str = "wallet sync backend not reachable at startup";
+
+/// Emitted (info) by the background init task once the backend is reached.
+const BACKEND_AVAILABLE_LOG: &str = "wallet sync backend became available";
+
 /// Block until electrs has indexed up to bitcoind's tip.
 ///
-/// The wallet full-scans exactly once, during startup sync, and the test
-/// harness runs the enforcer with `--wallet-skip-periodic-sync`, so there is
-/// no later retry to paper over a chain source that was still catching up.
+/// The test harness runs the enforcer with `--wallet-skip-periodic-sync`, so
+/// each full scan runs exactly once, at the point the test drives it, with no
+/// later retry to paper over a chain source that was still catching up. Every
+/// scan must therefore be sequenced after this wait.
 async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
     const POLL_INTERVAL: Duration = Duration::from_millis(500);
     const TIMEOUT: Duration = Duration::from_secs(180);
@@ -227,9 +279,9 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
          MAX_BLOCK_BY_BLOCK_REPLAY been raised above {GAP_BLOCKS}?"
     );
     anyhow::ensure!(
-        !enforcer_log.contains("no chain source is configured"),
-        "the harness configures a chain source, so the wallet must not have taken the \
-         block-by-block fallback"
+        !enforcer_log.contains(FALLBACK_LOG),
+        "the harness configures a reachable chain source, so the wallet must not have \
+         taken the block-by-block fallback"
     );
     // The point of the fix: the gap is crossed in one update, not one block at
     // a time. A handful of these can legitimately show up for the small tail
@@ -267,6 +319,234 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
          indices, but the wallet holds {deep_gap_utxos} confirmed UTXOs there. A scan that \
          stops at the first unused index never looks that far, and the money is silently lost"
     );
+
+    // --- The same gap size again, now with the sync backend dark. ---
+    //
+    // Crossing a large gap needs the chain source, but needing it must not
+    // mean hanging on it. With no client available the wallet must fall back
+    // to block-by-block replay, exactly as if no sync source were configured:
+    // slow and loud, but the enforcer keeps enforcing throughout, and the
+    // wallet still recovers everything paid to its revealed addresses without
+    // the backend's help.
+    let balance_before_dark = post_setup
+        .wallet_service_client
+        .get_balance(GetBalanceRequest::default())
+        .await?
+        .into_owned();
+    // Owned by the wallet, revealed, and currently unfunded, so the recovery
+    // below shows up as balance growth. Revealed is the operative word: the
+    // block-by-block fallback only sees addresses the wallet already knows
+    // about. (`create_new_address` is `next_unused_address`, which after the
+    // scan above may equally well be an already-revealed index the gap
+    // skipped over -- either serves.)
+    let dark_gap_address = post_setup
+        .wallet_service_client
+        .create_new_address(CreateNewAddressRequest::default())
+        .await?
+        .into_owned()
+        .address;
+
+    tracing::info!("killing enforcer and electrs, then mining {GAP_BLOCKS} blocks");
+    post_setup.kill_enforcer().await?;
+    post_setup.kill_electrs().await?;
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [GAP_BLOCKS.to_string(), dark_gap_address.clone()],
+        )
+        .run_utf8()
+        .await?;
+
+    // The gRPC port must open inside `restart_enforcer`'s wait even though
+    // the checkpoint-and-scan path is unavailable.
+    tracing::info!("restarting enforcer with a large gap and its sync backend unreachable");
+    post_setup
+        .restart_enforcer(&bin_paths, Vec::<String>::new(), res_tx.clone())
+        .await?;
+    let _log = wait_for_enforcer_log(
+        &post_setup.directories.enforcer_dir,
+        &format!("enforcer to log {BACKEND_UNREACHABLE_LOG:?}"),
+        |log| log.contains(BACKEND_UNREACHABLE_LOG),
+    )
+    .await?;
+
+    // The validator must cross the gap without the wallet's backend.
+    wait_for_validator_tip(&post_setup).await?;
+
+    // The regression this phase pins: with the gap too large to want a
+    // replay but no client to scan with, the wallet must take the fallback
+    // rather than block on the backend. Blocking here parks the initial
+    // sync: the fallback warn never appears, the wallet tip never moves, and
+    // no block mined after the restart is ever enforced.
+    let _log = wait_for_enforcer_log(
+        &post_setup.directories.enforcer_dir,
+        &format!("enforcer to log {FALLBACK_LOG:?}"),
+        |log| log.contains(FALLBACK_LOG),
+    )
+    .await?;
+    // The replay grinds the wallet to the tip with the backend still dark...
+    wait_for_wallet_sync(&mut post_setup).await?;
+    // ...and recovers the coinbases paid to the revealed address on the way,
+    // without the backend's help.
+    let balance_after_dark = post_setup
+        .wallet_service_client
+        .get_balance(GetBalanceRequest::default())
+        .await?
+        .into_owned();
+    tracing::info!(
+        ?balance_after_dark,
+        "wallet balance after the dark-backend gap"
+    );
+    anyhow::ensure!(
+        balance_after_dark.confirmed_sats > balance_before_dark.confirmed_sats,
+        "the block-by-block fallback must recover the coinbases paid to the wallet's \
+         revealed address while the backend was dark, but confirmed_sats did not grow: \
+         {balance_after_dark:?} (was {balance_before_dark:?})"
+    );
+
+    // Liveness: the initial sync returned and the block pipeline is running,
+    // so fresh blocks keep being enforced and followed by the wallet.
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [LIVENESS_BLOCKS.to_string(), dark_gap_address],
+        )
+        .run_utf8()
+        .await?;
+    wait_for_validator_tip(&post_setup).await?;
+    wait_for_wallet_sync(&mut post_setup).await?;
+
+    // The backend returns: the background init must still pick it up for
+    // later syncs, even though the wallet already caught up without it.
+    tracing::info!("restarting electrs; the enforcer must pick it up in the background");
+    post_setup
+        .restart_electrs(&bin_paths, res_tx.clone())
+        .await?;
+    let _log = wait_for_enforcer_log(
+        &post_setup.directories.enforcer_dir,
+        &format!("enforcer to log {BACKEND_AVAILABLE_LOG:?} after electrs came back"),
+        |log| log.contains(BACKEND_AVAILABLE_LOG),
+    )
+    .await?;
+
+    // The rolling log spans both restarts: the first crossing checkpointed
+    // and scanned, and the dark crossing must not have -- there was no
+    // client to scan with, only the fallback.
+    let enforcer_log = read_enforcer_log(&post_setup.directories.enforcer_dir)?;
+    let checkpoints = enforcer_log.matches(CHECKPOINT_LOG).count();
+    anyhow::ensure!(
+        checkpoints == 1,
+        "expected exactly one {CHECKPOINT_LOG:?} entry (the first, backend-up crossing); \
+         found {checkpoints}. The dark crossing has no client to scan with and must take \
+         the block-by-block fallback instead"
+    );
+
+    // --- A small gap, with the backend dark again. ---
+    //
+    // The dark crossing above exercised the too-far-behind branch of
+    // `sync_wallet_to_tip`; this exercises the other one. Within
+    // `MAX_BLOCK_BY_BLOCK_REPLAY` the wallet takes the block-by-block path
+    // by choice -- it needs only Bitcoin Core, so a dark backend costs it
+    // nothing: no checkpoint, and no fallback warn either.
+    let small_gap_address = post_setup
+        .wallet_service_client
+        .create_new_address(CreateNewAddressRequest::default())
+        .await?
+        .into_owned()
+        .address;
+    let balance_before_small = post_setup
+        .wallet_service_client
+        .get_balance(GetBalanceRequest::default())
+        .await?
+        .into_owned();
+
+    tracing::info!("killing enforcer and electrs, then mining {SMALL_GAP_BLOCKS} blocks");
+    post_setup.kill_enforcer().await?;
+    post_setup.kill_electrs().await?;
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [SMALL_GAP_BLOCKS.to_string(), small_gap_address],
+        )
+        .run_utf8()
+        .await?;
+
+    tracing::info!("restarting enforcer with a small gap and its sync backend unreachable");
+    post_setup
+        .restart_enforcer(&bin_paths, Vec::<String>::new(), res_tx.clone())
+        .await?;
+    // Prove the degraded path ran again, rather than the backend having been
+    // reachable all along.
+    let _log = wait_for_enforcer_log(
+        &post_setup.directories.enforcer_dir,
+        &format!("enforcer to log {BACKEND_UNREACHABLE_LOG:?} a second time"),
+        |log| log.matches(BACKEND_UNREACHABLE_LOG).count() >= 2,
+    )
+    .await?;
+
+    wait_for_validator_tip(&post_setup).await?;
+    wait_for_wallet_sync(&mut post_setup).await?;
+
+    let balance_after_small = post_setup
+        .wallet_service_client
+        .get_balance(GetBalanceRequest::default())
+        .await?
+        .into_owned();
+    tracing::info!(
+        ?balance_after_small,
+        "wallet balance after the small dark gap"
+    );
+    anyhow::ensure!(
+        balance_after_small.confirmed_sats > balance_before_small.confirmed_sats,
+        "mining {SMALL_GAP_BLOCKS} blocks must mature more of the wallet's coinbases even \
+         with the sync backend down, but confirmed_sats did not grow: \
+         {balance_after_small:?} (was {balance_before_small:?})"
+    );
+
+    // Still exactly one checkpoint and one fallback warn in the rolling log:
+    // the small gap took the replay path by choice, not as a fallback, and
+    // nothing connected to a backend while electrs was down.
+    let enforcer_log = read_enforcer_log(&post_setup.directories.enforcer_dir)?;
+    let checkpoints = enforcer_log.matches(CHECKPOINT_LOG).count();
+    anyhow::ensure!(
+        checkpoints == 1,
+        "a {SMALL_GAP_BLOCKS}-block gap sits far inside MAX_BLOCK_BY_BLOCK_REPLAY and must \
+         be replayed block-by-block, but the {CHECKPOINT_LOG:?} count moved to {checkpoints}"
+    );
+    let fallbacks = enforcer_log.matches(FALLBACK_LOG).count();
+    anyhow::ensure!(
+        fallbacks == 1,
+        "expected only the dark large-gap crossing's {FALLBACK_LOG:?} entry, but found \
+         {fallbacks}; a small gap must not be treated as a fallback from the missing \
+         chain source"
+    );
+    let connections = enforcer_log.matches(BACKEND_AVAILABLE_LOG).count();
+    anyhow::ensure!(
+        connections == 1,
+        "{BACKEND_AVAILABLE_LOG:?} appeared {connections} times, but electrs was down for \
+         the small gap, so only the first dark crossing's entry should exist; the \
+         background init connected to something it shouldn't have"
+    );
+
+    // The backend returns one more time; the background task must pick it up
+    // without a restart. Its retry delay is capped at 10s, so well inside the
+    // poll budget.
+    tracing::info!("restarting electrs; the enforcer must pick it up in the background");
+    post_setup
+        .restart_electrs(&bin_paths, res_tx.clone())
+        .await?;
+    let _log = wait_for_enforcer_log(
+        &post_setup.directories.enforcer_dir,
+        &format!("enforcer to log {BACKEND_AVAILABLE_LOG:?} after electrs came back"),
+        |log| log.matches(BACKEND_AVAILABLE_LOG).count() >= 2,
+    )
+    .await?;
 
     Ok(())
 }

@@ -81,7 +81,7 @@ async fn sync_wallet_to_tip(
     let blocks_behind = new_tip_height.saturating_sub(wallet_tip.height);
     let wallet_tip = if blocks_behind <= MAX_BLOCK_BY_BLOCK_REPLAY {
         wallet_tip
-    } else if wallet.inner.has_chain_source() {
+    } else if wallet.inner.chain_source_client().is_some() {
         tracing::info!(
             wallet_tip_height = wallet_tip.height,
             %new_tip_height,
@@ -100,10 +100,10 @@ async fn sync_wallet_to_tip(
             wallet_tip_height = wallet_tip.height,
             %new_tip_height,
             %blocks_behind,
-            "wallet is far behind and no chain source is configured, \
+            "wallet is far behind and no chain source is available, \
              falling back to block-by-block replay. This is very slow. \
-             Set --wallet-sync-source to electrum or esplora to catch up \
-             with a checkpoint and full scan instead"
+             A reachable electrum or esplora --wallet-sync-source catches \
+             up with a checkpoint and full scan instead"
         );
         wallet_tip
     };

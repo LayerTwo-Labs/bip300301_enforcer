@@ -27,7 +27,7 @@ use bitcoin_jsonrpsee::{
 };
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{FutureExt, TryFutureExt, TryStreamExt};
+use futures::{TryFutureExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -73,6 +73,55 @@ enum ChainSourceClient {
     Esplora(EsploraClient),
 }
 
+/// Retry loop for a sync backend that was not reachable when the wallet was
+/// created. Returned by [`Wallet::new`] for the caller to spawn.
+pub struct ChainSourceInitTask {
+    config: WalletConfig,
+    network: Network,
+    state_tx: tokio::sync::watch::Sender<Option<Arc<ChainSourceClient>>>,
+}
+
+impl ChainSourceInitTask {
+    /// Publishes the client through the wallet's watch channel once the
+    /// backend comes up. Returns without publishing on a non-transient error
+    /// (the wallet then operates without a sync source), on `cancel`, or if
+    /// every receiver is dropped.
+    pub async fn run(self, cancel: CancellationToken) {
+        const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
+        const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
+        let mut retry_delay = INITIAL_RETRY_DELAY;
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = self.state_tx.closed() => return,
+                () = tokio::time::sleep(retry_delay) => (),
+            }
+            match WalletInner::try_init_chain_source_client(&self.config, self.network).await {
+                Ok(client) => {
+                    tracing::info!("wallet sync backend became available");
+                    let _send_res: Result<(), _> = self.state_tx.send(Some(Arc::new(client)));
+                    return;
+                }
+                Err(err) if err.is_transient() => {
+                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
+                    tracing::warn!(
+                        %err,
+                        "wallet sync backend not ready, retrying in {retry_delay:?}",
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "wallet sync backend initialization failed, the wallet will \
+                         operate without a sync source: {:#}",
+                        ErrorChain::new(&err)
+                    );
+                    return;
+                }
+            }
+        }
+    }
+}
+
 const fn default_esplora_url(network: Network) -> Option<&'static str> {
     match network {
         Network::Signet => Some("https://explorer.signet.drivechain.info/api"),
@@ -108,7 +157,12 @@ struct WalletInner {
     /// `bdk_db`
     bdk_db: tokio::sync::Mutex<Persistence>,
     seed_store: SeedStore,
-    chain_source_client: Option<ChainSourceClient>,
+    /// Handle to the configured chain source (Electrum/Esplora).
+    ///
+    /// The sync backend may not be reachable when the enforcer starts, and
+    /// the wallet must not hold up the rest of the process while waiting for
+    /// it. Holds `None` until a client exists.
+    chain_source: tokio::sync::watch::Receiver<Option<Arc<ChainSourceClient>>>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
@@ -193,46 +247,74 @@ impl WalletInner {
         Ok(BdkElectrumClient::new(electrum_client))
     }
 
-    async fn init_chain_source_client(
+    async fn try_init_chain_source_client(
         config: &WalletConfig,
         network: Network,
-    ) -> Result<Option<ChainSourceClient>, error::InitChainSourceClient> {
-        if config.sync_source == WalletSyncSource::Disabled {
-            return Ok(None);
-        }
-        // The sync backend (electrs / esplora) may not be reachable yet when the
-        // enforcer starts -- e.g. a freshly bootstrapped network where electrs is
-        // still coming up. Rather than aborting startup, retry transient
-        // connection failures with capped backoff, mirroring how we wait for
-        // Bitcoin Core to become ready. Config and chain-mismatch errors are not
-        // transient and fail immediately.
-        const INITIAL_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-        const MAX_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
-        let mut retry_delay = INITIAL_RETRY_DELAY;
-        loop {
-            let result = match config.sync_source {
-                WalletSyncSource::Electrum => Self::init_electrum_client(config, network)
-                    .map(|client| ChainSourceClient::Electrum(Box::new(client)))
-                    .map_err(error::InitChainSourceClient::from),
-                WalletSyncSource::Esplora => Self::init_esplora_client(config, network)
+    ) -> Result<ChainSourceClient, error::InitChainSourceClient> {
+        match config.sync_source {
+            WalletSyncSource::Electrum => {
+                // The electrum client does synchronous socket I/O (with a 5s
+                // timeout), which must not stall a runtime worker thread.
+                let config = config.clone();
+                tokio::task::spawn_blocking(move || Self::init_electrum_client(&config, network))
                     .await
-                    .map(ChainSourceClient::Esplora)
-                    .map_err(error::InitChainSourceClient::from),
-                WalletSyncSource::Disabled => unreachable!("handled above"),
-            };
-            match result {
-                Ok(client) => return Ok(Some(client)),
-                Err(err) if err.is_transient() => {
-                    tracing::warn!(
-                        %err,
-                        "wallet sync backend not ready, retrying in {retry_delay:?}",
-                    );
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
-                }
-                Err(err) => return Err(err),
+                    .expect("electrum client init task panicked")
+                    .map(|client| ChainSourceClient::Electrum(Box::new(client)))
+                    .map_err(error::InitChainSourceClient::from)
+            }
+            WalletSyncSource::Esplora => Self::init_esplora_client(config, network)
+                .await
+                .map(ChainSourceClient::Esplora)
+                .map_err(error::InitChainSourceClient::from),
+            WalletSyncSource::Disabled => {
+                unreachable!("callers check for a disabled sync source")
             }
         }
+    }
+
+    /// The sync backend may not be reachable yet when the enforcer starts.
+    /// Rather than blocking startup, a transient connection failure hands the
+    /// retrying off to a [`ChainSourceInitTask`], returned here for the
+    /// caller to spawn.
+    async fn init_chain_source(
+        config: &WalletConfig,
+        network: Network,
+    ) -> Result<
+        (
+            tokio::sync::watch::Receiver<Option<Arc<ChainSourceClient>>>,
+            Option<ChainSourceInitTask>,
+        ),
+        error::InitChainSourceClient,
+    > {
+        if config.sync_source == WalletSyncSource::Disabled {
+            let (_state_tx, state_rx) = tokio::sync::watch::channel(None);
+            return Ok((state_rx, None));
+        }
+        match Self::try_init_chain_source_client(config, network).await {
+            Ok(client) => {
+                let (_state_tx, state_rx) = tokio::sync::watch::channel(Some(Arc::new(client)));
+                Ok((state_rx, None))
+            }
+            Err(err) if err.is_transient() => {
+                tracing::warn!(
+                    %err,
+                    "wallet sync backend not reachable at startup, \
+                     continuing without it and retrying in the background",
+                );
+                let (state_tx, state_rx) = tokio::sync::watch::channel(None);
+                let init_task = ChainSourceInitTask {
+                    config: config.clone(),
+                    network,
+                    state_tx,
+                };
+                Ok((state_rx, Some(init_task)))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn chain_source_client(&self) -> Option<Arc<ChainSourceClient>> {
+        self.chain_source.borrow().clone()
     }
 
     async fn initialize_wallet_from_mnemonic(
@@ -284,7 +366,7 @@ impl WalletInner {
         main_client: HttpClient,
         producer: BlockProducer,
         magic: bitcoin::p2p::Magic,
-    ) -> Result<Self, error::InitWallet> {
+    ) -> Result<(Self, Option<ChainSourceInitTask>), error::InitWallet> {
         let network = {
             let validator_network = producer.validator().network();
             bdk_wallet::bitcoin::Network::from_str(validator_network.to_string().as_str())?
@@ -307,8 +389,8 @@ impl WalletInner {
             .await
             .map_err(error::InitWallet::OpenConnection)?;
 
-        let chain_source_client =
-            Self::init_chain_source_client(&config.wallet_opts, network).await?;
+        let (chain_source, chain_source_init) =
+            Self::init_chain_source(&config.wallet_opts, network).await?;
 
         // If we:
         // 1. Already have an initialized wallet
@@ -337,7 +419,7 @@ impl WalletInner {
             wallet_initialized = bitcoin_wallet.is_some()
         );
 
-        Ok(Self {
+        let inner = Self {
             config: config.clone(),
             main_client,
             producer,
@@ -345,9 +427,10 @@ impl WalletInner {
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             seed_store,
-            chain_source_client,
+            chain_source,
             last_sync: async_lock::RwLock::new(None),
-        })
+        };
+        Ok((inner, chain_source_init))
     }
 
     /// Warn if lock takes this long to acquire
@@ -579,16 +662,21 @@ pub struct Wallet {
 }
 
 impl Wallet {
+    /// Also returns the retry task for a sync backend that was unreachable at
+    /// startup (if any), which the caller is responsible for spawning.
     pub async fn new(
         data_dir: &Path,
         config: &Config,
         main_client: HttpClient,
         producer: BlockProducer,
         magic: bitcoin::p2p::Magic,
-    ) -> Result<Self, error::InitWallet> {
-        let inner =
-            Arc::new(WalletInner::new(data_dir, config, main_client, producer, magic).await?);
-        Ok(Self { inner })
+    ) -> Result<(Self, Option<ChainSourceInitTask>), error::InitWallet> {
+        let (inner, chain_source_init) =
+            WalletInner::new(data_dir, config, main_client, producer, magic).await?;
+        let wallet = Self {
+            inner: Arc::new(inner),
+        };
+        Ok((wallet, chain_source_init))
     }
 
     /// The keyless block producer underneath this wallet.
