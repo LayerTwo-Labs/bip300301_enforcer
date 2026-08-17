@@ -11,7 +11,9 @@ use cusf_enforcer_mempool::{
         CoinbaseTxn, CusfBlockProducer, FilledBlockTemplate, InitialBlockTemplate,
         typewit::const_marker::{Bool, BoolWit},
     },
-    cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
+    cusf_enforcer::{
+        ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
+    },
 };
 use tracing::instrument;
 
@@ -305,6 +307,7 @@ impl WalletInner {
 }
 
 impl CusfEnforcer for Wallet {
+    type InvalidBlockReason = <Validator as CusfEnforcer>::InvalidBlockReason;
     type SyncError = error::InitialSync;
 
     #[instrument(skip_all, fields(tip_hash))]
@@ -316,7 +319,7 @@ impl CusfEnforcer for Wallet {
         &mut self,
         shutdown_signal: Signal,
         tip_hash: BlockHash,
-    ) -> std::result::Result<(), Self::SyncError>
+    ) -> std::result::Result<(), SyncToTipError<Self::InvalidBlockReason, Self::SyncError>>
     where
         Signal: Future<Output = ()> + Send,
     {
@@ -336,28 +339,33 @@ impl CusfEnforcer for Wallet {
             match futures::future::select(shutdown_signal, sync_validator_to_tip).await {
                 futures::future::Either::Left(((), sync_validator_to_tip)) => {
                     cancellation_token.cancel();
-                    let () = sync_validator_to_tip.await?;
-                    return Err(Self::SyncError::Shutdown);
+                    let () = sync_validator_to_tip
+                        .await
+                        .map_err(|err| err.map_other(Self::SyncError::from))?;
+                    return Err(Self::SyncError::Shutdown.into());
                 }
                 futures::future::Either::Right((res, shutdown_signal)) => {
-                    let () = res?;
+                    let () = res.map_err(|err| err.map_other(Self::SyncError::from))?;
                     shutdown_signal
                 }
             };
-        // The validator may have stopped short of `tip_hash`. It
-        // stops early the moment it hits a block it rejects Ask it
-        // what it actually reached.
-        let synced_tip_hash = self.inner.validator().get_mainchain_tip()?;
+        // Sync the wallet to the tip the validator actually reached, rather
+        // than assuming it is `tip_hash`.
+        let synced_tip_hash = self
+            .inner
+            .validator()
+            .get_mainchain_tip()
+            .map_err(|err| SyncToTipError::Other(err.into()))?;
         tracing::debug!(%tip_hash, %synced_tip_hash, "Synced validator");
 
         let sync_wallet_to_tip = self.inner.sync_wallet_to_tip(synced_tip_hash, None);
         tokio::pin!(sync_wallet_to_tip);
         match futures::future::select(shutdown_signal, sync_wallet_to_tip).await {
             futures::future::Either::Left(((), _sync_wallet_to_tip)) => {
-                Err(Self::SyncError::Shutdown)
+                Err(Self::SyncError::Shutdown.into())
             }
             futures::future::Either::Right((res, _)) => {
-                let () = res?;
+                let () = res.map_err(|err| SyncToTipError::Other(err.into()))?;
                 tracing::debug!(%synced_tip_hash, "Synced wallet");
                 Ok(())
             }

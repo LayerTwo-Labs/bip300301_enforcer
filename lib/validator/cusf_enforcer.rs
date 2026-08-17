@@ -8,11 +8,10 @@ use std::{
 use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::cusf_enforcer::{
-    ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
+    ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
 };
 use error_fatality::{Nested as _, Split};
 use fallible_iterator::FallibleIterator;
-use futures::TryFutureExt as _;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
 use sneed::{RoTxn, RwTxn, db, env, rwtxn};
@@ -34,6 +33,11 @@ use crate::{
 #[error(transparent)]
 #[repr(transparent)]
 pub struct SyncError(#[from] task::error::Sync);
+
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct InvalidBlockReason(Box<<task::error::ConnectBlock as Split>::Jfyi>);
 
 #[derive(Debug, Diagnostic, Error)]
 enum ConnectBlockErrorInner {
@@ -351,13 +355,14 @@ where
 }
 
 impl CusfEnforcer for Validator {
+    type InvalidBlockReason = InvalidBlockReason;
     type SyncError = SyncError;
 
     async fn sync_to_tip<Signal>(
         &mut self,
         shutdown_signal: Signal,
         tip: BlockHash,
-    ) -> Result<(), Self::SyncError>
+    ) -> Result<(), SyncToTipError<Self::InvalidBlockReason, Self::SyncError>>
     where
         Signal: Future<Output = ()> + Send,
     {
@@ -366,7 +371,7 @@ impl CusfEnforcer for Validator {
         let header_sync_progress_tx = {
             let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
             if header_sync_progress_rx_write.is_some() {
-                return Err(task::error::Sync::HeaderSyncInProgress.into());
+                return Err(SyncError::from(task::error::Sync::HeaderSyncInProgress).into());
             }
             let (header_sync_progress_tx, header_sync_progress_rx) =
                 tokio::sync::watch::channel(HeaderSyncProgress {
@@ -378,29 +383,34 @@ impl CusfEnforcer for Validator {
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
-        let sync_future = handler
-            .sync_to_tip(
-                &self.mainchain_client,
-                self.mainchain_rest_client.as_ref(),
-                self.mainchain_blocks_dir.clone(),
-                tip,
-                task::SyncSignals {
-                    cancel: cancel.clone(),
-                    header_sync_progress_tx,
-                    event_tx: self.events_tx.clone(),
-                },
-            )
-            .map_err(SyncError);
+        let sync_future = handler.sync_to_tip(
+            &self.mainchain_client,
+            self.mainchain_rest_client.as_ref(),
+            self.mainchain_blocks_dir.clone(),
+            tip,
+            task::SyncSignals {
+                cancel: cancel.clone(),
+                header_sync_progress_tx,
+                event_tx: self.events_tx.clone(),
+            },
+        );
 
         tokio::select! {
             result = sync_future => {
                 *self.header_sync_progress_rx.write() = None;
-                result
+                match result {
+                    Ok(None) => Ok(()),
+                    Ok(Some(invalid_block)) => Err(SyncToTipError::InvalidBlock {
+                        block_hash: invalid_block.block_hash,
+                        reason: InvalidBlockReason(invalid_block.reason),
+                    }),
+                    Err(err) => Err(SyncError(err).into()),
+                }
             }
             _ = shutdown_signal => {
                 cancel.cancel();
                 *self.header_sync_progress_rx.write() = None;
-                Err(SyncError(crate::validator::task::error::Sync::Shutdown))
+                Err(SyncError(crate::validator::task::error::Sync::Shutdown).into())
             }
         }
     }

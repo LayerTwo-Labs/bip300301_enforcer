@@ -24,18 +24,22 @@ use crate::{
     setup::{DummySidechain, PostSetup, Sidechain},
 };
 
-struct BadBlockCase {
+pub(crate) struct BadBlockCase {
     name: &'static str,
     extra_coinbase_outputs: fn() -> anyhow::Result<Vec<TxOut>>,
     expected_log_contains: &'static str,
 }
 
+/// Shared with the sync-path test (`test_invalid_block_during_sync`), which
+/// mines this block while the enforcer is down.
+pub(crate) const DUPLICATE_M1: BadBlockCase = BadBlockCase {
+    name: "duplicate_m1",
+    extra_coinbase_outputs: duplicate_m1_outputs,
+    expected_log_contains: "rejecting block: M1 sidechain proposal for slot",
+};
+
 const CASES: &[BadBlockCase] = &[
-    BadBlockCase {
-        name: "duplicate_m1",
-        extra_coinbase_outputs: duplicate_m1_outputs,
-        expected_log_contains: "rejecting block: M1 sidechain proposal for slot",
-    },
+    DUPLICATE_M1,
     BadBlockCase {
         name: "duplicate_m2",
         extra_coinbase_outputs: duplicate_m2_outputs,
@@ -467,7 +471,7 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
     Ok(BlockHash::from_str(&result.hash)?)
 }
 
-async fn submit_invalid_block(
+pub(crate) async fn submit_invalid_block(
     post_setup: &PostSetup,
     case: &BadBlockCase,
 ) -> anyhow::Result<BlockHash> {
