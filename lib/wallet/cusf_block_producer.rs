@@ -194,6 +194,114 @@ impl WalletInner {
 
         Ok(())
     }
+
+    /// Connect missing blocks to the BDK chain. Retries if we get a 'nested'
+    /// alert from BDK, about further missing ancestors.
+    async fn connect_missing_block(
+        &self,
+        try_include_height: u32,
+    ) -> std::result::Result<(), error::ConnectMissingBlock> {
+        use bitcoin_jsonrpsee::{
+            MainClient as _,
+            client::{GetBlockClient as _, U8Witness},
+        };
+
+        struct TryInclude {
+            block_height: u32,
+            block: Option<bitcoin::Block>,
+        }
+
+        // stack of block heights / blocks to connect
+        let mut try_includes = vec![TryInclude {
+            block_height: try_include_height,
+            block: None,
+        }];
+
+        while let Some(try_include) = try_includes.last_mut() {
+            let TryInclude {
+                block_height,
+                block,
+            } = try_include;
+            let block = match block {
+                Some(block) => block,
+                None => {
+                    let block_hash = self
+                        .main_client
+                        .getblockhash(*block_height as usize)
+                        .await
+                        .map_err(|err| {
+                            error::ConnectMissingBlockInner::GetBlockHash(error::BitcoinCoreRPC {
+                                method: "getblockhash".to_string(),
+                                error: err,
+                            })
+                        })?;
+                    block.insert(
+                        self.main_client
+                            .get_block(block_hash, U8Witness::<0>)
+                            .await
+                            .map_err(|err| {
+                                error::ConnectMissingBlockInner::GetBlock(error::BitcoinCoreRPC {
+                                    method: "getblock".to_string(),
+                                    error: err,
+                                })
+                            })?
+                            .0,
+                    )
+                }
+            };
+            let block_hash = block.block_hash();
+            let infos = self.validator().get_block_infos(&block_hash, 0)?;
+            assert_eq!(infos.len(), 1);
+            let (_header_info, block_info) = infos.head;
+            tracing::debug!(
+                "connecting missing block {} at height {}",
+                block_hash,
+                block_height,
+            );
+            match self
+                .handle_connect_block(block, *block_height, &block_info)
+                .await?
+            {
+                Ok(()) => {
+                    tracing::debug!(
+                        "connected missing block {} at height {}",
+                        block_hash,
+                        block_height
+                    );
+                    try_includes.pop();
+                }
+                // We can receive 'nested' alerts from BDK, about further missing ancestors. We therefore
+                // recurse, but make sure to only do so if the recommended try_include_height is /below/
+                // what we just tried. Otherwise we'll just loop forever.
+                Err(
+                    err @ bdk_wallet::chain::local_chain::CannotConnectError { try_include_height },
+                ) => {
+                    if try_include_height < *block_height {
+                        // BDK's `try_include_height` can skip past the block's
+                        // immediate parent, and retrying at the skipped-to height
+                        // connects as a no-op without fixing anything, looping
+                        // forever. Step down one height at a time instead. The
+                        // reported height is only used (above) to check that we're
+                        // still making downward progress.
+                        let next_height = *block_height - 1;
+                        tracing::debug!("adding missing block at height {} to stack", next_height);
+                        try_includes.push(TryInclude {
+                            block_height: next_height,
+                            block: None,
+                        });
+                    } else {
+                        return Err(error::ConnectMissingBlockInner::BdkConnect {
+                            block_height: *block_height,
+                            source: err,
+                        }
+                        .into());
+                    }
+                }
+            };
+        }
+
+        Ok(())
+    }
 }
 
 impl CusfEnforcer for Wallet {
