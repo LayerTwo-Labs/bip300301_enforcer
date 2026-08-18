@@ -608,15 +608,19 @@ fn is_secret_arg(arg: &clap::Arg) -> bool {
     arg.get_value_parser().type_id() == secret.type_id()
 }
 
-/// Strip the password from a value that parses as a URL, e.g.
-/// `https://user:hunter2@example.com/api`. Returns `None` when there is
-/// nothing to strip, so callers can keep the original value.
-fn redact_embedded_credentials(value: &str) -> Option<String> {
+const REDACTED_URL_COMPONENT: &str = "redacted";
+
+pub(crate) fn redact_embedded_credentials(value: &str) -> Option<String> {
     let mut url = url::Url::parse(value).ok()?;
-    url.password()?;
-    // `set_password` only fails for URLs that cannot have credentials at all,
-    // which cannot be the case for one that already has a password.
-    url.set_password(Some("redacted")).ok()?;
+
+    if url.password().is_some() {
+        url.set_password(Some(REDACTED_URL_COMPONENT)).ok()?;
+    } else if !url.username().is_empty() {
+        url.set_username(REDACTED_URL_COMPONENT).ok()?;
+    } else {
+        return None;
+    }
+
     Some(url.to_string())
 }
 
@@ -977,5 +981,29 @@ mod tests {
             None,
         );
         assert_eq!(redact_embedded_credentials("/not/a/url"), None);
+    }
+
+    /// An esplora endpoint may carry its API key in the userinfo slot with no
+    /// password. There the lone component is the credential itself, not a
+    /// principal worth keeping, so the whole of it goes.
+    #[test]
+    fn url_userinfo_without_password_is_a_credential() {
+        assert_eq!(
+            redact_embedded_credentials("https://SECRETTOKEN@esplora.example/api").as_deref(),
+            Some("https://redacted@esplora.example/api"),
+        );
+    }
+
+    /// Redaction must not swallow the parts that identify which backend the
+    /// wallet is talking to -- those are the whole point of reporting it.
+    #[test]
+    fn redaction_preserves_the_endpoint_identity() {
+        let redacted =
+            redact_embedded_credentials("https://alice:hunter2@esplora.example:8443/api/v1")
+                .expect("a password is present");
+        assert_eq!(
+            redacted, "https://alice:redacted@esplora.example:8443/api/v1",
+            "scheme, username, host, port and path must all survive"
+        );
     }
 }
