@@ -6,6 +6,7 @@ use buffa::MessageField;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 
 use crate::{
+    cli::WalletSyncSource,
     convert,
     errors::ErrorChain,
     proto::{
@@ -32,6 +33,50 @@ use crate::{
     types::BlindedM6,
     wallet::{CreateTransactionParams, error::WalletInitialization},
 };
+
+fn sync_source_kind(kind: WalletSyncSource) -> get_info_response::sync_source::Kind {
+    use get_info_response::sync_source::Kind;
+
+    match kind {
+        WalletSyncSource::Electrum => Kind::Electrum,
+        WalletSyncSource::Esplora => Kind::Esplora,
+        WalletSyncSource::Disabled => Kind::Disabled,
+    }
+}
+
+/// A sync source that is configured but has no client is not an error in
+/// itself: the backend is retried in the background, and the wallet keeps
+/// following new blocks meanwhile. What distinguishes the states is whether a
+/// client exists and whether the last interaction with the backend failed.
+fn sync_source_state(
+    info: &crate::wallet::SyncSourceInfo,
+) -> get_info_response::sync_source::State {
+    use get_info_response::sync_source::State;
+
+    if info.kind == WalletSyncSource::Disabled {
+        return State::Disabled;
+    }
+    match (info.connected, info.last_error.is_some()) {
+        (false, _) => State::Unavailable,
+        (true, true) => State::Failing,
+        (true, false) => State::Available,
+    }
+}
+
+fn sync_source_message(info: &crate::wallet::SyncSourceInfo) -> get_info_response::SyncSource {
+    get_info_response::SyncSource {
+        kind: sync_source_kind(info.kind).into(),
+        endpoint: info.endpoint.clone(),
+        state: sync_source_state(info).into(),
+        last_error: info.last_error.clone(),
+        last_synced_at: info
+            .last_synced_at
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or_else(MessageField::none, |elapsed| {
+                wrap_timestamp(elapsed.as_secs() as i64)
+            }),
+    }
+}
 
 #[expect(refining_impl_trait_reachable)]
 impl WalletService for crate::wallet::Wallet {
@@ -65,6 +110,7 @@ impl WalletService for crate::wallet::Wallet {
                 height: info.tip.1,
                 hash: MessageField::some(ReverseHex::encode(&info.tip.0)),
             }),
+            sync_source: MessageField::some(sync_source_message(&info.sync_source)),
         }))
     }
 
