@@ -27,7 +27,7 @@ use bitcoin_jsonrpsee::{
 };
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{FutureExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, StreamExt as _, TryFutureExt};
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -1059,10 +1059,18 @@ impl Wallet {
                 })
             })
             .collect::<futures::stream::FuturesUnordered<_>>();
-        while let Some((peer_addr, broadcast_success)) = broadcast_results_stream.try_next().await?
-        {
-            tracing::debug!(%txid, "Broadcast deposit transaction via P2P to {peer_addr} successfully: {broadcast_success}");
-            broadcast_successfully |= broadcast_success
+        while let Some(broadcast_result) = broadcast_results_stream.next().await {
+            match broadcast_result {
+                Ok((peer_addr, broadcast_success)) => {
+                    tracing::debug!(%txid, "Broadcast deposit transaction via P2P to {peer_addr} successfully: {broadcast_success}");
+                    broadcast_successfully |= broadcast_success
+                }
+                // A single unreachable peer must not fail a broadcast that our
+                // own node, or another peer, already accepted. Failing here
+                // would also skip applying the unconfirmed tx to the wallet
+                // below.
+                Err(err) => tracing::warn!(%txid, "{:#}", ErrorChain::new(&err)),
+            }
         }
         if broadcast_successfully {
             tracing::info!(%txid, "Broadcast deposit transaction successfully");
@@ -1734,19 +1742,38 @@ impl Wallet {
             .p2p_broadcast_addrs()
             .map(|peer_addr| {
                 crate::p2p::broadcast_nonstandard_tx(
-                    peer_addr,
+                    peer_addr.clone(),
                     block_height as i32,
                     self.inner.magic,
                     tx.clone(),
                 )
                 .map_err(error::CreateBmmRequestInner::BroadcastNonstandardTx)
+                .map(move |broadcast_result| (peer_addr, broadcast_result))
             })
             .collect::<futures::stream::FuturesUnordered<_>>();
         let mut broadcast_successfully = None;
-        while let Some(broadcast_success) = broadcast_results_stream.try_next().await? {
-            broadcast_successfully = match broadcast_successfully {
-                Some(broadcast_successfully) => Some(broadcast_successfully || broadcast_success),
-                None => Some(broadcast_success),
+        while let Some((peer_addr, broadcast_result)) = broadcast_results_stream.next().await {
+            match broadcast_result {
+                Ok(broadcast_success) => {
+                    broadcast_successfully = match broadcast_successfully {
+                        Some(broadcast_successfully) => {
+                            Some(broadcast_successfully || broadcast_success)
+                        }
+                        None => Some(broadcast_success),
+                    }
+                }
+                // A single unreachable peer must not fail the request: the BMM
+                // request has already been stored, and the tx must still reach
+                // our own node via RPC below. Recording the failure keeps
+                // "every peer failed" distinct from "no peers configured".
+                Err(err) => {
+                    broadcast_successfully = Some(broadcast_successfully.unwrap_or(false));
+                    tracing::warn!(
+                        %txid,
+                        "failed to broadcast BMM request tx to {peer_addr}: {:#}",
+                        ErrorChain::new(&err)
+                    );
+                }
             }
         }
         match broadcast_successfully {
