@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::{
     block_producer::BlockProducer,
-    cli::{Config, WalletConfig, WalletSyncSource},
+    cli::{Config, WalletConfig, WalletSyncSource, redact_embedded_credentials},
     convert,
     errors::ErrorChain,
     messages::{self, M8BmmRequest},
@@ -79,6 +79,8 @@ pub struct ChainSourceInitTask {
     config: WalletConfig,
     network: Network,
     state_tx: tokio::sync::watch::Sender<Option<Arc<ChainSourceClient>>>,
+    /// Shared with the wallet, which reports it in wallet info.
+    last_error: Arc<async_lock::RwLock<Option<String>>>,
 }
 
 impl ChainSourceInitTask {
@@ -99,10 +101,12 @@ impl ChainSourceInitTask {
             match WalletInner::try_init_chain_source_client(&self.config, self.network).await {
                 Ok(client) => {
                     tracing::info!("wallet sync backend became available");
+                    *self.last_error.write().await = None;
                     let _send_res: Result<(), _> = self.state_tx.send(Some(Arc::new(client)));
                     return;
                 }
                 Err(err) if err.is_transient() => {
+                    *self.last_error.write().await = Some(format!("{:#}", ErrorChain::new(&err)));
                     retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
                     tracing::warn!(
                         %err,
@@ -110,6 +114,7 @@ impl ChainSourceInitTask {
                     );
                 }
                 Err(err) => {
+                    *self.last_error.write().await = Some(format!("{:#}", ErrorChain::new(&err)));
                     tracing::error!(
                         "wallet sync backend initialization failed, the wallet will \
                          operate without a sync source: {:#}",
@@ -128,6 +133,54 @@ const fn default_esplora_url(network: Network) -> Option<&'static str> {
         Network::Bitcoin => Some("https://explorer.forknet.drivechain.info/api"),
         Network::Regtest => Some("http://localhost:3003"),
         _ => None,
+    }
+}
+
+/// The effective esplora URL, applying the per-network default when unset.
+fn esplora_endpoint(
+    config: &WalletConfig,
+    network: Network,
+) -> Result<url::Url, error::InitEsploraClient> {
+    match config.esplora_url.as_ref() {
+        Some(url) => Ok(url.clone()),
+        None => {
+            let default_url = default_esplora_url(network)
+                .ok_or(error::InitEsploraClient::MissingUrl { network })?;
+            Ok(url::Url::parse(default_url)?)
+        }
+    }
+}
+
+/// The effective electrum endpoint (`host:port`), applying per-network
+/// defaults for whichever of host and port is unset.
+fn electrum_endpoint(
+    config: &WalletConfig,
+    network: Network,
+) -> Result<String, error::InitElectrumClient> {
+    let (electrum_host, electrum_port) =
+        match (config.electrum_host.as_deref(), config.electrum_port) {
+            (Some(host), Some(port)) => (host, port),
+            (host, port) => {
+                let (default_host, default_port) = default_electrum_host_port(network)
+                    .ok_or(error::InitElectrumClient::MissingHostPort { network })?;
+                (host.unwrap_or(default_host), port.unwrap_or(default_port))
+            }
+        };
+    Ok(format!("{electrum_host}:{electrum_port}"))
+}
+
+/// The configured sync backend endpoint, for reporting in wallet info:
+/// `host:port` for electrum, a URL with any embedded credentials redacted for
+/// esplora. `None` when the sync source is disabled, or when no endpoint is
+/// known for the network.
+fn sync_backend_endpoint(config: &WalletConfig, network: Network) -> Option<String> {
+    match config.sync_source {
+        WalletSyncSource::Electrum => electrum_endpoint(config, network).ok(),
+        WalletSyncSource::Esplora => {
+            let url = esplora_endpoint(config, network).ok()?.to_string();
+            Some(redact_embedded_credentials(&url).unwrap_or(url))
+        }
+        WalletSyncSource::Disabled => None,
     }
 }
 
@@ -163,6 +216,7 @@ struct WalletInner {
     /// the wallet must not hold up the rest of the process while waiting for
     /// it. Holds `None` until a client exists.
     chain_source: tokio::sync::watch::Receiver<Option<Arc<ChainSourceClient>>>,
+    sync_backend_error: Arc<async_lock::RwLock<Option<String>>>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
     config: Config,
 }
@@ -184,16 +238,14 @@ impl WalletInner {
         config: &WalletConfig,
         network: Network,
     ) -> Result<EsploraClient, error::InitEsploraClient> {
-        let esplora_url = match config.esplora_url.as_ref() {
-            Some(url) => url,
-            None => {
-                let default_url = default_esplora_url(network)
-                    .ok_or(error::InitEsploraClient::MissingUrl { network })?;
-                &url::Url::parse(default_url)?
-            }
-        };
+        let esplora_url = esplora_endpoint(config, network)?;
 
-        tracing::info!(esplora_url = %esplora_url, "creating esplora client");
+        // Redacted: an esplora URL may carry credentials
+        tracing::info!(
+            esplora_url = %redact_embedded_credentials(esplora_url.as_str())
+                .unwrap_or_default(),
+            "creating esplora client"
+        );
 
         // URLs with a port number at the end get a `/` when turned back into a string, for
         // some reason. The Esplora library doesn't like that! Remove it.
@@ -215,16 +267,7 @@ impl WalletInner {
         config: &WalletConfig,
         network: Network,
     ) -> Result<ElectrumClient, error::InitElectrumClient> {
-        let (electrum_host, electrum_port) =
-            match (config.electrum_host.as_deref(), config.electrum_port) {
-                (Some(host), Some(port)) => (host, port),
-                (host, port) => {
-                    let (default_host, default_port) = default_electrum_host_port(network)
-                        .ok_or(error::InitElectrumClient::MissingHostPort { network })?;
-                    (host.unwrap_or(default_host), port.unwrap_or(default_port))
-                }
-            };
-        let electrum_url = format!("{electrum_host}:{electrum_port}");
+        let electrum_url = electrum_endpoint(config, network)?;
 
         tracing::debug!(%electrum_url, "creating electrum client");
         // Apply a reasonably short timeout to prevent the wallet from hanging
@@ -275,25 +318,28 @@ impl WalletInner {
     /// The sync backend may not be reachable yet when the enforcer starts.
     /// Rather than blocking startup, a transient connection failure hands the
     /// retrying off to a [`ChainSourceInitTask`], returned here for the
-    /// caller to spawn.
+    /// caller to spawn. Also returns the shared last-backend-error slot for
+    /// [`WalletInner::sync_backend_error`], seeded with the startup failure
+    /// (if any).
     async fn init_chain_source(
         config: &WalletConfig,
         network: Network,
     ) -> Result<
         (
             tokio::sync::watch::Receiver<Option<Arc<ChainSourceClient>>>,
+            Arc<async_lock::RwLock<Option<String>>>,
             Option<ChainSourceInitTask>,
         ),
         error::InitChainSourceClient,
     > {
         if config.sync_source == WalletSyncSource::Disabled {
             let (_state_tx, state_rx) = tokio::sync::watch::channel(None);
-            return Ok((state_rx, None));
+            return Ok((state_rx, Arc::new(async_lock::RwLock::new(None)), None));
         }
         match Self::try_init_chain_source_client(config, network).await {
             Ok(client) => {
                 let (_state_tx, state_rx) = tokio::sync::watch::channel(Some(Arc::new(client)));
-                Ok((state_rx, None))
+                Ok((state_rx, Arc::new(async_lock::RwLock::new(None)), None))
             }
             Err(err) if err.is_transient() => {
                 tracing::warn!(
@@ -301,13 +347,18 @@ impl WalletInner {
                     "wallet sync backend not reachable at startup, \
                      continuing without it and retrying in the background",
                 );
+                let last_error = Arc::new(async_lock::RwLock::new(Some(format!(
+                    "{:#}",
+                    ErrorChain::new(&err)
+                ))));
                 let (state_tx, state_rx) = tokio::sync::watch::channel(None);
                 let init_task = ChainSourceInitTask {
                     config: config.clone(),
                     network,
                     state_tx,
+                    last_error: last_error.clone(),
                 };
-                Ok((state_rx, Some(init_task)))
+                Ok((state_rx, last_error, Some(init_task)))
             }
             Err(err) => Err(err),
         }
@@ -315,6 +366,24 @@ impl WalletInner {
 
     fn chain_source_client(&self) -> Option<Arc<ChainSourceClient>> {
         self.chain_source.borrow().clone()
+    }
+
+    /// Record the outcome of an interaction with the sync backend in
+    /// [`Self::sync_backend_error`], so wallet info can report a backend that
+    /// is currently failing. Passes the result through unchanged.
+    pub(in crate::wallet) async fn record_sync_backend_result<T, E>(
+        &self,
+        result: Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: std::error::Error,
+    {
+        let mut last_error = self.sync_backend_error.write().await;
+        *last_error = match &result {
+            Ok(_) => None,
+            Err(err) => Some(format!("{:#}", ErrorChain::new(err))),
+        };
+        result
     }
 
     async fn initialize_wallet_from_mnemonic(
@@ -389,7 +458,7 @@ impl WalletInner {
             .await
             .map_err(error::InitWallet::OpenConnection)?;
 
-        let (chain_source, chain_source_init) =
+        let (chain_source, sync_backend_error, chain_source_init) =
             Self::init_chain_source(&config.wallet_opts, network).await?;
 
         // If we:
@@ -428,6 +497,7 @@ impl WalletInner {
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             seed_store,
             chain_source,
+            sync_backend_error,
             last_sync: async_lock::RwLock::new(None),
         };
         Ok((inner, chain_source_init))
@@ -654,6 +724,23 @@ pub struct WalletInfo {
     pub transaction_count: usize,
     pub unspent_output_count: usize,
     pub tip: (BlockHash, u32),
+    pub sync_source: SyncSourceInfo,
+}
+
+/// The wallet's sync source and its observed status.
+pub struct SyncSourceInfo {
+    pub kind: WalletSyncSource,
+    /// The effective backend endpoint, with credentials redacted. `None`
+    /// when the sync source is disabled.
+    pub endpoint: Option<String>,
+    /// Whether a connection to the backend has been established. A backend
+    /// that is unreachable at startup is retried in the background.
+    pub connected: bool,
+    /// The most recent error from the backend -- a failed connection attempt
+    /// or a failed sync. `None` while the backend is healthy.
+    pub last_error: Option<String>,
+    /// Time of the last successful wallet sync.
+    pub last_synced_at: Option<SystemTime>,
 }
 
 /// Cheap to clone, since it uses Arc internally
@@ -1826,12 +1913,22 @@ impl Wallet {
 
         let tip = w.local_chain().tip();
 
+        let wallet_opts = &self.inner.config.wallet_opts;
+        let sync_source = SyncSourceInfo {
+            kind: wallet_opts.sync_source,
+            endpoint: sync_backend_endpoint(wallet_opts, w.network()),
+            connected: self.inner.chain_source_client().is_some(),
+            last_error: self.inner.sync_backend_error.read().await.clone(),
+            last_synced_at: *self.inner.last_sync.read().await,
+        };
+
         Ok(WalletInfo {
             keychain_descriptors,
             network: w.network(),
             transaction_count: w.transactions().count(),
             unspent_output_count: w.list_unspent().count(),
             tip: (tip.hash(), tip.height()),
+            sync_source,
         })
     }
 
@@ -1885,7 +1982,9 @@ mod tests {
     };
     use bitcoin::{BlockHash, hashes::Hash as _};
 
-    use super::{CreateTransactionParams, M8BmmRequest, Wallet};
+    use super::{
+        CreateTransactionParams, M8BmmRequest, Network, Wallet, WalletConfig, WalletSyncSource,
+    };
     use crate::types::{BmmCommitment, SidechainNumber};
 
     #[test]
@@ -1993,5 +2092,72 @@ mod tests {
             M8BmmRequest::parse(&outputs[0].script_pubkey.to_bytes())
                 .expect("output 0 must parse as an M8 BMM request");
         }
+    }
+
+    /// A password embedded in `--wallet-esplora-url` reaches the wallet
+    /// config verbatim, and wallet info is served over the API, so the
+    /// endpoint reported there must be redacted the same way the startup
+    /// config dump redacts it.
+    #[test]
+    fn reported_esplora_endpoint_redacts_credentials() {
+        let config = WalletConfig {
+            auto_create: false,
+            esplora_url: Some(
+                url::Url::parse("https://alice:hunter2@esplora.example/api").unwrap(),
+            ),
+            electrum_host: None,
+            electrum_port: None,
+            skip_periodic_sync: false,
+            sync_source: WalletSyncSource::Esplora,
+            mnemonic_path: None,
+        };
+
+        let endpoint = super::sync_backend_endpoint(&config, Network::Regtest)
+            .expect("an esplora URL is configured");
+        assert!(
+            !endpoint.contains("hunter2"),
+            "the esplora password must not be reported over the API: {endpoint}"
+        );
+        assert_eq!(endpoint, "https://alice:redacted@esplora.example/api");
+    }
+
+    /// Host and port default independently, so a config that sets only one of
+    /// them must still report a complete endpoint.
+    #[test]
+    fn reported_electrum_endpoint_fills_in_defaults() {
+        let config = WalletConfig {
+            auto_create: false,
+            esplora_url: None,
+            electrum_host: None,
+            electrum_port: Some(50009),
+            skip_periodic_sync: false,
+            sync_source: WalletSyncSource::Electrum,
+            mnemonic_path: None,
+        };
+
+        assert_eq!(
+            super::sync_backend_endpoint(&config, Network::Regtest).as_deref(),
+            Some("127.0.0.1:50009"),
+        );
+    }
+
+    /// A disabled sync source has no backend, so there is no endpoint to
+    /// report rather than a misleading default one.
+    #[test]
+    fn disabled_sync_source_reports_no_endpoint() {
+        let config = WalletConfig {
+            auto_create: false,
+            esplora_url: None,
+            electrum_host: None,
+            electrum_port: None,
+            skip_periodic_sync: false,
+            sync_source: WalletSyncSource::Disabled,
+            mnemonic_path: None,
+        };
+
+        assert_eq!(
+            super::sync_backend_endpoint(&config, Network::Regtest),
+            None
+        );
     }
 }

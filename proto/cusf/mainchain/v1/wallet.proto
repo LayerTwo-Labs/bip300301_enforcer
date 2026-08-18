@@ -200,6 +200,53 @@ message GetInfoResponse {
 
   // The chain tip the wallet is synced to.
   Tip tip = 5;
+
+  message SyncSource {
+    enum Kind {
+      KIND_UNSPECIFIED = 0;
+      // Communicates over the Electrum protocol.
+      KIND_ELECTRUM = 1;
+      // Communicates over REST to an Esplora server.
+      KIND_ESPLORA = 2;
+      // No sync source; the wallet is only synced by new blocks coming in.
+      KIND_DISABLED = 3;
+    }
+
+    enum State {
+      STATE_UNSPECIFIED = 0;
+      // No sync source is configured
+      STATE_DISABLED = 1;
+      // No connection to the sync backend has been established yet.
+      // Connecting is retried in the background. `last_error` holds the
+      // most recent failure.
+      STATE_UNAVAILABLE = 2;
+      // The sync backend is connected
+      STATE_AVAILABLE = 3;
+      // The sync backend was reached at least once, but the most recent
+      // sync against it failed. See `last_error`.
+      STATE_FAILING = 4;
+    }
+
+    // The kind of sync source.
+    Kind kind = 1;
+
+    // The sync backend endpoint: `host:port` for electrum, a URL (with any
+    // embedded credentials redacted) for esplora. Unset when the sync
+    // source is disabled.
+    optional string endpoint = 2;
+
+    State state = 3;
+
+    // The most recent error from the sync backend: a failed connection
+    // attempt or a failed wallet sync. Unset if the backend is healthy.
+    optional string last_error = 4;
+
+    // Time of the last successful wallet sync.
+    optional google.protobuf.Timestamp last_synced_at = 5;
+  }
+
+  // The wallet's sync source and its status.
+  SyncSource sync_source = 6;
 }
 
 message ListUnspentOutputsRequest {}

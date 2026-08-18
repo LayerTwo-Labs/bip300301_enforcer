@@ -201,17 +201,15 @@ impl WalletInner {
             ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 5;
                 const FETCH_PREV_TXOUTS: bool = false;
-                (
-                    "electrum",
-                    electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)?,
-                )
+                let result = electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS);
+                ("electrum", self.record_sync_backend_result(result).await?)
             }
-            ChainSourceClient::Esplora(esplora_client) => (
-                "esplora",
-                esplora_client
+            ChainSourceClient::Esplora(esplora_client) => {
+                let result = esplora_client
                     .sync(request, ESPLORA_PARALLEL_REQUESTS)
-                    .await?,
-            ),
+                    .await;
+                ("esplora", self.record_sync_backend_result(result).await?)
+            }
         };
         tracing::trace!("Fetched update from {chain_source}");
         if let Some(chain_update) = update.chain_update {
@@ -335,21 +333,24 @@ impl WalletInner {
         // date remains the job of `sync`.
         let request = wallet_read.start_full_scan().chain_tip(checkpoint);
 
-        let update = match chain_source_client.as_ref() {
-            ChainSourceClient::Electrum(electrum_client) => {
-                const BATCH_SIZE: usize = 100;
-                const FETCH_PREV_TXOUTS: bool = true;
-                electrum_client
-                    .full_scan(request, STOP_GAP, BATCH_SIZE, FETCH_PREV_TXOUTS)
-                    .map_err(error::ChainSourceClient::Electrum)?
-            }
+        let update = {
+            let result = match chain_source_client.as_ref() {
+                ChainSourceClient::Electrum(electrum_client) => {
+                    const BATCH_SIZE: usize = 100;
+                    const FETCH_PREV_TXOUTS: bool = true;
+                    electrum_client
+                        .full_scan(request, STOP_GAP, BATCH_SIZE, FETCH_PREV_TXOUTS)
+                        .map_err(error::ChainSourceClient::Electrum)
+                }
 
-            ChainSourceClient::Esplora(esplora_client) => {
-                esplora_client
-                    .full_scan(request, STOP_GAP, ESPLORA_PARALLEL_REQUESTS)
-                    .map_err(|err| error::ChainSourceClient::Esplora(*err))
-                    .await?
-            }
+                ChainSourceClient::Esplora(esplora_client) => {
+                    esplora_client
+                        .full_scan(request, STOP_GAP, ESPLORA_PARALLEL_REQUESTS)
+                        .map_err(|err| error::ChainSourceClient::Esplora(*err))
+                        .await
+                }
+            };
+            self.record_sync_backend_result(result).await?
         };
 
         tracing::info!(
