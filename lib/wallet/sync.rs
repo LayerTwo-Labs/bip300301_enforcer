@@ -200,7 +200,11 @@ impl WalletInner {
             ChainSourceClient::Electrum(electrum_client) => {
                 const BATCH_SIZE: usize = 5;
                 const FETCH_PREV_TXOUTS: bool = false;
-                let result = electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS);
+                // `sync` is synchronous network I/O: hand the worker thread
+                // back to tokio rather than parking an executor thread on it.
+                let result = tokio::task::block_in_place(|| {
+                    electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS)
+                });
                 ("electrum", self.record_sync_backend_result(result)?)
             }
             ChainSourceClient::Esplora(esplora_client) => {
@@ -375,9 +379,13 @@ impl WalletInner {
                 ChainSourceClient::Electrum(electrum_client) => {
                     const BATCH_SIZE: usize = 100;
                     const FETCH_PREV_TXOUTS: bool = true;
-                    electrum_client
-                        .full_scan(request, STOP_GAP, BATCH_SIZE, FETCH_PREV_TXOUTS)
-                        .map_err(error::ChainSourceClient::Electrum)
+                    // `full_scan` is synchronous network I/O, and minutes of
+                    // it: hand the worker thread back to tokio rather than
+                    // parking an executor thread for the whole scan.
+                    tokio::task::block_in_place(|| {
+                        electrum_client.full_scan(request, STOP_GAP, BATCH_SIZE, FETCH_PREV_TXOUTS)
+                    })
+                    .map_err(error::ChainSourceClient::Electrum)
                 }
 
                 ChainSourceClient::Esplora(esplora_client) => {
