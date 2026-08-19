@@ -581,7 +581,7 @@ jobs:
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [integration-test, test-build-release]
+    needs: [test-build-release]
     if: github.ref == 'refs/heads/master'
     steps:
       - name: Download artifacts
