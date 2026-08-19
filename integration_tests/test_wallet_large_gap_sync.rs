@@ -45,6 +45,14 @@
 //! the first place -- it catches up by connecting blocks against Bitcoin
 //! Core alone, taking the replay path by choice rather than as a fallback,
 //! with no checkpoint and no fallback warn.
+//!
+//! Last, the same recovery is driven by an operator rather than by a gap.
+//! Everything above reaches `full_scan` through `sync_wallet_to_tip`, which
+//! only gets there by falling far enough behind; the `FullScan` RPC asks for
+//! that scan on a wallet that is perfectly in sync. That is what a restored
+//! seed needs, and it is what the `--wallet-full-scan` startup flag used to
+//! cover -- as an RPC, without a restart. The obligation is the same one the
+//! gap crossings carry: money at an index the wallet never revealed.
 
 use std::{str::FromStr as _, time::Duration};
 
@@ -53,12 +61,13 @@ use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     proto::{
         mainchain::{
-            CreateNewAddressRequest, GetBalanceRequest, GetInfoRequest, ListUnspentOutputsRequest,
+            CreateNewAddressRequest, FullScanRequest, FullScanResponse, GetBalanceRequest,
+            GetInfoRequest, ListUnspentOutputsRequest, get_info_response,
         },
         unwrap_string,
     },
 };
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::{BlockHash, secp256k1::Secp256k1};
 use futures::channel::mpsc;
 use tokio::time::sleep;
 
@@ -103,6 +112,19 @@ const LIVENESS_BLOCKS: u32 = 5;
 /// `MAX_BLOCK_BY_BLOCK_REPLAY` so the wallet catches up by connecting blocks
 /// without ever wanting the chain source.
 const SMALL_GAP_BLOCKS: u32 = 10;
+
+/// External keychain index the RPC-driven scan has to reach.
+///
+/// Past everything the gap crossings revealed: those leave the external
+/// keychain revealed up to [`DERIVATION_GAP_INDEX`] plus BDK's lookahead, so a
+/// smaller index would be matched by block connection alone and the scan would
+/// be proving nothing. Still comfortably inside the scan's stop gap measured
+/// from the last *used* index, which is the reach being exercised.
+const RPC_SCAN_INDEX: u32 = 150;
+
+/// How many blocks are paid to [`RPC_SCAN_INDEX`]. Only has to be enough to
+/// tell "found them all" from "found some".
+const RPC_SCAN_BLOCKS: u32 = 3;
 
 /// Emitted by `sync_wallet_to_tip` when it takes the checkpoint path.
 const CHECKPOINT_LOG: &str = "checkpointing chain forward and running a full scan";
@@ -169,6 +191,51 @@ async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
         );
         sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Number of confirmed wallet UTXOs paying `address`.
+async fn confirmed_utxos_at(post_setup: &mut PostSetup, address: &str) -> anyhow::Result<usize> {
+    let utxos = post_setup
+        .wallet_service_client
+        .list_unspent_outputs(ListUnspentOutputsRequest::default())
+        .await?
+        .into_owned();
+    Ok(utxos
+        .outputs
+        .into_iter()
+        .filter(|output| output.is_confirmed)
+        .filter_map(|output| unwrap_string(output.address))
+        .filter(|found| found == address)
+        .count())
+}
+
+/// The wallet's own chain tip, as it reports it.
+async fn wallet_tip(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
+    post_setup
+        .wallet_service_client
+        .get_info(GetInfoRequest::default())
+        .await?
+        .into_owned()
+        .tip
+        .into_option()
+        .and_then(|tip| tip.hash.into_option())
+        .ok_or_else(|| anyhow::anyhow!("expected `tip.hash` in GetInfoResponse"))?
+        .decode::<get_info_response::Tip, BlockHash>("hash")
+        .map_err(anyhow::Error::from)
+}
+
+/// Drive a full scan over gRPC, returning the tip it reports.
+async fn request_full_scan(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
+    post_setup
+        .wallet_service_client
+        .full_scan(FullScanRequest::default())
+        .await?
+        .into_owned()
+        .tip_hash
+        .into_option()
+        .ok_or_else(|| anyhow::anyhow!("expected `tip_hash` in FullScanResponse"))?
+        .decode::<FullScanResponse, BlockHash>("tip_hash")
+        .map_err(anyhow::Error::from)
 }
 
 /// Derive an address from the wallet's own external descriptor without
@@ -300,18 +367,7 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     // index -- `gap_address` is the wallet's own next unused address, so its
     // coinbases are found either way. These are the ones that are only
     // reachable by continuing past the gap.
-    let utxos = post_setup
-        .wallet_service_client
-        .list_unspent_outputs(ListUnspentOutputsRequest::default())
-        .await?
-        .into_owned();
-    let deep_gap_utxos = utxos
-        .outputs
-        .into_iter()
-        .filter(|output| output.is_confirmed)
-        .filter_map(|output| unwrap_string(output.address))
-        .filter(|address| *address == deep_gap_address)
-        .count();
+    let deep_gap_utxos = confirmed_utxos_at(&mut post_setup, &deep_gap_address).await?;
     anyhow::ensure!(
         deep_gap_utxos == GAP_INDEX_BLOCKS as usize,
         "the full scan must recover the {GAP_INDEX_BLOCKS} coinbases paid to external index \
@@ -547,6 +603,75 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
         |log| log.matches(BACKEND_AVAILABLE_LOG).count() >= 2,
     )
     .await?;
+
+    // --- The same recovery, asked for over RPC instead of forced by a gap. ---
+    //
+    // The wallet is in sync and the backend is back, so nothing here will fall
+    // behind far enough to reach `full_scan` on its own. `FullScan` is the
+    // operator's way in.
+    let rpc_scan_address = peek_external_address(&mut post_setup, RPC_SCAN_INDEX).await?;
+    tracing::info!(
+        "mining {RPC_SCAN_BLOCKS} blocks to unrevealed external index {RPC_SCAN_INDEX} \
+         ({rpc_scan_address}), with the enforcer running"
+    );
+    post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [RPC_SCAN_BLOCKS.to_string(), rpc_scan_address.clone()],
+        )
+        .run_utf8()
+        .await?;
+
+    // The enforcer is up and following the tip, so these blocks arrive through
+    // the ordinary connect_block path -- which cannot match an index the
+    // indexer has never held. This is what gives the scan below its teeth: the
+    // coinbases must still be missing once the blocks carrying them are
+    // connected, or something other than the scan recovered them.
+    wait_for_wallet_sync(&mut post_setup).await?;
+    let before_rpc_scan = confirmed_utxos_at(&mut post_setup, &rpc_scan_address).await?;
+    anyhow::ensure!(
+        before_rpc_scan == 0,
+        "external index {RPC_SCAN_INDEX} sits past every index the gap crossings revealed, \
+         so connecting blocks must not have matched its {RPC_SCAN_BLOCKS} coinbases, but \
+         the wallet already holds {before_rpc_scan} UTXO(s) there. Has the lookahead grown, \
+         or did an earlier scan reveal that far? The scan below proves nothing as it stands"
+    );
+
+    wait_for_electrs_tip(&post_setup).await?;
+    tracing::info!("requesting a full scan over gRPC");
+    let scanned_tip = request_full_scan(&mut post_setup).await?;
+    let after_rpc_scan = confirmed_utxos_at(&mut post_setup, &rpc_scan_address).await?;
+    anyhow::ensure!(
+        after_rpc_scan == RPC_SCAN_BLOCKS as usize,
+        "the full scan must recover the {RPC_SCAN_BLOCKS} coinbases paid to external index \
+         {RPC_SCAN_INDEX} ({rpc_scan_address}), but the wallet holds {after_rpc_scan} \
+         UTXO(s) there"
+    );
+
+    // The response reports the tip the scan left the wallet at, so a caller
+    // knows how much chain the result covers without a second round trip.
+    let tip = wallet_tip(&mut post_setup).await?;
+    anyhow::ensure!(
+        scanned_tip == tip,
+        "FullScan reported tip {scanned_tip}, but the wallet is at {tip}"
+    );
+
+    // A rescan over the same chain is a no-op that must still succeed and must
+    // not disturb what the first one found: this is an RPC an operator can
+    // reasonably hit twice.
+    let rescanned_tip = request_full_scan(&mut post_setup).await?;
+    anyhow::ensure!(
+        rescanned_tip == tip,
+        "a repeated FullScan reported tip {rescanned_tip}, but the wallet is at {tip}"
+    );
+    let after_rescan = confirmed_utxos_at(&mut post_setup, &rpc_scan_address).await?;
+    anyhow::ensure!(
+        after_rescan == after_rpc_scan,
+        "a repeated full scan changed the wallet's UTXO set at external index \
+         {RPC_SCAN_INDEX}: {after_rescan} UTXO(s), was {after_rpc_scan}"
+    );
 
     Ok(())
 }

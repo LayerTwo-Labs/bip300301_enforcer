@@ -572,9 +572,12 @@ pub mod full_scan {
     use miette::Diagnostic;
     use thiserror::Error;
 
-    use crate::wallet::{
-        WalletSyncSource,
-        error::{ChainSourceClient, NotUnlocked, SqliteError},
+    use crate::{
+        proto::{StatusBuilder, ToStatus},
+        wallet::{
+            WalletSyncSource,
+            error::{ChainSourceClient, NotUnlocked, SqliteError},
+        },
     };
 
     #[derive(Debug, Diagnostic, Error)]
@@ -603,6 +606,37 @@ pub mod full_scan {
         #[error("no chain source client available for a full scan (sync source: {:?})", .sync_source)]
         #[diagnostic(code(invalid_sync_source))]
         InvalidSyncSource { sync_source: WalletSyncSource },
+
+        #[error(transparent)]
+        TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+
+        #[error("no mainchain tip: the validator has not synced a chain tip yet")]
+        #[diagnostic(code(no_mainchain_tip))]
+        NoMainchainTip,
+    }
+
+    impl ToStatus for Error {
+        fn builder(&self) -> StatusBuilder<'_> {
+            match self {
+                Self::WalletNotUnlocked(err) => err.builder(),
+                Self::InvalidSyncSource { .. } | Self::NoMainchainTip => {
+                    StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+                }
+                Self::TryGetMainchainTip(err) => err.builder(),
+                Self::ChainSourceClient(err) => {
+                    StatusBuilder::new(err).code(connectrpc::ErrorCode::Unavailable)
+                }
+                Self::ListHeaders(err) => {
+                    StatusBuilder::new(err).code(connectrpc::ErrorCode::Internal)
+                }
+                Self::CannotConnect(err) => {
+                    StatusBuilder::new(err).code(connectrpc::ErrorCode::Internal)
+                }
+                Self::CreateCheckPointFromHeaders { .. } | Self::PersistWallet(_) => {
+                    StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
+                }
+            }
+        }
     }
 }
 
