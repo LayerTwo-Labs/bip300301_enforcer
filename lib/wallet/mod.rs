@@ -55,9 +55,11 @@ use crate::{
 
 mod cusf_block_producer;
 pub mod error;
+mod locks;
 pub mod mnemonic;
 mod seed_store;
 mod sync;
+mod sync_state;
 mod thread_safe_connection;
 mod util;
 
@@ -78,16 +80,14 @@ enum ChainSourceClient {
 pub struct ChainSourceInitTask {
     config: WalletConfig,
     network: Network,
-    state_tx: tokio::sync::watch::Sender<Option<Arc<ChainSourceClient>>>,
-    /// Shared with the wallet, which reports it in wallet info.
-    last_error: Arc<async_lock::RwLock<Option<String>>>,
+    /// Weak, so that a wallet that has been dropped ends the retry loop.
+    state: sync_state::WeakSyncState,
 }
 
 impl ChainSourceInitTask {
-    /// Publishes the client through the wallet's watch channel once the
-    /// backend comes up. Returns without publishing on a non-transient error
-    /// (the wallet then operates without a sync source), on `cancel`, or if
-    /// every receiver is dropped.
+    /// Publishes the client into the wallet's sync state once the backend
+    /// comes up. Returns without publishing on a non-transient error,
+    /// on `cancel`, or once the wallet itself has been dropped.
     pub async fn run(self, cancel: CancellationToken) {
         const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
         const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
@@ -95,18 +95,19 @@ impl ChainSourceInitTask {
         loop {
             tokio::select! {
                 () = cancel.cancelled() => return,
-                () = self.state_tx.closed() => return,
                 () = tokio::time::sleep(retry_delay) => (),
             }
+            let Some(state) = self.state.upgrade() else {
+                return;
+            };
             match WalletInner::try_init_chain_source_client(&self.config, self.network).await {
                 Ok(client) => {
                     tracing::info!("wallet sync backend became available");
-                    *self.last_error.write().await = None;
-                    let _send_res: Result<(), _> = self.state_tx.send(Some(Arc::new(client)));
+                    state.publish_client(client);
                     return;
                 }
                 Err(err) if err.is_transient() => {
-                    *self.last_error.write().await = Some(format!("{:#}", ErrorChain::new(&err)));
+                    state.set_last_error(&err);
                     retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
                     tracing::warn!(
                         %err,
@@ -114,7 +115,7 @@ impl ChainSourceInitTask {
                     );
                 }
                 Err(err) => {
-                    *self.last_error.write().await = Some(format!("{:#}", ErrorChain::new(&err)));
+                    state.set_last_error(&err);
                     tracing::error!(
                         "wallet sync backend initialization failed, the wallet will \
                          operate without a sync source: {:#}",
@@ -201,23 +202,11 @@ struct WalletInner {
     main_client: HttpClient,
     producer: BlockProducer,
     magic: bitcoin::p2p::Magic,
-    // Unlocked, ready-to-go wallet: Some
-    // Locked wallet: None
-    bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
-    /// Persistence for the BDK wallet.
-    ///
-    /// Lock order: when both are needed, take `bitcoin_wallet` before
-    /// `bdk_db`
-    bdk_db: tokio::sync::Mutex<Persistence>,
+    /// The BDK wallet and its persistence. Held together so that we
+    /// ensure at build time that the correct order is applied.
+    locks: locks::WalletLocks,
     seed_store: SeedStore,
-    /// Handle to the configured chain source (Electrum/Esplora).
-    ///
-    /// The sync backend may not be reachable when the enforcer starts, and
-    /// the wallet must not hold up the rest of the process while waiting for
-    /// it. Holds `None` until a client exists.
-    chain_source: tokio::sync::watch::Receiver<Option<Arc<ChainSourceClient>>>,
-    sync_backend_error: Arc<async_lock::RwLock<Option<String>>>,
-    last_sync: async_lock::RwLock<Option<SystemTime>>,
+    sync_state: sync_state::SharedSyncState,
     config: Config,
 }
 
@@ -318,72 +307,56 @@ impl WalletInner {
     /// The sync backend may not be reachable yet when the enforcer starts.
     /// Rather than blocking startup, a transient connection failure hands the
     /// retrying off to a [`ChainSourceInitTask`], returned here for the
-    /// caller to spawn. Also returns the shared last-backend-error slot for
-    /// [`WalletInner::sync_backend_error`], seeded with the startup failure
-    /// (if any).
+    /// caller to spawn. The returned state is seeded with the startup failure
+    /// (if any), so wallet info can report it meanwhile.
     async fn init_chain_source(
         config: &WalletConfig,
         network: Network,
     ) -> Result<
-        (
-            tokio::sync::watch::Receiver<Option<Arc<ChainSourceClient>>>,
-            Arc<async_lock::RwLock<Option<String>>>,
-            Option<ChainSourceInitTask>,
-        ),
+        (sync_state::SharedSyncState, Option<ChainSourceInitTask>),
         error::InitChainSourceClient,
     > {
         if config.sync_source == WalletSyncSource::Disabled {
-            let (_state_tx, state_rx) = tokio::sync::watch::channel(None);
-            return Ok((state_rx, Arc::new(async_lock::RwLock::new(None)), None));
+            return Ok((sync_state::SharedSyncState::default(), None));
         }
         match Self::try_init_chain_source_client(config, network).await {
-            Ok(client) => {
-                let (_state_tx, state_rx) = tokio::sync::watch::channel(Some(Arc::new(client)));
-                Ok((state_rx, Arc::new(async_lock::RwLock::new(None)), None))
-            }
+            Ok(client) => Ok((sync_state::SharedSyncState::with_client(client), None)),
             Err(err) if err.is_transient() => {
                 tracing::warn!(
                     %err,
                     "wallet sync backend not reachable at startup, \
                      continuing without it and retrying in the background",
                 );
-                let last_error = Arc::new(async_lock::RwLock::new(Some(format!(
+                let state = sync_state::SharedSyncState::with_last_error(Some(format!(
                     "{:#}",
                     ErrorChain::new(&err)
-                ))));
-                let (state_tx, state_rx) = tokio::sync::watch::channel(None);
+                )));
                 let init_task = ChainSourceInitTask {
                     config: config.clone(),
                     network,
-                    state_tx,
-                    last_error: last_error.clone(),
+                    state: state.downgrade(),
                 };
-                Ok((state_rx, last_error, Some(init_task)))
+                Ok((state, Some(init_task)))
             }
             Err(err) => Err(err),
         }
     }
 
     fn chain_source_client(&self) -> Option<Arc<ChainSourceClient>> {
-        self.chain_source.borrow().clone()
+        self.sync_state.client()
     }
 
-    /// Record the outcome of an interaction with the sync backend in
-    /// [`Self::sync_backend_error`], so wallet info can report a backend that
-    /// is currently failing. Passes the result through unchanged.
-    pub(in crate::wallet) async fn record_sync_backend_result<T, E>(
+    /// Record the outcome of an interaction with the sync backend, so wallet
+    /// info can report a backend that is currently failing. Passes the result
+    /// through unchanged.
+    pub(in crate::wallet) fn record_sync_backend_result<T, E>(
         &self,
         result: Result<T, E>,
     ) -> Result<T, E>
     where
         E: std::error::Error,
     {
-        let mut last_error = self.sync_backend_error.write().await;
-        *last_error = match &result {
-            Ok(_) => None,
-            Err(err) => Some(format!("{:#}", ErrorChain::new(err))),
-        };
-        result
+        self.sync_state.record_result(result)
     }
 
     async fn initialize_wallet_from_mnemonic(
@@ -458,7 +431,7 @@ impl WalletInner {
             .await
             .map_err(error::InitWallet::OpenConnection)?;
 
-        let (chain_source, sync_backend_error, chain_source_init) =
+        let (sync_state, chain_source_init) =
             Self::init_chain_source(&config.wallet_opts, network).await?;
 
         // If we:
@@ -493,68 +466,28 @@ impl WalletInner {
             main_client,
             producer,
             magic,
-            bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
-            bdk_db: tokio::sync::Mutex::new(wallet_database),
+            locks: locks::WalletLocks::new(bitcoin_wallet, wallet_database),
             seed_store,
-            chain_source,
-            sync_backend_error,
-            last_sync: async_lock::RwLock::new(None),
+            sync_state,
         };
         Ok((inner, chain_source_init))
     }
 
-    /// Warn if lock takes this long to acquire
-    const LOCK_WARN_DURATION: Duration = Duration::from_secs(1);
-
-    /// Await a lock on the inner wallet, warning if acquisition takes longer
-    /// than [`Self::LOCK_WARN_DURATION`].
-    async fn acquire_lock_warn_slow<Guard>(
-        lock: impl std::future::Future<Output = Guard>,
-        what: &str,
-    ) -> Guard {
-        use futures::future::{Either, select};
-        tracing::trace!("wallet: acquiring {what}");
-        match select(
-            std::pin::pin!(lock),
-            std::pin::pin!(tokio::time::sleep(Self::LOCK_WARN_DURATION)),
-        )
-        .await
-        {
-            Either::Left((guard, _sleep)) => guard,
-            Either::Right(((), acquiring_lock)) => {
-                tracing::warn!(
-                    "wallet: waiting over {} to acquire {what}",
-                    jiff::SignedDuration::try_from(Self::LOCK_WARN_DURATION).unwrap(),
-                );
-                acquiring_lock.await
-            }
-        }
-    }
-
     async fn read_wallet(&self) -> Result<RwLockReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
-        let read_guard =
-            Self::acquire_lock_warn_slow(self.bitcoin_wallet.read(), "read lock").await;
-        RwLockReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
+        self.locks.read().await
     }
 
     /// Obtain an upgradable read lock on the inner wallet
     async fn read_wallet_upgradable(
         &self,
     ) -> Result<RwLockUpgradableReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
-        let read_guard = Self::acquire_lock_warn_slow(
-            self.bitcoin_wallet.upgradable_read(),
-            "upgradable read lock",
-        )
-        .await;
-        RwLockUpgradableReadGuardSome::new(read_guard).ok_or(error::NotUnlocked)
+        self.locks.upgradable_read().await
     }
 
     async fn write_wallet(
         &self,
     ) -> Result<RwLockWriteGuardSome<'_, BdkWallet>, error::NotUnlocked> {
-        let write_guard =
-            Self::acquire_lock_warn_slow(self.bitcoin_wallet.write(), "write lock").await;
-        RwLockWriteGuardSome::new(write_guard).ok_or(error::NotUnlocked)
+        self.locks.write().await
     }
 
     /// Apply an unconfirmed transaction to the wallet, marking the wallet
@@ -568,9 +501,8 @@ impl WalletInner {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        // Lock order: wallet before `bdk_db`, see the `bdk_db` field docs
         let mut wallet_write = self.write_wallet().await?;
-        let mut bdk_db = self.bdk_db.lock().await;
+        let mut bdk_db = self.locks.db(&wallet_write).await;
         let changed = wallet_write
             .with_mut(|wallet| {
                 wallet.apply_unconfirmed_txs([(tx, last_seen)]);
@@ -630,13 +562,13 @@ impl WalletInner {
             }
         }
 
-        let mut database = self.bdk_db.lock().await;
+        // Same lock order as other places
+        let mut write_guard = self.locks.write_slot().await;
+        let mut database = self.locks.db(&write_guard).await;
         let network = self.validator().network();
         let wallet =
             WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database).await?;
         drop(database);
-
-        let mut write_guard = self.bitcoin_wallet.write().await;
         *write_guard = Some(wallet);
         drop(write_guard);
         Ok(())
@@ -646,7 +578,7 @@ impl WalletInner {
         &self,
         password: &str,
     ) -> Result<(), error::UnlockExistingWallet> {
-        if self.bitcoin_wallet.read().await.is_some() {
+        if self.locks.read_slot().await.is_some() {
             return Err(WalletInitialization::AlreadyUnlocked.into());
         }
 
@@ -674,15 +606,14 @@ impl WalletInner {
             WalletInitialization::InvalidPassword
         })?;
 
-        let mut database = self.bdk_db.lock().await;
+        let mut write_guard = self.locks.write_slot().await;
+        let mut database = self.locks.db(&write_guard).await;
         let network = self.validator().network();
 
         tracing::debug!("unlock wallet: initializing BDK wallet struct");
         let wallet =
             WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database).await?;
         drop(database);
-
-        let mut write_guard = self.bitcoin_wallet.write().await;
         *write_guard = Some(wallet);
         drop(write_guard);
 
@@ -837,7 +768,7 @@ impl Wallet {
                         %tick,
                     );
                     let guard = span.enter();
-                    if self.inner.last_sync.read().await.is_none() {
+                    if !self.inner.sync_state.has_synced() {
                         // Initial sync is incomplete, nothing to do
                         tracing::debug!(
                             "waiting for initial wallet sync to complete"
@@ -869,12 +800,15 @@ impl Wallet {
         Ok(address)
     }
 
+    /// Full scan the wallet against the chain source. Fails with
+    /// [`error::FullScan::ScanInProgress`] rather than queueing if a scan is
+    /// already running.
     pub async fn full_scan(&self) -> miette::Result<BlockHash, error::FullScan> {
-        self.inner.full_scan().await
+        self.inner.try_full_scan().await
     }
 
     pub async fn is_initialized(&self) -> bool {
-        self.inner.bitcoin_wallet.read().await.is_some()
+        self.inner.locks.read_slot().await.is_some()
     }
 
     pub fn validator(&self) -> &Validator {
@@ -1268,7 +1202,7 @@ impl Wallet {
     pub async fn get_wallet_balance(
         &self,
     ) -> Result<(bdk_wallet::Balance, bool), error::GetWalletBalance> {
-        let has_synced = self.inner.last_sync.read().await.is_some();
+        let has_synced = self.inner.sync_state.has_synced();
 
         let balance = self.inner.read_wallet().await?.balance();
 
@@ -1909,6 +1843,12 @@ impl Wallet {
     }
 
     pub async fn get_wallet_info(&self) -> Result<WalletInfo, error::NotUnlocked> {
+        let sync_state::SyncStateReport {
+            connected,
+            last_error,
+            last_synced_at,
+        } = self.inner.sync_state.report();
+
         let w = self.inner.read_wallet().await?;
         let mut keychain_descriptors = std::collections::HashMap::new();
         for (kind, _) in w.keychains() {
@@ -1921,9 +1861,9 @@ impl Wallet {
         let sync_source = SyncSourceInfo {
             kind: wallet_opts.sync_source,
             endpoint: sync_backend_endpoint(wallet_opts, w.network()),
-            connected: self.inner.chain_source_client().is_some(),
-            last_error: self.inner.sync_backend_error.read().await.clone(),
-            last_synced_at: *self.inner.last_sync.read().await,
+            connected,
+            last_error,
+            last_synced_at,
         };
 
         Ok(WalletInfo {
@@ -1945,7 +1885,7 @@ impl Wallet {
         // to cross the wallet scan gap.
         let mut wallet_write = self.inner.write_wallet().await?;
 
-        let mut bdk_db_lock = self.inner.bdk_db.lock().await;
+        let mut bdk_db_lock = self.inner.locks.db(&wallet_write).await;
         let address = wallet_write
             .with_mut(|wallet| {
                 let info = wallet.next_unused_address(bdk_wallet::KeychainKind::External);

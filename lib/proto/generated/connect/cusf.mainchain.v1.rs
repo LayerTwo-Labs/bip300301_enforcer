@@ -5104,7 +5104,11 @@ pub trait WalletService: Send + Sync + 'static {
             > + Send + use<'a, Self>,
         >,
     > + Send;
-    /// Handle the FullScan RPC.
+    /// Rescan the whole chain for wallet transactions, from index 0 of every
+    /// keychain. Blocks until the scan completes, which can take a long time.
+    /// A scan holds the wallet for its whole duration, which also stalls block
+    /// processing, so only one runs at a time: calling this while a scan is
+    /// already in progress fails with ABORTED rather than queueing.
     ///
     /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
     ///

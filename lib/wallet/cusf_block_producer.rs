@@ -39,7 +39,7 @@ impl WalletInner {
         //    If not, we have to iterate over the missing blocks and connect them first.
         let wallet_tip = self.get_tip().await?;
         if wallet_tip.hash == new_tip_hash {
-            self.set_last_synced_now().await;
+            self.set_last_synced_now();
             return Ok(());
         }
         // Blocks mined before the wallet's keys existed provably cannot contain
@@ -190,7 +190,7 @@ impl WalletInner {
             }
         }
 
-        self.set_last_synced_now().await;
+        self.set_last_synced_now();
 
         Ok(())
     }
@@ -394,9 +394,7 @@ impl CusfEnforcer for Wallet {
                     .sync_wallet_to_tip(block.block_hash(), Some(block))
                     .await?;
                 let mut wallet_write = self.inner.write_wallet().await?;
-                // Lock order: wallet before `bdk_db`, see the `bdk_db` field
-                // docs
-                let mut bdk_db = self.inner.bdk_db.lock().await;
+                let mut bdk_db = self.inner.locks.db(&wallet_write).await;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()

@@ -2,7 +2,6 @@
 
 use std::time::SystemTime;
 
-use async_lock::RwLockWriteGuard;
 use bdk_chain::bdk_core;
 use bdk_esplora::EsploraAsyncExt as _;
 use futures::TryFutureExt;
@@ -11,14 +10,16 @@ use tracing::instrument;
 
 use crate::wallet::{
     BdkWallet, ChainSourceClient, Persistence, WalletInner, error,
+    locks::FullScanGuard,
+    sync_state::SharedSyncState,
     util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
 };
 
-/// Write-locked last_sync, wallet, and database
+/// Write-locked wallet and database, plus the sync state to stamp on commit.
 #[must_use]
 pub(in crate::wallet) struct SyncWriteGuard<'a> {
     database: tokio::sync::MutexGuard<'a, Persistence>,
-    last_sync: RwLockWriteGuard<'a, Option<SystemTime>>,
+    sync_state: &'a SharedSyncState,
     pub(in crate::wallet) wallet: RwLockWriteGuardSome<'a, BdkWallet>,
 }
 
@@ -34,7 +35,7 @@ impl SyncWriteGuard<'_> {
                 file_path: self.database.file_path.clone(),
                 source: err,
             })?;
-        *self.last_sync = Some(SystemTime::now());
+        self.sync_state.mark_synced_now();
         Ok(())
     }
 }
@@ -69,7 +70,7 @@ impl WalletInner {
             .producer
             .apply_connected_block_policy(block_info)
             .await?;
-        let mut database = self.bdk_db.lock().await;
+        let mut database = self.locks.db(&wallet_write).await;
         tracing::trace!("applying block to BDK wallet");
 
         // `apply_block` mutates the in-memory `LocalChain` immediately, so it must
@@ -102,9 +103,8 @@ impl WalletInner {
         Ok(Ok(()))
     }
 
-    pub(in crate::wallet) async fn set_last_synced_now(&self) {
-        let mut last_sync_write = self.last_sync.write().await;
-        *last_sync_write = Some(SystemTime::now());
+    pub(in crate::wallet) fn set_last_synced_now(&self) {
+        self.sync_state.mark_synced_now();
     }
 
     /// The wallet's recorded birthday height, if any. Read errors are
@@ -131,7 +131,7 @@ impl WalletInner {
     ) -> Result<(), error::FullScan> {
         let start = Instant::now();
         let mut wallet_write = self.write_wallet().await?;
-        let mut bdk_db = self.bdk_db.lock().await;
+        let mut bdk_db = self.locks.db(&wallet_write).await;
 
         let checkpoint = {
             let local_chain = wallet_write.local_chain();
@@ -184,7 +184,6 @@ impl WalletInner {
             }
         };
         tracing::trace!("acquired upgradable read lock on wallet");
-        let last_sync_write = self.last_sync.write().await;
         let request = wallet_read.start_sync_with_revealed_spks().build();
 
         tracing::trace!(
@@ -202,13 +201,13 @@ impl WalletInner {
                 const BATCH_SIZE: usize = 5;
                 const FETCH_PREV_TXOUTS: bool = false;
                 let result = electrum_client.sync(request, BATCH_SIZE, FETCH_PREV_TXOUTS);
-                ("electrum", self.record_sync_backend_result(result).await?)
+                ("electrum", self.record_sync_backend_result(result)?)
             }
             ChainSourceClient::Esplora(esplora_client) => {
                 let result = esplora_client
                     .sync(request, ESPLORA_PARALLEL_REQUESTS)
                     .await;
-                ("esplora", self.record_sync_backend_result(result).await?)
+                ("esplora", self.record_sync_backend_result(result)?)
             }
         };
         tracing::trace!("Fetched update from {chain_source}");
@@ -238,9 +237,10 @@ impl WalletInner {
             "wallet sync complete in {:?}",
             start.elapsed().unwrap_or_default(),
         );
+        let database = self.locks.db(&wallet_write).await;
         Ok(Some(SyncWriteGuard {
-            database: self.bdk_db.lock().await,
-            last_sync: last_sync_write,
+            database,
+            sync_state: &self.sync_state,
             wallet: wallet_write,
         }))
     }
@@ -297,9 +297,36 @@ impl WalletInner {
         Ok(checkpoint)
     }
 
-    #[expect(clippy::significant_drop_tightening, reason = "false positive")]
+    /// Full scan the wallet, waiting for any scan already in flight to
+    /// finish first. For callers that must not be turned away, such as the
+    /// gap path in `sync_wallet_to_tip`.
     pub(in crate::wallet) async fn full_scan(
         &self,
+    ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
+        let scan_slot = self.locks.full_scan().await;
+        self.full_scan_guarded(scan_slot).await
+    }
+
+    /// Full scan the wallet, failing with [`error::FullScan::ScanInProgress`]
+    /// if a scan is already running. For on-demand callers: a scan holds the
+    /// wallet across minutes of network I/O and the enforcer's block
+    /// connection path needs that wallet, so queueing scans would let a
+    /// caller keep blocks from being connected for as long as it keeps
+    /// asking.
+    pub(in crate::wallet) async fn try_full_scan(
+        &self,
+    ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
+        let scan_slot = self
+            .locks
+            .try_full_scan()
+            .ok_or(error::FullScan::ScanInProgress)?;
+        self.full_scan_guarded(scan_slot).await
+    }
+
+    #[expect(clippy::significant_drop_tightening, reason = "false positive")]
+    async fn full_scan_guarded(
+        &self,
+        _scan_slot: FullScanGuard<'_>,
     ) -> miette::Result<bdk_wallet::bitcoin::BlockHash, error::FullScan> {
         tracing::info!("starting wallet full scan");
 
@@ -360,7 +387,7 @@ impl WalletInner {
                         .await
                 }
             };
-            self.record_sync_backend_result(result).await?
+            self.record_sync_backend_result(result)?
         };
 
         tracing::info!(
@@ -374,7 +401,7 @@ impl WalletInner {
         // Applying the update reveals addresses up to the last active index of
         // each keychain, so that the persist below records which index we're at.
         let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
-        let mut bdk_db = self.bdk_db.lock().await;
+        let mut bdk_db = self.locks.db(&wallet_write).await;
 
         // A full scan re-adopts stale BMM requests still in the chain
         // source's mempool view. Evict them again before persisting.
