@@ -229,17 +229,67 @@ pub struct ReservedPorts {
     pub enforcer_serve_rpc: ReservedPort,
 }
 
+/// Whether some process is already listening on `127.0.0.1:port`.
+///
+/// `reserve-port` calls a port free when it can `bind` it on `127.0.0.1` and
+/// `[::1]`, which is not the same question as "is this port ours to serve on".
+/// A process that binds the *wildcard* address (`*:port`) -- a container
+/// runtime, a docker-desktop-style proxy, some other dev server -- does not
+/// stop those binds from succeeding: the kernel lets a more specific address
+/// coexist with a wildcard one. It does, however, answer every connection to
+/// `127.0.0.1:port` until our own child binds the more specific address.
+///
+/// So a reserved port can be shadowed by a foreign listener, and the harness
+/// cannot tell the difference by binding: [`wait_for_port`] sees the foreign
+/// listener accept and reports the child ready, and the first gRPC request
+/// goes to a peer that accepts the connection and then never answers -- a
+/// request that hangs for its entire timeout instead of failing and being
+/// retried.
+///
+/// A genuinely free port refuses connections. Anything that accepts one is
+/// already shadowed.
+fn port_is_shadowed(port: u16) -> bool {
+    const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+    let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).is_ok()
+}
+
+/// [`ReservedPort::random`], skipping ports that a foreign listener already
+/// answers on (see [`port_is_shadowed`]).
+fn reserve_unshadowed_port() -> Result<ReservedPort, reserve_port::Error> {
+    /// Shadowed ports are rare; needing more attempts than this means the
+    /// scanned range is unusable, which is worth failing loudly over.
+    const MAX_ATTEMPTS: usize = 32;
+
+    for _ in 0..MAX_ATTEMPTS {
+        let reserved = ReservedPort::random()?;
+        if !port_is_shadowed(reserved.port()) {
+            return Ok(reserved);
+        }
+        tracing::warn!(
+            port = reserved.port(),
+            "reserved port is already answered by another process on this machine; \
+             taking another"
+        );
+        // Deliberately never dropped: `ReservedPort`'s `Drop` hands the port
+        // back to `reserve-port`'s global finder, which would offer this same
+        // shadowed port to the next test that asks.
+        std::mem::forget(reserved);
+    }
+    Err(reserve_port::Error::FailedToReservePort)
+}
+
 impl ReservedPorts {
     pub fn new() -> Result<Self, reserve_port::Error> {
         Ok(Self {
-            bitcoind_listen: ReservedPort::random()?,
-            bitcoind_rpc: ReservedPort::random()?,
-            bitcoind_zmq_sequence: ReservedPort::random()?,
-            electrs_electrum_rpc: ReservedPort::random()?,
-            electrs_electrum_http: ReservedPort::random()?,
-            electrs_monitoring: ReservedPort::random()?,
-            enforcer_serve_grpc: ReservedPort::random()?,
-            enforcer_serve_rpc: ReservedPort::random()?,
+            bitcoind_listen: reserve_unshadowed_port()?,
+            bitcoind_rpc: reserve_unshadowed_port()?,
+            bitcoind_zmq_sequence: reserve_unshadowed_port()?,
+            electrs_electrum_rpc: reserve_unshadowed_port()?,
+            electrs_electrum_http: reserve_unshadowed_port()?,
+            electrs_monitoring: reserve_unshadowed_port()?,
+            enforcer_serve_grpc: reserve_unshadowed_port()?,
+            enforcer_serve_rpc: reserve_unshadowed_port()?,
         })
     }
 }
@@ -419,10 +469,21 @@ pub async fn wait_for_validator_synced(
 ) -> anyhow::Result<proto::mainchain::BlockHeaderInfo> {
     const TIMEOUT: Duration = Duration::from_secs(120);
     const CHECK_INTERVAL: Duration = Duration::from_millis(100);
+    /// Budget for a single attempt. Connect RPCs carry no client-side deadline
+    /// by default, so a request to a peer that accepts the connection and then
+    /// never answers -- a foreign listener shadowing the port, an enforcer
+    /// still binding it -- would otherwise spend the whole `TIMEOUT` inside one
+    /// call and never reach the retry below. Bounding each attempt turns that
+    /// into one lost interval, and the retry opens a fresh connection.
+    const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
     let task = async {
         loop {
-            match client.get_chain_tip(GetChainTipRequest::default()).await {
-                Ok(resp) => {
+            let attempt = timeout(
+                ATTEMPT_TIMEOUT,
+                client.get_chain_tip(GetChainTipRequest::default()),
+            );
+            match attempt.await {
+                Ok(Ok(resp)) => {
                     return resp
                         .into_owned()
                         .block_header_info
@@ -435,9 +496,15 @@ pub async fn wait_for_validator_synced(
                 // connection. With the whole suite starting processes at once
                 // both are routine, so retry either until the timeout rather
                 // than failing a test on a startup hiccup.
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::trace!("Validator not ready yet ({err}), waiting...");
                     sleep(CHECK_INTERVAL).await;
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        "chain tip request got no response within {ATTEMPT_TIMEOUT:?}; \
+                         retrying on a fresh connection"
+                    );
                 }
             }
         }
@@ -870,13 +937,11 @@ type Transport = HttpClient;
 
 /// Construct a connectrpc transport/config pair for a plaintext gRPC endpoint
 /// served by our enforcer.
-fn make_client(port: u16) -> anyhow::Result<(HttpClient, ClientConfig)> {
+fn client_config(port: u16) -> anyhow::Result<ClientConfig> {
     let uri: http::Uri = format!("http://127.0.0.1:{port}")
         .parse()
         .map_err(|err| anyhow!("invalid client URI: {err}"))?;
-    let http = HttpClient::plaintext();
-    let config = ClientConfig::new(uri);
-    Ok((http, config))
+    Ok(ClientConfig::new(uri))
 }
 
 #[derive(Clone, Debug)]
@@ -1282,12 +1347,26 @@ impl PostSetup {
         if let Some(signet_miner) = signet_miner.as_mut() {
             let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }
-        let (http, config) = make_client(enforcer.serve_grpc_port)?;
-        let validator_service_client = ValidatorServiceClient::new(http.clone(), config.clone());
+        // A fresh `HttpClient` per service, so each gets its own hyper
+        // connection pool instead of all four sharing one.
+        //
+        // The harness keeps `SubscribeEvents` streams open for long stretches:
+        // one for the whole test in `DummySidechain`, plus one per `mine_*`
+        // call. A streaming response holds its pooled HTTP/1.1 connection for
+        // its entire lifetime, and with a single shared pool the first unary
+        // call issued right after such a stream is opened has been observed to
+        // hang indefinitely -- no new socket, no request reaching the server,
+        // no error, until the harness's per-test timeout fires 20 minutes
+        // later. Separate pools keep a long-lived subscription on the
+        // validator client from stranding calls on the others.
+        let config = client_config(enforcer.serve_grpc_port)?;
+        let validator_service_client =
+            ValidatorServiceClient::new(HttpClient::plaintext(), config.clone());
         let block_producer_service_client =
-            BlockProducerServiceClient::new(http.clone(), config.clone());
-        let mining_service_client = MiningServiceClient::new(http.clone(), config.clone());
-        let wallet_service_client = WalletServiceClient::new(http, config);
+            BlockProducerServiceClient::new(HttpClient::plaintext(), config.clone());
+        let mining_service_client =
+            MiningServiceClient::new(HttpClient::plaintext(), config.clone());
+        let wallet_service_client = WalletServiceClient::new(HttpClient::plaintext(), config);
         // The gRPC port opens before the validator has synced the blocks that
         // this setup generated. Wait for it, so that tests don't race the
         // initial sync.

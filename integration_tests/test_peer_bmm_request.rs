@@ -7,7 +7,7 @@ use bip300301_enforcer_lib::{
         common::ConsensusHex,
         mainchain::{
             BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, CreateNewAddressRequest,
-            GetBalanceRequest, GetChainTipRequest, SendTransactionRequest,
+            GetBalanceRequest, GetChainTipRequest, SendTransactionRequest, SendTransactionResponse,
         },
     },
 };
@@ -169,7 +169,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         .await?
         .into_owned()
         .address;
-    if post_setup
+    let funding_txid = post_setup
         .miner
         .wallet_service_client
         .send_transaction(SendTransactionRequest {
@@ -181,10 +181,16 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         .await?
         .into_owned()
         .txid
-        .is_unset()
-    {
-        anyhow::bail!("Failed to create a tx to fund sender wallet")
-    };
+        .into_option()
+        .ok_or_else(|| anyhow::anyhow!("Failed to create a tx to fund sender wallet"))?
+        .decode::<SendTransactionResponse, bitcoin::Txid>("txid")?;
+    // The block below has to *contain* this transaction, and the miner builds
+    // it from the enforcer's mempool mirror rather than from bitcoind's
+    // mempool. Mining the moment `SendTransaction` returns races the mirror,
+    // which is milliseconds behind: the block goes out with only its coinbase,
+    // the sender's balance never moves, and the wait below burns its whole
+    // budget for nothing.
+    let () = mine::wait_for_tx_in_block_template(&post_setup.miner, &funding_txid).await?;
     let () = crate::mine::mine::<DummySidechain>(&mut post_setup.miner, 1, None).await?;
     // Wait for the sender to receive the block over p2p and credit the funds.
     let () = wait_until("sender wallet to see the funding tx confirmed", || async {

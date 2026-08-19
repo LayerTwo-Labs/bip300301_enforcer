@@ -19,9 +19,39 @@ use either::Either;
 use thiserror::Error;
 
 use crate::{
-    setup::{MiningMode, Network, PostSetup, Sidechain},
+    setup::{MiningMode, Network, PostSetup, Sidechain, wait_until},
     util::VarError,
 };
+
+/// Block until the enforcer's block template carries `txid`.
+///
+/// A transaction is in bitcoind's mempool the moment `sendrawtransaction`
+/// returns, but the enforcer builds templates from its own mempool mirror,
+/// which is fed asynchronously off bitcoind's ZMQ sequence stream. Mining as
+/// soon as a send RPC returns therefore races that stream: the template is
+/// built from a mirror that has not caught up, the block goes out without the
+/// transaction, and whatever the test expected it to pay for never confirms.
+/// The lag is milliseconds, which is exactly what makes it an intermittent
+/// failure rather than an obvious one.
+///
+/// Only meaningful in [`crate::setup::Mode::GetBlockTemplate`], which is the
+/// mode that serves the enforcer's `getblocktemplate`.
+pub async fn wait_for_tx_in_block_template(
+    post_setup: &PostSetup,
+    txid: &bitcoin::Txid,
+) -> anyhow::Result<()> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+    wait_until(
+        &format!("tx `{txid}` to reach the enforcer's block template"),
+        || async {
+            let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+            request.capabilities.insert("coinbasetxn".to_owned());
+            let template = post_setup.gbt_client.get_block_template(request).await?;
+            Ok(template.transactions.iter().any(|tx| tx.txid == *txid))
+        },
+    )
+    .await
+}
 
 /// Mine a single signet block
 async fn mine_single_signet(
