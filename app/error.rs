@@ -3,9 +3,10 @@
 use std::net::SocketAddr;
 
 use cusf_enforcer_mempool::{
-    cusf_enforcer::InitialSyncError,
+    cusf_enforcer::{CusfEnforcer, InitialSyncError, TaskError},
     mempool::{InitialSyncMempoolError, SyncTaskError},
 };
+use jsonrpsee::core::ClientError;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -67,5 +68,31 @@ where
             SyncTaskError::SequenceStream(_)
                 | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_))
         )
+    }
+}
+
+/// Whether a node RPC call failed at the transport layer rather than being
+/// answered with an error.
+///
+/// bitcoind closes idle HTTP connections, so a request that races that close
+/// fails with `connection closed before message completed`.
+fn is_transport_error(err: &ClientError) -> bool {
+    matches!(err, ClientError::Transport(_))
+}
+
+/// Whether a fresh sync can clear this. The no-mempool counterpart of
+/// [`MempoolTask::is_resyncable`].
+pub fn enforcer_task_is_resyncable<Enforcer>(err: &TaskError<Enforcer>) -> bool
+where
+    Enforcer: CusfEnforcer,
+{
+    match err {
+        TaskError::ZmqSequence(_) | TaskError::InitialSync(InitialSyncError::SequenceStream(_)) => {
+            true
+        }
+        TaskError::JsonRpc(err) | TaskError::InitialSync(InitialSyncError::JsonRpc(err)) => {
+            is_transport_error(err)
+        }
+        _ => false,
     }
 }

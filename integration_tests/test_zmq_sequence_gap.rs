@@ -1,8 +1,10 @@
 //! A gap in bitcoind's ZMQ sequence stream must not kill the enforcer.
 //!
 //! bitcoind's ZMQ publisher drops notifications once the socket's high-water
-//! mark is reached. The mempool sync task detects the resulting gap
-//! (`SequenceStreamError::MissingMempoolSequence`) and returns an error.
+//! mark is reached. Both sync tasks consume that one stream, and the gap check
+//! runs before the per-task message filtering, so both see the error:
+//! `Mode::Mempool` drives the mempool sync task, `Mode::NoMempool` the
+//! tip-chasing task that is the default mode.
 //!
 //! Observed on drynet4 roughly every 1–3 hours once the chain was mining at
 //! ~1 block/2.5s, each occurrence costing a process restart. Raising
@@ -17,11 +19,16 @@ use bip300301_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetChainIn
 
 use crate::{
     integration_test,
-    setup::{DummySidechain, PostSetup},
+    setup::{DummySidechain, Mode, PostSetup},
 };
 
 /// Extra bitcoind args that make the publisher drop sequence messages.
 pub const BITCOIND_ARGS: [&str; 1] = ["-zmqpubsequencehwm=1"];
+
+/// Mirrors `MAX_CONSECUTIVE_RESYNCS` in `run_no_mempool_task`. That const is
+/// local to the enforcer binary, so it cannot be imported here; keep the two
+/// in step.
+const MAX_CONSECUTIVE_RESYNCS: usize = 5;
 
 /// The enforcer writes to `<enforcer_dir>/logs/bip300301_enforcer.log.<date>.N`.
 fn read_enforcer_log(post_setup: &PostSetup) -> anyhow::Result<String> {
@@ -107,11 +114,20 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
 
     // ---- negative case ----
     //
-    // Recovery must stay narrow. Stopping bitcoind makes the next re-sync fail
-    // on the ZMQ reachability check (`ZmqNotReachable`), which is NOT
-    // resyncable, so the sync task must give up rather than spin forever
-    // against a node that is gone. A too-broad `is_resyncable` would turn
-    // every fatal condition into a silent infinite retry — worse than exiting.
+    // Recovery must stay narrow. Stopping bitcoind must not leave the sync
+    // task spinning forever against a node that is gone. A too-broad
+    // `is_resyncable` would turn every fatal condition into a silent infinite
+    // retry — worse than exiting.
+    //
+    // The two modes reach that outcome differently, so the bound differs:
+    //
+    // - `Mempool` re-syncs through a ZMQ reachability pre-check, which fails
+    //   with `ZmqNotReachable`. That is not resyncable, so the task gives up
+    //   on the first attempt.
+    // - `NoMempool` has no such pre-check. A stopped node refuses the RPC
+    //   connection, which surfaces as a transport error and IS resyncable, so
+    //   the task legitimately retries until its consecutive-resync budget runs
+    //   out. Bounded rather than unbounded is the property under test here.
     //
     // Asserted on the enforcer's own log rather than on gRPC availability:
     // `get_chain_info` is served from the validator's local database, so the
@@ -121,6 +137,17 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
         .matches("recoverably")
         .count();
 
+    // The gRPC check above cannot stand on its own: it is served from the
+    // validator's local database, so it answers whether or not the gap was
+    // recovered — or even reached. Without this, a run where the publisher
+    // never dropped a message would go green having never entered the
+    // recovery path at all.
+    anyhow::ensure!(
+        resyncs_before_stop > 0,
+        "enforcer never logged a recovery, so the ZMQ gap this test exists to \
+         force was never hit: nothing about recovery was actually exercised"
+    );
+
     post_setup
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "stop", Vec::<String>::new())
@@ -129,12 +156,18 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
 
     tokio::time::sleep(Duration::from_secs(15)).await;
 
+    // The extra 1 covers the attempt already in flight when bitcoind stopped.
+    let budget = match post_setup.mode {
+        Mode::NoMempool => MAX_CONSECUTIVE_RESYNCS + 1,
+        Mode::Mempool | Mode::GetBlockTemplate => 1,
+    };
     let log = read_enforcer_log(&post_setup)?;
     let resyncs = log.matches("recoverably").count();
     anyhow::ensure!(
-        resyncs <= resyncs_before_stop + 1,
+        resyncs <= resyncs_before_stop + budget,
         "sync task kept re-syncing after bitcoind stopped ({resyncs} attempts, \
-         was {resyncs_before_stop}): a non-recoverable error is being retried"
+         was {resyncs_before_stop}, budget {budget}): a non-recoverable error \
+         is being retried"
     );
 
     Ok(())

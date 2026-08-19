@@ -957,24 +957,29 @@ pub fn tests(
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
     async_trials.extend(unconfirmed_transactions_tests);
-    async_trials.push(new_trial_with_setup_opts(
-        "zmq_sequence_gap".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::Mempool,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::setup::SetupOpts {
-            bitcoind_args: test_zmq_sequence_gap::BITCOIND_ARGS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            ..Default::default()
-        },
-        test_zmq_sequence_gap::test_zmq_sequence_gap,
-    ));
+    // Both sync tasks consume the same sequence stream and both die on a gap
+    // in it, so both need to recover: `Mempool` drives the mempool sync task,
+    // `NoMempool` the tip-chasing task that is the default mode.
+    async_trials.extend([Mode::Mempool, Mode::NoMempool].map(|mode| {
+        new_trial_with_setup_opts(
+            format!("zmq_sequence_gap (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::setup::SetupOpts {
+                bitcoind_args: test_zmq_sequence_gap::BITCOIND_ARGS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                ..Default::default()
+            },
+            test_zmq_sequence_gap::test_zmq_sequence_gap,
+        )
+    }));
     async_trials.push(peer_bmm_request_trial);
     // Competing BMM bids, in both block production modes: the enforcer's own
     // template server (GetBlockTemplate) and `GenerateToAddress` self-mining
