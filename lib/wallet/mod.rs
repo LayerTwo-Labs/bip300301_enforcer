@@ -2053,6 +2053,7 @@ mod tests {
             electrum_port: None,
             skip_periodic_sync: false,
             sync_source: WalletSyncSource::Esplora,
+            max_block_by_block_replay: 2_000,
             mnemonic_path: None,
         };
 
@@ -2076,6 +2077,7 @@ mod tests {
             electrum_port: Some(50009),
             skip_periodic_sync: false,
             sync_source: WalletSyncSource::Electrum,
+            max_block_by_block_replay: 2_000,
             mnemonic_path: None,
         };
 
@@ -2096,6 +2098,7 @@ mod tests {
             electrum_port: None,
             skip_periodic_sync: false,
             sync_source: WalletSyncSource::Disabled,
+            max_block_by_block_replay: 2_000,
             mnemonic_path: None,
         };
 

@@ -383,6 +383,19 @@ pub struct WalletConfig {
     #[arg(long = "wallet-sync-source", default_value_t = WalletSyncSource::default(), value_enum)]
     pub sync_source: WalletSyncSource,
 
+    /// How many blocks the wallet is willing to catch up on one block at a
+    /// time. Past this it advances its chain with a single checkpoint and
+    /// recovers the transactions in the skipped range with a full scan
+    /// against the sync backend instead.
+    ///
+    /// Hidden: for testing purposes only
+    #[arg(
+        long = "wallet-max-block-by-block-replay",
+        default_value_t = 2_000,
+        hide = true
+    )]
+    pub max_block_by_block_replay: u32,
+
     /// Path to a file containing exactly 12 space-separated BIP39 mnemonic words.
     #[arg(long = "wallet-seed-file", conflicts_with = "auto_create")]
     pub mnemonic_path: Option<PathBuf>,
@@ -851,6 +864,25 @@ mod tests {
                 panic!("{preset:?} and {previous:?} both use datadir suffix `{suffix}`");
             }
         }
+    }
+
+    /// The wallet's replay limit decides whether a gap is crossed one block
+    /// at a time or with a checkpoint and a full scan, and it is hidden, so
+    /// nothing in an ordinary run would notice it drifting. The integration
+    /// tests lower it to put gaps on both sides of it, which only works for
+    /// as long as the flag keeps this spelling.
+    #[test]
+    fn block_by_block_replay_limit_is_overridable() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["bip300301_enforcer"];
+            argv.extend_from_slice(args);
+            Config::try_parse_from(argv)
+                .expect("should parse")
+                .wallet_opts
+                .max_block_by_block_replay
+        };
+        assert_eq!(parse(&[]), 2_000);
+        assert_eq!(parse(&["--wallet-max-block-by-block-replay=50"]), 50);
     }
 
     /// The annotation itself: typing a field `SecretString` is what makes the
