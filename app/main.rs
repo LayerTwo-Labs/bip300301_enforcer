@@ -719,15 +719,60 @@ async fn run_no_mempool_task(
     cancel: CancellationToken,
 ) -> Result<(), miette::Report> {
     tracing::info!("CUSF enforcer task w/o mempool: starting");
-    cusf_enforcer_mempool::cusf_enforcer::task(
-        &mut enforcer,
-        &mainchain_client,
-        &zmq_addr_sequence,
-        cancel.cancelled(),
-    )
-    .await
-    .into_diagnostic()
-    .wrap_err("CUSF enforcer task w/o mempool")
+
+    // A dropped ZMQ notification or a node RPC connection that closed
+    // mid-request leaves this task's view stale, and a fresh sync clears it.
+    //
+    // Bounded, unlike the mempool loop above, because this one also treats a
+    // node RPC transport error as recoverable, and a node that has gone away
+    // for good produces those forever.
+    const MAX_CONSECUTIVE_RESYNCS: usize = 5;
+
+    // A task that ran at least this long before failing has clearly been
+    // working, so its failure starts a fresh budget rather than counting
+    // towards the previous burst.
+    const RESYNC_BUDGET_RESET: Duration = Duration::from_secs(60);
+
+    let mut consecutive = 0usize;
+    loop {
+        let started = std::time::Instant::now();
+        let res = cusf_enforcer_mempool::cusf_enforcer::task(
+            &mut enforcer,
+            &mainchain_client,
+            &zmq_addr_sequence,
+            cancel.cancelled(),
+        )
+        .await;
+        match res {
+            Ok(()) => return Ok(()),
+            Err(err) if error::enforcer_task_is_resyncable(&err) && !cancel.is_cancelled() => {
+                if started.elapsed() >= RESYNC_BUDGET_RESET {
+                    consecutive = 0;
+                }
+                consecutive += 1;
+                if consecutive > MAX_CONSECUTIVE_RESYNCS {
+                    return Err(miette::Report::from_err(err)).wrap_err(format!(
+                        "CUSF enforcer task w/o mempool: gave up after \
+                         {MAX_CONSECUTIVE_RESYNCS} consecutive re-syncs"
+                    ));
+                }
+                tracing::warn!(
+                    err = %ErrorChain::new(&err),
+                    attempt = consecutive,
+                    "CUSF enforcer task w/o mempool failed recoverably, re-syncing",
+                );
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(MEMPOOL_RESYNC_DELAY) => (),
+                }
+            }
+            Err(err) => {
+                return Err(miette::Report::from_err(err))
+                    .wrap_err("CUSF enforcer task w/o mempool");
+            }
+        }
+    }
 }
 
 async fn run_validator_mempool_task(
