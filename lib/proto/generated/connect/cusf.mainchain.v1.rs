@@ -4360,6 +4360,18 @@ pub type OwnedCreateWalletResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<FullScanRequestView<'static>>`.
+pub type OwnedFullScanRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<FullScanResponseView<'static>>`.
+pub type OwnedFullScanResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanResponseView<
+        'static,
+    >,
+>;
 ///Shorthand for `OwnedView<GetBalanceRequestView<'static>>`.
 pub type OwnedGetBalanceRequestView = ::buffa::view::OwnedView<
     crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetBalanceRequestView<
@@ -4574,6 +4586,34 @@ impl ::connectrpc::Encodable<
 >
 for ::buffa::view::OwnedView<
     crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateWalletResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::FullScanResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::FullScanResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanResponseView<
         'static,
     >,
 > {
@@ -4827,6 +4867,15 @@ pub const WALLET_SERVICE_CREATE_WALLET_SPEC: ::connectrpc::Spec = ::connectrpc::
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `FullScan` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_FULL_SCAN_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/FullScan",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
 /// Static [`Spec`](::connectrpc::Spec) for the server-side `GetBalance` RPC.
 ///
 /// The dispatcher surfaces this on
@@ -5052,6 +5101,29 @@ pub trait WalletService: Send + Sync + 'static {
         Output = ::connectrpc::ServiceResult<
             impl ::connectrpc::Encodable<
                 crate::proto::generated::buffa::cusf::mainchain::v1::CreateWalletResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the FullScan RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn full_scan<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::FullScanRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::FullScanResponse,
             > + Send + use<'a, Self>,
         >,
     > + Send;
@@ -5390,6 +5462,35 @@ impl<S: WalletService> WalletServiceExt for S {
                 },
             )
             .with_spec(WALLET_SERVICE_CREATE_WALLET_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "FullScan",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::FullScanRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.full_scan(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::FullScanResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_FULL_SCAN_SPEC)
             .route_view_idempotent(
                 WALLET_SERVICE_SERVICE_NAME,
                 "GetBalance",
@@ -5670,6 +5771,12 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                         .with_spec(WALLET_SERVICE_CREATE_WALLET_SPEC),
                 )
             }
+            "FullScan" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_FULL_SCAN_SPEC),
+                )
+            }
             "GetBalance" => {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
@@ -5831,6 +5938,27 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                         .await?
                         .encode::<
                             crate::proto::generated::buffa::cusf::mainchain::v1::CreateWalletResponse,
+                        >(format)
+                })
+            }
+            "FullScan" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::FullScanRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::FullScanRequest,
+                    >::from_parts(&req, &body);
+                    svc.full_scan(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::FullScanResponse,
                         >(format)
                 })
             }
@@ -6328,6 +6456,51 @@ where
                 &self.config,
                 WALLET_SERVICE_SERVICE_NAME,
                 "CreateWallet",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the FullScan RPC. Sends a request to /cusf.mainchain.v1.WalletService/FullScan.
+    pub async fn full_scan(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::FullScanRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.full_scan_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the FullScan RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn full_scan_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::FullScanRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::FullScanResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "FullScan",
                 request,
                 options,
             )

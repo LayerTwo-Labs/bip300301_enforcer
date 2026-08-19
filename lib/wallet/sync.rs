@@ -313,6 +313,16 @@ impl WalletInner {
                     sync_source: self.config.wallet_opts.sync_source,
                 })?;
 
+        // Applying the scan requires a mainchain tip to judge stale BMM
+        // requests against (see below). Check for one before spending minutes
+        // on a scan that cannot be persisted. The tip advances during the
+        // scan, so the value used there is re-read rather than carried down.
+        let _: bitcoin::BlockHash = self
+            .validator()
+            .try_get_mainchain_tip()
+            .map_err(error::FullScan::TryGetMainchainTip)?
+            .ok_or(error::FullScan::NoMainchainTip)?;
+
         let mut start = SystemTime::now();
 
         let wallet_read = self
@@ -368,13 +378,18 @@ impl WalletInner {
 
         // A full scan re-adopts stale BMM requests still in the chain
         // source's mempool view. Evict them again before persisting.
-        let mainchain_tip = self.validator().try_get_mainchain_tip().ok().flatten();
+        // Without a tip there is nothing to judge staleness against, and
+        // persisting the update anyway would commit the re-adopted requests
+        // and re-lock their inputs: fail instead of skipping the eviction.
+        let mainchain_tip = self
+            .validator()
+            .try_get_mainchain_tip()
+            .map_err(error::FullScan::TryGetMainchainTip)?
+            .ok_or(error::FullScan::NoMainchainTip)?;
         wallet_write
             .with_mut(|wallet| {
                 wallet.apply_update(update).map(|_| {
-                    if let Some(mainchain_tip) = mainchain_tip {
-                        let _stale = super::Wallet::evict_stale_bmm_requests(wallet, mainchain_tip);
-                    }
+                    let _stale = super::Wallet::evict_stale_bmm_requests(wallet, mainchain_tip);
                     wallet.persist_async(&mut bdk_db)
                 })
             })

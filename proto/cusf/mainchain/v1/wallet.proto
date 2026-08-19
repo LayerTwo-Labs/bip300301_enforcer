@@ -32,6 +32,10 @@ service WalletService {
   rpc CreateDepositTransaction(CreateDepositTransactionRequest) returns (CreateDepositTransactionResponse);
   rpc CreateNewAddress(CreateNewAddressRequest) returns (CreateNewAddressResponse);
   rpc CreateWallet(CreateWalletRequest) returns (CreateWalletResponse);
+
+  // Rescan the whole chain for wallet transactions, from index 0 of every
+  // keychain. Blocks until the scan completes, which can take a long time.
+  rpc FullScan(FullScanRequest) returns (FullScanResponse);
   rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
@@ -107,6 +111,13 @@ message CreateWalletRequest {
   string password = 3;
 }
 message CreateWalletResponse {}
+
+message FullScanRequest {}
+
+message FullScanResponse {
+  // The chain tip the wallet is synced to after the scan.
+  cusf.common.v1.ReverseHex tip_hash = 1;
+}
 
 message GetBalanceRequest {}
 message GetBalanceResponse {

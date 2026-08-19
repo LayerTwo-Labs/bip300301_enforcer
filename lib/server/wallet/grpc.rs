@@ -17,12 +17,12 @@ use crate::{
             CreateBmmCriticalDataTransactionRequest, CreateBmmCriticalDataTransactionResponse,
             CreateDepositTransactionRequest, CreateDepositTransactionResponse,
             CreateNewAddressRequest, CreateNewAddressResponse, CreateWalletRequest,
-            CreateWalletResponse, GetBalanceRequest, GetBalanceResponse, GetInfoRequest,
-            GetInfoResponse, ListSidechainDepositTransactionsRequest,
-            ListSidechainDepositTransactionsResponse, ListTransactionsRequest,
-            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
-            SendTransactionRequest, SendTransactionResponse, UnlockWalletRequest,
-            UnlockWalletResponse, WalletTransaction, get_info_response,
+            CreateWalletResponse, FullScanRequest, FullScanResponse, GetBalanceRequest,
+            GetBalanceResponse, GetInfoRequest, GetInfoResponse,
+            ListSidechainDepositTransactionsRequest, ListSidechainDepositTransactionsResponse,
+            ListTransactionsRequest, ListTransactionsResponse, ListUnspentOutputsRequest,
+            ListUnspentOutputsResponse, SendTransactionRequest, SendTransactionResponse,
+            UnlockWalletRequest, UnlockWalletResponse, WalletTransaction, get_info_response,
             list_sidechain_deposit_transactions_response::SidechainDepositTransaction,
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
         },
@@ -614,5 +614,19 @@ impl WalletService for crate::wallet::Wallet {
             .map_err(|err| err.builder().to_connect_error())?;
 
         Ok(Response::new(CreateWalletResponse::default()))
+    }
+
+    async fn full_scan(
+        &self,
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, FullScanRequest>,
+    ) -> ServiceResult<FullScanResponse> {
+        let tip_hash = self
+            .full_scan()
+            .await
+            .map_err(|err| err.builder().to_connect_error())?;
+        Ok(Response::new(FullScanResponse {
+            tip_hash: MessageField::some(ReverseHex::encode(&tip_hash)),
+        }))
     }
 }
