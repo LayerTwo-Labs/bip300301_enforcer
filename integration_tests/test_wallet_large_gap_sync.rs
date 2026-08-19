@@ -4,10 +4,16 @@
 //! Connecting missing blocks individually costs two node RPCs and a wallet
 //! persist per block, and each persist gets slower as the local chain grows,
 //! so a wallet that is hundreds of thousands of blocks behind never finishes.
-//! Past `MAX_BLOCK_BY_BLOCK_REPLAY` in `lib/wallet/cusf_block_producer.rs`,
-//! `sync_wallet_to_tip` must instead advance the local chain with a single
-//! checkpoint update and recover its transactions with a full scan against
-//! the chain source.
+//! Past the block-by-block replay limit, `sync_wallet_to_tip` must instead
+//! advance the local chain with a single checkpoint update and recover its
+//! transactions with a full scan against the chain source.
+//!
+//! Every enforcer spawned here runs with that limit lowered to
+//! [`MAX_BLOCK_BY_BLOCK_REPLAY`], well below the production default. What
+//! the phases below need is gaps on either side of the limit, and one of
+//! them is crossed a block at a time -- at the production limit that is
+//! thousands of RPCs and persists per crossing, which put the test over its
+//! own sync deadline on slower CI runners.
 //!
 //! The gap is mined while the enforcer is down, and paid to an address the
 //! enforcer's own wallet owns, so the coinbases are only discoverable by
@@ -41,7 +47,7 @@
 //! inside `restart_enforcer`'s wait.)
 //!
 //! Finally, a *small* gap is crossed with the backend still dark: within
-//! `MAX_BLOCK_BY_BLOCK_REPLAY` the wallet never wants the chain source in
+//! [`MAX_BLOCK_BY_BLOCK_REPLAY`] the wallet never wants the chain source in
 //! the first place -- it catches up by connecting blocks against Bitcoin
 //! Core alone, taking the replay path by choice rather than as a fallback,
 //! with no checkpoint and no fallback warn.
@@ -82,9 +88,22 @@ use crate::{
 
 pub const TEST_NAME: &str = "wallet_large_gap_sync";
 
-/// Must exceed `MAX_BLOCK_BY_BLOCK_REPLAY`, or the wallet takes the
+/// `--wallet-max-block-by-block-replay` for every enforcer this test spawns,
+/// in place of the production default.
+///
+/// Lowering it is what keeps [`GAP_BLOCKS`] small: which branch of
+/// `sync_wallet_to_tip` a phase takes depends on the gap against this limit,
+/// not on either being large in absolute terms.
+const MAX_BLOCK_BY_BLOCK_REPLAY: u32 = 50;
+
+/// Must exceed [`MAX_BLOCK_BY_BLOCK_REPLAY`], or the wallet takes the
 /// block-by-block path and the assertions below fail (loudly, and correctly).
-const GAP_BLOCKS: u32 = 2_100;
+///
+/// Must also clear coinbase maturity with room to spare: every gap here is
+/// mined to an address the wallet owns, and the balance assertions count on
+/// the earliest of those coinbases being mature by the time the gap is
+/// closed.
+const GAP_BLOCKS: u32 = 150;
 
 /// External keychain index of the address funded behind a derivation gap.
 ///
@@ -109,7 +128,7 @@ const LIVENESS_BLOCKS: u32 = 5;
 
 /// Mined behind the enforcer's back for the small-gap phase. Enough that the
 /// balance assertion sees movement, small enough to stay far inside
-/// `MAX_BLOCK_BY_BLOCK_REPLAY` so the wallet catches up by connecting blocks
+/// [`MAX_BLOCK_BY_BLOCK_REPLAY`] so the wallet catches up by connecting blocks
 /// without ever wanting the chain source.
 const SMALL_GAP_BLOCKS: u32 = 10;
 
@@ -144,6 +163,16 @@ const BACKEND_UNREACHABLE_LOG: &str = "wallet sync backend not reachable at star
 
 /// Emitted (info) by the background init task once the backend is reached.
 const BACKEND_AVAILABLE_LOG: &str = "wallet sync backend became available";
+
+/// Args for every enforcer this test spawns, restarts included: the replay
+/// limit the gaps below are sized against. An enforcer that came up without
+/// it would take the production default and quietly cross both gaps the same
+/// way, leaving the phases here asserting against paths they never took.
+fn enforcer_args() -> Vec<String> {
+    vec![format!(
+        "--wallet-max-block-by-block-replay={MAX_BLOCK_BY_BLOCK_REPLAY}"
+    )]
+}
 
 /// Block until electrs has indexed up to bitcoind's tip.
 ///
@@ -264,7 +293,10 @@ async fn peek_external_address(post_setup: &mut PostSetup, index: u32) -> anyhow
 pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let pre_setup = PreSetup::new(bin_paths.clone(), Network::Regtest)?;
-    let setup_opts: SetupOpts = Default::default();
+    let setup_opts: SetupOpts = SetupOpts {
+        enforcer_args: enforcer_args(),
+        ..Default::default()
+    };
     let mut post_setup = pre_setup
         .setup(Mode::Mempool, setup_opts, res_tx.clone())
         .await?;
@@ -322,7 +354,7 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
 
     tracing::info!("restarting enforcer -- it must checkpoint across the gap, not replay it");
     post_setup
-        .restart_enforcer(&bin_paths, Vec::<String>::new(), res_tx.clone())
+        .restart_enforcer(&bin_paths, enforcer_args(), res_tx.clone())
         .await?;
     wait_for_wallet_sync(&mut post_setup).await?;
 
@@ -342,8 +374,9 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     anyhow::ensure!(
         enforcer_log.contains(CHECKPOINT_LOG),
         "expected the wallet to close a {GAP_BLOCKS}-block gap with a checkpoint and full \
-         scan, but {CHECKPOINT_LOG:?} never appeared in the enforcer log. Has \
-         MAX_BLOCK_BY_BLOCK_REPLAY been raised above {GAP_BLOCKS}?"
+         scan, but {CHECKPOINT_LOG:?} never appeared in the enforcer log. Did the enforcer \
+         come up without --wallet-max-block-by-block-replay={MAX_BLOCK_BY_BLOCK_REPLAY}, \
+         leaving a limit this gap no longer exceeds?"
     );
     anyhow::ensure!(
         !enforcer_log.contains(FALLBACK_LOG),
@@ -419,7 +452,7 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     // the checkpoint-and-scan path is unavailable.
     tracing::info!("restarting enforcer with a large gap and its sync backend unreachable");
     post_setup
-        .restart_enforcer(&bin_paths, Vec::<String>::new(), res_tx.clone())
+        .restart_enforcer(&bin_paths, enforcer_args(), res_tx.clone())
         .await?;
     let _log = wait_for_enforcer_log(
         &post_setup.directories.enforcer_dir,
@@ -535,7 +568,7 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
 
     tracing::info!("restarting enforcer with a small gap and its sync backend unreachable");
     post_setup
-        .restart_enforcer(&bin_paths, Vec::<String>::new(), res_tx.clone())
+        .restart_enforcer(&bin_paths, enforcer_args(), res_tx.clone())
         .await?;
     // Prove the degraded path ran again, rather than the backend having been
     // reachable all along.
@@ -572,8 +605,9 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     let checkpoints = enforcer_log.matches(CHECKPOINT_LOG).count();
     anyhow::ensure!(
         checkpoints == 1,
-        "a {SMALL_GAP_BLOCKS}-block gap sits far inside MAX_BLOCK_BY_BLOCK_REPLAY and must \
-         be replayed block-by-block, but the {CHECKPOINT_LOG:?} count moved to {checkpoints}"
+        "a {SMALL_GAP_BLOCKS}-block gap sits far inside the {MAX_BLOCK_BY_BLOCK_REPLAY}-block \
+         replay limit and must be replayed block-by-block, but the {CHECKPOINT_LOG:?} count \
+         moved to {checkpoints}"
     );
     let fallbacks = enforcer_log.matches(FALLBACK_LOG).count();
     anyhow::ensure!(

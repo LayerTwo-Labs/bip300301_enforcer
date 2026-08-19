@@ -74,15 +74,16 @@ impl WalletInner {
         // blocks, advance the local chain with a single checkpoint update built from
         // validator headers and recover any wallet transactions in the skipped range
         // with a full scan against the chain source.
-        const MAX_BLOCK_BY_BLOCK_REPLAY: u32 = 2_000;
+        let max_block_by_block_replay = self.config.wallet_opts.max_block_by_block_replay;
         let blocks_behind = new_tip_height.saturating_sub(wallet_tip.height);
-        let wallet_tip = if blocks_behind <= MAX_BLOCK_BY_BLOCK_REPLAY {
+        let wallet_tip = if blocks_behind <= max_block_by_block_replay {
             wallet_tip
         } else if self.chain_source_client().is_some() {
             tracing::info!(
                 wallet_tip_height = wallet_tip.height,
                 %new_tip_height,
                 %blocks_behind,
+                %max_block_by_block_replay,
                 "wallet is too far behind to replay block-by-block, \
                  checkpointing chain forward and running a full scan instead"
             );
@@ -97,6 +98,7 @@ impl WalletInner {
                 wallet_tip_height = wallet_tip.height,
                 %new_tip_height,
                 %blocks_behind,
+                %max_block_by_block_replay,
                 "wallet is far behind and no chain source is available, \
                  falling back to block-by-block replay. This is very slow. \
                  A reachable electrum or esplora --wallet-sync-source catches \
