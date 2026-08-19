@@ -35,6 +35,10 @@ service WalletService {
 
   // Rescan the whole chain for wallet transactions, from index 0 of every
   // keychain. Blocks until the scan completes, which can take a long time.
+  //
+  // A scan holds the wallet for its whole duration, which also stalls block
+  // processing, so only one runs at a time: calling this while a scan is
+  // already in progress fails with ABORTED rather than queueing.
   rpc FullScan(FullScanRequest) returns (FullScanResponse);
   rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;

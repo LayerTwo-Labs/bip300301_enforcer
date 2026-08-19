@@ -607,6 +607,10 @@ pub mod full_scan {
         #[diagnostic(code(invalid_sync_source))]
         InvalidSyncSource { sync_source: WalletSyncSource },
 
+        #[error("a wallet full scan is already in progress")]
+        #[diagnostic(code(full_scan_in_progress))]
+        ScanInProgress,
+
         #[error(transparent)]
         TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
 
@@ -621,6 +625,11 @@ pub mod full_scan {
                 Self::WalletNotUnlocked(err) => err.builder(),
                 Self::InvalidSyncSource { .. } | Self::NoMainchainTip => {
                     StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+                }
+                // A concurrency conflict rather than a bad request: the same
+                // call succeeds once the running scan finishes.
+                Self::ScanInProgress => {
+                    StatusBuilder::new(self).code(connectrpc::ErrorCode::Aborted)
                 }
                 Self::TryGetMainchainTip(err) => err.builder(),
                 Self::ChainSourceClient(err) => {
