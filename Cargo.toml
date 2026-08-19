@@ -27,7 +27,7 @@ bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.100"
 bitcoin-send-tx-p2p = "0.3.0"
-buffa = { version = "0.8", features = ["json"] }
+buffa = { version = "0.9", features = ["json"] }
 # `reflect` is needed by the `reflect_mode=bridge` generated code, which embeds
 # descriptors and exposes `descriptor_pool()` for gRPC server reflection.
 buffa-descriptor = { version = "0.8", features = ["reflect"] }
