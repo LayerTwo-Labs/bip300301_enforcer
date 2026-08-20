@@ -3504,6 +3504,60 @@ mod tests {
 
     // ── handle_m3 ──
 
+    #[test]
+    fn connect_block_ignores_duplicate_m3_in_same_coinbase() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sc = SidechainNumber(1);
+        dbs.active_sidechains
+            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
+            .into_diagnostic()?;
+        let m6id = test_m6id(0xAA);
+        let m3_script = || -> Result<ScriptBuf> {
+            M3ProposeBundle {
+                sidechain_number: sc,
+                bundle_txid: m6id.0.to_byte_array(),
+            }
+            .try_into()
+            .into_diagnostic()
+        };
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: m3_script()?,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: m3_script()?,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 1)])
+            .into_diagnostic()?;
+
+        let event = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()?;
+        let pending = dbs
+            .active_sidechains
+            .pending_m6ids()
+            .get(&rwtxn, &sc)
+            .into_diagnostic()?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[&m6id].vote_count, 1);
+        let Event::ConnectBlock { block_info, .. } = event else {
+            panic!("expected connect-block event");
+        };
+        assert_eq!(block_info.events.len(), 1);
+        Ok(())
+    }
+
     /// BIP 300 M3: a newly proposed bundle starts with an ACK score of 1
     /// (the proposer's implicit vote), not 0.
     #[test]
