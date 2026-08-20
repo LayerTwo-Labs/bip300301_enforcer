@@ -616,6 +616,30 @@ pub async fn wait_for_tx_in_mempool(
     .await
 }
 
+/// Reported by the enforcer's `getblocktemplate` while its mempool syncs.
+const RPC_CLIENT_IN_INITIAL_DOWNLOAD: i32 = -10;
+
+/// Block until the enforcer's `getblocktemplate` endpoint serves templates,
+/// rather than reporting that it is still syncing. Any other answer counts as
+/// ready; a transport error is not an answer, and is retried.
+pub async fn wait_for_block_templates(
+    gbt_client: &jsonrpsee::http_client::HttpClient,
+) -> anyhow::Result<()> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+
+    wait_until("the enforcer to serve block templates", || async {
+        let request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+        match gbt_client.get_block_template(request).await {
+            Ok(_) => Ok(true),
+            Err(jsonrpsee::core::client::Error::Call(err)) => {
+                Ok(err.code() != RPC_CLIENT_IN_INITIAL_DOWNLOAD)
+            }
+            Err(err) => Err(err.into()),
+        }
+    })
+    .await
+}
+
 /// Concatenate the enforcer's rolling log files.
 ///
 /// Not `stdout.txt`: that only holds the run the harness spawned most recently,
@@ -1327,10 +1351,15 @@ impl PostSetup {
         .await
         .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
 
-        // The JSON-RPC (`getblocktemplate`) server comes up after the gRPC one,
-        // and only in the mode that serves block templates. Both the `gbt_client`
-        // below and the signet miner's GBT script talk to it, so wait for it
-        // too rather than racing the first template request against startup.
+        let gbt_client = jsonrpsee::http_client::HttpClient::builder()
+            .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
+            .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
+
+        // The JSON-RPC (`getblocktemplate`) server only runs in the mode that
+        // serves block templates, and it binds before the enforcer has synced.
+        // Both the `gbt_client` above and the signet miner's GBT script talk to
+        // it, so wait for it to serve a template rather than racing the first
+        // request against startup.
         if enforcer.enable_block_template_server {
             wait_for_port(
                 "127.0.0.1",
@@ -1339,11 +1368,8 @@ impl PostSetup {
             )
             .await
             .map_err(|e| anyhow!("Failed waiting for enforcer JSON-RPC port: {e}"))?;
+            wait_for_block_templates(&gbt_client).await?;
         }
-
-        let gbt_client = jsonrpsee::http_client::HttpClient::builder()
-            .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
-            .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
         if let Some(signet_miner) = signet_miner.as_mut() {
             let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }

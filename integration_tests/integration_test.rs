@@ -1199,6 +1199,14 @@ pub fn tests(
     ));
 
     async_trials.push(new_bespoke_trial(
+        crate::test_gbt_during_initial_sync::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_gbt_during_initial_sync::test_gbt_during_initial_sync,
+    ));
+
+    async_trials.push(new_bespoke_trial(
         crate::test_wallet_reorg_multi_block::TEST_NAME,
         bin_paths,
         &file_registry,
