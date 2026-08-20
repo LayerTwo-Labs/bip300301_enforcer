@@ -486,13 +486,12 @@ async fn run_connect_server(
     res
 }
 
-async fn spawn_gbt_server<BP, RpcClient>(
-    server: cusf_enforcer_mempool::server::Server<BP, RpcClient>,
+async fn spawn_gbt_server<S>(
+    server: S,
     serve_addr: SocketAddr,
 ) -> miette::Result<jsonrpsee::server::ServerHandle>
 where
-    BP: CusfBlockProducer + Send + Sync + 'static,
-    RpcClient: bitcoin_jsonrpsee::MainClient + Send + Sync + 'static,
+    S: cusf_enforcer_mempool::server::RpcServer,
 {
     let rpc_server = server.into_rpc();
 
@@ -514,7 +513,6 @@ where
         .layer(jsonrpsee_tracer!("gbt_server"));
     let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
 
-    use cusf_enforcer_mempool::server::RpcServer;
     let handle = jsonrpsee::server::Server::builder()
         .set_http_middleware(http_middleware)
         .set_rpc_middleware(rpc_middleware)
@@ -811,12 +809,111 @@ struct GbtConfig {
     serve_rpc_addr: SocketAddr,
 }
 
-/// Build the sample block template and bring up the `getblocktemplate` server.
-async fn spawn_block_template_server<BP>(
+type GbtServer<BP> = cusf_enforcer_mempool::server::Server<
+    BP,
+    bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+>;
+
+// https://github.com/bitcoin/bitcoin/blob/6c4fe401e908cff1b67d80035b117aae15fe7db6/src/rpc/protocol.h#L58
+/// No P2P peers connected
+const RPC_CLIENT_NOT_CONNECTED: i32 = -9;
+
+/// Still syncing, i.e. in IBD
+const RPC_CLIENT_IN_INITIAL_DOWNLOAD: i32 = -10;
+
+/// The JSON-RPC endpoint, bound before the initial sync of the wallet.
+/// `submitblock` only needs the node connection, so it is served immediately.
+/// `getblocktemplate` needs a synced mempool, so until there is one it reports
+/// the same error code Bitcoin Core does.
+struct GbtSlot<BP> {
+    server: Arc<tokio::sync::RwLock<Option<Arc<GbtServer<BP>>>>>,
+    mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+}
+
+// Derived `Clone` would demand `BP: Clone`.
+impl<BP> Clone for GbtSlot<BP> {
+    fn clone(&self) -> Self {
+        Self {
+            server: Arc::clone(&self.server),
+            mainchain_client: self.mainchain_client.clone(),
+        }
+    }
+}
+
+impl<BP> GbtSlot<BP> {
+    fn new(mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient) -> Self {
+        Self {
+            server: Arc::new(tokio::sync::RwLock::new(None)),
+            mainchain_client,
+        }
+    }
+
+    async fn ready(&self) -> Option<Arc<GbtServer<BP>>> {
+        self.server.read().await.clone()
+    }
+
+    async fn publish(&self, server: GbtServer<BP>) {
+        *self.server.write().await = Some(Arc::new(server));
+        tracing::info!("now serving `getblocktemplate`");
+    }
+
+    async fn clear(&self) {
+        if self.server.write().await.take().is_some() {
+            tracing::info!("no longer serving `getblocktemplate`");
+        }
+    }
+}
+
+#[jsonrpsee::core::async_trait]
+impl<BP> cusf_enforcer_mempool::server::RpcServer for GbtSlot<BP>
+where
+    BP: CusfBlockProducer + Send + Sync + 'static,
+{
+    async fn get_block_template(
+        &self,
+        request: bitcoin_jsonrpsee::client::BlockTemplateRequest,
+    ) -> jsonrpsee::core::RpcResult<bitcoin_jsonrpsee::client::BlockTemplate> {
+        match self.ready().await {
+            Some(server) => server.get_block_template(request).await,
+            None => Err(jsonrpsee::types::ErrorObject::owned(
+                RPC_CLIENT_IN_INITIAL_DOWNLOAD,
+                "enforcer is still syncing, and cannot build block templates yet",
+                None::<()>,
+            )),
+        }
+    }
+
+    async fn submit_block(&self, block_hex: String) -> jsonrpsee::core::RpcResult<Option<String>> {
+        match self.ready().await {
+            Some(server) => server.submit_block(block_hex).await,
+            // What the block template server does with it, too: the node
+            // validates and stores the block, synced enforcer or not.
+            None => self
+                .mainchain_client
+                .submit_block(block_hex)
+                .await
+                .map_err(|err| match err {
+                    Error::Call(err) => err,
+                    err => {
+                        tracing::error!("`submitblock` while syncing: {err:#}");
+                        jsonrpsee::types::ErrorObject::owned(
+                            jsonrpsee::types::ErrorCode::InternalError.code(),
+                            jsonrpsee::types::ErrorCode::InternalError.message(),
+                            Some(format!("{err:#}")),
+                        )
+                    }
+                }),
+        }
+    }
+}
+
+/// Build the sample block template and the `getblocktemplate` server. The
+/// endpoint it is served on is bound separately, by [`GbtSlot`].
+async fn build_block_template_server<BP>(
     gbt: GbtConfig,
     mempool: cusf_enforcer_mempool::mempool::MempoolSync<BP>,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-) -> Result<jsonrpsee::server::ServerHandle, miette::Report>
+) -> Result<GbtServer<BP>, miette::Report>
 where
     BP: CusfBlockProducer + Send + Sync + 'static,
 {
@@ -824,7 +921,7 @@ where
         mining_reward_address,
         network,
         cache_lifetime,
-        serve_rpc_addr,
+        serve_rpc_addr: _, // already bound, see `GbtSlot`
     } = gbt;
 
     let network_info = mainchain_client
@@ -840,15 +937,12 @@ where
     // current Core tip. However, Core can still be stuck in IBD, hence the need for this loop
     // https://github.com/bitcoin/bitcoin/blob/6c4fe401e908cff1b67d80035b117aae15fe7db6/src/rpc/mining.cpp#L771-L773
     let sample_block_template = loop {
-        // https://github.com/bitcoin/bitcoin/blob/6c4fe401e908cff1b67d80035b117aae15fe7db6/src/rpc/protocol.h#L58
-        const RPC_CLIENT_NOT_CONNECTED: i32 = -9; // No P2P peers connected, refuses block template requests
-        const RPC_IN_WARMUP: i32 = -10; // In IBD etc, refuses block template requests
         match get_block_template(&mainchain_client, network).await {
             Ok(block_template) => break block_template,
             Err(wallet::error::BitcoinCoreRPC {
                 method: _,
                 error: jsonrpsee::core::client::Error::Call(err),
-            }) if err.code() == RPC_IN_WARMUP => {
+            }) if err.code() == RPC_CLIENT_IN_INITIAL_DOWNLOAD => {
                 tracing::debug!(
                     err = format!("{}: {}", err.code(), err.message()),
                     "Transient Bitcoin Core error, retrying before spawning GBT server...",
@@ -876,7 +970,7 @@ where
         }
     };
 
-    let gbt_server = cusf_enforcer_mempool::server::Server::new(
+    cusf_enforcer_mempool::server::Server::new(
         mining_reward_address.script_pubkey(),
         mempool,
         network,
@@ -885,12 +979,11 @@ where
         cache_lifetime,
         sample_block_template,
     )
-    .into_diagnostic()?;
-    spawn_gbt_server(gbt_server, serve_rpc_addr).await
+    .into_diagnostic()
 }
 
 /// Sync the mempool for any block producer, and, when `gbt` is `Some`, serve
-/// `getblocktemplate` from it.
+/// JSON-RPC from it.
 ///
 /// Serving templates is a niche miner feature, so it is optional: a wallet may
 /// sync the mempool purely to track unconfirmed transactions.
@@ -906,9 +999,19 @@ where
     BP: CusfBlockProducer + Clone + Send + Sync + 'static,
     error::MempoolTask<BP>: Into<miette::Report>,
 {
+    // Bound before syncing anything, see `GbtSlot`.
+    let gbt_server = match gbt {
+        Some(gbt) => {
+            let slot = GbtSlot::<BP>::new(mainchain_client.clone());
+            let handle = spawn_gbt_server(slot.clone(), gbt.serve_rpc_addr).await?;
+            Some((gbt, slot, handle))
+        }
+        None => None,
+    };
+
     // Re-sync rather than exit on a recoverable sync failure. A ZMQ sequence
     // gap blocks the stream permanently, but a fresh sync clears it.
-    loop {
+    let res = loop {
         let sync = sync_mempool(
             producer.clone(),
             mainchain_client.clone(),
@@ -927,44 +1030,56 @@ where
                 tokio::time::sleep(MEMPOOL_RESYNC_DELAY).await;
                 continue;
             }
-            Err(err) => return Err(miette::Report::from_err(err)),
+            Err(err) => break Err(miette::Report::from_err(err)),
         };
 
-        let (server_handle, _mempool) = match gbt.clone() {
-            Some(gbt) => {
-                let handle =
-                    spawn_block_template_server(gbt, mempool, mainchain_client.clone()).await?;
-                (Some(handle), None)
+        // Important: bind the mempool sync handle when it is not moved into a
+        // server. Otherwise it is dropped immediately.
+        let _mempool = match &gbt_server {
+            Some((gbt, slot, _handle)) => {
+                match build_block_template_server(gbt.clone(), mempool, mainchain_client.clone())
+                    .await
+                {
+                    Ok(server) => slot.publish(server).await,
+                    Err(err) => break Err(err),
+                }
+                None
             }
-            None => (None, Some(mempool)),
+            None => Some(mempool),
         };
 
         let err = wait_for_error_or_shutdown(cancel.clone(), err_rx).await;
 
-        // Always stop the server before looping: the next iteration rebinds
-        // the same address
-        if let Some(server_handle) = server_handle {
-            tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
-
-            // This should never fail. The only failure mode is the server
-            // already being stopped, and we have full control over that.
-            if let Err(err) = server_handle.stop() {
-                tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
-            }
+        // Templates must not be served from a mempool that is no longer
+        // being updated.
+        if let Some((_gbt, slot, _handle)) = &gbt_server {
+            slot.clear().await;
         }
 
-        match err? {
-            None => return Ok(()),
-            Some(err) if err.is_resyncable() && !cancel.is_cancelled() => {
+        match err {
+            Err(err) => break Err(err),
+            Ok(None) => break Ok(()),
+            Ok(Some(err)) if err.is_resyncable() && !cancel.is_cancelled() => {
                 tracing::warn!(
                     err = %ErrorChain::new(&err),
                     "mempool sync failed recoverably, re-syncing",
                 );
                 tokio::time::sleep(MEMPOOL_RESYNC_DELAY).await;
             }
-            Some(err) => return Err(miette::Report::from_err(err)),
+            Ok(Some(err)) => break Err(miette::Report::from_err(err)),
+        }
+    };
+
+    if let Some((_gbt, _slot, server_handle)) = gbt_server {
+        tracing::debug!("stopping `getblocktemplate` JSON-RPC server");
+
+        // This should never fail. The only failure mode is the server
+        // already being stopped, and we have full control over that.
+        if let Err(err) = server_handle.stop() {
+            tracing::error!("error stopping `getblocktemplate` JSON-RPC server: {err:#}");
         }
     }
+    res
 }
 
 async fn run_wallet_mempool_task(
