@@ -518,17 +518,15 @@ impl CoinbaseMessages {
                 }
             }
             CoinbaseMessage::M2AckSidechain(m2) => {
-                match self.m2_ack_slot_to_index.entry(m2.sidechain_number) {
-                    hash_map::Entry::Occupied(entry) => Err(CoinbaseMessagesError::DuplicateM2 {
-                        index: *entry.get(),
-                        slot: m2.sidechain_number,
-                    }),
-                    hash_map::Entry::Vacant(entry) => {
-                        entry.insert(vout);
-                        self.messages.push((msg, vout));
-                        Ok(())
-                    }
-                }
+                // An M2 is only a BIP300 message when it matches an ancestor
+                // M1. Keep every well-formed M2 here; `connect_block` performs
+                // duplicate detection once it can distinguish valid M2s from
+                // ordinary scripts.
+                self.m2_ack_slot_to_index
+                    .entry(m2.sidechain_number)
+                    .or_insert(vout);
+                self.messages.push((msg, vout));
+                Ok(())
             }
             CoinbaseMessage::M4AckBundles(_) => {
                 if let Some(index) = self.m4_index {
