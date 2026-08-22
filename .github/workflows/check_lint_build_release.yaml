@@ -141,9 +141,10 @@ jobs:
       - name: Check for unused dependencies
         run: cargo shear --deny-warnings
 
-  # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs` and the
-  # drynet tag out of `scripts/setup_integration_tests.sh`, and emits
-  # the integration-test matrix. Keeping the list of stock versions in
+  # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs`, and the ecash
+  # builds (the pinned drynet tag plus the rolling alphanet build) out of
+  # `scripts/setup_integration_tests.sh`, and emits the integration-test
+  # matrix. Keeping the list of stock versions in
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
   # matrix can't drift — a unit test (`ci_versions_match_majors`) asserts
   # the two are consistent. The drynet tag lives in the setup script so
@@ -186,9 +187,11 @@ jobs:
           # off those fields, not off which entry they are. `grpc_checks`
           # marks the one entry that also runs the flavor-independent gRPC
           # reflection checks.
-          DRYNET_MAGIC=$(./scripts/setup_integration_tests.sh --print-drynet-magic)
+          DRYNET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic "$DRYNET_TAG")
+          ALPHANET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic alphanet)
           ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
           ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\",\"regtest_magic\":\"$DRYNET_MAGIC\"}"
+          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin alphanet\",\"zip\":\"L1-ecash-bitcoin-alphanet\",\"regtest_magic\":\"$ALPHANET_MAGIC\"}"
           for v in $VERSIONS; do
             ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
           done

@@ -8,6 +8,7 @@
 #   unpatched        newest stock Bitcoin Core release
 #   stock-X.Y        a specific stock release from CI_BITCOIN_CORE_VERSIONS
 #   drynetN          the ecash-com/bitcoin drynet fork at that tag
+#   alphanet         the rolling build of ecash-com/bitcoin's alphanet branch
 #   all              every flavor in the CI matrix, continuing past failures
 #
 # Remaining args go to the test runner. Missing dependencies are downloaded
@@ -85,15 +86,17 @@ case "$flavor" in
         # (BIP300 opcodes), matching the stock CI matrix entries.
         skip_patterns=('deposit_withdraw_roundtrip')
         ;;
-    drynet*)
-        setup_env=("DRYNET_REVISION=$flavor")
-        if [ -n "$(DRYNET_REVISION="$flavor" \
-            "$REPO_ROOT/scripts/setup_integration_tests.sh" --print-drynet-magic)" ]; then
+    drynet* | alphanet)
+        # A pinned `drynetN` tag has to be named for setup to fetch that one;
+        # `alphanet` is a fixed name that setup always fetches.
+        case "$flavor" in drynet*) setup_env=("DRYNET_REVISION=$flavor") ;; esac
+        if [ -n "$("$REPO_ROOT/scripts/setup_integration_tests.sh" \
+            --print-regtest-magic "$flavor")" ]; then
             skip_patterns=('peer_bmm_request')
         fi
         ;;
     *)
-        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, or all)" >&2
+        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, alphanet, or all)" >&2
         exit 1
         ;;
 esac
