@@ -27,6 +27,7 @@ use crate::{
     types::{
         AmountOverflowError, BmmCommitment, M6id, OP_DRIVECHAIN, SidechainDeclaration,
         SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalId,
+        WithdrawalBundleVote,
     },
 };
 
@@ -223,6 +224,41 @@ impl M4AckBundles {
             return Ok((input, message));
         }
         fail().parse(input)
+    }
+}
+
+impl M4AckBundles {
+    /// The largest bundle index `OneByte` can carry: `0xFE` and `0xFF` are the
+    /// alarm and abstain sentinels, so indices stop one short of them.
+    pub const MAX_ONE_BYTE_UPVOTE: u16 = Self::ALARM_ONE_BYTE as u16 - 1;
+
+    /// Encode one vote per active sidechain, in active-sidechain order.
+    pub fn from_votes(votes: &[WithdrawalBundleVote]) -> Self {
+        let needs_two_bytes = votes.iter().any(|vote| {
+            matches!(vote, WithdrawalBundleVote::Upvote(index) if *index > Self::MAX_ONE_BYTE_UPVOTE)
+        });
+        if needs_two_bytes {
+            let upvotes = votes
+                .iter()
+                .map(|vote| match vote {
+                    WithdrawalBundleVote::Abstain => Self::ABSTAIN_TWO_BYTES,
+                    WithdrawalBundleVote::Alarm => Self::ALARM_TWO_BYTES,
+                    WithdrawalBundleVote::Upvote(index) => *index,
+                })
+                .collect();
+            Self::TwoBytes { upvotes }
+        } else {
+            let upvotes = votes
+                .iter()
+                .map(|vote| match vote {
+                    WithdrawalBundleVote::Abstain => Self::ABSTAIN_ONE_BYTE,
+                    WithdrawalBundleVote::Alarm => Self::ALARM_ONE_BYTE,
+                    // In range by the check above.
+                    WithdrawalBundleVote::Upvote(index) => *index as u8,
+                })
+                .collect();
+            Self::OneByte { upvotes }
+        }
     }
 }
 
@@ -1388,5 +1424,46 @@ mod tests {
         // Spend > old treasury → InsufficientTreasury
         let overspending = build_m6_tx(sc, Amount::from_sat(5_000), &[Amount::from_sat(3_000)]);
         assert!(compute_m6id(overspending, Amount::from_sat(7_000)).is_err());
+    }
+
+    /// BIP300 M4 forces the encoding: `OneByte` stops one short of the alarm
+    /// sentinel, and `TwoBytes` is rejected outright unless something needs
+    /// the wider range. The sentinels differ between the two, so every vote
+    /// re-encodes, not just the out-of-range one.
+    #[test]
+    fn m4_encoding_follows_the_widest_upvote() {
+        let votes = [
+            WithdrawalBundleVote::Abstain,
+            WithdrawalBundleVote::Alarm,
+            WithdrawalBundleVote::Upvote(M4AckBundles::MAX_ONE_BYTE_UPVOTE),
+        ];
+        let M4AckBundles::OneByte { upvotes } = M4AckBundles::from_votes(&votes) else {
+            panic!("votes within the one-byte range must not widen the encoding")
+        };
+        assert_eq!(
+            upvotes,
+            vec![
+                M4AckBundles::ABSTAIN_ONE_BYTE,
+                M4AckBundles::ALARM_ONE_BYTE,
+                M4AckBundles::MAX_ONE_BYTE_UPVOTE as u8,
+            ]
+        );
+
+        let votes = [
+            WithdrawalBundleVote::Abstain,
+            WithdrawalBundleVote::Alarm,
+            WithdrawalBundleVote::Upvote(M4AckBundles::MAX_ONE_BYTE_UPVOTE + 1),
+        ];
+        let M4AckBundles::TwoBytes { upvotes } = M4AckBundles::from_votes(&votes) else {
+            panic!("an upvote past the one-byte range must widen the encoding")
+        };
+        assert_eq!(
+            upvotes,
+            vec![
+                M4AckBundles::ABSTAIN_TWO_BYTES,
+                M4AckBundles::ALARM_TWO_BYTES,
+                M4AckBundles::MAX_ONE_BYTE_UPVOTE + 1,
+            ]
+        );
     }
 }

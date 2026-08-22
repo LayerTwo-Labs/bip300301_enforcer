@@ -1,4 +1,9 @@
-use std::{borrow::Cow, collections::HashMap, num::TryFromIntError, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    num::TryFromIntError,
+    sync::Arc,
+};
 
 use bdk_wallet::chain::{ChainPosition, ConfirmationBlockTime};
 use bitcoin::{
@@ -260,6 +265,12 @@ impl From<SidechainNumber> for u8 {
 #[serde(transparent)]
 pub struct M6id(pub Txid);
 
+impl From<Txid> for M6id {
+    fn from(txid: Txid) -> Self {
+        Self(txid)
+    }
+}
+
 impl From<[u8; 32]> for M6id {
     fn from(bytes: <Txid as bitcoin::hashes::Hash>::Bytes) -> Self {
         Self(Txid::from_byte_array(bytes))
@@ -495,6 +506,120 @@ impl TryFrom<&SidechainDescription> for SidechainDeclaration {
 pub struct SidechainAck {
     pub sidechain_number: SidechainNumber,
     pub description_hash: sha256d::Hash,
+}
+
+/// Which sidechain proposals the block producer ACKs (BIP300 M2) without an
+/// explicit [`SidechainAck`] stored for them.
+///
+/// A proposal for a slot an active sidechain already occupies is a *slot
+/// replacement*. Activating it evicts the incumbent, under BIP300 M2's
+/// used-slot threshold rather than the unused-slot one. Voting to let anyone
+/// onto an empty slot is a much smaller commitment than voting to evict a
+/// sidechain that is already running, so the two are separate policies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AckAllProposalsPolicy {
+    /// ACK only what is explicitly stored.
+    None,
+    /// Additionally ACK every proposal for a slot no active sidechain
+    /// occupies. Replacements are left to explicit ACKs.
+    NewSlots,
+    /// Additionally ACK every proposal, replacements included.
+    All,
+}
+
+/// Which pending withdrawal bundles the block producer upvotes (BIP300 M4)
+/// without an explicit ACK stored for them.
+///
+/// An M4 carries one vote per active sidechain, and upvoting a bundle
+/// downvotes that sidechain's others, so each sidechain backs at most one
+/// bundle per block. See [`WithdrawalBundleVote`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WithdrawalBundlePolicy {
+    /// Upvote only what is explicitly ACKed.
+    None,
+    /// Additionally upvote the first pending bundle whose transaction this
+    /// node holds -- one it proposed, or had broadcast through it.
+    Known,
+    /// Additionally upvote each sidechain's first pending bundle, whoever
+    /// proposed it.
+    All,
+    /// Alarm every sidechain, downvoting every bundle with positive votes.
+    Alarm,
+}
+
+/// One M4 vote, for one active sidechain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WithdrawalBundleVote {
+    /// Leave this sidechain's bundles as they are.
+    Abstain,
+    /// Downvote every bundle of this sidechain that carries positive votes.
+    Alarm,
+    /// Upvote the bundle at this index of the sidechain's pending list,
+    /// downvoting its others.
+    Upvote(u16),
+}
+
+impl WithdrawalBundleVote {
+    /// The M4 vote for one sidechain, given that sidechain's pending bundles
+    /// in order. An explicit ACK wins over `policy`: it is the operator naming
+    /// a bundle, and under [`WithdrawalBundlePolicy::None`] it is the only way
+    /// to back one.
+    ///
+    /// `acked` are the m6ids explicitly ACKed for this sidechain, `ours` the
+    /// ones whose transaction this node stores. Both are matched against
+    /// `pending` rather than trusted directly, so an entry naming a bundle
+    /// this sidechain is not (or is no longer) voting on is simply ignored.
+    pub fn resolve(
+        policy: WithdrawalBundlePolicy,
+        pending: &[M6id],
+        acked: &HashSet<M6id>,
+        ours: &HashSet<M6id>,
+    ) -> Self {
+        // Every upvote is "the first pending bundle worth backing", for a
+        // different sense of worth. BIP300 M4 upvotes by index, and the index
+        // has to fit the encoding, which `M4AckBundles::from_votes` picks to
+        // suit.
+        fn first_matching(
+            pending: &[M6id],
+            worth_backing: impl Fn(&M6id) -> bool,
+        ) -> Option<WithdrawalBundleVote> {
+            pending
+                .iter()
+                .position(worth_backing)
+                .and_then(|index| u16::try_from(index).ok())
+                .map(WithdrawalBundleVote::Upvote)
+        }
+        if let Some(vote) = first_matching(pending, |m6id| acked.contains(m6id)) {
+            return vote;
+        }
+        let by_policy = match policy {
+            WithdrawalBundlePolicy::None => return Self::Abstain,
+            // Unconditional: with nothing to downvote an alarm is a no-op, and
+            // saying so is more honest than silently abstaining.
+            WithdrawalBundlePolicy::Alarm => return Self::Alarm,
+            WithdrawalBundlePolicy::Known => first_matching(pending, |m6id| ours.contains(m6id)),
+            WithdrawalBundlePolicy::All => first_matching(pending, |_| true),
+        };
+        by_policy.unwrap_or(Self::Abstain)
+    }
+}
+
+impl AckAllProposalsPolicy {
+    /// Whether a proposal gets an automatic ACK under this policy.
+    /// `slot_is_used` is whether an active sidechain occupies the proposal's
+    /// slot, i.e. whether activating the proposal would be a replacement.
+    pub const fn auto_acks(self, slot_is_used: bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::NewSlots => !slot_is_used,
+            Self::All => true,
+        }
+    }
+
+    /// Whether this policy ACKs anything at all beyond the explicit ACKs.
+    pub const fn is_automatic(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[derive(derive_more::Debug, Deserialize, Serialize)]
@@ -1079,12 +1204,14 @@ impl PendingM6idInfo {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
+    use std::{borrow::Cow, collections::HashSet};
 
+    use bitcoin::hashes::Hash as _;
     use miette::Diagnostic as _;
 
     use crate::types::{
-        BlindedM6, SidechainDeclaration, SidechainNumber, SidechainProposal, Thresholds,
+        BlindedM6, M6id, SidechainDeclaration, SidechainNumber, SidechainProposal, Thresholds,
+        WithdrawalBundlePolicy, WithdrawalBundleVote,
     };
 
     #[test]
@@ -1334,5 +1461,119 @@ mod tests {
                 "expected error for tail_len {tail_len}, got Ok"
             );
         }
+    }
+
+    /// `resolve` matches m6ids against the pending list by identity, so the
+    /// fixtures only need distinguishable ids.
+    fn m6id(byte: u8) -> M6id {
+        M6id(bitcoin::Txid::from_byte_array([byte; 32]))
+    }
+
+    fn m6ids(bytes: &[u8]) -> HashSet<M6id> {
+        bytes.iter().copied().map(m6id).collect()
+    }
+
+    /// `All` backs whatever is at the front of the queue; `Known` walks past
+    /// the strangers' bundles to the first one this node holds.
+    #[test]
+    fn known_policy_skips_bundles_that_are_not_ours() {
+        let pending = [m6id(1), m6id(2), m6id(3)];
+        let ours = m6ids(&[3]);
+        let none = HashSet::new();
+
+        assert_eq!(
+            WithdrawalBundleVote::resolve(WithdrawalBundlePolicy::All, &pending, &none, &ours,),
+            WithdrawalBundleVote::Upvote(0)
+        );
+        assert_eq!(
+            WithdrawalBundleVote::resolve(WithdrawalBundlePolicy::Known, &pending, &none, &ours,),
+            WithdrawalBundleVote::Upvote(2)
+        );
+    }
+
+    /// A sidechain whose pending bundles are all strangers' gets no vote under
+    /// `Known` -- abstaining, rather than falling back to backing one of them.
+    #[test]
+    fn known_policy_abstains_when_no_pending_bundle_is_ours() {
+        assert_eq!(
+            WithdrawalBundleVote::resolve(
+                WithdrawalBundlePolicy::Known,
+                &[m6id(1), m6id(2)],
+                &HashSet::new(),
+                &m6ids(&[9]),
+            ),
+            WithdrawalBundleVote::Abstain
+        );
+    }
+
+    /// An explicit ACK is the operator naming a bundle, so it outranks the
+    /// standing policy -- including `None`, where it is the only way to vote,
+    /// and `Alarm`, which otherwise backs nothing.
+    #[test]
+    fn an_explicit_ack_outranks_every_policy() {
+        let pending = [m6id(1), m6id(2)];
+        let acked = m6ids(&[2]);
+        let ours = HashSet::new();
+        for policy in [
+            WithdrawalBundlePolicy::None,
+            WithdrawalBundlePolicy::Known,
+            WithdrawalBundlePolicy::All,
+            WithdrawalBundlePolicy::Alarm,
+        ] {
+            assert_eq!(
+                WithdrawalBundleVote::resolve(policy, &pending, &acked, &ours),
+                WithdrawalBundleVote::Upvote(1),
+                "{policy:?} ignored an explicit ACK"
+            );
+        }
+    }
+
+    /// An ACK naming a bundle this sidechain is not voting on is ignored, not
+    /// forced into the vote: the index has to point into `pending`.
+    #[test]
+    fn an_ack_for_a_bundle_that_is_not_pending_is_ignored() {
+        assert_eq!(
+            WithdrawalBundleVote::resolve(
+                WithdrawalBundlePolicy::None,
+                &[m6id(1)],
+                &m6ids(&[7]),
+                &HashSet::new(),
+            ),
+            WithdrawalBundleVote::Abstain
+        );
+    }
+
+    #[test]
+    fn none_abstains_and_alarm_alarms_whatever_is_pending() {
+        let none = HashSet::new();
+        for pending in [Vec::new(), vec![m6id(1)]] {
+            assert_eq!(
+                WithdrawalBundleVote::resolve(WithdrawalBundlePolicy::None, &pending, &none, &none,),
+                WithdrawalBundleVote::Abstain
+            );
+            assert_eq!(
+                WithdrawalBundleVote::resolve(
+                    WithdrawalBundlePolicy::Alarm,
+                    &pending,
+                    &none,
+                    &none,
+                ),
+                WithdrawalBundleVote::Alarm
+            );
+        }
+    }
+
+    /// `All` has nothing to back on a sidechain with no pending bundles.
+    #[test]
+    fn all_abstains_with_nothing_pending() {
+        assert_eq!(
+            WithdrawalBundleVote::resolve(
+                WithdrawalBundlePolicy::All,
+                &[],
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            WithdrawalBundleVote::Abstain
+        );
     }
 }
