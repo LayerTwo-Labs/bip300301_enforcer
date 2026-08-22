@@ -69,6 +69,15 @@ type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
 
+/// SLIP-44 coin type for the BIP 44 account path's second level. SLIP-44
+/// registers `0` for Bitcoin and reserves `1` for *all* test networks.
+const fn slip44_coin_type(network: Network) -> u32 {
+    match network {
+        Network::Bitcoin => 0,
+        _ => 1,
+    }
+}
+
 #[non_exhaustive]
 enum ChainSourceClient {
     Electrum(Box<ElectrumClient>),
@@ -359,20 +368,29 @@ impl WalletInner {
         self.sync_state.record_result(result)
     }
 
-    async fn initialize_wallet_from_mnemonic(
+    fn bip84_descriptors(
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
-        wallet_database: &mut Persistence,
-    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
+    ) -> Result<(String, String), error::InitWalletFromMnemonic> {
         let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
 
         let xpriv = extended_key
             .into_xprv(network.into())
             .ok_or(error::InitWalletFromMnemonic::DeriveXpriv)?;
 
-        // Create a BDK wallet structure using BIP 84 descriptor ("m/84h/1h/0h/0" and "m/84h/1h/0h/1")
-        let external_desc = format!("wpkh({xpriv}/84'/1'/0'/0/*)");
-        let internal_desc = format!("wpkh({xpriv}/84'/1'/0'/1/*)");
+        let coin_type = slip44_coin_type(network);
+        Ok((
+            format!("wpkh({xpriv}/84'/{coin_type}'/0'/0/*)"),
+            format!("wpkh({xpriv}/84'/{coin_type}'/0'/1/*)"),
+        ))
+    }
+
+    async fn initialize_wallet_from_mnemonic(
+        mnemonic: &Mnemonic,
+        network: bdk_wallet::bitcoin::Network,
+        wallet_database: &mut Persistence,
+    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
+        let (external_desc, internal_desc) = Self::bip84_descriptors(mnemonic, network)?;
 
         tracing::debug!("Attempting load of existing BDK wallet");
         let bitcoin_wallet = bdk_wallet::Wallet::load()
@@ -1921,15 +1939,105 @@ mod tests {
     use std::collections::HashMap;
 
     use bdk_wallet::{
+        bip39::Language,
         bitcoin::{Amount, ScriptBuf, script::PushBytesBuf},
         test_utils::get_funded_wallet_wpkh,
     };
     use bitcoin::{BlockHash, hashes::Hash as _};
 
     use super::{
-        CreateTransactionParams, M8BmmRequest, Network, Wallet, WalletConfig, WalletSyncSource,
+        CreateTransactionParams, KeychainKind, M8BmmRequest, Mnemonic, Network, Wallet,
+        WalletConfig, WalletInner, WalletSyncSource, slip44_coin_type,
     };
     use crate::types::{BmmCommitment, SidechainNumber};
+
+    /// The BIP 39 test mnemonic that BIP 84's published vectors derive from.
+    const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon \
+                                 abandon abandon abandon abandon abandon about";
+
+    /// Every network other than mainnet is a test network, and SLIP-44
+    /// reserves coin type `1` for all of them.
+    #[test]
+    fn coin_type_is_zero_only_on_mainnet() {
+        assert_eq!(slip44_coin_type(Network::Bitcoin), 0);
+        for network in [
+            Network::Testnet,
+            Network::Testnet4,
+            Network::Signet,
+            Network::Regtest,
+        ] {
+            assert_eq!(slip44_coin_type(network), 1, "{network}");
+        }
+    }
+
+    fn descriptors(network: Network) -> (String, String) {
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, TEST_MNEMONIC).unwrap();
+        WalletInner::bip84_descriptors(&mnemonic, network).unwrap()
+    }
+
+    #[test]
+    fn descriptors_carry_the_network_coin_type() {
+        let (external, internal) = descriptors(Network::Bitcoin);
+        assert!(external.starts_with("wpkh(xprv"), "{external}");
+        assert!(external.ends_with("/84'/0'/0'/0/*)"), "{external}");
+        assert!(internal.ends_with("/84'/0'/0'/1/*)"), "{internal}");
+
+        for network in [
+            Network::Testnet,
+            Network::Testnet4,
+            Network::Signet,
+            Network::Regtest,
+        ] {
+            let (external, internal) = descriptors(network);
+            assert!(external.starts_with("wpkh(tprv"), "{network}: {external}");
+            assert!(
+                external.ends_with("/84'/1'/0'/0/*)"),
+                "{network}: {external}"
+            );
+            assert!(
+                internal.ends_with("/84'/1'/0'/1/*)"),
+                "{network}: {internal}"
+            );
+        }
+    }
+
+    /// First external and internal address for `network`, derived through BDK
+    /// rather than from the descriptor string, so the assertions cover the
+    /// path the wallet actually takes.
+    fn first_addresses(network: Network) -> (String, String) {
+        let (external, internal) = descriptors(network);
+        let wallet = bdk_wallet::Wallet::create(external, internal)
+            .network(network)
+            .create_wallet_no_persist()
+            .unwrap();
+        (
+            wallet.peek_address(KeychainKind::External, 0).to_string(),
+            wallet.peek_address(KeychainKind::Internal, 0).to_string(),
+        )
+    }
+
+    /// Pins mainnet against BIP 84's published test vectors. A mainnet wallet
+    /// built before the coin type became network-aware derived under the
+    /// test-network `1'` and produced neither of these addresses.
+    #[test]
+    fn mainnet_matches_bip84_test_vectors() {
+        let (receive, change) = first_addresses(Network::Bitcoin);
+        assert_eq!(receive, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        assert_eq!(change, "bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el");
+    }
+
+    /// The test networks keep the derivation they already had, and stay
+    /// distinct from mainnet's.
+    #[test]
+    fn test_networks_derive_under_the_test_coin_type() {
+        let (mainnet, _) = first_addresses(Network::Bitcoin);
+        let (signet, _) = first_addresses(Network::Signet);
+        let (regtest, _) = first_addresses(Network::Regtest);
+
+        assert!(signet.starts_with("tb1"), "{signet}");
+        assert!(regtest.starts_with("bcrt1"), "{regtest}");
+        assert_ne!(mainnet, signet);
+    }
 
     #[test]
     fn bmm_bid_is_a_fee_not_a_burn() {
