@@ -569,14 +569,14 @@ impl<T> From<JoinHandle<T>> for AbortOnDrop<T> {
     }
 }
 
+/// A writable handle to `path`, appending to what is already there. Reopened
+/// whenever a process is respawned into the same directory, where this
+/// previously opened read-only and silently dropped the new process's output.
 fn open_file_or_create_new(path: &std::path::Path) -> Result<std::fs::File, std::io::Error> {
-    std::fs::File::create_new(path).or_else(|err| {
-        if err.kind() == std::io::ErrorKind::AlreadyExists {
-            std::fs::File::open(path)
-        } else {
-            Err(err)
-        }
-    })
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
 }
 
 /// Run command with args, dumping stderr/stdout to `dir` on exit

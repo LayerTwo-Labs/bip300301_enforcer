@@ -64,6 +64,7 @@ mod thread_safe_connection;
 mod util;
 
 pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
+type PersistenceError = <Persistence as bdk_wallet::AsyncWalletPersister>::Error;
 type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
@@ -76,6 +77,27 @@ const fn slip44_coin_type(network: Network) -> u32 {
         Network::Bitcoin => 0,
         _ => 1,
     }
+}
+
+/// The coin type every wallet derived under before [`slip44_coin_type`] made
+/// the choice network-aware. On mainnet it is not what this build derives, so
+/// wallets persisted by those builds need
+/// [`WalletInner::initialize_wallet_from_mnemonic`]'s fallback.
+const LEGACY_COIN_TYPE: u32 = 1;
+
+fn descriptor_coin_type(config: &WalletConfig, network: Network) -> u32 {
+    config
+        .derivation_coin_type
+        .unwrap_or_else(|| slip44_coin_type(network))
+}
+
+fn is_descriptor_mismatch(err: &bdk_wallet::LoadWithPersistError<PersistenceError>) -> bool {
+    matches!(
+        err,
+        bdk_wallet::LoadWithPersistError::InvalidChangeSet(bdk_wallet::LoadError::Mismatch(
+            bdk_wallet::LoadMismatch::Descriptor { .. }
+        ))
+    )
 }
 
 #[non_exhaustive]
@@ -371,6 +393,7 @@ impl WalletInner {
     fn bip84_descriptors(
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
+        coin_type: u32,
     ) -> Result<(String, String), error::InitWalletFromMnemonic> {
         let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
 
@@ -378,43 +401,89 @@ impl WalletInner {
             .into_xprv(network.into())
             .ok_or(error::InitWalletFromMnemonic::DeriveXpriv)?;
 
-        let coin_type = slip44_coin_type(network);
         Ok((
             format!("wpkh({xpriv}/84'/{coin_type}'/0'/0/*)"),
             format!("wpkh({xpriv}/84'/{coin_type}'/0'/1/*)"),
         ))
     }
 
-    async fn initialize_wallet_from_mnemonic(
-        mnemonic: &Mnemonic,
+    /// Insists on exactly these descriptors. `Ok(None)` if the database holds
+    /// no wallet yet.
+    async fn load_bdk_wallet(
+        external_desc: &str,
+        internal_desc: &str,
         network: bdk_wallet::bitcoin::Network,
         wallet_database: &mut Persistence,
-    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
-        let (external_desc, internal_desc) = Self::bip84_descriptors(mnemonic, network)?;
-
-        tracing::debug!("Attempting load of existing BDK wallet");
-        let bitcoin_wallet = bdk_wallet::Wallet::load()
-            .descriptor(KeychainKind::External, Some(external_desc.clone()))
-            .descriptor(KeychainKind::Internal, Some(internal_desc.clone()))
+    ) -> Result<Option<BdkWallet>, bdk_wallet::LoadWithPersistError<PersistenceError>> {
+        bdk_wallet::Wallet::load()
+            .descriptor(KeychainKind::External, Some(external_desc.to_owned()))
+            .descriptor(KeychainKind::Internal, Some(internal_desc.to_owned()))
             .extract_keys()
             .check_network(network)
             .load_wallet_async(wallet_database)
-            .await?;
+            .await
+    }
 
-        let bitcoin_wallet = match bitcoin_wallet {
-            Some(wallet) => {
+    async fn initialize_wallet_from_mnemonic(
+        mnemonic: &Mnemonic,
+        network: bdk_wallet::bitcoin::Network,
+        config: &WalletConfig,
+        wallet_database: &mut Persistence,
+    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
+        let coin_type = descriptor_coin_type(config, network);
+        let (external_desc, internal_desc) = Self::bip84_descriptors(mnemonic, network, coin_type)?;
+
+        tracing::debug!(%coin_type, "Attempting load of existing BDK wallet");
+        let loaded =
+            Self::load_bdk_wallet(&external_desc, &internal_desc, network, wallet_database).await;
+
+        let bitcoin_wallet = match loaded {
+            Ok(Some(wallet)) => {
                 tracing::info!("Loaded existing BDK wallet");
                 wallet
             }
 
-            None => {
-                tracing::info!("Creating new BDK wallet");
+            Ok(None) => {
+                tracing::info!(%coin_type, "Creating new BDK wallet");
 
                 bdk_wallet::Wallet::create(external_desc, internal_desc)
                     .network(network)
                     .create_wallet_async(wallet_database)
                     .await?
             }
+
+            // A wallet persisted before the coin type became network-aware
+            // sits at `LEGACY_COIN_TYPE` on every network. Adopt it rather
+            // than refusing to start: this node's funds are on those
+            // addresses, and re-deriving would lose sight of them.
+            Err(err) if is_descriptor_mismatch(&err) && coin_type != LEGACY_COIN_TYPE => {
+                let (legacy_external, legacy_internal) =
+                    Self::bip84_descriptors(mnemonic, network, LEGACY_COIN_TYPE)?;
+                match Self::load_bdk_wallet(
+                    &legacy_external,
+                    &legacy_internal,
+                    network,
+                    wallet_database,
+                )
+                .await
+                {
+                    Ok(Some(wallet)) => {
+                        tracing::warn!(
+                            %coin_type,
+                            legacy_coin_type = %LEGACY_COIN_TYPE,
+                            "Loaded existing BDK wallet under the legacy coin type. It was \
+                             created before the derivation path became network-aware, and \
+                             keeps deriving addresses under the path it was created with.",
+                        );
+                        wallet
+                    }
+                    // Not a legacy wallet either. Report the original
+                    // mismatch, against the descriptor this build wanted.
+                    _ => return Err(err.into()),
+                }
+            }
+
+            Err(err) => return Err(err.into()),
         };
 
         Ok(bitcoin_wallet)
@@ -465,6 +534,7 @@ impl WalletInner {
                 let initialized = WalletInner::initialize_wallet_from_mnemonic(
                     &mnemonic,
                     network,
+                    &config.wallet_opts,
                     &mut wallet_database,
                 )
                 .await?;
@@ -584,8 +654,13 @@ impl WalletInner {
         let mut write_guard = self.locks.write_slot().await;
         let mut database = self.locks.db(&write_guard).await;
         let network = self.validator().network();
-        let wallet =
-            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database).await?;
+        let wallet = WalletInner::initialize_wallet_from_mnemonic(
+            &mnemonic,
+            network,
+            &self.config.wallet_opts,
+            &mut database,
+        )
+        .await?;
         drop(database);
         *write_guard = Some(wallet);
         drop(write_guard);
@@ -629,8 +704,13 @@ impl WalletInner {
         let network = self.validator().network();
 
         tracing::debug!("unlock wallet: initializing BDK wallet struct");
-        let wallet =
-            WalletInner::initialize_wallet_from_mnemonic(&mnemonic, network, &mut database).await?;
+        let wallet = WalletInner::initialize_wallet_from_mnemonic(
+            &mnemonic,
+            network,
+            &self.config.wallet_opts,
+            &mut database,
+        )
+        .await?;
         drop(database);
         *write_guard = Some(wallet);
         drop(write_guard);
@@ -1946,10 +2026,14 @@ mod tests {
     use bitcoin::{BlockHash, hashes::Hash as _};
 
     use super::{
-        CreateTransactionParams, KeychainKind, M8BmmRequest, Mnemonic, Network, Wallet,
-        WalletConfig, WalletInner, WalletSyncSource, slip44_coin_type,
+        BdkWallet, CreateTransactionParams, KeychainKind, LEGACY_COIN_TYPE, M8BmmRequest, Mnemonic,
+        Network, Persistence, Wallet, WalletConfig, WalletInner, WalletSyncSource, error,
+        slip44_coin_type,
     };
-    use crate::types::{BmmCommitment, SidechainNumber};
+    use crate::{
+        errors::ErrorChain,
+        types::{BmmCommitment, SidechainNumber},
+    };
 
     /// The BIP 39 test mnemonic that BIP 84's published vectors derive from.
     const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon \
@@ -1970,9 +2054,13 @@ mod tests {
         }
     }
 
+    fn test_mnemonic() -> Mnemonic {
+        Mnemonic::parse_in_normalized(Language::English, TEST_MNEMONIC).unwrap()
+    }
+
     fn descriptors(network: Network) -> (String, String) {
-        let mnemonic = Mnemonic::parse_in_normalized(Language::English, TEST_MNEMONIC).unwrap();
-        WalletInner::bip84_descriptors(&mnemonic, network).unwrap()
+        WalletInner::bip84_descriptors(&test_mnemonic(), network, slip44_coin_type(network))
+            .unwrap()
     }
 
     #[test]
@@ -2037,6 +2125,164 @@ mod tests {
         assert!(signet.starts_with("tb1"), "{signet}");
         assert!(regtest.starts_with("bcrt1"), "{regtest}");
         assert_ne!(mainnet, signet);
+    }
+
+    fn wallet_config(derivation_coin_type: Option<u32>) -> WalletConfig {
+        WalletConfig {
+            auto_create: false,
+            esplora_url: None,
+            electrum_host: None,
+            electrum_port: None,
+            skip_periodic_sync: false,
+            sync_source: WalletSyncSource::Disabled,
+            max_block_by_block_replay: 2_000,
+            derivation_coin_type,
+            mnemonic_path: None,
+        }
+    }
+
+    /// Open the wallet the way the enforcer does.
+    async fn open_wallet(
+        database: &mut Persistence,
+        network: Network,
+        coin_type: Option<u32>,
+    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
+        WalletInner::initialize_wallet_from_mnemonic(
+            &test_mnemonic(),
+            network,
+            &wallet_config(coin_type),
+            database,
+        )
+        .await
+    }
+
+    /// Leave `database` holding a wallet persisted under `coin_type`, and
+    /// return its first receive address.
+    async fn persist_wallet_under(
+        database: &mut Persistence,
+        network: Network,
+        coin_type: u32,
+    ) -> String {
+        let wallet = open_wallet(database, network, Some(coin_type))
+            .await
+            .expect("an empty database must yield a freshly created wallet");
+        wallet.peek_address(KeychainKind::External, 0).to_string()
+    }
+
+    async fn empty_database(dir: &temp_dir::TempDir) -> Persistence {
+        Persistence::open(dir.path().join("wallet.sqlite.db"))
+            .await
+            .expect("must open a wallet database")
+    }
+
+    /// The upgrade the fallback exists for: a mainnet wallet persisted under
+    /// [`LEGACY_COIN_TYPE`] has to open under a build that derives `0`, and
+    /// keep deriving where its funds are.
+    #[tokio::test]
+    async fn a_legacy_mainnet_wallet_still_loads() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let legacy_address =
+            persist_wallet_under(&mut database, Network::Bitcoin, LEGACY_COIN_TYPE).await;
+
+        let wallet = open_wallet(&mut database, Network::Bitcoin, None)
+            .await
+            .expect("a legacy mainnet wallet must still load");
+
+        assert_eq!(
+            wallet.peek_address(KeychainKind::External, 0).to_string(),
+            legacy_address,
+            "the wallet must keep deriving under the path it was created with",
+        );
+        // Guard the premise: the two derivations must genuinely differ.
+        assert_ne!(
+            legacy_address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+            "the legacy derivation must not coincide with the BIP 84 one",
+        );
+    }
+
+    /// An empty database is unaffected by the fallback.
+    #[tokio::test]
+    async fn a_fresh_mainnet_wallet_is_created_under_the_network_coin_type() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+
+        let wallet = open_wallet(&mut database, Network::Bitcoin, None)
+            .await
+            .expect("an empty database must yield a freshly created wallet");
+
+        assert_eq!(
+            wallet.peek_address(KeychainKind::External, 0).to_string(),
+            "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+        );
+    }
+
+    /// Neither this build's descriptor nor the legacy one: a foreign wallet,
+    /// which must fail as a data mismatch rather than an opaque load failure.
+    #[tokio::test]
+    async fn an_unrecognized_descriptor_is_a_data_mismatch() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let _foreign_address = persist_wallet_under(&mut database, Network::Bitcoin, 7).await;
+
+        let err = open_wallet(&mut database, Network::Bitcoin, None)
+            .await
+            .expect_err("a foreign descriptor must not load");
+
+        assert!(
+            matches!(err, error::InitWalletFromMnemonic::DataMismatch(_)),
+            "expected a data mismatch, got: {err:#}",
+        );
+        // The report has to name what differs; not doing so is what left the
+        // original bug report with nothing to go on.
+        let rendered = format!("{:#}", ErrorChain::new(&err));
+        assert!(
+            rendered.contains("Descriptor mismatch"),
+            "the mismatch BDK reported must survive into the error: {rendered}",
+        );
+    }
+
+    /// The mapping used to be a substring test for "data mismatch", a phrase
+    /// BDK never emits, so every mismatch fell through to the opaque
+    /// `LoadWallet` variant. Pins why the mapping must stay on the variant.
+    #[tokio::test]
+    async fn bdk_does_not_call_a_mismatch_a_data_mismatch() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let _foreign_address = persist_wallet_under(&mut database, Network::Bitcoin, 7).await;
+
+        let (external, internal) = descriptors(Network::Bitcoin);
+        let err =
+            WalletInner::load_bdk_wallet(&external, &internal, Network::Bitcoin, &mut database)
+                .await
+                .expect_err("a foreign descriptor must not load");
+
+        assert!(
+            !err.to_string().contains("data mismatch"),
+            "BDK renders its mismatch as `{err}`. If it now says `data \
+             mismatch`, the old substring test would work again -- but the \
+             mapping is matched on the variant, so only this pin is stale.",
+        );
+    }
+
+    /// The test networks' coin type never changed, so there is nothing to
+    /// fall back to and a mismatch is exactly that.
+    #[tokio::test]
+    async fn a_test_network_has_no_legacy_descriptor_to_fall_back_to() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        assert_eq!(slip44_coin_type(Network::Regtest), LEGACY_COIN_TYPE);
+        // The mainnet coin type, on a regtest wallet.
+        let _foreign_address = persist_wallet_under(&mut database, Network::Regtest, 0).await;
+
+        let err = open_wallet(&mut database, Network::Regtest, None)
+            .await
+            .expect_err("a foreign descriptor must not load");
+
+        assert!(
+            matches!(err, error::InitWalletFromMnemonic::DataMismatch(_)),
+            "expected a data mismatch, got: {err:#}",
+        );
     }
 
     #[test]
@@ -2162,6 +2408,7 @@ mod tests {
             skip_periodic_sync: false,
             sync_source: WalletSyncSource::Esplora,
             max_block_by_block_replay: 2_000,
+            derivation_coin_type: None,
             mnemonic_path: None,
         };
 
@@ -2186,6 +2433,7 @@ mod tests {
             skip_periodic_sync: false,
             sync_source: WalletSyncSource::Electrum,
             max_block_by_block_replay: 2_000,
+            derivation_coin_type: None,
             mnemonic_path: None,
         };
 
@@ -2207,6 +2455,7 @@ mod tests {
             skip_periodic_sync: false,
             sync_source: WalletSyncSource::Disabled,
             max_block_by_block_replay: 2_000,
+            derivation_coin_type: None,
             mnemonic_path: None,
         };
 

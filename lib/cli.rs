@@ -396,6 +396,14 @@ pub struct WalletConfig {
     )]
     pub max_block_by_block_replay: u32,
 
+    /// SLIP-44 coin type for the BIP 84 account path, overriding the one the
+    /// network implies. Drives a descriptor mismatch on a network where the
+    /// coin type never changed and one could not otherwise arise.
+    ///
+    /// Hidden: for testing purposes only
+    #[arg(long = "wallet-derivation-coin-type", hide = true)]
+    pub derivation_coin_type: Option<u32>,
+
     /// Path to a file containing exactly 12 space-separated BIP39 mnemonic words.
     #[arg(long = "wallet-seed-file", conflicts_with = "auto_create")]
     pub mnemonic_path: Option<PathBuf>,
@@ -883,6 +891,23 @@ mod tests {
         };
         assert_eq!(parse(&[]), 2_000);
         assert_eq!(parse(&["--wallet-max-block-by-block-replay=50"]), 50);
+    }
+
+    /// The integration tests persist a wallet under one coin type and start
+    /// the enforcer under another, which only works while the flag keeps
+    /// this spelling.
+    #[test]
+    fn derivation_coin_type_is_overridable() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["bip300301_enforcer"];
+            argv.extend_from_slice(args);
+            Config::try_parse_from(argv)
+                .expect("should parse")
+                .wallet_opts
+                .derivation_coin_type
+        };
+        assert_eq!(parse(&[]), None);
+        assert_eq!(parse(&["--wallet-derivation-coin-type=0"]), Some(0));
     }
 
     /// The annotation itself: typing a field `SecretString` is what makes the

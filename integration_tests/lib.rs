@@ -21,6 +21,7 @@ mod test_rest_disabled;
 mod test_seed_migration;
 mod test_sidechain_ack_policy;
 mod test_unconfirmed_transactions;
+mod test_wallet_descriptor_fallback;
 mod test_wallet_large_gap_sync;
 mod test_wallet_less_block_template;
 mod test_wallet_reorg_multi_block;
