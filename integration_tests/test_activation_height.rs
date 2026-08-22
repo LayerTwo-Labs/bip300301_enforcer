@@ -34,7 +34,7 @@ use futures::channel::mpsc;
 
 use crate::{
     integration_test::wait_for_validator_tip,
-    mine::mine,
+    mine::{MiningPolicy, mine},
     setup::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain as _,
         wait_for_block_templates, wait_for_enforcer_log, wait_for_pending_proposal,
@@ -218,11 +218,11 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
 
     // Mine up to one block before the activation height. The block producer
     // skips drivechain coinbase messages entirely below the activation
-    // height, so despite mining with ack-all set these are plain Bitcoin
+    // height, so despite mining with auto-ACK set these are plain Bitcoin
     // coinbases.
     let below = activation_height - 1 - height;
     tracing::info!("Mining {below} block(s), staying below activation height");
-    let () = mine::<DummySidechain>(&mut post_setup, below, Some(true)).await?;
+    let () = mine::<DummySidechain>(&mut post_setup, below, MiningPolicy::VOTE).await?;
     anyhow::ensure!(block_count(&post_setup).await? == activation_height - 1);
     anyhow::ensure!(
         proposal_count(&mut post_setup).await? == 0,
@@ -250,7 +250,7 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
 
     // The next block is AT the activation height: its M1 must register.
     tracing::info!("Mining the activation-height block");
-    let () = mine::<DummySidechain>(&mut post_setup, 1, Some(true)).await?;
+    let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
     anyhow::ensure!(block_count(&post_setup).await? == activation_height);
     anyhow::ensure!(
         proposal_count(&mut post_setup).await? == 1,
@@ -261,7 +261,7 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
     // needs strictly more acks than the preset's threshold.
     let acks = constants.unused_sidechain_slot_activation_threshold + 1;
     tracing::info!("Mining {acks} acked blocks to activate the sidechain");
-    let () = mine::<DummySidechain>(&mut post_setup, acks, Some(true)).await?;
+    let () = mine::<DummySidechain>(&mut post_setup, acks, MiningPolicy::VOTE).await?;
     anyhow::ensure!(
         active_sidechain_count(&mut post_setup).await? == 1,
         "sidechain must activate normally after the activation height"

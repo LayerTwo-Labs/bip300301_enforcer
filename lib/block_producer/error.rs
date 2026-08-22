@@ -11,6 +11,10 @@ use crate::{
 };
 
 #[derive(Debug, Diagnostic, Error)]
+#[error("unknown stored ACK policy: `{0}`")]
+pub struct UnknownStoredAckPolicy(pub String);
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum InitDbConnection {
     #[error(transparent)]
     Migration(#[from] rusqlite_migration::Error),
@@ -486,8 +490,10 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GetBundleProposals),
-    #[error("Failed to read the ACK-all-proposals setting")]
-    GetAckAllProposals(#[source] rusqlite::Error),
+    #[error("Failed to read the sidechain ACK policy")]
+    GetAckPolicy(#[source] rusqlite::Error),
+    #[error("Failed to read the withdrawal bundle policy")]
+    GetBundlePolicy(#[source] rusqlite::Error),
     #[error("the `coinbasetxn` GBT capability is required")]
     NoCoinbaseTxn,
 }

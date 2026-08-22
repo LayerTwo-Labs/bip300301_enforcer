@@ -11,11 +11,11 @@ use crate::{
     proto::{
         common::{ConsensusHex, Hex, ReverseHex},
         mainchain::{
-            BlockHeaderInfo, BlockInfo, Deposit, Network, SidechainDeclaration,
-            WithdrawalBundleEvent, block_info, deposit, get_coinbase_psbt_request,
-            get_sidechains_response, get_two_way_peg_data_response, send_transaction_request,
-            sidechain_declaration, subscribe_events_response, wallet_transaction,
-            withdrawal_bundle_event,
+            AckAllProposalsPolicy, BlockHeaderInfo, BlockInfo, Deposit, Network,
+            SidechainDeclaration, WithdrawalBundleEvent, WithdrawalBundlePolicy, block_info,
+            deposit, get_coinbase_psbt_request, get_sidechains_response,
+            get_two_way_peg_data_response, send_transaction_request, sidechain_declaration,
+            subscribe_events_response, wallet_transaction, withdrawal_bundle_event,
         },
     },
     types::SidechainNumber,
@@ -562,6 +562,65 @@ impl TryFrom<SidechainDeclaration> for crate::types::SidechainDeclaration {
         sidechain_declaration
             .ok_or_else(|| Error::missing_field::<SidechainDeclaration>("sidechain_declaration"))?
             .try_into()
+    }
+}
+
+impl From<crate::types::AckAllProposalsPolicy> for AckAllProposalsPolicy {
+    fn from(policy: crate::types::AckAllProposalsPolicy) -> Self {
+        use crate::types::AckAllProposalsPolicy as Policy;
+        match policy {
+            Policy::None => Self::ACK_ALL_PROPOSALS_POLICY_NONE,
+            Policy::NewSlots => Self::ACK_ALL_PROPOSALS_POLICY_NEW_SLOTS,
+            Policy::All => Self::ACK_ALL_PROPOSALS_POLICY_ALL,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown policy")]
+pub struct UnknownPolicy;
+
+impl TryFrom<buffa::EnumValue<AckAllProposalsPolicy>> for crate::types::AckAllProposalsPolicy {
+    type Error = UnknownPolicy;
+
+    fn try_from(policy: buffa::EnumValue<AckAllProposalsPolicy>) -> Result<Self, Self::Error> {
+        match policy.as_known() {
+            Some(AckAllProposalsPolicy::ACK_ALL_PROPOSALS_POLICY_NONE) => Ok(Self::None),
+            Some(AckAllProposalsPolicy::ACK_ALL_PROPOSALS_POLICY_NEW_SLOTS) => Ok(Self::NewSlots),
+            Some(AckAllProposalsPolicy::ACK_ALL_PROPOSALS_POLICY_ALL) => Ok(Self::All),
+            // Unspecified, or an enum value only a newer build defines.
+            Some(AckAllProposalsPolicy::ACK_ALL_PROPOSALS_POLICY_UNSPECIFIED) | None => {
+                Err(UnknownPolicy)
+            }
+        }
+    }
+}
+
+impl From<crate::types::WithdrawalBundlePolicy> for WithdrawalBundlePolicy {
+    fn from(policy: crate::types::WithdrawalBundlePolicy) -> Self {
+        use crate::types::WithdrawalBundlePolicy as Policy;
+        match policy {
+            Policy::None => Self::WITHDRAWAL_BUNDLE_POLICY_NONE,
+            Policy::Known => Self::WITHDRAWAL_BUNDLE_POLICY_KNOWN,
+            Policy::All => Self::WITHDRAWAL_BUNDLE_POLICY_ALL,
+            Policy::Alarm => Self::WITHDRAWAL_BUNDLE_POLICY_ALARM,
+        }
+    }
+}
+
+impl TryFrom<buffa::EnumValue<WithdrawalBundlePolicy>> for crate::types::WithdrawalBundlePolicy {
+    type Error = UnknownPolicy;
+
+    fn try_from(policy: buffa::EnumValue<WithdrawalBundlePolicy>) -> Result<Self, Self::Error> {
+        match policy.as_known() {
+            Some(WithdrawalBundlePolicy::WITHDRAWAL_BUNDLE_POLICY_NONE) => Ok(Self::None),
+            Some(WithdrawalBundlePolicy::WITHDRAWAL_BUNDLE_POLICY_KNOWN) => Ok(Self::Known),
+            Some(WithdrawalBundlePolicy::WITHDRAWAL_BUNDLE_POLICY_ALL) => Ok(Self::All),
+            Some(WithdrawalBundlePolicy::WITHDRAWAL_BUNDLE_POLICY_ALARM) => Ok(Self::Alarm),
+            Some(WithdrawalBundlePolicy::WITHDRAWAL_BUNDLE_POLICY_UNSPECIFIED) | None => {
+                Err(UnknownPolicy)
+            }
+        }
     }
 }
 
