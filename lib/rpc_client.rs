@@ -1,10 +1,13 @@
 use bitcoin_jsonrpsee::{
     MainClient,
+    client::{BlockTemplate, BlockTemplateRequest},
     jsonrpsee::{core::ClientError, http_client::HttpClient},
 };
+use jsonrpsee::{core::client::ClientT, rpc_params};
 use miette::Diagnostic;
+use serde::Serialize;
 
-use crate::{cli::NodeRpcConfig, errors::ErrorChain};
+use crate::{block_producer::error::BitcoinCoreRPC, cli::NodeRpcConfig, errors::ErrorChain};
 
 #[derive(Debug, Diagnostic, thiserror::Error)]
 pub enum Error {
@@ -203,4 +206,66 @@ where
         code == BITCOIN_CORE_RPC_TRANSACTION_REJECTED
     })
     .await
+}
+
+/// A `getblocktemplate` request that acknowledges the enforcer. Bitcoin Core
+/// serves a plain layer 1 template, so the caller adds the BIP300/BIP301
+/// commitments itself.
+#[derive(Debug, Serialize)]
+struct EnforcerBlockTemplateRequest {
+    #[serde(flatten)]
+    request: BlockTemplateRequest,
+    bip300301_enforcer: bool,
+}
+
+fn block_template_request(network: bitcoin::Network) -> EnforcerBlockTemplateRequest {
+    let mut request = BlockTemplateRequest::default();
+    if network == bitcoin::Network::Signet {
+        request.rules.push("signet".to_owned());
+    }
+    EnforcerBlockTemplateRequest {
+        request,
+        bip300301_enforcer: true,
+    }
+}
+
+/// Fetches a block template from Bitcoin Core.
+pub async fn get_block_template<RpcClient>(
+    rpc_client: &RpcClient,
+    network: bitcoin::Network,
+) -> Result<BlockTemplate, BitcoinCoreRPC>
+where
+    RpcClient: ClientT + Sync,
+{
+    rpc_client
+        .request(
+            "getblocktemplate",
+            rpc_params![block_template_request(network)],
+        )
+        .await
+        .map_err(|error| BitcoinCoreRPC {
+            method: "getblocktemplate".to_string(),
+            error,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_template_request;
+
+    #[test]
+    fn signet_template_request_acks_the_enforcer() {
+        let request = serde_json::to_value(block_template_request(bitcoin::Network::Signet))
+            .expect("failed to serialize block template request");
+        assert_eq!(request["bip300301_enforcer"], serde_json::json!(true));
+        assert_eq!(request["rules"], serde_json::json!(["segwit", "signet"]));
+    }
+
+    #[test]
+    fn regtest_template_request_drops_the_signet_rule() {
+        let request = serde_json::to_value(block_template_request(bitcoin::Network::Regtest))
+            .expect("failed to serialize block template request");
+        assert_eq!(request["bip300301_enforcer"], serde_json::json!(true));
+        assert_eq!(request["rules"], serde_json::json!(["segwit"]));
+    }
 }

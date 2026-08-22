@@ -85,26 +85,6 @@ fn enforcer_wallet(enforcer: &Enforcer) -> Option<&Wallet> {
     }
 }
 
-async fn get_block_template<RpcClient>(
-    rpc_client: &RpcClient,
-    network: bitcoin::Network,
-) -> Result<bitcoin_jsonrpsee::client::BlockTemplate, wallet::error::BitcoinCoreRPC>
-where
-    RpcClient: MainClient + Sync,
-{
-    let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
-    if network == bitcoin::Network::Signet {
-        request.rules.push("signet".to_owned())
-    }
-    rpc_client
-        .get_block_template(request)
-        .await
-        .map_err(|err| wallet::error::BitcoinCoreRPC {
-            method: "getblocktemplate".to_string(),
-            error: err,
-        })
-}
-
 /// Resolve the message-start bytes used by Bitcoin Core's block files.
 ///
 /// An explicit CLI override remains the escape hatch for rebranded node
@@ -937,7 +917,7 @@ where
     // current Core tip. However, Core can still be stuck in IBD, hence the need for this loop
     // https://github.com/bitcoin/bitcoin/blob/6c4fe401e908cff1b67d80035b117aae15fe7db6/src/rpc/mining.cpp#L771-L773
     let sample_block_template = loop {
-        match get_block_template(&mainchain_client, network).await {
+        match rpc_client::get_block_template(&mainchain_client, network).await {
             Ok(block_template) => break block_template,
             Err(wallet::error::BitcoinCoreRPC {
                 method: _,
@@ -1547,7 +1527,7 @@ async fn main() -> Result<()> {
     }
 
     let signet_challenge = if info.chain == bitcoin::Network::Signet {
-        let block_template = get_block_template(&mainchain_client, info.chain).await?;
+        let block_template = rpc_client::get_block_template(&mainchain_client, info.chain).await?;
         let Some(signet_challenge) = block_template.signet_challenge else {
             return Err(miette!("signet challenge not found in block template"));
         };
