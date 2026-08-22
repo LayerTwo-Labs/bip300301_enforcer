@@ -1012,6 +1012,19 @@ pub fn tests(
         },
         crate::test_activation_height::test_activation_height,
     ));
+    async_trials.push(new_trial_with_setup(
+        crate::test_gbt_rule_ack::TEST_NAME.to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            // The test talks to Bitcoin Core directly, so it needs no more of
+            // the enforcer than a node to ask.
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_gbt_rule_ack::test_gbt_rule_ack,
+    ));
     async_trials.push(new_trial_with_setup_opts(
         crate::test_rest_disabled::TEST_NAME.to_string(),
         TestSetupComponents {

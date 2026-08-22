@@ -121,7 +121,10 @@ impl BlockProducer {
         mainchain_tip: BlockHash,
     ) -> Result<Vec<(Transaction, Amount)>, error::SelectBlockTxs> {
         let template = self
-            .fetch_block_template(vec!["segwit".to_string()])
+            .fetch_block_template(vec![
+                "segwit".to_string(),
+                crate::rpc_client::BIP300301_RULE.to_string(),
+            ])
             .await?;
 
         // The template is built on its server's tip. We build on the
@@ -395,7 +398,11 @@ impl BlockProducer {
         }
 
         let template = self
-            .fetch_block_template(vec!["signet".to_string(), "segwit".to_string()])
+            .fetch_block_template(vec![
+                "signet".to_string(),
+                "segwit".to_string(),
+                crate::rpc_client::BIP300301_RULE.to_string(),
+            ])
             .await?;
 
         let Some(signet_challenge) = template.signet_challenge else {

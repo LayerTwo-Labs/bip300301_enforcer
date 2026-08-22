@@ -6,6 +6,10 @@ use miette::Diagnostic;
 
 use crate::{cli::NodeRpcConfig, errors::ErrorChain};
 
+/// BIP9 rule name acknowledging that the client adds the BIP300/BIP301
+/// commitments to a block template before it is mined.
+pub const BIP300301_RULE: &str = "bip300301";
+
 #[derive(Debug, Diagnostic, thiserror::Error)]
 pub enum Error {
     #[error("RPC user and password must be set together")]

@@ -879,6 +879,35 @@ async fn mine_cached_signet_chain(
         .parse::<bitcoin::Address<_>>()?
         .require_network(bitcoin::Network::Signet)?;
     tracing::info!(%mining_address, "Mining cached chain's coinbases to the node wallet");
+
+    // These are plain layer 1 templates, and a node that enforces the
+    // drivechain rules will not serve one unless the client acknowledges the
+    // `bip300301` rule. The signet miner's own request does not, and it is not
+    // ours to change -- but it takes a command to fetch templates with, so the
+    // rule goes on in passing. Nodes that do not require it ignore a rule name
+    // they do not know, which keeps one path for every flavor.
+    let gbt_script_file = dirs.base_dir.path().join("gbt-node-script.sh");
+    tracing::debug!("Node GBT script: {}", gbt_script_file.display());
+    std::fs::write(
+        &gbt_script_file,
+        format!(
+            r#"#!/bin/sh
+REQUEST=$(printf '%s' "$1" | jq -c '.rules = ((.rules // []) + ["{rule}"] | unique)')
+exec {bitcoin_cli} getblocktemplate "$REQUEST"
+"#,
+            rule = bip300301_enforcer_lib::rpc_client::BIP300301_RULE,
+            bitcoin_cli = bitcoin_cli.display(),
+        ),
+    )?;
+    cfg_if::cfg_if! {
+        if #[cfg(target_family = "unix")] {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut perms = std::fs::metadata(&gbt_script_file)?.permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            std::fs::set_permissions(&gbt_script_file, perms)?;
+        }
+    }
+
     let signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner()?.clone(),
         bitcoin_cli: bitcoin_cli.clone(),
@@ -890,8 +919,11 @@ async fn mine_cached_signet_chain(
         // grinding per block -- which is exactly why this is cached.
         nbits: None,
         // Mine against Bitcoin Core's own templates: these are plain funding
-        // blocks, with no BIP300 messages that would need the enforcer.
-        getblocktemplate_command: None,
+        // blocks, with no BIP300 messages that would need the enforcer. The
+        // command only forwards the request to the node, with the rule ack
+        // added; it is not the enforcer's template server.
+        getblocktemplate_command: Some(format!("{}", gbt_script_file.display())),
+        // The miner builds its own coinbase, paying `coinbase_recipient`.
         coinbasetxn: false,
     };
     for height in 1..=SIGNET_CACHED_CHAIN_BLOCKS {

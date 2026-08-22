@@ -125,6 +125,15 @@ impl BitcoinCli {
 
     /// Display without chain argument.
     /// Required by signet miner
+    /// The full invocation, for embedding in a script that shells out to
+    /// `bitcoin-cli` the way the harness itself would.
+    pub fn display(&self) -> String {
+        std::iter::once(format!("{}", self.path.display()))
+            .chain(self.default_args())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn display_without_chain(&self) -> String {
         let mut command_fragments = vec![format!("{}", self.path.display())];
         command_fragments.extend(
