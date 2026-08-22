@@ -339,13 +339,18 @@ impl BlockProducer {
             coinbase_txouts
         );
 
-        let ack_all_proposals = self
+        let ack_policy = self
             .db()
-            .get_ack_all_proposals()
+            .get_ack_policy()
             .await
-            .map_err(error::InitialBlockTemplateInner::GetAckAllProposals)?;
+            .map_err(error::InitialBlockTemplateInner::GetAckPolicy)?;
+        let bundle_policy = self
+            .db()
+            .get_bundle_policy()
+            .await
+            .map_err(error::InitialBlockTemplateInner::GetBundlePolicy)?;
         let () = self
-            .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, coinbase_txouts)
+            .extend_coinbase_txouts(ack_policy, bundle_policy, mainchain_tip, coinbase_txouts)
             .await?;
         tracing::debug!(
             "Initial coinbase txouts post-extension: {:?}",

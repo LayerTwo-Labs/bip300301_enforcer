@@ -7,8 +7,9 @@ use bip300301_enforcer_lib::{
     proto::{
         self, ToStatus,
         mainchain::{
-            BlockHeaderInfo, GenerateToAddressRequest, GenerateToAddressResponse,
-            SetAckAllProposalsRequest, SubscribeEventsRequest, SubscribeEventsResponse,
+            AckAllProposalsPolicy, BlockHeaderInfo, GenerateToAddressRequest,
+            GenerateToAddressResponse, SetAckAllProposalsRequest, SetWithdrawalBundlePolicyRequest,
+            SubscribeEventsRequest, SubscribeEventsResponse, WithdrawalBundlePolicy,
             subscribe_events_response, subscribe_events_response::event::ConnectBlock,
         },
     },
@@ -306,13 +307,38 @@ where
     Ok(())
 }
 
+/// What the producer votes while mining: the sidechain-proposal ACK policy
+/// (BIP300 M2) and the withdrawal-bundle policy (M4), which are independent
+/// settings on the enforcer.
+#[derive(Clone, Copy, Debug)]
+pub struct MiningPolicy {
+    pub ack: AckAllProposalsPolicy,
+    pub bundle: WithdrawalBundlePolicy,
+}
+
+impl MiningPolicy {
+    /// Vote: ACK proposals for empty sidechain slots, and upvote the pending
+    /// withdrawal bundles this node holds itself. What a miner participating
+    /// in drivechain normally does.
+    pub const VOTE: Self = Self {
+        ack: AckAllProposalsPolicy::NewSlots,
+        bundle: WithdrawalBundlePolicy::Known,
+    };
+
+    /// Cast no votes at all, so nothing moves except by explicit ACK.
+    pub const SILENT: Self = Self {
+        ack: AckAllProposalsPolicy::None,
+        bundle: WithdrawalBundlePolicy::None,
+    };
+}
+
 // Mine blocks via `GenerateToAddress`, running a check after each block.
-// `GenerateToAddress` mines with the persisted ACK policy, so set it first to
+// `GenerateToAddress` mines with the persisted policies, so set them first to
 // mirror the requested per-call behavior.
 pub async fn mine_generateblocks_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
-    ack_all_proposals: Option<bool>,
+    policy: MiningPolicy,
     mut check: F,
 ) -> Result<(), Either<ConnectError, Err>>
 where
@@ -321,7 +347,15 @@ where
     let () = post_setup
         .block_producer_service_client
         .set_ack_all_proposals(SetAckAllProposalsRequest {
-            ack_all: ack_all_proposals.unwrap_or(false),
+            policy: policy.ack.into(),
+        })
+        .await
+        .map(|_| ())
+        .map_err(Either::Left)?;
+    let () = post_setup
+        .block_producer_service_client
+        .set_withdrawal_bundle_policy(SetWithdrawalBundlePolicyRequest {
+            policy: policy.bundle.into(),
         })
         .await
         .map(|_| ())
@@ -360,7 +394,7 @@ pub enum MineError {
 pub async fn mine<S>(
     post_setup: &mut PostSetup,
     blocks: u32,
-    ack_all_proposals: Option<bool>,
+    policy: MiningPolicy,
 ) -> Result<(), MineError>
 where
     S: Sidechain,
@@ -368,13 +402,11 @@ where
     use std::convert::Infallible;
     match (post_setup.network, post_setup.mode.mining_mode()) {
         (Network::Regtest, MiningMode::GenerateBlocks) => {
-            mine_generateblocks_check(post_setup, blocks, ack_all_proposals, |_| {
-                Ok::<_, Infallible>(())
-            })
-            .await
-            .map_err(|err| match err {
-                Either::Left(err) => MineError::GenerateToAddress(err),
-            })
+            mine_generateblocks_check(post_setup, blocks, policy, |_| Ok::<_, Infallible>(()))
+                .await
+                .map_err(|err| match err {
+                    Either::Left(err) => MineError::GenerateToAddress(err),
+                })
         }
         (Network::Regtest, MiningMode::GetBlockTemplate) => {
             mine_gbt_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
@@ -398,7 +430,7 @@ where
 pub async fn mine_check_block_events<F, S>(
     post_setup: &mut PostSetup,
     blocks: u32,
-    ack_all_proposals: Option<bool>,
+    policy: MiningPolicy,
     mut check: F,
 ) -> anyhow::Result<()>
 where
@@ -411,7 +443,7 @@ where
         .subscribe_events(subscribe_request::<S>())
         .await?;
     for blocks_mined in 0..blocks {
-        let () = mine::<S>(post_setup, 1, ack_all_proposals).await?;
+        let () = mine::<S>(post_setup, 1, policy).await?;
         let Some(view) = events.message().await? else {
             anyhow::bail!("Expected a block event")
         };

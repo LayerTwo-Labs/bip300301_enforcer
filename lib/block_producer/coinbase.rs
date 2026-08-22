@@ -7,33 +7,33 @@ use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
     messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
     types::{
-        AmountUnderflowError, BlindedM6, Ctip, Sidechain, SidechainAck, SidechainNumber,
-        SidechainProposal, SidechainProposalId, Thresholds,
+        AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, M6id, Sidechain,
+        SidechainAck, SidechainNumber, SidechainProposal, SidechainProposalId, Thresholds,
+        WithdrawalBundlePolicy, WithdrawalBundleVote,
     },
 };
 
+/// The M4 votes to cast, paired with the explicit bundle ACKs to delete.
+type SelectedBundleVotes = (Vec<WithdrawalBundleVote>, Vec<(SidechainNumber, M6id)>);
+
 impl BlockProducer {
     /// Bundle proposals we've stored, joined with the validator's view of each
-    /// one. Proposals for a sidechain that isn't active are dropped: per BIP300
-    /// M3, a bundle proposed for an inactive slot is just an ordinary script (a
-    /// no-op), so there is nothing to gain by proposing it. Those can sneak in by
-    /// activating a sidechain and then reorging it out of existence.
+    /// one. Proposals for a sidechain that isn't active -- whose slot is not in
+    /// `used_slots` -- are dropped: per BIP300 M3, a bundle proposed for an
+    /// inactive slot is just an ordinary script (a no-op), so there is nothing
+    /// to gain by proposing it. Those can sneak in by activating a sidechain
+    /// and then reorging it out of existence.
     pub(crate) async fn get_bundle_proposals(
         &self,
+        used_slots: &HashSet<SidechainNumber>,
     ) -> Result<HashMap<SidechainNumber, BundleProposals>, error::GetBundleProposals> {
         let bundle_proposals = self.db().get_bundle_proposals().await?;
-        let active_sidechain_numbers: HashSet<SidechainNumber> = self
-            .validator()
-            .get_active_sidechains()?
-            .into_iter()
-            .map(|sidechain| sidechain.proposal.sidechain_number)
-            .collect();
         let res = bundle_proposals
             .into_iter()
             .map(Ok::<_, error::GetBundleProposals>)
             .transpose_into_fallible()
             .filter_map(|(sidechain_id, m6ids)| {
-                if !active_sidechain_numbers.contains(&sidechain_id) {
+                if !used_slots.contains(&sidechain_id) {
                     return Ok(None);
                 }
                 let pending_m6ids = self.validator().get_pending_withdrawals(&sidechain_id)?;
@@ -49,6 +49,16 @@ impl BlockProducer {
             })
             .collect()?;
         Ok(res)
+    }
+
+    /// The slots an active sidechain currently occupies. A proposal for one of
+    /// these would evict the incumbent if it activated, rather than moving into
+    /// an empty slot.
+    fn used_slots(active_sidechains: &[Sidechain]) -> HashSet<SidechainNumber> {
+        active_sidechains
+            .iter()
+            .map(|sidechain| sidechain.proposal.sidechain_number)
+            .collect()
     }
 
     /// Sidechain proposals from the *validator*: already included in a block, and
@@ -96,22 +106,21 @@ impl BlockProducer {
     /// Returns `true` if any M2 in this coinbase might activate an unused slot,
     /// in which case the M4 must be omitted.
     ///
+    /// An M2 for a *used* slot cannot do this: activating it replaces the
+    /// incumbent in place, leaving the active set the same size.
+    ///
     /// `next_height` is the height of the block under construction, from
     /// which each proposal's age is computed, mirroring the validator's M2
     /// handling at connect time.
     fn m2s_may_activate_unused_slot(
         &self,
         coinbase_messages: &CoinbaseMessages,
-        active_sidechains: &[Sidechain],
+        used_slots: &HashSet<SidechainNumber>,
         next_height: u32,
     ) -> Result<bool, crate::validator::GetSidechainsError> {
         if coinbase_messages.m2_ack_slots().is_empty() {
             return Ok(false);
         }
-        let active_slots: HashSet<SidechainNumber> = active_sidechains
-            .iter()
-            .map(|sidechain| sidechain.proposal.sidechain_number)
-            .collect();
 
         let mut unused_slot_acks = HashSet::new();
         for (message, _vout) in coinbase_messages.iter() {
@@ -120,7 +129,7 @@ impl BlockProducer {
             };
             // Only ACKs for slots that are not already active can grow the
             // active set
-            if active_slots.contains(&m2.sidechain_number) {
+            if used_slots.contains(&m2.sidechain_number) {
                 continue;
             }
             unused_slot_acks.insert(SidechainProposalId {
@@ -148,32 +157,38 @@ impl BlockProducer {
     }
 
     /// Split the stored ACKs into the ones to emit and the stale ones to
-    /// delete, adding an auto-ACK for every pending proposal left without one
-    /// when `ack_all_proposals` is set. Stale rows are dropped before that,
-    /// so a stale ACK for a slot cannot suppress the auto-ACK for the
-    /// replacement proposal in the same slot.
+    /// delete, adding an auto-ACK for every pending proposal `policy` covers
+    /// and that is left without one. Stale rows are dropped before that, so a
+    /// stale ACK for a slot cannot suppress the auto-ACK for the replacement
+    /// proposal in the same slot.
+    ///
+    /// `used_slots` are the slots an active sidechain already occupies: a
+    /// proposal for one of those would evict the incumbent if it activated,
+    /// which [`AckAllProposalsPolicy::NewSlots`] leaves to an explicit ACK.
     fn select_sidechain_acks(
         stored_acks: Vec<SidechainAck>,
         pending_proposals: &HashMap<SidechainNumber, SidechainProposal>,
-        ack_all_proposals: bool,
+        used_slots: &HashSet<SidechainNumber>,
+        policy: AckAllProposalsPolicy,
     ) -> (Vec<SidechainAck>, Vec<SidechainAck>) {
         let (mut acks, stale_acks): (Vec<_>, Vec<_>) = stored_acks
             .into_iter()
             .partition(|ack| Self::validate_sidechain_ack(ack, pending_proposals));
-        if ack_all_proposals {
-            for (sidechain_number, proposal) in pending_proposals {
-                if acks
-                    .iter()
-                    .any(|ack| ack.sidechain_number == *sidechain_number)
-                {
-                    continue;
-                }
-                tracing::debug!("Handle sidechain ACK: adding 'fake' ACK for {sidechain_number}");
-                acks.push(SidechainAck {
-                    sidechain_number: *sidechain_number,
-                    description_hash: proposal.description.sha256d_hash(),
-                });
+        for (sidechain_number, proposal) in pending_proposals {
+            if !policy.auto_acks(used_slots.contains(sidechain_number)) {
+                continue;
             }
+            if acks
+                .iter()
+                .any(|ack| ack.sidechain_number == *sidechain_number)
+            {
+                continue;
+            }
+            tracing::debug!("Handle sidechain ACK: adding 'fake' ACK for {sidechain_number}");
+            acks.push(SidechainAck {
+                sidechain_number: *sidechain_number,
+                description_hash: proposal.description.sha256d_hash(),
+            });
         }
         (acks, stale_acks)
     }
@@ -182,7 +197,8 @@ impl BlockProducer {
     /// M1 (propose), M2 (ack), M3 (bundle propose) and M4 (bundle votes).
     pub(crate) async fn extend_coinbase_txouts(
         &self,
-        ack_all_proposals: bool,
+        ack_policy: AckAllProposalsPolicy,
+        bundle_policy: WithdrawalBundlePolicy,
         mainchain_tip: BlockHash,
         coinbase_txouts: &mut Vec<TxOut>,
     ) -> Result<(), error::GenerateCoinbaseTxouts> {
@@ -209,7 +225,8 @@ impl BlockProducer {
 
         let mut coinbase_builder = CoinbaseBuilder::new(coinbase_txouts)?;
         tracing::debug!(
-            ack_all_proposals,
+            ?ack_policy,
+            ?bundle_policy,
             %mainchain_tip,
             "Extending coinbase txouts",
         );
@@ -255,15 +272,24 @@ impl BlockProducer {
         // broadcast by (potentially) someone else, and already active.
         let active_sidechain_proposals = self.get_active_sidechain_proposals()?;
 
-        if ack_all_proposals && !active_sidechain_proposals.is_empty() {
+        // One read of the active set, shared by the ACK policy, the bundle
+        // proposals, the activation check and the M4 below: a slot counts as
+        // used consistently throughout, and the M4 is sized against the same
+        // active set the check ran against.
+        let active_sidechains = self.validator().get_active_sidechains()?;
+        let used_slots = Self::used_slots(&active_sidechains);
+
+        if ack_policy.is_automatic() && !active_sidechain_proposals.is_empty() {
             tracing::info!(
-                "Handle sidechain ACK: acking all sidechains regardless of what DB says"
+                ?ack_policy,
+                "Handle sidechain ACK: acking proposals per policy, on top of what the DB says"
             );
         }
         let (sidechain_acks, stale_acks) = Self::select_sidechain_acks(
             stored_acks,
             &active_sidechain_proposals,
-            ack_all_proposals,
+            &used_slots,
+            ack_policy,
         );
         for stale_ack in stale_acks {
             self.db().delete_sidechain_ack(&stale_ack).await?;
@@ -293,44 +319,107 @@ impl BlockProducer {
             )?;
         }
 
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
+        let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
+        for (sidechain_id, m6ids) in &bundle_proposals {
             for (m6id, _blinded_m6, m6id_info) in m6ids {
                 if m6id_info.is_none() {
-                    coinbase_builder.propose_bundle(sidechain_id, m6id)?;
+                    coinbase_builder.propose_bundle(*sidechain_id, *m6id)?;
                 }
             }
         }
-        // One read of the active set, shared by the activation check and the
-        // M4 below, so that the M4 is sized against the same active set the
-        // check ran against.
-        let active_sidechains = self.validator().get_active_sidechains()?;
-        // Ack bundles
-        // TODO: Exclusively ack bundles that are known to us
-        if ack_all_proposals
+
+        // Ack bundles (BIP300 M4), one vote per active sidechain in the same
+        // order the validator reads them back.
+        let stored_bundle_acks = self.db().get_bundle_acks().await?;
+        let (bundle_votes, stale_bundle_acks) = self.select_bundle_votes(
+            stored_bundle_acks,
+            &bundle_proposals,
+            &active_sidechains,
+            bundle_policy,
+        )?;
+        for (sidechain_number, m6id) in stale_bundle_acks {
+            self.db().delete_bundle_ack(sidechain_number, m6id).await?;
+            tracing::info!(%sidechain_number, %m6id, "dropped an ACK for a bundle that is no longer pending");
+        }
+        // Only emit an M4 that votes. An abstain-only one changes nothing, and
+        // the validator already treats it and an absent M4 identically -- a
+        // later block's RepeatPrevious reads both as "no prior M4". And an M4
+        // sized against the current active set is invalid in a block whose own
+        // M2s grow that set.
+        let votes_something = bundle_votes
+            .iter()
+            .any(|vote| *vote != WithdrawalBundleVote::Abstain);
+        if votes_something
             && !self.m2s_may_activate_unused_slot(
                 coinbase_builder.messages(),
-                &active_sidechains,
+                &used_slots,
                 next_height,
             )?
         {
-            let upvotes = active_sidechains
-                .iter()
-                .map(|sidechain| {
-                    if self
-                        .validator()
-                        .get_pending_withdrawals(&sidechain.proposal.sidechain_number)?
-                        .is_empty()
-                    {
-                        Ok(M4AckBundles::ABSTAIN_ONE_BYTE)
-                    } else {
-                        Ok(0)
-                    }
-                })
-                .collect::<Result<_, crate::validator::GetPendingWithdrawalsError>>()?;
-            coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
+            coinbase_builder.ack_bundles(M4AckBundles::from_votes(&bundle_votes))?;
         }
         let () = coinbase_builder.build()?;
         Ok(())
+    }
+
+    /// One M4 vote per active sidechain, in active-sidechain order, plus the
+    /// explicit ACKs to delete: rows naming a bundle that is no longer pending
+    /// for its sidechain, which can never be voted on again.
+    ///
+    /// `bundle_proposals` are the bundles this node stores, which is what
+    /// [`WithdrawalBundlePolicy::Known`] means by a bundle being ours.
+    fn select_bundle_votes(
+        &self,
+        stored_bundle_acks: Vec<(SidechainNumber, M6id)>,
+        bundle_proposals: &HashMap<SidechainNumber, BundleProposals>,
+        active_sidechains: &[Sidechain],
+        policy: WithdrawalBundlePolicy,
+    ) -> Result<SelectedBundleVotes, crate::validator::GetPendingWithdrawalsError> {
+        let mut acked_by_slot: HashMap<SidechainNumber, HashSet<M6id>> = HashMap::new();
+        for (sidechain_number, m6id) in &stored_bundle_acks {
+            acked_by_slot
+                .entry(*sidechain_number)
+                .or_default()
+                .insert(*m6id);
+        }
+        let empty = HashSet::new();
+
+        let mut votes = Vec::with_capacity(active_sidechains.len());
+        let mut pending_by_slot: HashMap<SidechainNumber, Vec<M6id>> = HashMap::new();
+        for sidechain in active_sidechains {
+            let slot = sidechain.proposal.sidechain_number;
+            let pending: Vec<M6id> = self
+                .validator()
+                .get_pending_withdrawals(&slot)?
+                .keys()
+                .copied()
+                .collect();
+            let ours: HashSet<M6id> = bundle_proposals
+                .get(&slot)
+                .into_iter()
+                .flatten()
+                .map(|(m6id, _blinded_m6, _info)| *m6id)
+                .collect();
+            votes.push(WithdrawalBundleVote::resolve(
+                policy,
+                &pending,
+                acked_by_slot.get(&slot).unwrap_or(&empty),
+                &ours,
+            ));
+            pending_by_slot.insert(slot, pending);
+        }
+
+        // An ACK for a slot with no active sidechain is stale too: there is no
+        // pending list for it, so `pending_by_slot` has no entry to match.
+        let stale = stored_bundle_acks
+            .into_iter()
+            .filter(|(sidechain_number, m6id)| {
+                !pending_by_slot
+                    .get(sidechain_number)
+                    .is_some_and(|pending| pending.contains(m6id))
+            })
+            .collect();
+        Ok((votes, stale))
     }
 
     /// Treasury value remaining after a withdrawal bundle spends `fee` and
@@ -382,7 +471,8 @@ impl BlockProducer {
         ctips: &HashMap<SidechainNumber, Ctip>,
     ) -> Result<Vec<Transaction>, error::GetBundleProposals> {
         let thresholds = self.validator().network_params().thresholds;
-        let bundle_proposals = self.get_bundle_proposals().await?;
+        let used_slots = Self::used_slots(&self.validator().get_active_sidechains()?);
+        let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
         Ok(Self::suffix_txs_for_proposals(
             bundle_proposals,
             ctips,
@@ -462,7 +552,10 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, collections::HashMap};
+    use std::{
+        borrow::Cow,
+        collections::{HashMap, HashSet},
+    };
 
     use bitcoin::{
         Amount, OutPoint, ScriptBuf, Transaction, TxOut, Txid, absolute::LockTime,
@@ -472,8 +565,8 @@ mod tests {
     use crate::{
         block_producer::{BlockProducer, BundleProposals},
         types::{
-            AmountUnderflowError, BlindedM6, Ctip, PendingM6idInfo, SidechainAck,
-            SidechainDescription, SidechainNumber, SidechainProposal, Thresholds,
+            AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, PendingM6idInfo,
+            SidechainAck, SidechainDescription, SidechainNumber, SidechainProposal, Thresholds,
             op_drivechain_script,
         },
     };
@@ -742,7 +835,12 @@ mod tests {
         };
         let pending = HashMap::from_iter([(slot, replacement)]);
 
-        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![stale], &pending, true);
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(
+            vec![stale],
+            &pending,
+            &HashSet::new(),
+            AckAllProposalsPolicy::NewSlots,
+        );
 
         assert_eq!(acks.len(), 1);
         assert_eq!(acks[0].sidechain_number, slot);
@@ -761,7 +859,12 @@ mod tests {
         };
         let pending = HashMap::from_iter([(slot, proposal)]);
 
-        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![ack], &pending, true);
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(
+            vec![ack],
+            &pending,
+            &HashSet::new(),
+            AckAllProposalsPolicy::NewSlots,
+        );
 
         assert_eq!(acks.len(), 1);
         assert_eq!(acks[0].description_hash, description_hash);
@@ -776,10 +879,96 @@ mod tests {
             description_hash: test_proposal(slot, b"old").description.sha256d_hash(),
         };
 
-        let (acks, stale_acks) =
-            BlockProducer::select_sidechain_acks(vec![stale], &HashMap::new(), false);
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(
+            vec![stale],
+            &HashMap::new(),
+            &HashSet::new(),
+            AckAllProposalsPolicy::None,
+        );
 
         assert!(acks.is_empty());
         assert_eq!(stale_acks.len(), 1);
+    }
+
+    /// A proposal for an occupied slot would evict the sidechain sitting
+    /// there if it activated. `NewSlots` auto-ACKs the empty slot next to it
+    /// and leaves the replacement alone; `All` votes for both.
+    #[test]
+    fn new_slots_policy_auto_acks_new_slots_but_not_replacements() {
+        const EMPTY: SidechainNumber = SidechainNumber(3);
+        const OCCUPIED: SidechainNumber = SidechainNumber(7);
+        let pending = HashMap::from_iter([
+            (EMPTY, test_proposal(EMPTY, b"fresh")),
+            (OCCUPIED, test_proposal(OCCUPIED, b"replacement")),
+        ]);
+        let used_slots = HashSet::from_iter([OCCUPIED]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(
+            Vec::new(),
+            &pending,
+            &used_slots,
+            AckAllProposalsPolicy::NewSlots,
+        );
+        assert!(stale_acks.is_empty());
+        let slots: Vec<_> = acks.iter().map(|ack| ack.sidechain_number).collect();
+        assert_eq!(slots, vec![EMPTY], "a replacement was auto-ACKed");
+
+        let (acks, _) = BlockProducer::select_sidechain_acks(
+            Vec::new(),
+            &pending,
+            &used_slots,
+            AckAllProposalsPolicy::All,
+        );
+        let mut slots: Vec<_> = acks.iter().map(|ack| ack.sidechain_number).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, vec![EMPTY, OCCUPIED]);
+    }
+
+    /// `NewSlots` withholds only the *automatic* vote: an operator who has
+    /// deliberately ACKed a replacement still gets their M2 emitted, since
+    /// that explicit ACK is the only way to vote for one under this policy.
+    #[test]
+    fn new_slots_policy_still_emits_an_explicit_replacement_ack() {
+        const OCCUPIED: SidechainNumber = SidechainNumber(7);
+        let replacement = test_proposal(OCCUPIED, b"replacement");
+        let description_hash = replacement.description.sha256d_hash();
+        let ack = SidechainAck {
+            sidechain_number: OCCUPIED,
+            description_hash,
+        };
+        let pending = HashMap::from_iter([(OCCUPIED, replacement)]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(
+            vec![ack],
+            &pending,
+            &HashSet::from_iter([OCCUPIED]),
+            AckAllProposalsPolicy::NewSlots,
+        );
+
+        assert!(stale_acks.is_empty());
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].sidechain_number, OCCUPIED);
+        assert_eq!(acks[0].description_hash, description_hash);
+    }
+
+    /// `None` emits nothing automatic, whether or not the slot is occupied.
+    #[test]
+    fn none_policy_auto_acks_nothing() {
+        const EMPTY: SidechainNumber = SidechainNumber(3);
+        const OCCUPIED: SidechainNumber = SidechainNumber(7);
+        let pending = HashMap::from_iter([
+            (EMPTY, test_proposal(EMPTY, b"fresh")),
+            (OCCUPIED, test_proposal(OCCUPIED, b"replacement")),
+        ]);
+
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(
+            Vec::new(),
+            &pending,
+            &HashSet::from_iter([OCCUPIED]),
+            AckAllProposalsPolicy::None,
+        );
+
+        assert!(acks.is_empty());
+        assert!(stale_acks.is_empty());
     }
 }

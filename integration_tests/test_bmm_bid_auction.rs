@@ -27,7 +27,7 @@ use crate::{
     integration_test::{
         fund_enforcer, propose_sidechain, propose_sidechain_for_slot, wait_for_wallet_sync,
     },
-    mine::mine_check_block_events,
+    mine::{MiningPolicy, mine_check_block_events},
     setup::{DummySidechain, Mode, PostSetup, Sidechain, wait_for_tx_in_mempool, wait_until},
 };
 
@@ -335,20 +335,25 @@ async fn mine_and_check_commitment(
     post_setup: &mut PostSetup,
     expected_commitment: Option<&[u8; 32]>,
 ) -> anyhow::Result<(bitcoin::Block, u32)> {
-    let () = mine_check_block_events::<_, DummySidechain>(post_setup, 1, None, |_, block_info| {
-        let bmm_commitment = block_info.bmm_commitment.into_option();
-        match expected_commitment {
-            Some(h_star) => anyhow::ensure!(
-                bmm_commitment == Some(ConsensusHex::encode(h_star)),
-                "expected the slot 0 BMM commitment to be the auction winner's"
-            ),
-            None => anyhow::ensure!(
-                bmm_commitment.is_none(),
-                "expected no slot 0 BMM commitment in this block"
-            ),
-        }
-        Ok(())
-    })
+    let () = mine_check_block_events::<_, DummySidechain>(
+        post_setup,
+        1,
+        MiningPolicy::SILENT,
+        |_, block_info| {
+            let bmm_commitment = block_info.bmm_commitment.into_option();
+            match expected_commitment {
+                Some(h_star) => anyhow::ensure!(
+                    bmm_commitment == Some(ConsensusHex::encode(h_star)),
+                    "expected the slot 0 BMM commitment to be the auction winner's"
+                ),
+                None => anyhow::ensure!(
+                    bmm_commitment.is_none(),
+                    "expected no slot 0 BMM commitment in this block"
+                ),
+            }
+            Ok(())
+        },
+    )
     .await?;
     let (_, block_hash, height) = chain_tip(post_setup).await?;
     let block = get_block(post_setup, &block_hash).await?;
@@ -380,10 +385,15 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     // Both proposals are pending before the acking blocks are mined, so both
     // slots cross the activation threshold together.
     let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
-    let () = propose_sidechain_for_slot::<DummySidechain>(&mut post_setup, OTHER_SLOT).await?;
-    let () =
-        mine_check_block_events::<_, DummySidechain>(&mut post_setup, 6, Some(true), |_, _| Ok(()))
-            .await?;
+    let () = propose_sidechain_for_slot::<DummySidechain>(&mut post_setup, OTHER_SLOT, "sidechain")
+        .await?;
+    let () = mine_check_block_events::<_, DummySidechain>(
+        &mut post_setup,
+        6,
+        MiningPolicy::VOTE,
+        |_, _| Ok(()),
+    )
+    .await?;
     let sidechains = post_setup
         .validator_service_client
         .get_sidechains(GetSidechainsRequest::default())
