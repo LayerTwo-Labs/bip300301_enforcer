@@ -1204,6 +1204,22 @@ pub fn tests(
     ));
 
     async_trials.push(new_bespoke_trial(
+        crate::test_wallet_descriptor_fallback::LEGACY_TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_descriptor_fallback::test_wallet_legacy_descriptor,
+    ));
+
+    async_trials.push(new_bespoke_trial(
+        crate::test_wallet_descriptor_fallback::FOREIGN_TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_descriptor_fallback::test_wallet_foreign_descriptor,
+    ));
+
+    async_trials.push(new_bespoke_trial(
         crate::test_wallet_large_gap_sync::TEST_NAME,
         bin_paths,
         &file_registry,

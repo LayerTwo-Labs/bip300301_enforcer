@@ -70,13 +70,16 @@ impl ToStatus for NotUnlocked {
     }
 }
 
-/// Wallet data mismatch
+/// Wallet data mismatch. The field is BDK's account of what differs, without
+/// which the report cannot say whether the fix is a different data dir or a
+/// different build.
 #[derive(Debug, Diagnostic, Error)]
 #[diagnostic(code(wallet_data_mismatch))]
 #[error(
-    "enforcer wallet data mismatch, data directory content does not line up with wallet descriptor"
+    "enforcer wallet data mismatch, data directory content does not line up \
+     with wallet descriptor: {0}"
 )]
-pub struct DataMismatch;
+pub struct DataMismatch(String);
 
 impl ToStatus for DataMismatch {
     fn builder(&self) -> StatusBuilder<'_> {
@@ -458,10 +461,14 @@ impl From<bdk_wallet::CreateWithPersistError<Persistence>> for InitWalletFromMne
 
 impl From<bdk_wallet::LoadWithPersistError<Persistence>> for InitWalletFromMnemonic {
     fn from(err: bdk_wallet::LoadWithPersistError<Persistence>) -> Self {
-        if err.to_string().contains("data mismatch") {
-            Self::DataMismatch(DataMismatch)
-        } else {
-            Self::LoadWallet(Box::new(err))
+        // Matched on the variant, not the rendered message: BDK has no one
+        // phrase common to its mismatches, so a substring test recognizes
+        // none of them.
+        match &err {
+            bdk_wallet::LoadWithPersistError::InvalidChangeSet(
+                bdk_wallet::LoadError::Mismatch(mismatch),
+            ) => Self::DataMismatch(DataMismatch(mismatch.to_string())),
+            _ => Self::LoadWallet(Box::new(err)),
         }
     }
 }
@@ -541,8 +548,10 @@ pub enum InitWallet {
     InitSeedStore(#[from] InitSeedStore),
     #[error(transparent)]
     InitChainSourceClient(#[from] InitChainSourceClient),
+    // `#[source]`: a bare `Box<_>` is not a source to thiserror, and without
+    // it the report says initialization failed and not a word of why.
     #[error("failed to initialize wallet from mnemonic")]
-    InitFromMnemonic(Box<InitWalletFromMnemonic>),
+    InitFromMnemonic(#[source] Box<InitWalletFromMnemonic>),
     #[error("no signet challenge found")]
     NoSignetChallengeFound,
     #[error("failed to open connection to wallet DB")]
