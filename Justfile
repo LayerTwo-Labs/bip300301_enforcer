@@ -61,9 +61,9 @@ fmt:
 
 # Run integration tests. `--bitcoind` selects the Bitcoin Core build
 # (default: bitcoin-patched): bitcoin-patched, unpatched (newest stock),
-# stock-X.Y (a specific stock release), drynetN, or all (every flavor in
-# the CI matrix, continuing past failures); remaining args go to the test
-# runner.
+# stock-X.Y (a specific stock release), drynetN, alphanet (the rolling
+# ecash-com/bitcoin alphanet build), or all (every flavor in the CI matrix,
+# continuing past failures); remaining args go to the test runner.
 # 
 # The signet tests need a chain with mature (spendable) coinbases, which costs
 # real proof-of-work to mine. The harness mines one on first use into
