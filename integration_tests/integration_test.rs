@@ -21,7 +21,7 @@ use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
-    mine::{mine, mine_check_block_events, mine_signet_check},
+    mine::{MiningPolicy, mine, mine_check_block_events, mine_signet_check},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
         wait_for_pending_proposal, wait_for_tx_in_mempool, wait_until,
@@ -183,17 +183,25 @@ where
 /// Propose a sidechain for `sidechain_number`, and mine one block to carry
 /// the M1. `S` is only used to subscribe to block events while mining, so the
 /// proposed slot does not have to be `S::SIDECHAIN_NUMBER`.
+///
+/// `title` goes into the M1 description, so distinct titles give distinct
+/// proposals -- which is what separates a slot replacement from a re-proposal
+/// of the sidechain already sitting there.
 pub async fn propose_sidechain_for_slot<S>(
     post_setup: &mut PostSetup,
     sidechain_number: SidechainNumber,
+    title: &str,
 ) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
-    tracing::info!("Proposing sidechain for slot {}", sidechain_number.0);
+    tracing::info!(
+        "Proposing sidechain `{title}` for slot {}",
+        sidechain_number.0
+    );
     let create_sidechain_proposal_request = {
         let v0 = proto::mainchain::sidechain_declaration::V0 {
-            title: proto::wrap_string("sidechain"),
+            title: proto::wrap_string(title),
             description: proto::wrap_string("sidechain"),
             hash_id_1: buffa::MessageField::some(ConsensusHex::encode(&[0; 32])),
             hash_id_2: buffa::MessageField::some(Hex::encode(&[0u8; 20])),
@@ -215,7 +223,7 @@ where
     let () = wait_for_pending_proposal(&post_setup.block_producer_service_client, sidechain_number)
         .await?;
     tracing::debug!("Mining 1 block");
-    let () = mine::<S>(post_setup, 1, Some(true)).await?;
+    let () = mine::<S>(post_setup, 1, MiningPolicy::VOTE).await?;
     let Some(_) = create_sidechain_proposal_resp.message().await? else {
         anyhow::bail!("Expected response when proposing sidechain");
     };
@@ -246,7 +254,7 @@ pub async fn propose_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<
 where
     S: Sidechain,
 {
-    propose_sidechain_for_slot::<S>(post_setup, S::SIDECHAIN_NUMBER).await
+    propose_sidechain_for_slot::<S>(post_setup, S::SIDECHAIN_NUMBER, "sidechain").await
 }
 
 pub async fn activate_sidechain<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
@@ -265,7 +273,10 @@ where
     };
     let blocks_to_mine = 6;
     tracing::debug!("Mining {blocks_to_mine} blocks");
-    let _ = mine_check_block_events::<_, S>(post_setup, blocks_to_mine, Some(true), |_, _| Ok(()))
+    let _ =
+        mine_check_block_events::<_, S>(post_setup, blocks_to_mine, MiningPolicy::VOTE, |_, _| {
+            Ok(())
+        })
         .await?;
     tracing::debug!("Checking that exactly 1 sidechain is active");
     let sidechains_resp = post_setup
@@ -476,19 +487,19 @@ where
     tracing::debug!("Deposit TXID: {deposit_txid}");
     let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid).await?;
     tracing::debug!("Mining 1 sidechain block");
-    let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
-        .events
-        .as_slice()
-    {
-        [
-            block_info::Event {
-                event: Some(block_info::event::Event::Deposit(_)),
-                ..
-            },
-        ] => Ok(()),
-        events => anyhow::bail!("Expected deposit event, found `{events:?}`"),
-    })
-    .await?;
+    let () =
+        mine_check_block_events::<_, S>(post_setup, 1, MiningPolicy::SILENT, |_, block_info| {
+            match block_info.events.as_slice() {
+                [
+                    block_info::Event {
+                        event: Some(block_info::event::Event::Deposit(_)),
+                        ..
+                    },
+                ] => Ok(()),
+                events => anyhow::bail!("Expected deposit event, found `{events:?}`"),
+            }
+        })
+        .await?;
     let () = sidechain
         .confirm_deposit(post_setup, sidechain_address, deposit_amount, deposit_txid)
         .await?;
@@ -541,7 +552,7 @@ pub(crate) fn expect_withdrawal_bundle_event(
 ///
 /// This is the shared tail of the unpayable-bundle tests. The enforcer
 /// (re-)proposes the stored bundle in the first block (age 0) and, with
-/// ack-all on, upvotes it each block after that, so it crosses the inclusion
+/// auto-ACK on, upvotes it each block after that, so it crosses the inclusion
 /// threshold while it cannot be paid out and stays pending until its age
 /// exceeds `withdrawal_bundle_max_age`, with the failure event landing one
 /// block later. Every one of these blocks still has to be produced: only a
@@ -561,7 +572,7 @@ where
     mine_check_block_events::<_, S>(
         post_setup,
         blocks_to_expiry,
-        Some(true),
+        MiningPolicy::VOTE,
         |seq, block_info| {
             for event in &block_info.events {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
@@ -620,42 +631,45 @@ where
         )
         .await?;
     tracing::debug!("Mining 1 block to include M3 for withdrawal bundle");
-    let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
-        .events
-        .as_slice()
-    {
-        [event] => {
-            let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-            let withdrawal_bundle_event::event::Event::Submitted(_) = event else {
-                anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
-            };
-            anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
-            Ok(())
-        }
-        events => {
-            anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
-        }
-    })
-    .await?;
+    let () =
+        mine_check_block_events::<_, S>(post_setup, 1, MiningPolicy::SILENT, |_, block_info| {
+            match block_info.events.as_slice() {
+                [event] => {
+                    let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
+                    let withdrawal_bundle_event::event::Event::Submitted(_) = event else {
+                        anyhow::bail!(
+                            "Expected withdrawal bundle submitted event, found `{event:?}`"
+                        )
+                    };
+                    anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
+                    Ok(())
+                }
+                events => {
+                    anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
+                }
+            }
+        })
+        .await?;
     tracing::debug!("Mining blocks until withdrawal bundle failure due to expiry");
-    let () = mine_check_block_events::<_, S>(post_setup, 11, None, |seq, block_info| {
-        match (seq, block_info.events.as_slice()) {
-            (10, [event]) => {
-                let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-                let withdrawal_bundle_event::event::Event::Failed(_) = event else {
-                    anyhow::bail!("Expected withdrawal bundle failed event, found `{event:?}`")
-                };
-                anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
-                Ok(())
+    let () =
+        mine_check_block_events::<_, S>(post_setup, 11, MiningPolicy::SILENT, |seq, block_info| {
+            match (seq, block_info.events.as_slice()) {
+                (10, [event]) => {
+                    let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
+                    let withdrawal_bundle_event::event::Event::Failed(_) = event else {
+                        anyhow::bail!("Expected withdrawal bundle failed event, found `{event:?}`")
+                    };
+                    anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
+                    Ok(())
+                }
+                (10, events) => {
+                    anyhow::bail!("Expected withdrawal bundle failed event, found `{events:?}`")
+                }
+                (_, []) => Ok(()),
+                (_, events) => anyhow::bail!("Expected no events, found `{events:?}`"),
             }
-            (10, events) => {
-                anyhow::bail!("Expected withdrawal bundle failed event, found `{events:?}`")
-            }
-            (_, []) => Ok(()),
-            (_, events) => anyhow::bail!("Expected no events, found `{events:?}`"),
-        }
-    })
-    .await?;
+        })
+        .await?;
     Ok(())
 }
 
@@ -680,23 +694,25 @@ where
         .create_withdrawal(post_setup, &receive_address, withdraw_amount, withdraw_fee)
         .await?;
     tracing::debug!("Mining 1 block to include M3 for withdrawal bundle");
-    let () = mine_check_block_events::<_, S>(post_setup, 1, None, |_, block_info| match block_info
-        .events
-        .as_slice()
-    {
-        [event] => {
-            let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
-            let withdrawal_bundle_event::event::Event::Submitted(_) = event else {
-                anyhow::bail!("Expected withdrawal bundle submitted event, found `{event:?}`")
-            };
-            anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
-            Ok(())
-        }
-        events => {
-            anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
-        }
-    })
-    .await?;
+    let () =
+        mine_check_block_events::<_, S>(post_setup, 1, MiningPolicy::SILENT, |_, block_info| {
+            match block_info.events.as_slice() {
+                [event] => {
+                    let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
+                    let withdrawal_bundle_event::event::Event::Submitted(_) = event else {
+                        anyhow::bail!(
+                            "Expected withdrawal bundle submitted event, found `{event:?}`"
+                        )
+                    };
+                    anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
+                    Ok(())
+                }
+                events => {
+                    anyhow::bail!("Expected withdrawal bundle submitted event, found `{events:?}`")
+                }
+            }
+        })
+        .await?;
     tracing::debug!("Checking receive address balance is 0");
     let receive_addr_balance_str = post_setup
         .bitcoin_cli
@@ -711,8 +727,11 @@ where
         bitcoin::Amount::from_str_in(&receive_addr_balance_str, bitcoin::Denomination::Bitcoin)?;
     anyhow::ensure!(receive_addr_balance == bitcoin::Amount::ZERO);
     tracing::debug!("Mining blocks until withdrawal success");
-    let () = mine_check_block_events::<_, S>(post_setup, 6, Some(true), |seq, block_info| {
-        match (seq, block_info.events.as_slice()) {
+    let () = mine_check_block_events::<_, S>(
+        post_setup,
+        6,
+        MiningPolicy::VOTE,
+        |seq, block_info| match (seq, block_info.events.as_slice()) {
             (5, [event]) => {
                 let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
                 let withdrawal_bundle_event::event::Event::Succeeded(_) = event else {
@@ -726,8 +745,8 @@ where
             }
             (_, []) => Ok(()),
             (_, events) => anyhow::bail!("Expected no events, found `{events:?}`"),
-        }
-    })
+        },
+    )
     .await?;
     let expected_withdrawal_value = pending_withdrawal_value + withdraw_amount;
     tracing::debug!(
@@ -1110,6 +1129,20 @@ pub fn tests(
             failure_collector: failure_collector.clone(),
         },
         crate::test_sidechain_ack_policy::test_sidechain_ack_policy,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "withdrawal_bundle_policy".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            // Same reason as `sidechain_ack_policy`: block templates read the
+            // persisted policy, which the GenerateToAddress path would
+            // overwrite.
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_withdrawal_bundle_policy::test_withdrawal_bundle_policy,
     ));
     async_trials.push(new_trial_with_setup(
         "invalid_block".to_string(),

@@ -18,6 +18,7 @@ use tracing::Instrument as _;
 use crate::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     mine,
+    mine::MiningPolicy,
     setup::{
         BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain,
         WAIT_POLL_INTERVAL_SUBPROCESS, wait_for_port_free, wait_for_tx_in_mempool, wait_until,
@@ -191,7 +192,8 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     // the sender's balance never moves, and the wait below burns its whole
     // budget for nothing.
     let () = mine::wait_for_tx_in_block_template(&post_setup.miner, &funding_txid).await?;
-    let () = crate::mine::mine::<DummySidechain>(&mut post_setup.miner, 1, None).await?;
+    let () =
+        crate::mine::mine::<DummySidechain>(&mut post_setup.miner, 1, MiningPolicy::SILENT).await?;
     // Wait for the sender to receive the block over p2p and credit the funds.
     let () = wait_until("sender wallet to see the funding tx confirmed", || async {
         let balance = post_setup
@@ -289,7 +291,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     let () = mine::mine_check_block_events::<_, DummySidechain>(
         &mut post_setup.miner,
         1,
-        None,
+        MiningPolicy::SILENT,
         |_, block_info| {
             let bmm_commitment = block_info
                 .bmm_commitment

@@ -19,20 +19,22 @@ use crate::{
     errors::ErrorChain,
     proto::{
         ToStatus,
-        common::{Hex, ReverseHex},
+        common::{ConsensusHex, Hex, ReverseHex},
         mainchain::{
-            CreateSidechainProposalRequest, CreateSidechainProposalResponse,
+            AckAllProposalsPolicy, CreateSidechainProposalRequest, CreateSidechainProposalResponse,
             GetBlockProducerStateRequest, GetBlockProducerStateResponse, PendingSidechainProposal,
             SetAckAllProposalsRequest, SetAckAllProposalsResponse, SetSidechainAckRequest,
-            SetSidechainAckResponse, SidechainAck as SidechainAckMessage, SidechainDeclaration,
-            SubmitSidechainProposalRequest, SubmitSidechainProposalResponse,
-            create_sidechain_proposal_response,
+            SetSidechainAckResponse, SetWithdrawalBundleAckRequest, SetWithdrawalBundleAckResponse,
+            SetWithdrawalBundlePolicyRequest, SetWithdrawalBundlePolicyResponse,
+            SidechainAck as SidechainAckMessage, SidechainDeclaration,
+            SubmitSidechainProposalRequest, SubmitSidechainProposalResponse, WithdrawalBundleAck,
+            WithdrawalBundlePolicy, create_sidechain_proposal_response,
         },
         mainchain_service::BlockProducerService,
         wrap_u32,
     },
-    server::{internal_err, missing_field, parse_sidechain_id},
-    types::Event,
+    server::{internal_err, invalid_field_value, missing_field, parse_sidechain_id},
+    types::{Event, M6id},
 };
 
 /// Stream (non-)confirmations for a sidechain proposal
@@ -267,12 +269,73 @@ impl BlockProducerService for BlockProducer {
         _ctx: RequestContext,
         request: ServiceRequest<'_, SetAckAllProposalsRequest>,
     ) -> ServiceResult<SetAckAllProposalsResponse> {
-        let SetAckAllProposalsRequest { ack_all, .. } = request.to_owned_message();
+        let SetAckAllProposalsRequest { policy, .. } = request.to_owned_message();
+        // No default: the whole point of the policy is choosing whether to
+        // vote to evict running sidechains, so an unset or unrecognized value
+        // is rejected rather than guessed at.
+        let policy: crate::types::AckAllProposalsPolicy = policy.try_into().map_err(|err| {
+            invalid_field_value::<SetAckAllProposalsRequest, _>("policy", &policy.to_string(), err)
+        })?;
         self.db()
-            .set_ack_all_proposals(ack_all)
+            .set_ack_policy(policy)
             .await
             .map_err(internal_err)?;
         Ok(Response::new(SetAckAllProposalsResponse::default()))
+    }
+
+    async fn set_withdrawal_bundle_policy(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, SetWithdrawalBundlePolicyRequest>,
+    ) -> ServiceResult<SetWithdrawalBundlePolicyResponse> {
+        let SetWithdrawalBundlePolicyRequest { policy, .. } = request.to_owned_message();
+        // As with the sidechain ACK policy: no default, since the choice
+        // includes actively downvoting every bundle in sight.
+        let policy: crate::types::WithdrawalBundlePolicy = policy.try_into().map_err(|err| {
+            invalid_field_value::<SetWithdrawalBundlePolicyRequest, _>(
+                "policy",
+                &policy.to_string(),
+                err,
+            )
+        })?;
+        self.db()
+            .set_bundle_policy(policy)
+            .await
+            .map_err(internal_err)?;
+        Ok(Response::new(SetWithdrawalBundlePolicyResponse::default()))
+    }
+
+    async fn set_withdrawal_bundle_ack(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, SetWithdrawalBundleAckRequest>,
+    ) -> ServiceResult<SetWithdrawalBundleAckResponse> {
+        let () = ensure_bip300_activation_height_reached(
+            self,
+            "a withdrawal bundle ACK cannot take effect",
+        )?;
+        let SetWithdrawalBundleAckRequest {
+            sidechain_number,
+            m6id,
+            ack,
+            ..
+        } = request.to_owned_message();
+        let sidechain_number = parse_sidechain_id::<SetWithdrawalBundleAckRequest>(
+            sidechain_number,
+            "sidechain_number",
+        )?;
+        let m6id: M6id = m6id
+            .into_option()
+            .ok_or_else(|| missing_field::<SetWithdrawalBundleAckRequest>("m6id"))?
+            .decode_status::<SetWithdrawalBundleAckRequest, bitcoin::Txid>("m6id")?
+            .into();
+        if ack {
+            self.db().ack_bundle(sidechain_number, m6id).await
+        } else {
+            self.db().delete_bundle_ack(sidechain_number, m6id).await
+        }
+        .map_err(internal_err)?;
+        Ok(Response::new(SetWithdrawalBundleAckResponse::default()))
     }
 
     async fn get_block_producer_state(
@@ -280,11 +343,20 @@ impl BlockProducerService for BlockProducer {
         _ctx: RequestContext,
         _request: ServiceRequest<'_, GetBlockProducerStateRequest>,
     ) -> ServiceResult<GetBlockProducerStateResponse> {
-        let ack_all_proposals = self
+        let ack_policy = self.db().get_ack_policy().await.map_err(internal_err)?;
+        let withdrawal_bundle_policy = self.db().get_bundle_policy().await.map_err(internal_err)?;
+
+        let explicit_bundle_acks = self
             .db()
-            .get_ack_all_proposals()
+            .get_bundle_acks()
             .await
-            .map_err(internal_err)?;
+            .map_err(internal_err)?
+            .into_iter()
+            .map(|(sidechain_number, m6id)| WithdrawalBundleAck {
+                sidechain_number: wrap_u32(sidechain_number.0 as u32),
+                m6id: MessageField::some(ConsensusHex::encode(&m6id.0)),
+            })
+            .collect();
 
         let explicit_acks = self
             .db()
@@ -325,8 +397,10 @@ impl BlockProducerService for BlockProducer {
 
         Ok(Response::new(GetBlockProducerStateResponse {
             pending_proposals,
-            ack_all_proposals,
+            ack_policy: AckAllProposalsPolicy::from(ack_policy).into(),
             explicit_acks,
+            withdrawal_bundle_policy: WithdrawalBundlePolicy::from(withdrawal_bundle_policy).into(),
+            explicit_bundle_acks,
         }))
     }
 }
