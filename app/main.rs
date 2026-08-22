@@ -93,6 +93,7 @@ where
     RpcClient: MainClient + Sync,
 {
     let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+    request.rules.push(rpc_client::BIP300301_RULE.to_owned());
     if network == bitcoin::Network::Signet {
         request.rules.push("signet".to_owned())
     }

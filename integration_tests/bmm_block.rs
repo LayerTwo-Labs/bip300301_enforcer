@@ -109,7 +109,13 @@ pub async fn submit_block_with_bmm_accepts(
 
     let template_json = post_setup
         .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblocktemplate", [r#"{"rules":["segwit"]}"#])
+        // We craft the BIP300/BIP301 coinbase commitments below, so we ack the
+        // rule the way the enforcer does. Stock nodes ignore the extra rule.
+        .command::<String, _, _, _, _>(
+            [],
+            "getblocktemplate",
+            [r#"{"rules":["segwit","bip300301"]}"#],
+        )
         .run_utf8()
         .await?;
     let template: BlockTemplate = serde_json::from_str(&template_json)?;
