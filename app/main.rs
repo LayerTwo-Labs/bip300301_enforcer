@@ -675,6 +675,67 @@ async fn wait_for_error_or_shutdown<E>(
 /// continuously is not hammered.
 const MEMPOOL_RESYNC_DELAY: Duration = Duration::from_secs(1);
 
+/// How a single attempt of a re-syncable task failed.
+enum AttemptError<E> {
+    /// Classified by the caller's `is_resyncable`.
+    Task(E),
+    /// Never re-synced.
+    Fatal(miette::Report),
+}
+
+/// Run `attempt` until it finishes cleanly or fails unrecoverably, re-running
+/// it after a recoverable failure rather than exiting the process and taking
+/// the gRPC and block template servers down with it.
+async fn run_with_resync<E, Fut>(
+    task_name: &str,
+    cancel: &CancellationToken,
+    is_resyncable: impl Fn(&E) -> bool,
+    mut attempt: impl FnMut() -> Fut,
+) -> Result<(), miette::Report>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<(), AttemptError<E>>> + Send,
+{
+    const MAX_CONSECUTIVE_RESYNCS: usize = 5;
+
+    // A task that ran at least this long before failing has clearly been
+    // working, so its failure starts a fresh budget rather than counting
+    // towards the previous burst.
+    const RESYNC_BUDGET_RESET: Duration = Duration::from_secs(60);
+
+    let mut consecutive = 0usize;
+    loop {
+        let started = std::time::Instant::now();
+        let err = match attempt().await {
+            Ok(()) => return Ok(()),
+            Err(AttemptError::Fatal(err)) => return Err(err),
+            Err(AttemptError::Task(err)) => err,
+        };
+        if !is_resyncable(&err) || cancel.is_cancelled() {
+            return Err(miette::Report::from_err(err)).wrap_err(task_name.to_owned());
+        }
+        if started.elapsed() >= RESYNC_BUDGET_RESET {
+            consecutive = 0;
+        }
+        consecutive += 1;
+        if consecutive > MAX_CONSECUTIVE_RESYNCS {
+            return Err(miette::Report::from_err(err)).wrap_err(format!(
+                "{task_name}: gave up after {MAX_CONSECUTIVE_RESYNCS} consecutive re-syncs"
+            ));
+        }
+        tracing::warn!(
+            err = %ErrorChain::new(&err),
+            attempt = consecutive,
+            "{task_name} failed recoverably, re-syncing",
+        );
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(()),
+            () = tokio::time::sleep(MEMPOOL_RESYNC_DELAY) => (),
+        }
+    }
+}
+
 async fn get_zmq_addr_sequence(
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
 ) -> Result<String> {
@@ -712,7 +773,7 @@ async fn get_zmq_addr_sequence(
 }
 
 async fn run_no_mempool_task(
-    mut enforcer: Enforcer,
+    enforcer: Enforcer,
     mainchain_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     zmq_addr_sequence: String,
     cancel: CancellationToken,
@@ -721,57 +782,28 @@ async fn run_no_mempool_task(
 
     // A dropped ZMQ notification or a node RPC connection that closed
     // mid-request leaves this task's view stale, and a fresh sync clears it.
-    //
-    // Bounded, unlike the mempool loop above, because this one also treats a
-    // node RPC transport error as recoverable, and a node that has gone away
-    // for good produces those forever.
-    const MAX_CONSECUTIVE_RESYNCS: usize = 5;
-
-    // A task that ran at least this long before failing has clearly been
-    // working, so its failure starts a fresh budget rather than counting
-    // towards the previous burst.
-    const RESYNC_BUDGET_RESET: Duration = Duration::from_secs(60);
-
-    let mut consecutive = 0usize;
-    loop {
-        let started = std::time::Instant::now();
-        let res = cusf_enforcer_mempool::cusf_enforcer::task(
-            &mut enforcer,
-            &mainchain_client,
-            &zmq_addr_sequence,
-            cancel.cancelled(),
-        )
-        .await;
-        match res {
-            Ok(()) => return Ok(()),
-            Err(err) if error::enforcer_task_is_resyncable(&err) && !cancel.is_cancelled() => {
-                if started.elapsed() >= RESYNC_BUDGET_RESET {
-                    consecutive = 0;
-                }
-                consecutive += 1;
-                if consecutive > MAX_CONSECUTIVE_RESYNCS {
-                    return Err(miette::Report::from_err(err)).wrap_err(format!(
-                        "CUSF enforcer task w/o mempool: gave up after \
-                         {MAX_CONSECUTIVE_RESYNCS} consecutive re-syncs"
-                    ));
-                }
-                tracing::warn!(
-                    err = %ErrorChain::new(&err),
-                    attempt = consecutive,
-                    "CUSF enforcer task w/o mempool failed recoverably, re-syncing",
-                );
-                tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => return Ok(()),
-                    () = tokio::time::sleep(MEMPOOL_RESYNC_DELAY) => (),
-                }
+    run_with_resync(
+        "CUSF enforcer task w/o mempool",
+        &cancel,
+        error::enforcer_task_is_resyncable,
+        || {
+            let mut enforcer = enforcer.clone();
+            let mainchain_client = &mainchain_client;
+            let zmq_addr_sequence = &zmq_addr_sequence;
+            let cancel = cancel.clone();
+            async move {
+                cusf_enforcer_mempool::cusf_enforcer::task(
+                    &mut enforcer,
+                    mainchain_client,
+                    zmq_addr_sequence,
+                    cancel.cancelled(),
+                )
+                .await
+                .map_err(AttemptError::Task)
             }
-            Err(err) => {
-                return Err(miette::Report::from_err(err))
-                    .wrap_err("CUSF enforcer task w/o mempool");
-            }
-        }
-    }
+        },
+    )
+    .await
 }
 
 async fn run_validator_mempool_task(
@@ -782,21 +814,38 @@ async fn run_validator_mempool_task(
     cancel: CancellationToken,
 ) -> Result<(), miette::Report> {
     tracing::info!("mempool sync task w/validator: starting");
-    // Important: bind the mempool sync handle. Otherwise it is dropped
-    // immediately
-    let (_mempool_sync, err_rx) = sync_mempool(
-        validator,
-        mainchain_client,
-        &zmq_addr_sequence,
-        mempool_dat.as_deref(),
-        cancel.clone(),
+
+    run_with_resync(
+        "mempool sync task w/validator",
+        &cancel,
+        error::MempoolTask::is_resyncable,
+        || {
+            let validator = validator.clone();
+            let mainchain_client = mainchain_client.clone();
+            let zmq_addr_sequence = &zmq_addr_sequence;
+            let mempool_dat = mempool_dat.as_deref();
+            let cancel = cancel.clone();
+            async move {
+                // Important: bind the mempool sync handle. Otherwise it is
+                // dropped immediately
+                let (_mempool_sync, err_rx) = sync_mempool(
+                    validator,
+                    mainchain_client,
+                    zmq_addr_sequence,
+                    mempool_dat,
+                    cancel.clone(),
+                )
+                .await
+                .map_err(AttemptError::Task)?;
+                match wait_for_error_or_shutdown(cancel, err_rx).await {
+                    Ok(None) => Ok(()),
+                    Ok(Some(err)) => Err(AttemptError::Task(err)),
+                    Err(err) => Err(AttemptError::Fatal(err)),
+                }
+            }
+        },
     )
     .await
-    .map_err(miette::Report::from_err)?;
-    match wait_for_error_or_shutdown(cancel, err_rx).await? {
-        Some(err) => Err(miette::Report::from_err(err)),
-        None => Ok(()),
-    }
 }
 
 /// Everything the block template server needs, beyond the producer itself and
@@ -1010,66 +1059,59 @@ where
         None => None,
     };
 
-    // Re-sync rather than exit on a recoverable sync failure. A ZMQ sequence
-    // gap blocks the stream permanently, but a fresh sync clears it.
-    let res = loop {
-        let sync = sync_mempool(
-            producer.clone(),
-            mainchain_client.clone(),
-            &zmq_addr_sequence,
-            mempool_dat.as_deref(),
-            cancel.clone(),
-        )
-        .await;
-        let (mempool, err_rx) = match sync {
-            Ok(synced) => synced,
-            Err(err) if err.is_resyncable() && !cancel.is_cancelled() => {
-                tracing::warn!(
-                    err = %ErrorChain::new(&err),
-                    "initial mempool sync failed recoverably, re-syncing",
-                );
-                tokio::time::sleep(MEMPOOL_RESYNC_DELAY).await;
-                continue;
-            }
-            Err(err) => break Err(miette::Report::from_err(err)),
-        };
+    let res = run_with_resync(
+        "mempool sync task w/block producer",
+        &cancel,
+        error::MempoolTask::is_resyncable,
+        || {
+            let producer = producer.clone();
+            let mainchain_client = mainchain_client.clone();
+            let zmq_addr_sequence = &zmq_addr_sequence;
+            let mempool_dat = mempool_dat.as_deref();
+            let gbt_server = &gbt_server;
+            let cancel = cancel.clone();
+            async move {
+                let (mempool, err_rx) = sync_mempool(
+                    producer,
+                    mainchain_client.clone(),
+                    zmq_addr_sequence,
+                    mempool_dat,
+                    cancel.clone(),
+                )
+                .await
+                .map_err(AttemptError::Task)?;
 
-        // Important: bind the mempool sync handle when it is not moved into a
-        // server. Otherwise it is dropped immediately.
-        let _mempool = match &gbt_server {
-            Some((gbt, slot, _handle)) => {
-                match build_block_template_server(gbt.clone(), mempool, mainchain_client.clone())
-                    .await
-                {
-                    Ok(server) => slot.publish(server).await,
-                    Err(err) => break Err(err),
+                // Important: bind the mempool sync handle when it is not moved
+                // into a server. Otherwise it is dropped immediately.
+                let _mempool = match gbt_server {
+                    Some((gbt, slot, _handle)) => {
+                        let server =
+                            build_block_template_server(gbt.clone(), mempool, mainchain_client)
+                                .await
+                                .map_err(AttemptError::Fatal)?;
+                        slot.publish(server).await;
+                        None
+                    }
+                    None => Some(mempool),
+                };
+
+                let err = wait_for_error_or_shutdown(cancel, err_rx).await;
+
+                // Templates must not be served from a mempool that is no longer
+                // being updated.
+                if let Some((_gbt, slot, _handle)) = gbt_server {
+                    slot.clear().await;
                 }
-                None
+
+                match err {
+                    Ok(None) => Ok(()),
+                    Ok(Some(err)) => Err(AttemptError::Task(err)),
+                    Err(err) => Err(AttemptError::Fatal(err)),
+                }
             }
-            None => Some(mempool),
-        };
-
-        let err = wait_for_error_or_shutdown(cancel.clone(), err_rx).await;
-
-        // Templates must not be served from a mempool that is no longer
-        // being updated.
-        if let Some((_gbt, slot, _handle)) = &gbt_server {
-            slot.clear().await;
-        }
-
-        match err {
-            Err(err) => break Err(err),
-            Ok(None) => break Ok(()),
-            Ok(Some(err)) if err.is_resyncable() && !cancel.is_cancelled() => {
-                tracing::warn!(
-                    err = %ErrorChain::new(&err),
-                    "mempool sync failed recoverably, re-syncing",
-                );
-                tokio::time::sleep(MEMPOOL_RESYNC_DELAY).await;
-            }
-            Ok(Some(err)) => break Err(miette::Report::from_err(err)),
-        }
-    };
+        },
+    )
+    .await;
 
     if let Some((_gbt, _slot, server_handle)) = gbt_server {
         tracing::debug!("stopping `getblocktemplate` JSON-RPC server");

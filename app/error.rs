@@ -61,8 +61,9 @@ where
     /// clears it, and re-syncing is strictly better than exiting the process and
     /// taking the gRPC and block template servers down with it.
     ///
-    /// The enforcer's own initial sync can also fail on a transient node
-    /// error.
+    /// A node RPC transport failure is recoverable on the same terms, as in
+    /// [`enforcer_task_is_resyncable`], and the enforcer's own initial sync
+    /// can also fail on a transient node error.
     pub fn is_resyncable(&self) -> bool {
         let (Self::SyncTask(inner) | Self::InitialSync(inner)) = self else {
             return false;
@@ -70,9 +71,16 @@ where
         match inner {
             SyncTaskError::SequenceStream(_)
             | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_)) => true,
+            SyncTaskError::JsonRpc(err)
+            | SyncTaskError::InitialSyncEnforcer(InitialSyncError::JsonRpc(err)) => {
+                is_transport_error(err)
+            }
             SyncTaskError::InitialSyncEnforcer(InitialSyncError::CusfEnforcer(err)) => {
                 is_block_not_found_on_disk(err)
             }
+            // The crate does not export this variant's error type, so its
+            // `ClientError` is only reachable through the source chain.
+            SyncTaskError::Request(_) => chain_has_transport_error(inner),
             _ => false,
         }
     }
@@ -98,6 +106,14 @@ fn is_transport_error(err: &ClientError) -> bool {
     matches!(err, ClientError::Transport(_))
 }
 
+/// [`is_transport_error`] for a [`ClientError`] behind an unnameable type.
+fn chain_has_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(err), |err| err.source()).any(|err| {
+        err.downcast_ref::<ClientError>()
+            .is_some_and(is_transport_error)
+    })
+}
+
 /// Whether a fresh sync can clear this. The no-mempool counterpart of
 /// [`MempoolTask::is_resyncable`].
 pub fn enforcer_task_is_resyncable<Enforcer>(err: &TaskError<Enforcer>) -> bool
@@ -115,5 +131,53 @@ where
             is_block_not_found_on_disk(err)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cusf_enforcer_mempool::{
+        cusf_enforcer::{DefaultEnforcer, InitialSyncError},
+        mempool::SyncTaskError,
+    };
+    use jsonrpsee::core::ClientError;
+
+    use super::MempoolTask;
+
+    type Task = MempoolTask<DefaultEnforcer>;
+
+    fn transport() -> ClientError {
+        ClientError::Transport("connection closed before message completed".into())
+    }
+
+    #[test]
+    fn a_transport_error_is_resyncable() {
+        assert!(
+            Task::SyncTask(SyncTaskError::JsonRpc(transport())).is_resyncable(),
+            "bitcoind closing an idle connection must not kill a mempool sync"
+        );
+        assert!(
+            Task::InitialSync(SyncTaskError::InitialSyncEnforcer(
+                InitialSyncError::JsonRpc(transport())
+            ))
+            .is_resyncable(),
+            "nor during the initial sync"
+        );
+    }
+
+    #[test]
+    fn an_answered_rpc_error_is_not_resyncable() {
+        assert!(
+            !Task::SyncTask(SyncTaskError::JsonRpc(ClientError::RequestTimeout)).is_resyncable(),
+            "re-syncing does not clear an error the node itself reported"
+        );
+    }
+
+    #[test]
+    fn an_ended_sequence_stream_is_not_resyncable() {
+        assert!(
+            !Task::SyncTask(SyncTaskError::SequenceStreamEnded).is_resyncable(),
+            "widening to transport errors must not sweep in the rest of the enum"
+        );
     }
 }

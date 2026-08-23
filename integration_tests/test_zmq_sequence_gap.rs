@@ -25,9 +25,9 @@ use crate::{
 /// Extra bitcoind args that make the publisher drop sequence messages.
 pub const BITCOIND_ARGS: [&str; 1] = ["-zmqpubsequencehwm=1"];
 
-/// Mirrors `MAX_CONSECUTIVE_RESYNCS` in `run_no_mempool_task`. That const is
-/// local to the enforcer binary, so it cannot be imported here; keep the two
-/// in step.
+/// Mirrors `MAX_CONSECUTIVE_RESYNCS` in `run_with_resync`. That const is local
+/// to the enforcer binary, so it cannot be imported here; keep the two in
+/// step.
 const MAX_CONSECUTIVE_RESYNCS: usize = 5;
 
 /// The enforcer writes to `<enforcer_dir>/logs/bip300301_enforcer.log.<date>.N`.
