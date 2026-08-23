@@ -35,7 +35,7 @@ use crate::{
     block_producer::{BlockProducer, error},
     errors::ErrorChain,
     messages::CoinbaseBuilder,
-    types::{BmmCommitment, SidechainNumber},
+    types::{AckAllProposalsPolicy, BmmCommitment, SidechainNumber, WithdrawalBundlePolicy},
 };
 
 pub(in crate::block_producer) fn bmm_auction_winners(
@@ -649,7 +649,8 @@ impl BlockProducer {
     pub async fn generate_block(
         &self,
         coinbase_addr: bitcoin::Address,
-        ack_all_proposals: bool,
+        ack_policy: AckAllProposalsPolicy,
+        bundle_policy: WithdrawalBundlePolicy,
     ) -> Result<BlockHash, error::GenerateBlock> {
         if self.validator().network() == Network::Signet {
             return self
@@ -663,7 +664,12 @@ impl BlockProducer {
         };
         let mut coinbase_outputs = Vec::new();
         let () = self
-            .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
+            .extend_coinbase_txouts(
+                ack_policy,
+                bundle_policy,
+                mainchain_tip,
+                &mut coinbase_outputs,
+            )
             .await?;
         let selected = self.select_block_txs(mainchain_tip).await?;
         let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {

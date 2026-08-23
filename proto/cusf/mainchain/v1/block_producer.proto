@@ -52,10 +52,77 @@ message SetSidechainAckRequest {
 }
 message SetSidechainAckResponse {}
 
+// How the block producer votes (BIP300 M2) on sidechain proposals it holds no
+// explicit `SetSidechainAck` ACK for.
+//
+// Proposals for an occupied sidechain slot are kept apart from proposals for an
+// empty one: activating a proposal for an occupied slot evicts the sidechain
+// sitting there (BIP300 M2, used-slot activation), so "ACK every new sidechain"
+// and "ACK every proposal in sight" are deliberately different policies.
+enum AckAllProposalsPolicy {
+  ACK_ALL_PROPOSALS_POLICY_UNSPECIFIED = 0;
+  // Emit only the ACKs set via `SetSidechainAck`.
+  ACK_ALL_PROPOSALS_POLICY_NONE = 1;
+  // Additionally ACK every proposal for a sidechain slot that no active
+  // sidechain occupies. Proposals that would replace an active sidechain are
+  // left to `SetSidechainAck`.
+  ACK_ALL_PROPOSALS_POLICY_NEW_SLOTS = 2;
+  // Additionally ACK every proposal, including ones that would replace the
+  // sidechain currently occupying a slot.
+  ACK_ALL_PROPOSALS_POLICY_ALL = 3;
+}
+
 message SetAckAllProposalsRequest {
-  bool ack_all = 1;
+  // Superseded by `policy`. The field number is retired rather than reused:
+  // `bool` and enum share a wire type, so an old client's `ack_all = true`
+  // would otherwise decode as a valid-but-wrong policy instead of failing.
+  reserved 1;
+  reserved "ack_all";
+
+  AckAllProposalsPolicy policy = 2;
 }
 message SetAckAllProposalsResponse {}
+
+// How the block producer votes (BIP300 M4) on the withdrawal bundles pending
+// for each active sidechain.
+//
+// An M4 carries one vote per active sidechain: abstain, alarm (downvote every
+// bundle currently carrying positive votes), or the index of the single bundle
+// to upvote. Upvoting one bundle downvotes that sidechain's others, so a
+// sidechain can back at most one bundle per block.
+enum WithdrawalBundlePolicy {
+  WITHDRAWAL_BUNDLE_POLICY_UNSPECIFIED = 0;
+  // Abstain for every sidechain. Bundles ACKed via `SetWithdrawalBundleAck`
+  // are still upvoted.
+  WITHDRAWAL_BUNDLE_POLICY_NONE = 1;
+  // Upvote the first pending bundle this node holds the transaction for --
+  // one it proposed or had broadcast through it. Abstain for a sidechain
+  // whose pending bundles are all strangers'.
+  WITHDRAWAL_BUNDLE_POLICY_KNOWN = 2;
+  // Upvote each sidechain's first pending bundle, whoever proposed it.
+  WITHDRAWAL_BUNDLE_POLICY_ALL = 3;
+  // Alarm every sidechain: downvote every bundle carrying positive votes,
+  // backing none of them.
+  WITHDRAWAL_BUNDLE_POLICY_ALARM = 4;
+}
+
+message SetWithdrawalBundlePolicyRequest {
+  WithdrawalBundlePolicy policy = 1;
+}
+message SetWithdrawalBundlePolicyResponse {}
+
+message WithdrawalBundleAck {
+  google.protobuf.UInt32Value sidechain_number = 1;
+  cusf.common.v1.ConsensusHex m6id = 2;
+}
+
+message SetWithdrawalBundleAckRequest {
+  google.protobuf.UInt32Value sidechain_number = 1;
+  cusf.common.v1.ConsensusHex m6id = 2;
+  // ACK the bundle if true, withdraw the ACK (NACK) if false.
+  bool ack = 3;
+}
+message SetWithdrawalBundleAckResponse {}
 
 message GetBlockProducerStateRequest {}
 
@@ -73,13 +140,21 @@ message PendingSidechainProposal {
 }
 
 message GetBlockProducerStateResponse {
+  // Superseded by `ack_policy`. See `SetAckAllProposalsRequest`.
+  reserved 2;
+  reserved "ack_all_proposals";
+
   // Sidechain proposals authored here but not yet mined into a coinbase.
   repeated PendingSidechainProposal pending_proposals = 1;
-  // When set, every active sidechain proposal is ACKed regardless of the
-  // explicit ACKs below.
-  bool ack_all_proposals = 2;
   // Proposals explicitly ACKed via `SetSidechainAck`.
   repeated SidechainAck explicit_acks = 3;
+  // Which proposals are ACKed automatically, on top of `explicit_acks`.
+  AckAllProposalsPolicy ack_policy = 4;
+  // Which withdrawal bundles are upvoted automatically, on top of
+  // `explicit_bundle_acks`.
+  WithdrawalBundlePolicy withdrawal_bundle_policy = 5;
+  // Bundles explicitly ACKed via `SetWithdrawalBundleAck`.
+  repeated WithdrawalBundleAck explicit_bundle_acks = 6;
 }
 
 // Manages drivechain policies for voting on sidechain proposals and withdrawal
@@ -98,12 +173,23 @@ service BlockProducerService {
   // processing, returning immediately once the proposal has been created.
   rpc SubmitSidechainProposal(SubmitSidechainProposalRequest) returns (SubmitSidechainProposalResponse);
 
-  // Toggle ACK or NACK policy for a specific sidechain proposal. Has no effect
-  // while `SetAckAllProposals` is on.
+  // Toggle ACK or NACK policy for a specific sidechain proposal. Redundant for
+  // proposals `SetAckAllProposals` already covers.
   rpc SetSidechainAck(SetSidechainAckRequest) returns (SetSidechainAckResponse);
 
-  // Toggle ACK of every active sidechain proposal.
+  // Set which sidechain proposals are ACKed without an explicit
+  // `SetSidechainAck`.
   rpc SetAckAllProposals(SetAckAllProposalsRequest) returns (SetAckAllProposalsResponse);
+
+  // Toggle ACK or NACK for a specific pending withdrawal bundle. An ACKed
+  // bundle is upvoted whatever `SetWithdrawalBundlePolicy` says, and is the
+  // only way to back a bundle under `WITHDRAWAL_BUNDLE_POLICY_NONE`. The ACK
+  // is dropped once the bundle stops being pending for that sidechain.
+  rpc SetWithdrawalBundleAck(SetWithdrawalBundleAckRequest) returns (SetWithdrawalBundleAckResponse);
+
+  // Set which pending withdrawal bundles are upvoted without an explicit
+  // `SetWithdrawalBundleAck`.
+  rpc SetWithdrawalBundlePolicy(SetWithdrawalBundlePolicyRequest) returns (SetWithdrawalBundlePolicyResponse);
 
   // Block-producer / operator state that is not (yet) reflected on-chain:
   // sidechain proposals authored here but not yet mined into a coinbase, plus

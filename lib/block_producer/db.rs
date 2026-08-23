@@ -9,13 +9,63 @@ use rusqlite::Connection;
 use crate::{
     block_producer::error,
     types::{
-        BlindedM6, BmmCommitment, M6id, SidechainAck, SidechainNumber, SidechainProposal,
-        SidechainProposalId,
+        AckAllProposalsPolicy, BlindedM6, BmmCommitment, M6id, SidechainAck, SidechainNumber,
+        SidechainProposal, SidechainProposalId, WithdrawalBundlePolicy,
     },
 };
 
 /// Bundle proposals for a single sidechain, as stored (no validator filtering).
 pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>)>;
+
+impl rusqlite::types::ToSql for AckAllProposalsPolicy {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let name = match self {
+            Self::None => "none",
+            Self::NewSlots => "new_slots",
+            Self::All => "all",
+        };
+        Ok(rusqlite::types::ToSqlOutput::Borrowed(name.into()))
+    }
+}
+
+impl rusqlite::types::FromSql for AckAllProposalsPolicy {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "none" => Ok(Self::None),
+            "new_slots" => Ok(Self::NewSlots),
+            "all" => Ok(Self::All),
+            other => Err(rusqlite::types::FromSqlError::Other(Box::new(
+                error::UnknownStoredAckPolicy(other.to_owned()),
+            ))),
+        }
+    }
+}
+
+impl rusqlite::types::ToSql for WithdrawalBundlePolicy {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let name = match self {
+            Self::None => "none",
+            Self::Known => "known",
+            Self::All => "all",
+            Self::Alarm => "alarm",
+        };
+        Ok(rusqlite::types::ToSqlOutput::Borrowed(name.into()))
+    }
+}
+
+impl rusqlite::types::FromSql for WithdrawalBundlePolicy {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "none" => Ok(Self::None),
+            "known" => Ok(Self::Known),
+            "all" => Ok(Self::All),
+            "alarm" => Ok(Self::Alarm),
+            other => Err(rusqlite::types::FromSqlError::Other(Box::new(
+                error::UnknownStoredAckPolicy(other.to_owned()),
+            ))),
+        }
+    }
+}
 
 /// Undo rows are kept for this many recently-produced blocks, so that blocks
 /// which stay on the main chain (and are therefore never disconnected) don't
@@ -111,6 +161,25 @@ impl Db {
                  ack_all_proposals BOOLEAN NOT NULL);
                  INSERT INTO block_producer_settings (id, ack_all_proposals)
                  VALUES (0, TRUE);",
+            ),
+            M::up(
+                "CREATE TABLE block_producer_settings_new
+                (id INTEGER PRIMARY KEY CHECK (id = 0),
+                 ack_policy TEXT NOT NULL
+                   CHECK (ack_policy IN ('none', 'new_slots', 'all')));
+                 INSERT INTO block_producer_settings_new (id, ack_policy)
+                 SELECT id, CASE WHEN ack_all_proposals THEN 'new_slots' ELSE 'none' END
+                 FROM block_producer_settings;
+                 DROP TABLE block_producer_settings;
+                 ALTER TABLE block_producer_settings_new
+                   RENAME TO block_producer_settings;",
+            ),
+            M::up(
+                "ALTER TABLE block_producer_settings
+                 ADD COLUMN bundle_policy TEXT NOT NULL DEFAULT 'known'
+                   CHECK (bundle_policy IN ('none', 'known', 'all', 'alarm'));
+                 UPDATE block_producer_settings
+                 SET bundle_policy = CASE WHEN ack_policy = 'none' THEN 'none' ELSE 'known' END;",
             ),
         ]);
 
@@ -246,23 +315,104 @@ impl Db {
         Ok(())
     }
 
-    /// ACK every active sidechain proposal, whatever `sidechain_acks` says.
-    pub async fn get_ack_all_proposals(&self) -> Result<bool, rusqlite::Error> {
+    /// Which sidechain proposals get ACKed on top of `sidechain_acks`.
+    pub async fn get_ack_policy(&self) -> Result<AckAllProposalsPolicy, rusqlite::Error> {
         let connection = self.conn.lock().await;
         connection.query_row(
-            "SELECT ack_all_proposals FROM block_producer_settings WHERE id = 0",
+            "SELECT ack_policy FROM block_producer_settings WHERE id = 0",
             [],
             |row| row.get(0),
         )
     }
 
-    pub async fn set_ack_all_proposals(&self, ack_all: bool) -> Result<(), rusqlite::Error> {
+    pub async fn set_ack_policy(
+        &self,
+        policy: AckAllProposalsPolicy,
+    ) -> Result<(), rusqlite::Error> {
         self.conn
             .lock()
             .await
             .execute(
-                "UPDATE block_producer_settings SET ack_all_proposals = ?1 WHERE id = 0",
-                [ack_all],
+                "UPDATE block_producer_settings SET ack_policy = ?1 WHERE id = 0",
+                [policy],
+            )
+            .map(|_| ())
+    }
+
+    /// Which pending withdrawal bundles get upvoted on top of `bundle_acks`.
+    pub async fn get_bundle_policy(&self) -> Result<WithdrawalBundlePolicy, rusqlite::Error> {
+        let connection = self.conn.lock().await;
+        connection.query_row(
+            "SELECT bundle_policy FROM block_producer_settings WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    pub async fn set_bundle_policy(
+        &self,
+        policy: WithdrawalBundlePolicy,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn
+            .lock()
+            .await
+            .execute(
+                "UPDATE block_producer_settings SET bundle_policy = ?1 WHERE id = 0",
+                [policy],
+            )
+            .map(|_| ())
+    }
+
+    /// Withdrawal bundles explicitly ACKed by the operator, whatever the
+    /// standing policy says.
+    pub async fn get_bundle_acks(&self) -> Result<Vec<(SidechainNumber, M6id)>, rusqlite::Error> {
+        // Satisfy clippy with a single function call per lock
+        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
+            let mut statement =
+                connection.prepare("SELECT sidechain_number, bundle_hash FROM bundle_acks")?;
+            let rows = statement
+                .query_map([], |row| {
+                    let m6id: [u8; 32] = row.get(1)?;
+                    Ok((SidechainNumber(row.get(0)?), M6id::from(m6id)))
+                })?
+                .collect::<Result<_, _>>()?;
+            Ok(rows)
+        };
+        let connection = self.conn.lock().await;
+        with_connection(&connection)
+    }
+
+    pub async fn ack_bundle(
+        &self,
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    ) -> Result<(), rusqlite::Error> {
+        let sidechain_number: u8 = sidechain_number.into();
+        self.conn
+            .lock()
+            .await
+            .execute(
+                "INSERT OR IGNORE INTO bundle_acks (sidechain_number, bundle_hash)
+                 VALUES (?1, ?2)",
+                (sidechain_number, m6id.0.to_byte_array()),
+            )
+            .map(|_| ())
+    }
+
+    /// Withdraw an explicit ACK, whether the operator NACKed it or the bundle
+    /// simply stopped being pending.
+    pub async fn delete_bundle_ack(
+        &self,
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    ) -> Result<(), rusqlite::Error> {
+        let sidechain_number: u8 = sidechain_number.into();
+        self.conn
+            .lock()
+            .await
+            .execute(
+                "DELETE FROM bundle_acks WHERE sidechain_number = ?1 AND bundle_hash = ?2",
+                (sidechain_number, m6id.0.to_byte_array()),
             )
             .map(|_| ())
     }
@@ -754,7 +904,7 @@ pub(crate) mod migration_tests {
     use bitcoin::hashes::Hash as _;
     use rusqlite::Connection;
 
-    use super::Db;
+    use super::{AckAllProposalsPolicy, Db, WithdrawalBundlePolicy};
 
     /// The exact schema the pre-split wallet's 7 migrations left behind
     /// (`lib/wallet/mod.rs` before the block producer was split out), with
@@ -851,9 +1001,17 @@ pub(crate) mod migration_tests {
         }
 
         let db = Db::new(&dir).unwrap();
-        assert!(
-            db.get_ack_all_proposals().await.unwrap(),
-            "block_producer_settings must be created with ack-all defaulting on"
+        assert_eq!(
+            db.get_ack_policy().await.unwrap(),
+            AckAllProposalsPolicy::NewSlots,
+            "block_producer_settings must be created auto-ACKing new slots, \
+             and no further: a replacement evicts a running sidechain"
+        );
+        assert_eq!(
+            db.get_bundle_policy().await.unwrap(),
+            WithdrawalBundlePolicy::Known,
+            "a node that was voting on bundles must keep voting, but only for \
+             the bundles it holds itself"
         );
 
         // The snapshot-and-delete path `mine` hits after producing a block.
