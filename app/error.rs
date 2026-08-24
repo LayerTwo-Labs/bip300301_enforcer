@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use bip300301_enforcer_lib::errors::ErrorChain;
 use cusf_enforcer_mempool::{
     cusf_enforcer::{CusfEnforcer, InitialSyncError, TaskError},
     mempool::{InitialSyncMempoolError, SyncTaskError},
@@ -59,16 +60,33 @@ where
     /// since a dropped message means its mempool view is stale. Only a re-sync
     /// clears it, and re-syncing is strictly better than exiting the process and
     /// taking the gRPC and block template servers down with it.
+    ///
+    /// The enforcer's own initial sync can also fail on a transient node
+    /// error.
     pub fn is_resyncable(&self) -> bool {
         let (Self::SyncTask(inner) | Self::InitialSync(inner)) = self else {
             return false;
         };
-        matches!(
-            inner,
+        match inner {
             SyncTaskError::SequenceStream(_)
-                | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_))
-        )
+            | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_)) => true,
+            SyncTaskError::InitialSyncEnforcer(InitialSyncError::CusfEnforcer(err)) => {
+                is_block_not_found_on_disk(err)
+            }
+            _ => false,
+        }
     }
+}
+
+// Bitcoin Core responds with 'Block not found on disk' if it knows the header
+// but the data cannot be read (yet). Happens regularly while syncing blocks.
+fn is_block_not_found_on_disk<E>(err: &E) -> bool
+where
+    E: std::error::Error,
+{
+    ErrorChain::new(err)
+        .to_string()
+        .contains("Block not found on disk")
 }
 
 /// Whether a node RPC call failed at the transport layer rather than being
@@ -92,6 +110,9 @@ where
         }
         TaskError::JsonRpc(err) | TaskError::InitialSync(InitialSyncError::JsonRpc(err)) => {
             is_transport_error(err)
+        }
+        TaskError::InitialSync(InitialSyncError::CusfEnforcer(err)) => {
+            is_block_not_found_on_disk(err)
         }
         _ => false,
     }
