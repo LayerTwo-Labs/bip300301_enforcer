@@ -944,3 +944,17 @@ impl Enforcer {
         spawn_command_with_args(&self.data_dir, self.path.clone(), envs, args, err_handler)
     }
 }
+
+/// The block template from a template-mode `getblocktemplate` response.
+///
+/// BIP22/BIP23 overload the result by request mode, so the response is a
+/// union. A proposal verdict here would mean the server dispatched on a mode
+/// the caller did not ask for.
+pub fn expect_block_template(
+    response: cusf_enforcer_mempool::server::BlockTemplateResponse,
+) -> anyhow::Result<bitcoin_jsonrpsee::client::BlockTemplate> {
+    response
+        .into_template()
+        .map(|template| *template)
+        .ok_or_else(|| anyhow::anyhow!("expected a block template, got a BIP23 proposal verdict"))
+}

@@ -105,6 +105,8 @@ impl BlockProducer {
     ) -> Result<BlockTemplate, error::GetBlockTemplate> {
         self.gbt_client()
             .get_block_template(BlockTemplateRequest {
+                mode: None,
+                data: None,
                 rules,
                 capabilities: HashSet::from(["coinbasetxn".to_string()]),
                 long_poll_id: None,

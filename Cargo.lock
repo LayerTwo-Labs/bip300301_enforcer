@@ -656,7 +656,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-jsonrpsee"
 version = "0.1.1"
-source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=d32ba93d497c644394877aaa2a9f25185e7fca48#d32ba93d497c644394877aaa2a9f25185e7fca48"
+source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=3ca15900bef3c9a2fd83003f71480a738411f35e#3ca15900bef3c9a2fd83003f71480a738411f35e"
 dependencies = [
  "base64 0.23.0",
  "bitcoin",
@@ -1156,7 +1156,7 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.4.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=0bfedfae34ec6004ed8d9f03da1df4c50a8795df#0bfedfae34ec6004ed8d9f03da1df4c50a8795df"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=185e439807023902252ba85ca908b7133a2fb062#185e439807023902252ba85ca908b7133a2fb062"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1174,6 +1174,7 @@ dependencies = [
  "nonempty",
  "parking_lot",
  "polonius-the-crab",
+ "serde",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",

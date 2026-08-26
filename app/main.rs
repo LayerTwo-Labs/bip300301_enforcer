@@ -922,7 +922,7 @@ where
     async fn get_block_template(
         &self,
         request: bitcoin_jsonrpsee::client::BlockTemplateRequest,
-    ) -> jsonrpsee::core::RpcResult<bitcoin_jsonrpsee::client::BlockTemplate> {
+    ) -> jsonrpsee::core::RpcResult<cusf_enforcer_mempool::server::BlockTemplateResponse> {
         match self.ready().await {
             Some(server) => server.get_block_template(request).await,
             None => Err(jsonrpsee::types::ErrorObject::owned(

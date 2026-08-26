@@ -281,7 +281,9 @@ async fn wait_for_template_txs(
             async move {
                 let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
                 gbt_request.capabilities.insert("coinbasetxn".to_owned());
-                let template = gbt_client.get_block_template(gbt_request).await?;
+                let template = crate::util::expect_block_template(
+                    gbt_client.get_block_template(gbt_request).await?,
+                )?;
                 let txids: Vec<Txid> = template.transactions.iter().map(|tx| tx.txid).collect();
                 Ok(want.iter().all(|txid| txids.contains(txid))
                     && not_want.iter().all(|txid| !txids.contains(txid)))

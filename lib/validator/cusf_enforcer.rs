@@ -501,6 +501,15 @@ impl CusfEnforcer for Validator {
         };
         Ok(res)
     }
+
+    type ValidateBlockError = ConnectBlockError;
+
+    fn validate_block(&self, block: &Block) -> Result<Option<String>, Self::ValidateBlockError> {
+        match ConnectBlockDryRun(|_: &RoTxn<'_>| ()).connect_block(self, block)? {
+            Ok(()) => Ok(None),
+            Err(reason) => Ok(Some(format!("{:#}", ErrorChain::new(&reason)))),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
