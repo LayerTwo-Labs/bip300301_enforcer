@@ -479,6 +479,15 @@ impl CusfEnforcer for Wallet {
         }
         Ok(res)
     }
+
+    type ValidateBlockError = <Validator as CusfEnforcer>::ValidateBlockError;
+
+    fn validate_block(
+        &self,
+        block: &bitcoin::Block,
+    ) -> Result<Option<String>, Self::ValidateBlockError> {
+        self.inner.validator().validate_block(block)
+    }
 }
 
 impl CusfBlockProducer for Wallet {

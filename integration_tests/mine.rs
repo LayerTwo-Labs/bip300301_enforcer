@@ -46,7 +46,9 @@ pub async fn wait_for_tx_in_block_template(
         || async {
             let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
             request.capabilities.insert("coinbasetxn".to_owned());
-            let template = post_setup.gbt_client.get_block_template(request).await?;
+            let template = crate::util::expect_block_template(
+                post_setup.gbt_client.get_block_template(request).await?,
+            )?;
             Ok(template.transactions.iter().any(|tx| tx.txid == *txid))
         },
     )
@@ -87,6 +89,8 @@ pub enum MineGbtError {
     GbtClient(#[from] jsonrpsee::core::ClientError),
     #[error("Missing coinbasetxn in block template")]
     MissingCoinbaseTxn,
+    #[error("`getblocktemplate` answered a BIP23 proposal verdict, not a template")]
+    UnexpectedProposalVerdict,
     #[error("Expected block event")]
     NoBlockEvent,
     #[error("Submitting block failed with error: `{err_msg}`")]
@@ -105,7 +109,9 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
     let block_template = post_setup
         .gbt_client
         .get_block_template(gbt_request)
-        .await?;
+        .await?
+        .into_template()
+        .ok_or(MineGbtError::UnexpectedProposalVerdict)?;
     let bitcoin_jsonrpsee::client::CoinbaseTxnOrValue::Txn(coinbase_tx) =
         block_template.coinbase_txn_or_value
     else {

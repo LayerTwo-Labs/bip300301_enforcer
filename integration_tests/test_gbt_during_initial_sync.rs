@@ -64,7 +64,7 @@ fn enforcer_args() -> Vec<String> {
 
 async fn request_block_template(
     post_setup: &PostSetup,
-) -> Result<bitcoin_jsonrpsee::client::BlockTemplate, jsonrpsee::core::client::Error> {
+) -> Result<cusf_enforcer_mempool::server::BlockTemplateResponse, jsonrpsee::core::client::Error> {
     let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
     request.capabilities.insert("coinbasetxn".to_owned());
     post_setup.gbt_client.get_block_template(request).await
@@ -103,7 +103,7 @@ pub async fn test_gbt_during_initial_sync(bin_paths: BinPaths) -> anyhow::Result
 
     // Baseline: a synced enforcer serves templates, so the probes below read a
     // real difference.
-    let template = request_block_template(&post_setup).await?;
+    let template = crate::util::expect_block_template(request_block_template(&post_setup).await?)?;
     tracing::info!(
         height = template.height,
         "synced enforcer serves block templates"
@@ -162,13 +162,16 @@ pub async fn test_gbt_during_initial_sync(bin_paths: BinPaths) -> anyhow::Result
     // Probe 1: templates.
     let err = match request_block_template(&post_setup).await {
         Err(err) => err,
-        Ok(template) => anyhow::bail!(
-            "the enforcer served a block template at height {} while it was still \
+        Ok(response) => {
+            let template = crate::util::expect_block_template(response)?;
+            anyhow::bail!(
+                "the enforcer served a block template at height {} while it was still \
              crossing the {GAP_BLOCKS}-block gap, so it built one from a mempool it had \
              not finished syncing -- or the gap was crossed in the moments between the \
              port opening and this request, in which case raise GAP_BLOCKS",
-            template.height
-        ),
+                template.height
+            )
+        }
     };
     let jsonrpsee::core::client::Error::Call(err) = err else {
         anyhow::bail!(
@@ -212,7 +215,7 @@ pub async fn test_gbt_during_initial_sync(bin_paths: BinPaths) -> anyhow::Result
     wait_for_validator_tip(&post_setup).await?;
     wait_for_wallet_sync(&mut post_setup).await?;
     wait_for_block_templates(&post_setup.gbt_client).await?;
-    let template = request_block_template(&post_setup).await?;
+    let template = crate::util::expect_block_template(request_block_template(&post_setup).await?)?;
     tracing::info!(
         height = template.height,
         "enforcer serves block templates again once synced"

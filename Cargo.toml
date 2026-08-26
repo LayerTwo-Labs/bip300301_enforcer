@@ -90,11 +90,11 @@ zeroize = "1.8.2"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
-rev = "d32ba93d497c644394877aaa2a9f25185e7fca48"
+rev = "3ca15900bef3c9a2fd83003f71480a738411f35e"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "0bfedfae34ec6004ed8d9f03da1df4c50a8795df"
+rev = "185e439807023902252ba85ca908b7133a2fb062"
 
 [workspace.dependencies.educe]
 version = "0.7.4"

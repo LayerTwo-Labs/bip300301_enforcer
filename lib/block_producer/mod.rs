@@ -261,6 +261,17 @@ impl CusfEnforcer for BlockProducer {
     fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
         self.inner.validator.clone().accept_tx(tx)
     }
+
+    type ValidateBlockError = <Validator as CusfEnforcer>::ValidateBlockError;
+
+    /// A proposal is a dry run, so unlike `connect_block` there is no policy
+    /// maintenance to layer on top of the validator's verdict.
+    fn validate_block(
+        &self,
+        block: &bitcoin::Block,
+    ) -> Result<Option<String>, Self::ValidateBlockError> {
+        self.inner.validator.validate_block(block)
+    }
 }
 
 impl CusfBlockProducer for BlockProducer {
