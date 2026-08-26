@@ -8,7 +8,7 @@ use std::{
 
 use async_broadcast::{Sender, TrySendError};
 use bitcoin::{
-    Amount, Block, BlockHash, Network, OutPoint, Transaction, Work,
+    Amount, Block, BlockHash, Network, OutPoint, Transaction, Txid, Work,
     hashes::{Hash as _, sha256d},
 };
 use error_fatality::Split;
@@ -1045,6 +1045,38 @@ impl BlockHandler<'_> {
         }
     }
 
+    /// Check that the current chain tip is the parent of the incoming block
+    #[expect(clippy::result_large_err)]
+    fn ensure_tip_is_parent(
+        &self,
+        rotxn: &RoTxn,
+        parent: BlockHash,
+    ) -> Result<(), error::ConnectBlock> {
+        let dbs = self.dbs;
+        match dbs.current_chain_tip.try_get(rotxn, &())? {
+            Some(tip) if parent == tip => Ok(()),
+            None if parent == BlockHash::all_zeros() => Ok(()),
+            tip => {
+                let tip = tip.unwrap_or_else(BlockHash::all_zeros);
+                let tip_height = dbs
+                    .block_hashes
+                    .height()
+                    .get(rotxn, &tip)
+                    .unwrap_or_default();
+                tracing::error!(
+                    chain_tip = %tip,
+                    incoming_block_parent = %parent,
+                    "ensure prent: chain tip is not parent of incoming block"
+                );
+                Err(error::ConnectBlock::BlockParent {
+                    parent,
+                    tip,
+                    tip_height,
+                })
+            }
+        }
+    }
+
     /// Block header should be stored before calling this.
     #[tracing::instrument(skip_all)]
     #[expect(clippy::result_large_err)]
@@ -1057,58 +1089,26 @@ impl BlockHandler<'_> {
         let parent = block.header.prev_blockhash;
 
         tracing::trace!("verifying chain tip is block parent");
-        // Check that current chain tip is block parent
-        match dbs.current_chain_tip.try_get(rwtxn, &())? {
-            Some(tip) if parent == tip => (),
-            Some(tip) => {
-                let tip_height = dbs
-                    .block_hashes
-                    .height()
-                    .get(rwtxn, &tip)
-                    .unwrap_or_default();
-                tracing::error!(
-                    chain_tip = %tip,
-                    incoming_block_parent = %parent,
-                    "unable to connect block: chain tip is not parent of incoming block"
-                );
-                return Err(error::ConnectBlock::BlockParent {
-                    parent,
-                    tip,
-                    tip_height,
-                });
-            }
-            None if block.header.prev_blockhash == BlockHash::all_zeros() => (),
-            None => {
-                return Err(error::ConnectBlock::BlockParent {
-                    parent,
-                    tip: BlockHash::all_zeros(),
-                    tip_height: 0,
-                });
-            }
-        }
+        let () = self.ensure_tip_is_parent(rwtxn, parent)?;
 
         tracing::trace!("starting block processing");
-        let height = dbs.block_hashes.height().get(rwtxn, &block.block_hash())?;
+        let block_hash = block.block_hash();
+        let height = dbs.block_hashes.height().get(rwtxn, &block_hash)?;
         let Some(coinbase) = block.txdata.first() else {
             return Err(error::ConnectBlock::NoCoinbase);
+        };
+        let header_info = HeaderInfo {
+            block_hash,
+            prev_block_hash: parent,
+            height,
+            work: block.header.work(),
+            timestamp: block.header.time,
         };
         // Everything below activation height is plain Bitcoin history. We need
         // to record the block, but with an empty info + diff and skip all processing.
         if height < self.params.bip300_activation_height {
-            let block_info = BlockInfo {
-                bmm_commitments: BmmCommitments::new(),
-                coinbase_txid: coinbase.compute_txid(),
-                events: Vec::new(),
-            };
-            let block_diff = diff::Block {
-                coinbase: diff::Coinbase {
-                    msgs: Vec::new(),
-                    failed_proposals: diff::FailedProposals(Default::default()),
-                    failed_m6ids: diff::FailedM6ids(Default::default()),
-                },
-                txs: Vec::new(),
-            };
-            return self.record_block(rwtxn, block, height, block_info, block_diff);
+            let (block_info, block_diff) = empty_block_info_and_diff(coinbase.compute_txid());
+            return self.record_block(rwtxn, header_info, block_info, block_diff);
         }
         let mut coinbase_messages = CoinbaseMessages::default();
         // map of sidechain proposals to first vout
@@ -1220,8 +1220,6 @@ impl BlockHandler<'_> {
             failed_m6ids: failed_m6ids_diff,
         };
         tracing::trace!("Handled coinbase tx, handling other txs...");
-        let block_hash = block.header.block_hash();
-        let prev_mainchain_block_hash = block.header.prev_blockhash;
         let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
         // BIP301: "Only one `M8` can be accepted per mainchain block per
         // sidechain slot." Without this, a miner can collect the fees of
@@ -1233,7 +1231,7 @@ impl BlockHandler<'_> {
                     self.handle_transaction(
                         rotxn,
                         Some(&accepted_bmm_requests),
-                        &prev_mainchain_block_hash,
+                        &parent,
                         transaction,
                     )
                 })
@@ -1277,7 +1275,7 @@ impl BlockHandler<'_> {
             coinbase: coinbase_diff,
             txs: tx_diffs,
         };
-        self.record_block(rwtxn, block, height, block_info, block_diff)
+        self.record_block(rwtxn, header_info, block_info, block_diff)
     }
 
     /// Shared tail of [`Self::connect_block`]: persist the block's info +
@@ -1287,13 +1285,12 @@ impl BlockHandler<'_> {
     fn record_block(
         &self,
         rwtxn: &mut RwTxn,
-        block: &Block,
-        height: u32,
+        header_info: HeaderInfo,
         block_info: BlockInfo,
         block_diff: diff::Block,
     ) -> Result<Event, error::ConnectBlock> {
         let dbs = self.dbs;
-        let block_hash = block.header.block_hash();
+        let block_hash = header_info.block_hash;
         tracing::trace!("Storing block info");
         let () = dbs
             .block_hashes
@@ -1313,20 +1310,11 @@ impl BlockHandler<'_> {
         let cumulative_work = dbs.block_hashes.cumulative_work().get(rwtxn, &block_hash)?;
         if Some(cumulative_work) > current_tip_cumulative_work {
             dbs.current_chain_tip.put(rwtxn, &(), &block_hash)?;
-            tracing::trace!("updated current chain tip: {}", height);
+            tracing::trace!("updated current chain tip: {}", header_info.height);
         }
-        let event = {
-            let header_info = HeaderInfo {
-                block_hash,
-                prev_block_hash: block.header.prev_blockhash,
-                height,
-                work: block.header.work(),
-                timestamp: block.header.time,
-            };
-            Event::ConnectBlock {
-                header_info,
-                block_info,
-            }
+        let event = Event::ConnectBlock {
+            header_info,
+            block_info,
         };
         Ok(event)
     }
@@ -1368,6 +1356,26 @@ impl BlockHandler<'_> {
         events.push(Event::DisconnectBlock { block_hash });
         Ok(())
     }
+}
+
+/// The info + diff recorded for a block below the BIP300 activation height:
+/// such blocks are plain Bitcoin history, so everything except the coinbase
+/// txid is empty.
+fn empty_block_info_and_diff(coinbase_txid: Txid) -> (BlockInfo, diff::Block) {
+    let block_info = BlockInfo {
+        bmm_commitments: BmmCommitments::new(),
+        coinbase_txid,
+        events: Vec::new(),
+    };
+    let block_diff = diff::Block {
+        coinbase: diff::Coinbase {
+            msgs: Vec::new(),
+            failed_proposals: diff::FailedProposals(Default::default()),
+            failed_m6ids: diff::FailedM6ids(Default::default()),
+        },
+        txs: Vec::new(),
+    };
+    (block_info, block_diff)
 }
 
 /// Broadcast events for state that has already been committed.
@@ -1910,6 +1918,77 @@ impl BlockHandler<'_> {
         }
     }
 
+    /// Connect a block below the BIP300 activation height from its stored
+    /// header, without the block body. Such blocks are plain Bitcoin history:
+    /// `connect_block` skips all BIP300 processing for them, and the only
+    /// block-body data it records is the coinbase txid, which is not
+    /// observable anywhere for pre-activation blocks. A zeroed txid is
+    /// recorded in its place, so the body does not need to be fetched at all.
+    fn connect_block_from_header(
+        &self,
+        rwtxn: &mut RwTxn,
+        block_hash: &BlockHash,
+    ) -> Result<Event, error::Sync> {
+        let header_info = self.dbs.block_hashes.get_header_info(rwtxn, block_hash)?;
+        debug_assert!(header_info.height < self.params.bip300_activation_height);
+        let () = self.ensure_tip_is_parent(rwtxn, header_info.prev_block_hash)?;
+        let (block_info, block_diff) = empty_block_info_and_diff(Txid::all_zeros());
+        Ok(self.record_block(rwtxn, header_info, block_info, block_diff)?)
+    }
+
+    /// Connect blocks below the BIP300 activation height from their stored
+    /// headers, popping them off the back of `missing_blocks`. No block
+    /// bodies are fetched. Returns the number of blocks connected.
+    fn connect_pre_activation_blocks(
+        &self,
+        event_tx: &Sender<Event>,
+        missing_blocks: &mut Vec<BlockHash>,
+        cancel: &CancellationToken,
+    ) -> Result<usize, error::Sync> {
+        // Commit interval for header-only connects, so that progress is
+        // durable and the write txns stay reasonably sized.
+        const BATCH_SIZE: usize = 10_000;
+
+        let activation_height = self.params.bip300_activation_height;
+        if activation_height == 0 {
+            return Ok(0);
+        }
+        let dbs = self.dbs;
+        let start = Instant::now();
+        let mut connected: usize = 0;
+        loop {
+            if cancel.is_cancelled() {
+                tracing::warn!("Block sync interrupted");
+                return Err(error::Sync::Shutdown);
+            }
+            let mut rwtxn = dbs.write_txn()?;
+            let mut events = Vec::new();
+            while events.len() < BATCH_SIZE
+                && let Some(block_hash) = missing_blocks.last()
+                && dbs.block_hashes.height().get(&rwtxn, block_hash)? < activation_height
+            {
+                let event = self.connect_block_from_header(&mut rwtxn, block_hash)?;
+                events.push(event);
+                missing_blocks.pop();
+            }
+            if events.is_empty() {
+                rwtxn.abort();
+                break;
+            }
+            connected += events.len();
+            rwtxn.commit()?;
+            broadcast_events(event_tx, events);
+            tracing::info!("Connected {connected} pre-activation block(s) from stored headers");
+        }
+        if connected > 0 {
+            tracing::info!(
+                "Connected {connected} pre-activation block(s) from stored headers in {:?}",
+                start.elapsed()
+            );
+        }
+        Ok(connected)
+    }
+
     // MUST be called after `sync_headers`.
     /// Returns `Some(InvalidBlock)` if a block was rejected as invalid. The
     /// sync stops at the invalid block's parent.
@@ -1986,7 +2065,12 @@ impl BlockHandler<'_> {
             start.elapsed()
         );
 
-        let mut total_blocks_fetched: usize = 0;
+        // Blocks below the BIP300 activation height only need their headers,
+        // which `sync_headers` has already stored. Connect them without
+        // fetching any block bodies.
+        let mut total_blocks_synced: usize = tokio::task::block_in_place(|| {
+            self.connect_pre_activation_blocks(event_tx, &mut missing_blocks, &cancel)
+        })?;
 
         if let Some(main_blocks_dir) = main_blocks_dir {
             let start = Instant::now();
@@ -2004,7 +2088,7 @@ impl BlockHandler<'_> {
                 cancel.clone(),
             ) {
                 Ok(total_handled_blocks) => {
-                    total_blocks_fetched += total_handled_blocks as usize;
+                    total_blocks_synced += total_handled_blocks as usize;
                     tracing::info!(
                         "Synced {total_handled_blocks} blocks from blocks dir in {:?}",
                         start.elapsed()
@@ -2035,7 +2119,7 @@ impl BlockHandler<'_> {
             }
 
             let blocks = fetch_blocks_batch(main_rpc_client, chunk).await?;
-            total_blocks_fetched += blocks.len();
+            total_blocks_synced += blocks.len();
 
             let rwtxn = dbs.write_txn()?;
             let invalid_block = self.handle_block_batch_and_commit(rwtxn, &blocks, event_tx)?;
@@ -2049,7 +2133,7 @@ impl BlockHandler<'_> {
         }
 
         tracing::info!(
-            "Synced {total_blocks_fetched} blocks in {:?}",
+            "Synced {total_blocks_synced} blocks in {:?}",
             start.elapsed()
         );
         Ok(None)

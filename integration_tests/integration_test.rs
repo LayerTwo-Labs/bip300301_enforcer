@@ -997,19 +997,13 @@ pub fn tests(
             test_bmm_bid_auction::test_bmm_bid_auction,
         )
     }));
-    async_trials.push(new_trial_with_setup_opts(
-        "activation_height".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::GetBlockTemplate,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::setup::SetupOpts {
-            enforcer_args: vec!["--network-preset=test-activation".to_owned()],
-            ..Default::default()
-        },
+    // Bespoke: the test kills and restarts the enforcer to drive the
+    // pre-activation header-only sync, so it owns its setup.
+    async_trials.push(new_bespoke_trial(
+        crate::test_activation_height::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
         crate::test_activation_height::test_activation_height,
     ));
     async_trials.push(new_trial_with_setup(
