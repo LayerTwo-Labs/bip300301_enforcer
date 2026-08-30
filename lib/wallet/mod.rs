@@ -1559,13 +1559,86 @@ impl Wallet {
             .collect()
     }
 
+    /// The unconfirmed wallet transaction that has to be replaced for
+    /// `required_utxos` to be spendable, if there is exactly one.
+    ///
+    /// `TxBuilder::add_utxos` resolves outpoints against the wallet's unspent
+    /// outputs alone, so requiring an output that an unconfirmed wallet
+    /// transaction already spends fails as unknown. Requiring such an output
+    /// is a request to replace that transaction -- raising a BMM bid, for
+    /// instance -- which BDK models as a fee bump of it rather than as a
+    /// fresh build.
+    ///
+    /// `None` unless *every* required outpoint is an input of one and the same
+    /// unconfirmed transaction. A replacement is confined to that
+    /// transaction's inputs, so it cannot also honour a required output that
+    /// is merely unspent; a mix of the two, like anything else ambiguous, is
+    /// left to fail as an unknown UTXO exactly as before.
+    fn replaced_tx(
+        wallet: &bdk_wallet::Wallet,
+        required_utxos: &[bdk_wallet::bitcoin::OutPoint],
+    ) -> Option<bdk_wallet::bitcoin::Txid> {
+        if required_utxos.is_empty()
+            || required_utxos
+                .iter()
+                .any(|outpoint| wallet.list_unspent().any(|utxo| utxo.outpoint == *outpoint))
+        {
+            return None;
+        }
+        let mut spenders = wallet
+            .transactions()
+            .filter(|wallet_tx| !wallet_tx.chain_position.is_confirmed())
+            .filter(|wallet_tx| {
+                wallet_tx
+                    .tx_node
+                    .tx
+                    .input
+                    .iter()
+                    .any(|txin| required_utxos.contains(&txin.previous_output))
+            });
+        let replaced = spenders.next()?;
+        if spenders.next().is_some() {
+            return None;
+        }
+        required_utxos
+            .iter()
+            .all(|outpoint| {
+                replaced
+                    .tx_node
+                    .tx
+                    .input
+                    .iter()
+                    .any(|txin| txin.previous_output == *outpoint)
+            })
+            .then_some(replaced.tx_node.txid)
+    }
+
     fn build_send_psbt(
         wallet: &mut bdk_wallet::Wallet,
         destinations: HashMap<bitcoin::Address, Amount>,
         params: CreateTransactionParams,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateSendPsbt> {
+        let replaced_txid = Self::replaced_tx(wallet, &params.required_utxos);
+
         let mut timestamp = Instant::now();
-        let mut builder = wallet.build_tx();
+        // Nothing is applied to the wallet here: a fee bump leaves the
+        // transaction it replaces in the canonical set, which only gives way
+        // once the replacement is broadcast and applied as unconfirmed. BDK
+        // enforces the BIP125 fee increase against the replaced transaction.
+        let mut builder = match replaced_txid {
+            Some(txid) => {
+                tracing::info!(%txid, "Replacing unconfirmed transaction");
+                let mut builder = wallet
+                    .build_fee_bump(txid)
+                    .map_err(error::CreateSendPsbt::BuildFeeBump)?;
+                // A fee bump seeds the builder with the replaced transaction's
+                // outputs, but the outputs of this one come from the caller,
+                // exactly as they do for a fresh build.
+                builder.set_recipients(Vec::new());
+                builder
+            }
+            None => wallet.build_tx(),
+        };
 
         if let Some(op_return_message) = params.op_return_message {
             let op_return_output = Self::create_op_return_output(op_return_message)?;
@@ -1600,15 +1673,22 @@ impl Wallet {
         }
 
         if !params.required_utxos.is_empty() {
-            builder
-                // TODO: this does not work at all for wallets past a certain scale....
-                // 25s pr. UTXO for a wallet with 40k UTXOs in total
-                .add_utxos(&params.required_utxos)
-                .map_err(|err| match err {
-                    bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
-                        error::CreateSendPsbt::UnknownUTXO(outpoint)
-                    }
-                })?;
+            // A fee bump already requires the replaced transaction's inputs,
+            // which is where the required UTXOs went. `manually_selected_only`
+            // below then confines the replacement to those inputs, so it
+            // cannot pull in an unconfirmed one and break BIP125's rule
+            // against a replacement adding unconfirmed inputs.
+            if replaced_txid.is_none() {
+                builder
+                    // TODO: this does not work at all for wallets past a certain scale....
+                    // 25s pr. UTXO for a wallet with 40k UTXOs in total
+                    .add_utxos(&params.required_utxos)
+                    .map_err(|err| match err {
+                        bdk_wallet::tx_builder::AddUtxoError::UnknownUtxo(outpoint) => {
+                            error::CreateSendPsbt::UnknownUTXO(outpoint)
+                        }
+                    })?;
+            }
 
             builder.manually_selected_only();
 
@@ -2352,6 +2432,127 @@ mod tests {
                 .iter()
                 .all(|outpoint| wallet.list_unspent().any(|utxo| utxo.outpoint == *outpoint)),
             "evicting the stale bid must free its inputs"
+        );
+    }
+
+    /// Raising a BMM bid means replacing the unconfirmed request, so the
+    /// raised bid must respend the very inputs that request already spends.
+    /// Those inputs are gone from `list_unspent`, so requiring them has to
+    /// build a fee bump of the request that holds them rather than fail as
+    /// unknown -- while leaving that request in place, since only a broadcast
+    /// replacement actually displaces it.
+    #[test]
+    fn raised_bmm_bid_is_a_fee_bump_of_the_unconfirmed_bid() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        let tip = BlockHash::from_byte_array([0xAA; 32]);
+        let message =
+            M8BmmRequest::data(SidechainNumber(3), BmmCommitment([0x33; 32]), tip).unwrap();
+        let psbt = Wallet::build_bmm_psbt(
+            &mut wallet,
+            &message,
+            Amount::from_sat(1_000),
+            bitcoin::absolute::LockTime::ZERO,
+        )
+        .unwrap();
+        let tx = psbt.unsigned_tx;
+        let bid_txid = tx.compute_txid();
+        let spent: Vec<_> = tx.input.iter().map(|input| input.previous_output).collect();
+        assert!(!spent.is_empty());
+        wallet.apply_unconfirmed_txs([(tx, 100)]);
+
+        let raise = Amount::from_sat(25_000);
+        let raised_psbt = Wallet::build_send_psbt(
+            &mut wallet,
+            HashMap::new(),
+            CreateTransactionParams {
+                op_return_message: Some(message.as_bytes().to_vec()),
+                required_utxos: spent.clone(),
+                fee_policy: Some(crate::types::FeePolicy::Absolute(raise)),
+                ..Default::default()
+            },
+        )
+        .expect("a raised bid must respend the unconfirmed bid's inputs");
+        let raised = raised_psbt.unsigned_tx;
+
+        let respent: Vec<_> = raised
+            .input
+            .iter()
+            .map(|input| input.previous_output)
+            .collect();
+        assert_eq!(respent, spent, "must respend the bid's inputs");
+        assert!(
+            raised.input.iter().all(|input| input.sequence.is_rbf()),
+            "the raised bid must signal BIP125 replaceability"
+        );
+        assert_eq!(
+            wallet.calculate_fee(&raised).unwrap(),
+            raise,
+            "the raise is paid as the fee"
+        );
+        assert_eq!(
+            raised
+                .output
+                .iter()
+                .filter(|output| output.script_pubkey.is_op_return())
+                .count(),
+            1,
+            "the replaced bid's OP_RETURN must not be carried over"
+        );
+        M8BmmRequest::parse(&raised.output[0].script_pubkey.to_bytes())
+            .expect("output zero must contain the M8 request");
+        assert!(
+            wallet.transactions().any(|tx| tx.tx_node.txid == bid_txid),
+            "building a replacement must not evict the bid it replaces"
+        );
+    }
+
+    /// A replacement can only spend what the transaction it replaces spends,
+    /// so a required UTXO from outside that transaction cannot be honoured.
+    /// Requiring one alongside the replaced inputs must keep failing loudly
+    /// rather than quietly build a transaction without it.
+    #[test]
+    fn required_utxo_outside_the_replaced_bid_is_still_unknown() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        let tip = BlockHash::from_byte_array([0xAA; 32]);
+        let message =
+            M8BmmRequest::data(SidechainNumber(3), BmmCommitment([0x33; 32]), tip).unwrap();
+        let psbt = Wallet::build_bmm_psbt(
+            &mut wallet,
+            &message,
+            Amount::from_sat(1_000),
+            bitcoin::absolute::LockTime::ZERO,
+        )
+        .unwrap();
+        let tx = psbt.unsigned_tx;
+        let spent: Vec<_> = tx.input.iter().map(|input| input.previous_output).collect();
+        wallet.apply_unconfirmed_txs([(tx, 100)]);
+
+        let mut required_utxos = spent.clone();
+        required_utxos.push(
+            wallet
+                .list_unspent()
+                .next()
+                .expect("the bid must leave an unspent output")
+                .outpoint,
+        );
+
+        let err = Wallet::build_send_psbt(
+            &mut wallet,
+            HashMap::new(),
+            CreateTransactionParams {
+                op_return_message: Some(message.as_bytes().to_vec()),
+                required_utxos,
+                fee_policy: Some(crate::types::FeePolicy::Absolute(Amount::from_sat(25_000))),
+                ..Default::default()
+            },
+        )
+        .expect_err("a required UTXO outside the replaced bid must not be dropped");
+        let error::CreateSendPsbt::UnknownUTXO(outpoint) = &err else {
+            panic!("unexpected error: {err}");
+        };
+        assert!(
+            spent.contains(outpoint),
+            "the bid's own inputs are the unknown ones"
         );
     }
 
