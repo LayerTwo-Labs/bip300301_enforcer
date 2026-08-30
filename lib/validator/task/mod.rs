@@ -1635,6 +1635,20 @@ where
 
         match headers.last() {
             Some((_, last_block_hash, last_block_height)) => {
+                // The requested header is always the first entry in the batch,
+                // so a batch that ends where it started made no progress. That
+                // happens when the active chain has reorged onto a shorter
+                // chain whose tip is the block we're currently at: every
+                // further request returns that same single header. The batch is
+                // never empty and the cursor never reaches the captured tip, so
+                // neither of the checks below would ever fire. The tip we were
+                // given is gone, and only a sync against the node's current tip
+                // can make progress, so bail out and let the caller re-sync.
+                if *last_block_height <= current_height && *last_block_hash != main_tip {
+                    return Err(error::Sync::MainTipReorged {
+                        block_hash: main_tip,
+                    });
+                }
                 // Update the block_hash to the latest header fetched in this
                 // batch to continue the loop
                 current_block_hash = *last_block_hash;
@@ -2414,6 +2428,22 @@ mod tests {
         )
         .expect_err("a header that does not deserialize must be rejected");
         assert!(matches!(err, error::Sync::DeserializeHex(_)));
+    }
+
+    #[test]
+    fn a_reorged_main_tip_is_retryable() {
+        let err = error::Sync::MainTipReorged {
+            block_hash: dummy_block_hash(0x42),
+        };
+        assert!(
+            !err.is_fatal(),
+            "a tip that left the active chain clears on a sync against the current tip"
+        );
+        assert!(
+            err.to_string()
+                .contains("left the active chain during header sync"),
+            "`app::error::is_stale_main_tip` classifies this error by its message"
+        );
     }
 
     // ── handle_m8 ──
