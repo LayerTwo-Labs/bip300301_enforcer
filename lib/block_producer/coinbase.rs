@@ -5,7 +5,10 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 
 use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
-    messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
+    messages::{
+        CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles,
+        MAX_SIDECHAIN_DESCRIPTION_SIZE,
+    },
     types::{
         AmountUnderflowError, BlindedM6, Ctip, Sidechain, SidechainAck, SidechainNumber,
         SidechainProposal, SidechainProposalId, Thresholds,
@@ -244,9 +247,24 @@ impl BlockProducer {
             .collect::<HashSet<_>>();
 
         for sidechain_proposal in sidechain_proposals {
-            if !proposed_sidechains.contains(&sidechain_proposal.compute_id()) {
-                coinbase_builder.propose_sidechain(sidechain_proposal)?;
+            if proposed_sidechains.contains(&sidechain_proposal.compute_id()) {
+                continue;
             }
+            // An M1 whose OP_RETURN output does not fit in a block can never be
+            // mined, and a pending proposal is only cleared by the block that
+            // includes it. Skip it rather than wedging block production for
+            // good: rows persisted by a binary predating the RPC-level bound
+            // are otherwise unremovable.
+            if sidechain_proposal.description.0.len() > MAX_SIDECHAIN_DESCRIPTION_SIZE {
+                tracing::warn!(
+                    sidechain_number = %sidechain_proposal.sidechain_number,
+                    description_size = sidechain_proposal.description.0.len(),
+                    max_description_size = MAX_SIDECHAIN_DESCRIPTION_SIZE,
+                    "skipping a pending sidechain proposal too large for a coinbase"
+                );
+                continue;
+            }
+            coinbase_builder.propose_sidechain(sidechain_proposal)?;
         }
 
         let stored_acks = self.db().get_sidechain_acks().await?;

@@ -963,6 +963,18 @@ pub fn compute_m6id(
 
 // ... existing code ...
 
+/// Largest M1 sidechain description this node will propose, in bytes.
+///
+/// BIP300 does not bound the description, but the coinbase carrying the M1 has
+/// to fit in a block. A proposal too large to mine is worse than useless: a
+/// pending proposal is only cleared by the block that includes it, so it stops
+/// this node from producing blocks at all for as long as it is pending. The
+/// M1's `OP_RETURN` output is entirely non-witness data, so each of its bytes
+/// costs four of a block's 4,000,000 weight units. A quarter of that budget is
+/// far more than any real declaration needs, and leaves the rest of the block
+/// usable.
+pub const MAX_SIDECHAIN_DESCRIPTION_SIZE: usize = 250_000;
+
 // Returns the serialized sidechain proposal OP_RETURN output, plus the byte
 // slice encoded into the OP_RETURN output.
 pub fn create_sidechain_proposal(
@@ -1068,6 +1080,26 @@ mod tests {
             (&proposal.description).try_into().expect("Failed to parse");
 
         assert_eq!(parsed, declaration);
+    }
+
+    /// The description cap exists so that the coinbase output carrying the M1
+    /// still fits in a block: an M1 that cannot be mined can never confirm, and
+    /// stops block production for as long as the proposal is pending.
+    #[test]
+    fn maximal_sidechain_proposal_txout_fits_in_a_block() {
+        const MAX_BLOCK_WEIGHT: usize = 4_000_000;
+        let tx_out = TxOut {
+            value: Amount::ZERO,
+            script_pubkey: M1ProposeSidechain {
+                sidechain_number: SidechainNumber(0),
+                description: vec![0u8; MAX_SIDECHAIN_DESCRIPTION_SIZE].into(),
+            }
+            .try_into()
+            .expect("a capped description fits in a single push"),
+        };
+        // The output is entirely non-witness data: four weight units per byte.
+        let weight = bitcoin::consensus::encode::serialize(&tx_out).len() * 4;
+        assert!(weight < MAX_BLOCK_WEIGHT, "{weight} weight units");
     }
 
     // ── M8 script_pubkey roundtrip ──
