@@ -402,6 +402,24 @@ impl BlockProducer {
                         }),
                 );
         }
+        // `Validator::connect_block` deliberately leaves the previous
+        // generation of bids in the mempool, so that a one-block reorg can
+        // still mine them. They bid on `parent_block_hash`'s own parent, so
+        // `handle_m8` rejects them as expired in a block built on top of
+        // `parent_block_hash`: exclude them, or the template is unminable.
+        if let Some(header_infos) = self
+            .validator()
+            .try_get_header_infos(parent_block_hash, 0)?
+        {
+            let expired_bmm_requests = self
+                .validator()
+                .get_seen_bmm_requests_for_parent_block(header_infos.head.prev_block_hash)?;
+            template.exclude_mempool_txs.extend(
+                expired_bmm_requests
+                    .into_values()
+                    .flat_map(|requests| requests.into_values().flatten()),
+            );
+        }
         // Reserve suffix txs
         {
             let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
