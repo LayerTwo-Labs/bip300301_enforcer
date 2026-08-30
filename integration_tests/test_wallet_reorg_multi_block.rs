@@ -3,9 +3,10 @@
 //! streams block connects/disconnects one at a time, so several catch-up
 //! code paths only ever run after a restart with a real gap to cross.
 //!
-//! The rejected-block scenario must run last: it deliberately leaves the
-//! enforcer's validated tip stuck behind bitcoind's tip, a terminal state
-//! nothing else can sync past.
+//! The rejected-block scenario deliberately stops the enforcer's validated
+//! tip at a chain it rejects, a state nothing can sync past until that chain
+//! is reorged away. The stale-branch scenario is built on that state, so it
+//! runs last.
 
 use std::str::FromStr as _;
 
@@ -23,14 +24,26 @@ use futures::channel::mpsc;
 use serde::Deserialize;
 
 use crate::{
-    integration_test::{fund_enforcer, wait_for_wallet_sync},
-    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain, wait_until},
+    integration_test::{fund_enforcer, wait_for_electrs_tip, wait_for_wallet_sync},
+    setup::{
+        DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain,
+        read_enforcer_log, wait_until,
+    },
     util::BinPaths,
 };
 
 pub const TEST_NAME: &str = "wallet_reorg_multi_block";
 
 const FORK_DEPTH: u32 = 15;
+
+/// `--wallet-max-block-by-block-replay` for the stale-branch scenario's
+/// restart; past this many blocks the wallet checkpoints from headers.
+const STALE_BRANCH_MAX_BLOCK_BY_BLOCK_REPLAY: u32 = 50;
+
+const STALE_BRANCH_REPLACEMENT_BLOCKS: u32 = STALE_BRANCH_MAX_BLOCK_BY_BLOCK_REPLAY + 10;
+
+/// Emitted by `sync_wallet_to_tip` when it takes the checkpoint path.
+const CHECKPOINT_LOG: &str = "checkpointing chain forward and running a full scan";
 
 pub async fn test_wallet_reorg_multi_block(bin_paths: BinPaths) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
@@ -70,7 +83,11 @@ pub async fn test_wallet_reorg_multi_block(bin_paths: BinPaths) -> anyhow::Resul
     wallet_reorg_scenario(&mut post_setup, &bin_paths, &res_tx).await?;
 
     tracing::info!("starting scenario: rejected_block");
-    rejected_block_scenario(&mut post_setup, &bin_paths, &res_tx).await?;
+    let last_valid_height = rejected_block_scenario(&mut post_setup, &bin_paths, &res_tx).await?;
+
+    tracing::info!("starting scenario: stale_branch_full_scan");
+    stale_branch_full_scan_scenario(&mut post_setup, &bin_paths, &res_tx, last_valid_height)
+        .await?;
 
     Ok(())
 }
@@ -379,11 +396,13 @@ async fn broadcast_raw_bid(
 /// No sidechain needs to be proposed or activated for any of this: M8
 /// parsing and rejection never consult activation state -- acceptance is
 /// judged purely against M7 accepts in the containing block's own coinbase.
+///
+/// Returns the height the enforcer's validated tip came to rest at.
 async fn rejected_block_scenario(
     post_setup: &mut PostSetup,
     bin_paths: &BinPaths,
     res_tx: &mpsc::UnboundedSender<anyhow::Result<()>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u32> {
     // Kill the enforcer *before* touching the chain: everything below must
     // happen while it's down, so the only way it can learn about any of it
     // is by catching up across the whole gap in one bulk jump on restart.
@@ -524,6 +543,87 @@ async fn rejected_block_scenario(
     tracing::info!(
         last_valid_height,
         "enforcer survived the restart and caught up to its last accepted block"
+    );
+
+    Ok(last_valid_height)
+}
+
+/// Regression scenario for `Validator::list_headers` returning stale-branch
+/// headers, which left the wallet's full scan with duplicate heights to build
+/// its checkpoint from (a `debug_assert!` panic in debug builds, a failed scan
+/// in release builds).
+///
+/// Stale headers only matter above the wallet's tip. The rejected-block
+/// scenario leaves exactly that: `sync_headers` stored the rejected chain's
+/// headers past the validated tip, where the wallet stopped too. Reorging
+/// that chain away while the enforcer is down, past a lowered replay limit,
+/// forces the wallet to checkpoint from those headers on restart.
+async fn stale_branch_full_scan_scenario(
+    post_setup: &mut PostSetup,
+    bin_paths: &BinPaths,
+    res_tx: &mpsc::UnboundedSender<anyhow::Result<()>>,
+    last_valid_height: u32,
+) -> anyhow::Result<()> {
+    post_setup.kill_enforcer().await?;
+
+    // The enforcer already invalidated the poisoned block on its last restart,
+    // so bitcoind's tip is the last accepted block. Empty blocks: the stale bid
+    // is back in the mempool and `generatetoaddress` would mine it again.
+    let replacement_address = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getnewaddress", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .to_string();
+    for _ in 0..STALE_BRANCH_REPLACEMENT_BLOCKS {
+        post_setup
+            .bitcoin_cli
+            .command::<String, _, _, _, _>(
+                [],
+                "generateblock",
+                [replacement_address.clone(), "[]".to_owned()],
+            )
+            .run_utf8()
+            .await?;
+    }
+    let new_tip_height: u32 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    anyhow::ensure!(
+        new_tip_height == last_valid_height + STALE_BRANCH_REPLACEMENT_BLOCKS,
+        "expected the replacement chain to build on the last accepted block \
+         ({last_valid_height}), got height {new_tip_height}"
+    );
+
+    // electrs may not survive the reorg, and must be at the tip before the scan.
+    post_setup
+        .restart_electrs(bin_paths, res_tx.clone())
+        .await?;
+    wait_for_electrs_tip(post_setup).await?;
+
+    post_setup
+        .restart_enforcer(
+            bin_paths,
+            [format!(
+                "--wallet-max-block-by-block-replay={STALE_BRANCH_MAX_BLOCK_BY_BLOCK_REPLAY}"
+            )],
+            res_tx.clone(),
+        )
+        .await?;
+    // Pre-fix the enforcer went down in the full scan here.
+    wait_for_wallet_sync(post_setup).await?;
+
+    // Prove the checkpoint path ran, not a block-by-block replay.
+    let enforcer_log = read_enforcer_log(&post_setup.directories.enforcer_dir)?;
+    anyhow::ensure!(
+        enforcer_log.contains(CHECKPOINT_LOG),
+        "expected the wallet to close a {STALE_BRANCH_REPLACEMENT_BLOCKS}-block gap with a \
+         checkpoint and full scan, but {CHECKPOINT_LOG:?} never appeared in the enforcer log"
     );
 
     Ok(())

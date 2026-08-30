@@ -60,7 +60,7 @@
 //! cover -- as an RPC, without a restart. The obligation is the same one the
 //! gap crossings carry: money at an index the wallet never revealed.
 
-use std::{str::FromStr as _, time::Duration};
+use std::str::FromStr as _;
 
 use bdk_wallet::miniscript::{Descriptor, DescriptorPublicKey};
 use bip300301_enforcer_lib::{
@@ -75,10 +75,11 @@ use bip300301_enforcer_lib::{
 };
 use bitcoin::{BlockHash, secp256k1::Secp256k1};
 use futures::channel::mpsc;
-use tokio::time::sleep;
 
 use crate::{
-    integration_test::{fund_enforcer, wait_for_validator_tip, wait_for_wallet_sync},
+    integration_test::{
+        fund_enforcer, wait_for_electrs_tip, wait_for_validator_tip, wait_for_wallet_sync,
+    },
     setup::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, read_enforcer_log,
         wait_for_enforcer_log,
@@ -172,54 +173,6 @@ fn enforcer_args() -> Vec<String> {
     vec![format!(
         "--wallet-max-block-by-block-replay={MAX_BLOCK_BY_BLOCK_REPLAY}"
     )]
-}
-
-/// Block until electrs has indexed up to bitcoind's tip.
-///
-/// The test harness runs the enforcer with `--wallet-skip-periodic-sync`, so
-/// each full scan runs exactly once, at the point the test drives it, with no
-/// later retry to paper over a chain source that was still catching up. Every
-/// scan must therefore be sequenced after this wait.
-async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
-    const POLL_INTERVAL: Duration = Duration::from_millis(500);
-    const TIMEOUT: Duration = Duration::from_secs(180);
-
-    let target_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
-    let url = format!(
-        "http://127.0.0.1:{}/blocks/tip/height",
-        post_setup.reserved_ports.electrs_electrum_http.port()
-    );
-    tracing::debug!("waiting for electrs to index up to block {target_height}");
-
-    let client = reqwest::Client::new();
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    loop {
-        // electrs returns 5xx while it is still opening its index, so a
-        // failed request here is expected rather than fatal.
-        let indexed_height: Option<u32> = match client.get(&url).send().await {
-            Ok(response) => response
-                .text()
-                .await
-                .ok()
-                .and_then(|body| body.trim().parse().ok()),
-            Err(_) => None,
-        };
-        if indexed_height.is_some_and(|height| height >= target_height) {
-            return Ok(());
-        }
-        anyhow::ensure!(
-            std::time::Instant::now() < deadline,
-            "electrs did not index up to block {target_height} within {TIMEOUT:?} \
-             (stuck at {indexed_height:?})"
-        );
-        sleep(POLL_INTERVAL).await;
-    }
 }
 
 /// Number of confirmed wallet UTXOs paying `address`.
