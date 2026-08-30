@@ -106,7 +106,9 @@ struct SeedFile {
 pub(in crate::wallet) struct SeedStore {
     path: PathBuf,
     /// Serializes seed inserts, so two concurrent `CreateWallet` calls cannot
-    /// both pass the "does a seed already exist" check.
+    /// both pass the "does a seed already exist" check. Stores in *other*
+    /// processes are held off by the publish in [`write_seed_file`], which
+    /// refuses to replace a seed file that is already there.
     insert_lock: tokio::sync::Mutex<()>,
 }
 
@@ -181,7 +183,16 @@ impl SeedStore {
                 },
             },
         };
-        let () = write_seed_file(&self.path, &seed_file)?;
+        let () = write_seed_file(&self.path, &seed_file).map_err(|err| {
+            // Losing the publish race: another process created the wallet
+            // between the check above and the write. Report the wallet as
+            // already there, which is what the caller now sees on disk.
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                error::InsertSeed::AlreadyExists
+            } else {
+                error::InsertSeed::Io(err)
+            }
+        })?;
         Ok(())
     }
 }
@@ -198,10 +209,25 @@ fn read_seed_file(path: &Path) -> Result<Option<SeedFile>, error::ReadSeed> {
 }
 
 /// Write the seed file atomically and durably: temp file (0600) + fsync +
-/// rename + directory fsync, so a crash can never leave a bad seed file.
+/// hard link + directory fsync, so a crash can never leave a bad seed file.
+///
+/// Publishing with a link rather than a rename is what makes "there is no
+/// seed yet" the kernel's decision: [`std::fs::hard_link`] fails with
+/// [`std::io::ErrorKind::AlreadyExists`] if the seed file is already there,
+/// where a rename would silently replace a seed another process just wrote.
+/// An `AlreadyExists` out of here therefore means exactly that: someone else
+/// got their seed in first.
 fn write_seed_file(path: &Path, seed_file: &SeedFile) -> Result<(), std::io::Error> {
     let contents = serde_json::to_vec_pretty(seed_file).expect("seed file serialization is total");
-    let tmp_path = path.with_extension("json.tmp");
+    // Unique per write: two processes writing at once must not meet on the
+    // same temp path, or one would publish the other's half-written seed.
+    let tmp_path = {
+        use rand::Rng as _;
+        let mut nonce_bytes = [0u8; 8];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let (pid, nonce) = (std::process::id(), hex::encode(nonce_bytes));
+        path.with_extension(format!("json.{pid}.{nonce}.tmp"))
+    };
     {
         // The 0600 only takes effect when the open actually creates the file.
         // An existing temp file must never be reused. A leftover from a
@@ -222,11 +248,25 @@ fn write_seed_file(path: &Path, seed_file: &SeedFile) -> Result<(), std::io::Err
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
-        let mut file = options.open(&tmp_path)?;
+        // Something racing us onto our own temp path is not the seed file
+        // being taken; don't let it read back as "a wallet already exists".
+        let mut file = options.open(&tmp_path).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                std::io::Error::other(format!("temp seed file {} is in use", tmp_path.display()))
+            } else {
+                err
+            }
+        })?;
         let () = std::io::Write::write_all(&mut file, &contents)?;
         let () = file.sync_all()?;
     }
-    let () = std::fs::rename(&tmp_path, path)?;
+    // First writer wins, decided by the kernel rather than by a check the
+    // losers can slip past.
+    let published = std::fs::hard_link(&tmp_path, path);
+    // The temp file is a second on-disk copy of the seed either way; failing
+    // to unlink it leaves a stale 0600 file, nothing worse.
+    let _unlinked = std::fs::remove_file(&tmp_path);
+    let () = published?;
     let dir = std::fs::File::open(path.parent().expect("seed file path has a parent"))?;
     dir.sync_all()
 }
@@ -661,6 +701,69 @@ mod tests {
             .expect_err("second insert must fail");
         assert!(matches!(err, error::InsertSeed::AlreadyExists));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Stores constructed independently — as two processes would be — must
+    /// not both accept a seed. The in-process lock cannot see them, so the
+    /// publish itself has to be first-writer-wins: exactly one insert
+    /// succeeds, the rest are told the wallet already exists, and the seed
+    /// left on disk is the winner's.
+    #[test]
+    fn concurrent_stores_do_not_overwrite_each_others_seed() {
+        // Distinct BIP39 test vectors, so a lost race shows up as the wrong
+        // seed and not just as a second `Ok`.
+        const MNEMONICS: [&str; 4] = [
+            TEST_MNEMONIC,
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+        ];
+
+        let seed_dir = temp_dir("concurrent-insert");
+        let start = std::sync::Barrier::new(MNEMONICS.len());
+        let (dir, barrier) = (seed_dir.as_path(), &start);
+        let results: Vec<Result<String, error::InsertSeed>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = MNEMONICS
+                .into_iter()
+                .map(|mnemonic| {
+                    scope.spawn(move || {
+                        let mnemonic = Mnemonic::parse_in(Language::English, mnemonic).unwrap();
+                        let store = SeedStore::new(dir).unwrap();
+                        // Line the inserts up on the check they must not all
+                        // pass.
+                        let _released = barrier.wait();
+                        let inserted = store.insert_seed(Seed::Plaintext(&mnemonic), None);
+                        futures::executor::block_on(inserted).map(|()| mnemonic.to_string())
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+
+        let winners: Vec<&String> = results
+            .iter()
+            .filter_map(|result| result.as_ref().ok())
+            .collect();
+        assert_eq!(winners.len(), 1, "exactly one insert may succeed");
+        let winner = winners[0].clone();
+        for result in &results {
+            assert!(
+                matches!(result, Ok(_) | Err(error::InsertSeed::AlreadyExists)),
+                "the losers must be told the wallet already exists"
+            );
+        }
+
+        let store = SeedStore::new(dir).unwrap();
+        let stored = futures::executor::block_on(store.read_mnemonic())
+            .unwrap()
+            .expect("the winner's seed must be on disk")
+            .left()
+            .expect("the seed was plaintext");
+        assert_eq!(stored.to_string(), winner, "the winner's seed must survive");
+        std::fs::remove_dir_all(&seed_dir).ok();
     }
 
     /// A recorded birthday round-trips; absence stays absent; and a seed
