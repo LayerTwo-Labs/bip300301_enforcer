@@ -850,6 +850,8 @@ where
 
 #[derive(Debug, Diagnostic, Error)]
 pub(in crate::wallet) enum SyncWalletToTipInner {
+    #[error("failed to apply policy for the blocks skipped by the checkpoint")]
+    ApplySkippedBlocksPolicy(#[source] SqliteError),
     #[error("failed to connect missing block to wallet")]
     ConnectMissingBlock(#[from] ConnectMissingBlock),
     #[error("failed to catch wallet chain up to tip")]
