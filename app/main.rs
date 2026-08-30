@@ -1804,7 +1804,21 @@ async fn main() -> Result<()> {
 
         if !wallet.is_initialized().await && auto_create {
             tracing::info!("auto-creating new wallet");
-            wallet.create_wallet(mnemonic, None).await?;
+            match wallet.create_wallet(mnemonic, None).await {
+                Ok(()) => (),
+                // An encrypted wallet is locked rather than missing: its seed
+                // is already persisted, so there is nothing to auto-create.
+                // Leave it to the UnlockWallet RPC instead of refusing to
+                // start, which would put that RPC out of reach.
+                Err(wallet::error::CreateNewWallet::WalletInitialization(
+                    wallet::error::WalletInitialization::AlreadyExists,
+                )) => {
+                    tracing::info!(
+                        "wallet seed already exists but is not loaded, waiting for UnlockWallet"
+                    );
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
 
         Either::Right(Either::Right(wallet))
