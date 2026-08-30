@@ -1142,6 +1142,37 @@ impl BlockHandler<'_> {
                     .entry((*sidechain_number, description_hash))
                     .or_insert(vout as u32);
             }
+            // BIP 300: an M2 that `handle_m2_ack_sidechain` would ignore is an
+            // ordinary script, so it must not claim the slot's single M2 entry
+            // in `coinbase_messages` -- otherwise it suppresses a later valid
+            // M2 for the same slot with `DuplicateM2`, rejecting the block. No
+            // M1 from this block has been applied yet, so a proposal made in
+            // this same block is absent here, matching the `proposal_height ==
+            // height` case that handler also ignores.
+            if let CoinbaseMessage::M2AckSidechain(M2AckSidechain {
+                sidechain_number,
+                description_hash,
+            }) = &message
+            {
+                let proposal_id = SidechainProposalId {
+                    sidechain_number: *sidechain_number,
+                    description_hash: *description_hash,
+                };
+                if dbs
+                    .proposal_id_to_sidechain
+                    .try_get(rwtxn, &proposal_id)?
+                    .is_none()
+                {
+                    tracing::debug!(
+                        %sidechain_number,
+                        %description_hash,
+                        "ignoring M2 ack: no matching M1 proposal from an ancestor block"
+                    );
+                    continue;
+                }
+            }
+            // Only M2s that can actually be counted get this far, so a repeat
+            // here is a second *valid* ack for the slot.
             coinbase_messages.push(message, vout)?;
         }
         let mut accepted_bmm_requests = BmmCommitments::new();
@@ -3543,6 +3574,76 @@ mod tests {
                      not reject the block: {e:#}"
                 )
             })?;
+        Ok(())
+    }
+
+    /// BIP 300 M2: an ignored M2 is an ordinary script, so it must not occupy
+    /// the slot's single M2 entry and turn a later *valid* M2 for the same
+    /// slot into a duplicate.
+    #[test]
+    fn connect_block_accepts_valid_m2_after_ignored_m2_for_same_slot() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        // Proposal from an ancestor block, so an ack at height 1 counts.
+        let sidechain = test_sidechain(1, 0);
+        let proposal_id = sidechain.proposal.compute_id();
+        dbs.proposal_id_to_sidechain
+            .put(&mut rwtxn, &proposal_id, &sidechain)
+            .into_diagnostic()?;
+
+        let ignored_m2: ScriptBuf = M2AckSidechain {
+            sidechain_number: proposal_id.sidechain_number,
+            description_hash: bitcoin::hashes::sha256d::Hash::all_zeros(),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let valid_m2: ScriptBuf = M2AckSidechain {
+            sidechain_number: proposal_id.sidechain_number,
+            description_hash: proposal_id.description_hash,
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![
+                    TxOut {
+                        script_pubkey: ignored_m2,
+                        value: Amount::ZERO,
+                    },
+                    TxOut {
+                        script_pubkey: valid_m2,
+                        value: Amount::ZERO,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 1)])
+            .into_diagnostic()?;
+
+        test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .into_diagnostic()
+            .map_err(|e| {
+                miette::miette!(
+                    "M2 referencing unknown proposal must not suppress a later \
+                     valid M2 for the same slot: {e:#}"
+                )
+            })?;
+
+        let sidechain = dbs
+            .proposal_id_to_sidechain
+            .get(&rwtxn, &proposal_id)
+            .into_diagnostic()?;
+        assert_eq!(
+            sidechain.status.vote_count, 1,
+            "the valid M2 for the slot must still be counted"
+        );
         Ok(())
     }
 

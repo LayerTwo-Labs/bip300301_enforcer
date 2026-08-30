@@ -3,14 +3,14 @@ use std::{str::FromStr as _, time::Duration};
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
-    types::{BmmCommitment, SidechainDescription, op_drivechain_script},
+    types::{BmmCommitment, SidechainDescription, SidechainNumber, op_drivechain_script},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
     TxMerkleNode, TxOut, Txid, Witness,
     block::Header,
     consensus::encode::{deserialize_hex, serialize_hex},
-    hashes::{Hash as _, sha256d},
+    hashes::Hash as _,
     script::{Builder as ScriptBuilder, PushBytesBuf},
     transaction::Version,
 };
@@ -41,11 +41,6 @@ pub(crate) const DUPLICATE_M1: BadBlockCase = BadBlockCase {
 const CASES: &[BadBlockCase] = &[
     DUPLICATE_M1,
     BadBlockCase {
-        name: "duplicate_m2",
-        extra_coinbase_outputs: duplicate_m2_outputs,
-        expected_log_contains: "rejecting block: M2 that acks proposal for slot",
-    },
-    BadBlockCase {
         name: "duplicate_m4",
         extra_coinbase_outputs: duplicate_m4_outputs,
         expected_log_contains: "rejecting block: M4 already included at index",
@@ -68,20 +63,6 @@ fn duplicate_m1_outputs() -> anyhow::Result<Vec<TxOut>> {
     })?;
     let m1_b: ScriptBuf = proposal.try_into()?;
     Ok(vec![zero_value(m1_a), zero_value(m1_b)])
-}
-
-fn duplicate_m2_outputs() -> anyhow::Result<Vec<TxOut>> {
-    let m2_a: ScriptBuf = M2AckSidechain {
-        sidechain_number: DummySidechain::SIDECHAIN_NUMBER,
-        description_hash: sha256d::Hash::from_byte_array([0xAA; 32]),
-    }
-    .try_into()?;
-    let m2_b: ScriptBuf = M2AckSidechain {
-        sidechain_number: DummySidechain::SIDECHAIN_NUMBER,
-        description_hash: sha256d::Hash::from_byte_array([0xBB; 32]),
-    }
-    .try_into()?;
-    Ok(vec![zero_value(m2_a), zero_value(m2_b)])
 }
 
 fn duplicate_m4_outputs() -> anyhow::Result<Vec<TxOut>> {
@@ -128,6 +109,18 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
                 tracing::error!(case = case.name, "case failed: {err:#}");
                 failures.push(format!("{}: {err:#}", case.name));
             }
+        }
+    }
+
+    // A duplicate M2 needs a live proposal from an *earlier* block to ack, so
+    // it spans two blocks rather than the single self-contained one every
+    // `CASES` entry is built from.
+    const M2_CASE: &str = "duplicate_m2";
+    match run_duplicate_m2_case(&mut post_setup).await {
+        Ok(()) => tracing::info!(case = M2_CASE, "case passed"),
+        Err(err) => {
+            tracing::error!(case = M2_CASE, "case failed: {err:#}");
+            failures.push(format!("{M2_CASE}: {err:#}"));
         }
     }
 
@@ -178,6 +171,54 @@ async fn run_case(post_setup: &mut PostSetup, case: &BadBlockCase) -> anyhow::Re
         bad_block_hash,
         Expect::Rejected {
             log_contains: case.expected_log_contains,
+        },
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+/// An unused slot, so the proposal below cannot disturb the active
+/// [`DummySidechain`] in slot 0.
+const DUPLICATE_M2_SLOT: SidechainNumber = SidechainNumber(7);
+
+/// BIP 300: "only one M2 per sidechain slot per block". The rule is about acks
+/// that are actually counted -- an M2 whose description hash matches no live
+/// proposal is an ordinary script, and an M2 in the same block as its M1 is
+/// ignored too -- so the duplicate has to ack a proposal made in an earlier
+/// block. Two blocks: one proposing, one acking it twice.
+async fn run_duplicate_m2_case(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let description = SidechainDescription(b"duplicate-m2 test".to_vec());
+    let m1: ScriptBuf = M1ProposeSidechain {
+        sidechain_number: DUPLICATE_M2_SLOT,
+        description: description.clone(),
+    }
+    .try_into()?;
+    let proposal_block_hash =
+        submit_block_with_coinbase_outputs(post_setup, vec![zero_value(m1)]).await?;
+    tracing::info!(%proposal_block_hash, "submitted proposal for the duplicate M2 to ack");
+    let () = assert_enforcer_verdict(
+        post_setup,
+        proposal_block_hash,
+        Expect::Accepted,
+        Duration::from_secs(10),
+    )
+    .await?;
+
+    let m2: ScriptBuf = M2AckSidechain {
+        sidechain_number: DUPLICATE_M2_SLOT,
+        description_hash: description.sha256d_hash(),
+    }
+    .try_into()?;
+    let m2_output = zero_value(m2);
+    let bad_block_hash =
+        submit_block_with_coinbase_outputs(post_setup, vec![m2_output.clone(), m2_output]).await?;
+    tracing::info!(%bad_block_hash, "submitted bad block");
+
+    assert_enforcer_verdict(
+        post_setup,
+        bad_block_hash,
+        Expect::Rejected {
+            log_contains: "rejecting block: M2 that acks proposal for slot",
         },
         Duration::from_secs(10),
     )
@@ -475,6 +516,15 @@ pub(crate) async fn submit_invalid_block(
     post_setup: &PostSetup,
     case: &BadBlockCase,
 ) -> anyhow::Result<BlockHash> {
+    submit_block_with_coinbase_outputs(post_setup, (case.extra_coinbase_outputs)()?).await
+}
+
+/// Mine and submit a block whose coinbase carries `extra_coinbase_outputs` on
+/// top of the payout and witness commitment.
+async fn submit_block_with_coinbase_outputs(
+    post_setup: &PostSetup,
+    extra_coinbase_outputs: Vec<TxOut>,
+) -> anyhow::Result<BlockHash> {
     let template_json = post_setup
         .bitcoin_cli
         // We craft the BIP300/BIP301 coinbase commitments below, so we ack the
@@ -526,7 +576,7 @@ pub(crate) async fn submit_invalid_block(
             value: Amount::ZERO,
         },
     ];
-    outputs.extend((case.extra_coinbase_outputs)()?);
+    outputs.extend(extra_coinbase_outputs);
     let coinbase = Transaction {
         version: Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
