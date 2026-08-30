@@ -540,7 +540,7 @@ pub struct Config {
 }
 
 /// Written in place of a sensitive value.
-const REDACTED: &str = "[redacted]";
+pub(crate) const REDACTED: &str = "[redacted]";
 
 /// Written in place of an argument that was neither given nor defaulted.
 const UNSET: &str = "<unset>";
