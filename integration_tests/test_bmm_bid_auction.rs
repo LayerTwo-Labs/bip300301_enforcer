@@ -20,7 +20,10 @@ use bip300301_enforcer_lib::{
     },
     types::{BmmCommitment, SidechainNumber},
 };
-use bitcoin::{Amount, BlockHash, OutPoint, Txid, hashes::Hash as _};
+use bitcoin::{
+    Amount, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WPubkeyHash,
+    Weight, Witness, absolute::LockTime, hashes::Hash as _, transaction::Version as TxVersion,
+};
 use buffa::MessageField;
 
 use crate::{
@@ -56,6 +59,37 @@ const BIG_LOW_FEERATE_BID: u64 = 30_000;
 /// Inflates the big bid to roughly 10x the small bid's size, putting its fee
 /// rate well below the small bid's.
 const BIG_BID_PAD_OUTPUTS: usize = 40;
+/// Round 6 replays round 5's skew against a full block: this many unrelated
+/// transactions, each at a fee rate far above the winning bid's, compete with
+/// it for block space. At [`FILLER_OUTPUTS`] outputs apiece they weigh about
+/// 4.5M weight units between them, more than the roughly 4M a block holds.
+const CONGESTION_FILLERS: usize = 20;
+/// Outputs in a full-size filler. Each one costs 124 weight units, putting a
+/// filler at roughly 224k -- well under the 400k standard transaction limit,
+/// and small enough that the signed transaction's hex still fits in the
+/// single `bitcoin-cli` argument it is passed as.
+const FILLER_OUTPUTS: usize = 1_800;
+/// Running out of space is not enough on its own: selection skips past what
+/// does not fit and keeps going, so full-size fillers alone would leave a
+/// filler's worth of room -- far more than a bid needs. A tail of fillers
+/// halving from [`FILLER_OUTPUTS`] down to this takes that room out in
+/// shrinking bites, and what is left over at the end is smaller than the
+/// smallest of them: about 1.2k weight units, a fraction of the padded bid's.
+const FILLER_MIN_OUTPUTS: usize = 7;
+/// What signing adds to a filler's one P2WPKH input: a signature and a
+/// pubkey. The fee has to be settled before the witness exists, so allow for
+/// it up front.
+const FILLER_WITNESS_WEIGHT: Weight = Weight::from_wu(110);
+/// The first filler's fee rate; each subsequent one goes a satoshi lower, so
+/// that ancestor-fee-rate selection takes them in the order they are built --
+/// full-size ones first, then the shrinking tail. Every one of them stays far
+/// above the padded bid's roughly 20 sat/vB, which is what puts the bid last.
+const FILLER_FEE_RATE_SAT_VB: u64 = 500;
+/// How much of a block the fillers must occupy before round 6's assertions
+/// mean anything. The fillers are witness-light, so this is around 2.8M
+/// weight units' worth: a template only gets there once selection has taken
+/// as many of them as it has room for.
+const CONGESTED_TEMPLATE_MIN_BYTES: usize = 700_000;
 
 fn h_star(label: &str) -> [u8; 32] {
     bitcoin::hashes::sha256::Hash::hash(label.as_bytes()).to_byte_array()
@@ -197,15 +231,21 @@ async fn craft_core_bid(
         .command::<String, _, _, _, _>([], "createrawtransaction", [inputs, outputs])
         .run_utf8()
         .await?;
+    sign_and_broadcast(post_setup, raw.trim()).await
+}
+
+/// Sign a raw transaction with Bitcoin Core's wallet and broadcast it,
+/// returning its txid.
+async fn sign_and_broadcast(post_setup: &PostSetup, raw_hex: &str) -> anyhow::Result<Txid> {
     let signed_json = post_setup
         .bitcoin_cli
-        .command::<String, _, _, _, _>([], "signrawtransactionwithwallet", [raw.trim().to_owned()])
+        .command::<String, _, _, _, _>([], "signrawtransactionwithwallet", [raw_hex.to_owned()])
         .run_utf8()
         .await?;
     let signed: serde_json::Value = serde_json::from_str(&signed_json)?;
     anyhow::ensure!(
         signed["complete"].as_bool() == Some(true),
-        "failed to sign crafted bid: {signed}"
+        "failed to sign crafted transaction: {signed}"
     );
     let signed_hex = signed["hex"]
         .as_str()
@@ -218,6 +258,112 @@ async fn craft_core_bid(
         .trim()
         .parse::<Txid>()?;
     Ok(txid)
+}
+
+/// The fillers' output counts: [`CONGESTION_FILLERS`] full-size ones, then a
+/// tail halving down to [`FILLER_MIN_OUTPUTS`].
+fn filler_output_counts() -> Vec<usize> {
+    let mut counts = vec![FILLER_OUTPUTS; CONGESTION_FILLERS];
+    let mut outputs = FILLER_OUTPUTS / 2;
+    while outputs >= FILLER_MIN_OUTPUTS {
+        counts.push(outputs);
+        outputs /= 2;
+    }
+    counts
+}
+
+/// Congest the mempool with high-fee-rate transactions, each spending one
+/// mature Bitcoin Core UTXO into outputs that exist only to take up room.
+/// Every one of them outranks the auction winner on fee rate, and together
+/// they weigh more than a block holds, so packing by ancestor fee rate has
+/// nowhere left to put the winner by the time it reaches it.
+///
+/// Built here rather than sent through `sendtoaddress`, which produces
+/// transactions a few hundred weight units in size: filling a block takes
+/// transactions three orders of magnitude larger than that.
+async fn craft_core_fillers(post_setup: &PostSetup) -> anyhow::Result<Vec<Txid>> {
+    let output_counts = filler_output_counts();
+    let count = output_counts.len();
+    let unspent_json = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "listunspent", ["100".to_owned()])
+        .run_utf8()
+        .await?;
+    let unspent: serde_json::Value = serde_json::from_str(&unspent_json)?;
+    let utxos: Vec<(OutPoint, Amount)> = unspent
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|utxo| {
+            utxo["spendable"].as_bool() == Some(true)
+                && utxo["amount"].as_f64().is_some_and(|amount| amount >= 1.0)
+        })
+        .take(count)
+        .map(|utxo| {
+            let txid = utxo["txid"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("listunspent entry without txid"))?
+                .parse::<Txid>()?;
+            let vout = utxo["vout"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("listunspent entry without vout"))?;
+            let value = Amount::from_btc(
+                utxo["amount"]
+                    .as_f64()
+                    .ok_or_else(|| anyhow::anyhow!("listunspent entry without amount"))?,
+            )?;
+            let outpoint = OutPoint {
+                txid,
+                vout: vout as u32,
+            };
+            Ok((outpoint, value))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    anyhow::ensure!(
+        utxos.len() == count,
+        "expected {count} mature Core wallet UTXOs for the fillers, got {}",
+        utxos.len()
+    );
+    // A witness program Bitcoin Core's wallet does not own. The fillers exist
+    // only to take up block space, and there is no reason to make the wallet
+    // track tens of thousands of outputs it will never spend.
+    let filler_spk = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0x11; 20]));
+    let mut txids = Vec::with_capacity(count);
+    for (index, (previous_output, value)) in utxos.into_iter().enumerate() {
+        let outputs = output_counts[index];
+        let mut tx = Transaction {
+            version: TxVersion::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![
+                TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: filler_spk.clone(),
+                };
+                outputs
+            ],
+        };
+        // Output values do not change the transaction's size, so the fee can
+        // be settled before they are filled in. Every input is at least 1 BTC,
+        // far above the fee, and the change spread over the outputs stays well
+        // clear of the dust limit.
+        let vsize = (tx.weight() + FILLER_WITNESS_WEIGHT).to_vbytes_ceil();
+        let fee_rate = FILLER_FEE_RATE_SAT_VB - index as u64;
+        let output_value = (value - Amount::from_sat(fee_rate * vsize)) / outputs as u64;
+        for txout in &mut tx.output {
+            txout.value = output_value;
+        }
+        let txid =
+            sign_and_broadcast(post_setup, &bitcoin::consensus::encode::serialize_hex(&tx)).await?;
+        let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &txid).await?;
+        txids.push(txid);
+    }
+    Ok(txids)
 }
 
 async fn get_raw_transaction(
@@ -246,20 +392,54 @@ async fn get_block(
     Ok(block)
 }
 
-/// All M7 BMM accepts in a block's coinbase.
-fn coinbase_m7_accepts(block: &bitcoin::Block) -> anyhow::Result<Vec<M7BmmAccept>> {
-    let coinbase = block
-        .txdata
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("block {} has no coinbase", block.block_hash()))?;
-    Ok(coinbase
+/// All M7 BMM accepts in a coinbase transaction.
+fn m7_accepts(coinbase: &Transaction) -> Vec<M7BmmAccept> {
+    coinbase
         .output
         .iter()
         .filter_map(|txout| match CoinbaseMessage::parse(&txout.script_pubkey) {
             Ok((_rest, CoinbaseMessage::M7BmmAccept(m7))) => Some(m7),
             _ => None,
         })
-        .collect())
+        .collect()
+}
+
+/// All M7 BMM accepts in a block's coinbase.
+fn coinbase_m7_accepts(block: &bitcoin::Block) -> anyhow::Result<Vec<M7BmmAccept>> {
+    let coinbase = block
+        .txdata
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("block {} has no coinbase", block.block_hash()))?;
+    Ok(m7_accepts(coinbase))
+}
+
+/// All M7 BMM accepts in a block template's coinbase.
+fn template_m7_accepts(
+    template: &bitcoin_jsonrpsee::client::BlockTemplate,
+) -> anyhow::Result<Vec<M7BmmAccept>> {
+    use bitcoin_jsonrpsee::client::CoinbaseTxnOrValue;
+    let CoinbaseTxnOrValue::Txn(coinbase) = &template.coinbase_txn_or_value else {
+        anyhow::bail!("expected a `coinbasetxn` block template");
+    };
+    Ok(m7_accepts(&bitcoin::consensus::deserialize(
+        &coinbase.data,
+    )?))
+}
+
+/// The serialized size of everything a block template selected.
+fn template_bytes(template: &bitcoin_jsonrpsee::client::BlockTemplate) -> usize {
+    template.transactions.iter().map(|tx| tx.data.len()).sum()
+}
+
+/// Fetch the enforcer's block template. `Mode::GetBlockTemplate` only; that
+/// is the mode serving the enforcer's own `getblocktemplate`.
+async fn get_block_template(
+    gbt_client: &jsonrpsee::http_client::HttpClient,
+) -> anyhow::Result<bitcoin_jsonrpsee::client::BlockTemplate> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+    let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+    gbt_request.capabilities.insert("coinbasetxn".to_owned());
+    crate::util::expect_block_template(gbt_client.get_block_template(gbt_request).await?)
 }
 
 /// Wait until the enforcer's block template selects all of `want` and none
@@ -270,7 +450,6 @@ async fn wait_for_template_txs(
     want: Vec<Txid>,
     not_want: Vec<Txid>,
 ) -> anyhow::Result<()> {
-    use cusf_enforcer_mempool::server::RpcClient as _;
     let gbt_client = post_setup.gbt_client.clone();
     wait_until(
         "enforcer block template to settle the BMM auction",
@@ -279,17 +458,37 @@ async fn wait_for_template_txs(
             let want = want.clone();
             let not_want = not_want.clone();
             async move {
-                let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
-                gbt_request.capabilities.insert("coinbasetxn".to_owned());
-                let template = crate::util::expect_block_template(
-                    gbt_client.get_block_template(gbt_request).await?,
-                )?;
+                let template = get_block_template(&gbt_client).await?;
                 let txids: Vec<Txid> = template.transactions.iter().map(|tx| tx.txid).collect();
                 Ok(want.iter().all(|txid| txids.contains(txid))
                     && not_want.iter().all(|txid| !txids.contains(txid)))
             }
         },
     )
+    .await
+}
+
+/// Wait until the enforcer's block template is packed with `fillers` and has
+/// had to leave at least one of them out: block space has then run out, which
+/// is the state round 6 is about. The mirror trails bitcoind's mempool, and a
+/// template built before the fillers reached it would carry the auction
+/// winner whether or not the auction forces it in.
+async fn wait_for_congested_template(
+    post_setup: &PostSetup,
+    fillers: Vec<Txid>,
+) -> anyhow::Result<()> {
+    let gbt_client = post_setup.gbt_client.clone();
+    wait_until("the enforcer block template to fill up", move || {
+        let gbt_client = gbt_client.clone();
+        let fillers = fillers.clone();
+        async move {
+            let template = get_block_template(&gbt_client).await?;
+            let txids: Vec<Txid> = template.transactions.iter().map(|tx| tx.txid).collect();
+            let selected = fillers.iter().filter(|txid| txids.contains(txid)).count();
+            Ok(selected < fillers.len()
+                && template_bytes(&template) >= CONGESTED_TEMPLATE_MIN_BYTES)
+        }
+    })
     .await
 }
 
@@ -376,6 +575,9 @@ fn coinbase_value(block: &bitcoin::Block) -> Amount {
 ///   Bitcoin Core's default RPC fee-rate cap broadcasts and wins
 /// * Round 5: a large bid with the higher absolute fee beats a small bid
 ///   with the higher fee rate
+/// * Round 6 (`GetBlockTemplate` only): the same skew against a block that
+///   higher-fee-rate transactions have already filled: the enforcer's
+///   template carries the winner, and its M7, regardless
 pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let mode = post_setup.mode;
 
@@ -398,9 +600,10 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         sidechains.len()
     );
     let () = fund_enforcer::<DummySidechain>(&mut post_setup).await?;
-    // The crafted bids spend from Core's wallet, which the served coinbases
-    // do not pay in GetBlockTemplate mode. 105 blocks leaves a few mature
-    // coinbases at the first auction tip.
+    // The crafted bids and the round 6 fillers spend from Core's wallet,
+    // which the served coinbases do not pay in GetBlockTemplate mode. Only
+    // the ones 100 blocks back are mature by the time round 6 wants a UTXO per
+    // filler, so mine well past what the bids alone would need.
     let core_addr = post_setup
         .bitcoin_cli
         .command::<String, _, String, _, _>([], "getnewaddress", [])
@@ -410,7 +613,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         .to_owned();
     let _mined: String = post_setup
         .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["105".to_owned(), core_addr])
+        .command::<String, _, _, _, _>([], "generatetoaddress", ["140".to_owned(), core_addr])
         .run_utf8()
         .await?;
     let () = wait_for_wallet_sync(&mut post_setup).await?;
@@ -692,6 +895,84 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         );
     }
     tracing::info!("Round 5: absolute fee beat fee rate for the slot");
+
+    // Round 6 replays that skew with the block already full. Settling the
+    // slot by excluding the losing bid only works if the winner itself makes
+    // the block, and the winner is the padded bid: every filler outranks it on
+    // ancestor fee rate, and the fillers' shrinking tail leaves less room
+    // behind than the bid needs. The auction's winner must be in the template
+    // anyway, or the slot is settled with no bid at all.
+    //
+    // Only in the mode that serves the enforcer's own templates: `Mempool`
+    // mode builds on Bitcoin Core's `getblocktemplate`, which knows nothing
+    // of the auction, so there is no enforcer-side selection to congest.
+    if let Mode::GetBlockTemplate = mode {
+        // Before the bids, so the congestion is already established when they
+        // arrive: a template that still had room would carry the winner on
+        // merit, and the round would prove nothing. Fillers and bids alike
+        // spend a mature Core UTXO apiece, and the chain was mined long enough
+        // to leave more of those than the two of them together need.
+        let filler_txids = craft_core_fillers(&post_setup).await?;
+        let () = wait_for_congested_template(&post_setup, filler_txids.clone()).await?;
+        tracing::info!(
+            fillers = filler_txids.len(),
+            "Filled the block template ahead of the round 6 bids"
+        );
+
+        let h_loser = h_star("round 6 small high-feerate bid");
+        let h_winner = h_star("round 6 big high-fee bid");
+        let (_, prev_hash, _) = chain_tip(&mut post_setup).await?;
+        let loser_txid = craft_core_bid(
+            &post_setup,
+            DummySidechain::SIDECHAIN_NUMBER,
+            SMALL_HIGH_FEERATE_BID,
+            &h_loser,
+            prev_hash,
+            0,
+        )
+        .await?;
+        let winner_txid = craft_core_bid(
+            &post_setup,
+            DummySidechain::SIDECHAIN_NUMBER,
+            BIG_LOW_FEERATE_BID,
+            &h_winner,
+            prev_hash,
+            BIG_BID_PAD_OUTPUTS,
+        )
+        .await?;
+        for txid in [&loser_txid, &winner_txid] {
+            let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, txid).await?;
+        }
+        tracing::info!(%loser_txid, %winner_txid, "Placed round 6 bids into a congested mempool");
+
+        let () = wait_for_template_txs(&post_setup, vec![winner_txid], vec![loser_txid]).await?;
+        let template = get_block_template(&post_setup.gbt_client).await?;
+        anyhow::ensure!(
+            template_bytes(&template) >= CONGESTED_TEMPLATE_MIN_BYTES,
+            "the template must still be full where the round reads it, got {} bytes",
+            template_bytes(&template)
+        );
+        let template_txids: Vec<Txid> = template.transactions.iter().map(|tx| tx.txid).collect();
+        anyhow::ensure!(
+            template_txids.contains(&winner_txid),
+            "the auction winner must be in the template even when higher-fee-rate \
+             transactions have already taken the block's space"
+        );
+        anyhow::ensure!(
+            !template_txids.contains(&loser_txid),
+            "the losing bid must stay out of the congested template"
+        );
+        // The M7 follows the M8s the template actually carries, so a winner
+        // squeezed out of it would leave the slot with no accept at all.
+        let template_m7s = template_m7_accepts(&template)?;
+        anyhow::ensure!(
+            template_m7s.len() == 1
+                && template_m7s[0].sidechain_number == DummySidechain::SIDECHAIN_NUMBER
+                && template_m7s[0].sidechain_block_hash.0 == h_winner,
+            "expected exactly one M7 accept, committing the congested round's winner"
+        );
+        tracing::info!("Round 6: the auction winner survived a full block template");
+    }
 
     Ok(())
 }

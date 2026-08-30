@@ -127,6 +127,60 @@ impl BlockProducer {
         }
     }
 
+    /// The transaction for a winning BMM bid, if the block template can force
+    /// it in: it must still be fetchable, and it must not spend unconfirmed
+    /// outputs, since forcing it in without its unconfirmed ancestors would
+    /// build an invalid block.
+    async fn forceable_bmm_bid(&self, txid: Txid) -> Option<Transaction> {
+        use bitcoin_jsonrpsee::{
+            MainClient as _,
+            client::{GetRawTransactionClient, GetRawTransactionVerbose},
+        };
+        let tx_hex = match self
+            .main_client()
+            .get_raw_transaction(txid, GetRawTransactionVerbose::<false>, None)
+            .await
+        {
+            Ok(tx_hex) => tx_hex,
+            Err(err) => {
+                tracing::debug!(
+                    %txid,
+                    "not forcing in a BMM bid that cannot be fetched: {:#}",
+                    ErrorChain::new(&err),
+                );
+                return None;
+            }
+        };
+        let tx = match bitcoin::consensus::encode::deserialize_hex::<Transaction>(&tx_hex) {
+            Ok(tx) => tx,
+            Err(err) => {
+                tracing::debug!(
+                    %txid,
+                    "not forcing in a BMM bid that cannot be decoded: {:#}",
+                    ErrorChain::new(&err),
+                );
+                return None;
+            }
+        };
+        for input in &tx.input {
+            // A mempool entry exists only for an unconfirmed transaction, so
+            // this is the same "is it in the mempool?" test as `bmm_bid_fee`.
+            if self
+                .main_client()
+                .get_mempool_entry(input.previous_output.txid)
+                .await
+                .is_ok()
+            {
+                tracing::debug!(
+                    %txid,
+                    "not forcing in a BMM bid that spends unconfirmed outputs",
+                );
+                return None;
+            }
+        }
+        Some(tx)
+    }
+
     pub fn last_gbt_error(&self) -> Option<String> {
         self.inner.last_gbt_error.read().clone()
     }
@@ -368,6 +422,14 @@ impl BlockProducer {
         // template. Without this, generic tx selection would pick between
         // conflicting bids by ancestor fee rate. Excluded bids drop together
         // with their descendants when the template is built.
+        //
+        // Excluding the losers only settles the slot if the winner itself
+        // makes it into the block. Tx selection packs by ancestor fee rate, so
+        // a bid that wins on absolute fee can still be squeezed out by a busy
+        // mempool, and the slot would then be left with no bid at all. The
+        // winner is therefore forced into the template's prefix txs, and a
+        // slot whose winner cannot be forced in keeps all of its bids: tx
+        // selection picking the wrong bid for that slot beats picking none.
         {
             let seen_bmm_requests = self
                 .validator()
@@ -387,20 +449,17 @@ impl BlockProducer {
                 }
             }
             let winners = mine::bmm_auction_winners(bids);
+            let mut forced_winners = HashMap::new();
+            for (sidechain_number, (_commitment, winner_txid, fee)) in &winners {
+                let Some(tx) = self.forceable_bmm_bid(*winner_txid).await else {
+                    continue;
+                };
+                template.prefix_txs.push((tx, *fee));
+                forced_winners.insert(*sidechain_number, *winner_txid);
+            }
             template
                 .exclude_mempool_txs
-                .extend(
-                    seen_bmm_requests
-                        .into_iter()
-                        .flat_map(|(sidechain_number, requests)| {
-                            let winner_txid =
-                                winners.get(&sidechain_number).map(|(_, txid, _)| *txid);
-                            requests
-                                .into_values()
-                                .flatten()
-                                .filter(move |txid| Some(*txid) != winner_txid)
-                        }),
-                );
+                .extend(mine::losing_bmm_bids(seen_bmm_requests, &forced_winners));
         }
         // Reserve suffix txs
         {
