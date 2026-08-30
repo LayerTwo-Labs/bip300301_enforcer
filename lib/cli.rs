@@ -72,6 +72,10 @@ const LOG_FILENAME: &str = "bip300301_enforcer.log";
 // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
 const DEFAULT_LOG_DIRNAME: &str = "logs";
 
+/// Name of the cookie file that [`Config::bitcoin_cli`] writes under
+/// `data_dir` so that the node's RPC credentials never reach a command line.
+const RPC_COOKIE_FILENAME: &str = "enforcer-rpc.cookie";
+
 /// Possible formats for log output.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum LogFormat {
@@ -719,6 +723,58 @@ fn effective_config_lines(matches: &clap::ArgMatches) -> Vec<String> {
     lines
 }
 
+/// Write the node's RPC credentials to a 0600 file under `data_dir`, in the
+/// `user:pass` shape Bitcoin Core's own cookie file uses, and return its path.
+///
+/// Written the same way as the seed file, for the same reasons: an existing
+/// temp file must never be reused, or a leftover from a crashed write (or one
+/// planted by another user) would decide the cookie's permissions, or redirect
+/// the write through a symlink. The rename is what makes a concurrent reader
+/// see either the old cookie or the new one, never a half-written one.
+fn write_rpc_cookie(
+    data_dir: &Path,
+    user: &str,
+    pass: &SecretString,
+) -> Result<PathBuf, std::io::Error> {
+    // `bitcoin-cli` resolves a relative `-rpccookiefile` against the *node's*
+    // datadir rather than the working directory, so only an absolute path
+    // means here what it says.
+    let path = std::path::absolute(data_dir.join(RPC_COOKIE_FILENAME))?;
+    // The signet miner takes the whole `bitcoin-cli` invocation as one string
+    // and splits it on spaces, so a path with whitespace in it would arrive
+    // there as two arguments. A data dir like macOS' default `Application
+    // Support` one keeps the old behaviour rather than breaking mining.
+    if path.to_string_lossy().contains(char::is_whitespace) {
+        return Err(std::io::Error::other(format!(
+            "cookie path `{}` contains whitespace",
+            path.display()
+        )));
+    }
+    // The secret is exposed here, at the boundary where it is handed to the
+    // file that exists so it never has to be handed to a command line.
+    let contents = format!("{user}:{}", pass.expose());
+    let () = std::fs::create_dir_all(data_dir)?;
+    let tmp_path = path.with_extension("cookie.tmp");
+    {
+        match std::fs::remove_file(&tmp_path) {
+            Ok(()) => (),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => (),
+            Err(err) => return Err(err),
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp_path)?;
+        let () = std::io::Write::write_all(&mut file, contents.as_bytes())?;
+    }
+    let () = std::fs::rename(&tmp_path, &path)?;
+    Ok(path)
+}
+
 impl Config {
     /// Parse the command line, keeping the raw [`clap::ArgMatches`] alongside
     /// the parsed config so that [`log_effective_config`] can report where each
@@ -740,12 +796,42 @@ impl Config {
     }
 
     pub fn bitcoin_cli(&self, network: bitcoin::Network) -> crate::bins::BitcoinCli {
+        // `-rpcpassword=` on a command line is readable by every local user
+        // through `/proc/<pid>/cmdline`, for as long as the process lives, and
+        // the signet miner is handed the whole `bitcoin-cli` invocation as its
+        // `--cli=` argument, so the password would sit in that miner's argv
+        // for the entire mining run. `bitcoin-cli` reads `user:pass` out of a
+        // cookie file just as happily, so hand it a path instead. Falling back
+        // to the credential arguments keeps an unwritable data dir working, at
+        // the cost this is about.
+        let (rpc_user, rpc_pass, rpc_cookie_path) =
+            match (&self.node_rpc_opts.user, &self.node_rpc_opts.pass) {
+                (Some(user), Some(pass)) => match write_rpc_cookie(&self.data_dir, user, pass) {
+                    Ok(cookie_path) => (None, None, Some(cookie_path.display().to_string())),
+                    Err(err) => {
+                        tracing::warn!(
+                            "No usable RPC cookie file, falling back to passing credentials to \
+                             bitcoin-cli on the command line: {err}"
+                        );
+                        (
+                            Some(user.clone()),
+                            Some(pass.clone()),
+                            self.node_rpc_opts.cookie_path.clone(),
+                        )
+                    }
+                },
+                _ => (
+                    self.node_rpc_opts.user.clone(),
+                    self.node_rpc_opts.pass.clone(),
+                    self.node_rpc_opts.cookie_path.clone(),
+                ),
+            };
         crate::bins::BitcoinCli {
             path: self.mining_opts.bitcoin_cli_path.clone(),
             network,
-            rpc_user: self.node_rpc_opts.user.clone(),
-            rpc_pass: self.node_rpc_opts.pass.clone(),
-            rpc_cookie_path: self.node_rpc_opts.cookie_path.clone(),
+            rpc_user,
+            rpc_pass,
+            rpc_cookie_path,
             rpc_port: self.node_rpc_opts.addr.port(),
             rpc_host: self.node_rpc_opts.addr.ip().to_string(),
             rpc_wallet: None,
