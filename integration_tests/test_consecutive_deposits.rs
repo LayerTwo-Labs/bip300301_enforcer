@@ -16,7 +16,8 @@ use crate::{
     integration_test::{
         activate_sidechain, fund_enforcer, propose_sidechain, wait_for_wallet_sync,
     },
-    setup::{DummySidechain, PostSetup, Sidechain as _, wait_for_tx_in_mempool},
+    mine::{mine, wait_for_tx_in_block_template},
+    setup::{DummySidechain, PostSetup, Sidechain as _, wait_for_tx_in_mempool, wait_until},
 };
 
 const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
@@ -181,5 +182,94 @@ pub async fn test_consecutive_deposits(mut post_setup: PostSetup) -> anyhow::Res
         "second deposit {deposit_txid_2} missing from mempool: {mempool:?}"
     );
     tracing::info!("Both consecutive deposits are in the mempool");
+    Ok(())
+}
+
+/// Block until the enforcer's block template selects all of `want` and none
+/// of `not_want`. `Mode::GetBlockTemplate` only; the mempool mirror trails
+/// bitcoind's mempool, so this must gate mining on the deposits. A template
+/// that cannot be built at all is reported as the last error on timeout.
+async fn wait_for_template_txs(
+    post_setup: &PostSetup,
+    want: Vec<bitcoin::Txid>,
+    not_want: Vec<bitcoin::Txid>,
+) -> anyhow::Result<()> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+    let gbt_client = post_setup.gbt_client.clone();
+    wait_until(
+        "the enforcer's block template to settle the competing deposits",
+        move || {
+            let gbt_client = gbt_client.clone();
+            let want = want.clone();
+            let not_want = not_want.clone();
+            async move {
+                let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+                gbt_request.capabilities.insert("coinbasetxn".to_owned());
+                let template = crate::util::expect_block_template(
+                    gbt_client.get_block_template(gbt_request).await?,
+                )?;
+                let txids: Vec<bitcoin::Txid> =
+                    template.transactions.iter().map(|tx| tx.txid).collect();
+                Ok(want.iter().all(|txid| txids.contains(txid))
+                    && not_want.iter().all(|txid| !txids.contains(txid)))
+            }
+        },
+    )
+    .await
+}
+
+/// Two first deposits into the same empty treasury do not spend a treasury
+/// UTXO, so they are not double-spends of each other and both sit in the
+/// mempool at once. Only one of them can ever be connected, so a block
+/// producer that cannot tell them apart offers a template containing both and
+/// then fails to finalize it -- for this block, and for every block after the
+/// winner confirms, because nothing evicts the loser.
+pub async fn test_competing_deposits(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let sidechain = DummySidechain::setup((), &post_setup, res_tx).await?;
+    let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = activate_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = fund_enforcer::<DummySidechain>(&mut post_setup).await?;
+    tracing::info!("Activated sidechain and funded enforcer successfully");
+    drop(sidechain);
+
+    // As in `test_consecutive_deposits`: a single UTXO forces the second
+    // deposit to be funded from the first deposit's change.
+    let () = consolidate_to_single_utxo(&mut post_setup).await?;
+
+    let deposit_txid_1 = create_deposit(&mut post_setup, "sidechain address 1").await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid_1).await?;
+    // The mirror has to hold the first deposit before the second is created,
+    // so that it is the second that is seen to compete with the first.
+    let () = wait_for_tx_in_block_template(&post_setup, &deposit_txid_1).await?;
+
+    let deposit_txid_2 = create_deposit(&mut post_setup, "sidechain address 2").await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid_2).await?;
+    tracing::info!(%deposit_txid_1, %deposit_txid_2, "Both competing deposits are in the mempool");
+
+    // The second deposit spends the first's change, so the only block either
+    // can appear in is one holding the first alone.
+    let () = wait_for_template_txs(&post_setup, vec![deposit_txid_1], vec![deposit_txid_2]).await?;
+
+    let () = mine::<DummySidechain>(&mut post_setup, 1, None).await?;
+
+    // The block was mined from that template, so it took the first deposit
+    // alone, and the second is still an unconfirmed transaction that can never
+    // be connected now that the treasury it would have created exists.
+    let mempool = raw_mempool(&mut post_setup).await?;
+    anyhow::ensure!(
+        !mempool.contains(&deposit_txid_1.to_string()),
+        "expected the winning deposit {deposit_txid_1} to be mined: {mempool:?}"
+    );
+    anyhow::ensure!(
+        mempool.contains(&deposit_txid_2.to_string()),
+        "expected the losing deposit {deposit_txid_2} to stay in bitcoind's mempool: {mempool:?}"
+    );
+
+    // Unless connecting the block evicted the loser from the enforcer's own
+    // mempool mirror, every later template fails to finalize the same way the
+    // first one would have.
+    let () = wait_for_template_txs(&post_setup, vec![], vec![deposit_txid_2]).await?;
+    tracing::info!("The losing deposit was evicted, and templates are still served");
     Ok(())
 }
