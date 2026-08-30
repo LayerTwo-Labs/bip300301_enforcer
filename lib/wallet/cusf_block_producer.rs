@@ -327,12 +327,18 @@ impl CusfEnforcer for Wallet {
     {
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         tokio::pin!(shutdown_signal);
+        // Sync the validator through the producer, so that the BMM requests
+        // consumed by any block this sync unwinds are restored, exactly as they
+        // are when a reorg arrives block-by-block via `disconnect_block`.
         let sync_validator_to_tip = {
             let cancellation_token = cancellation_token.clone();
-            let mut validator = self.inner.validator().clone();
+            let mut producer = self.inner.producer.clone();
             async move {
-                validator
-                    .sync_to_tip(cancellation_token.cancelled_owned(), tip_hash)
+                producer
+                    .sync_to_tip_restoring_bmm_requests(
+                        cancellation_token.cancelled_owned(),
+                        tip_hash,
+                    )
                     .await
             }
         };
