@@ -330,6 +330,54 @@ pub async fn wait_for_wallet_sync(post_setup: &mut PostSetup) -> anyhow::Result<
     }
 }
 
+/// Block until electrs has indexed up to bitcoind's tip.
+///
+/// The test harness runs the enforcer with `--wallet-skip-periodic-sync`, so
+/// each full scan runs exactly once, at the point the test drives it, with no
+/// later retry to paper over a chain source that was still catching up. Every
+/// scan must therefore be sequenced after this wait.
+pub async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(500);
+    const TIMEOUT: Duration = Duration::from_secs(180);
+
+    let target_height: u32 = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getblockcount", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse()?;
+    let url = format!(
+        "http://127.0.0.1:{}/blocks/tip/height",
+        post_setup.reserved_ports.electrs_electrum_http.port()
+    );
+    tracing::debug!("waiting for electrs to index up to block {target_height}");
+
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        // electrs returns 5xx while it is still opening its index, so a
+        // failed request here is expected rather than fatal.
+        let indexed_height: Option<u32> = match client.get(&url).send().await {
+            Ok(response) => response
+                .text()
+                .await
+                .ok()
+                .and_then(|body| body.trim().parse().ok()),
+            Err(_) => None,
+        };
+        if indexed_height.is_some_and(|height| height >= target_height) {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "electrs did not index up to block {target_height} within {TIMEOUT:?} \
+             (stuck at {indexed_height:?})"
+        );
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// Block until the validator's reported chain tip reaches bitcoind's height.
 pub async fn wait_for_validator_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
     let target_height: u32 = post_setup
