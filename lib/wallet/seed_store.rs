@@ -3,7 +3,7 @@
 //! Before the wallet/producer split, the seed lived in a `wallet_seeds` table
 //! inside the shared `db.sqlite` (now the block producer's policy store).
 //! [`SeedStore::new`] migrates such a legacy seed automatically: it writes the
-//! seed file, verifies it round-trips, and only then deletes the legacy rows.
+//! seed file, verifies it round-trips, and only then deletes the legacy row.
 //! Every crash point either leaves the legacy seed untouched or leaves the
 //! seed in both places, and the duplicate resolves idempotently on the next
 //! startup. There is no ordering in which the seed exists nowhere.
@@ -232,9 +232,9 @@ fn write_seed_file(path: &Path, seed_file: &SeedFile) -> Result<(), std::io::Err
 }
 
 /// Move a legacy seed out of the pre-split `db.sqlite` into the seed file,
-/// if one is there. Copy → verify → delete: the legacy rows are only deleted
+/// if one is there. Copy → verify → delete: the legacy row is only deleted
 /// once the written file has been read back and matches, so no crash point
-/// loses the seed. Deleting the rows leaves the empty `wallet_seeds` table
+/// loses the seed. Deleting the row leaves the empty `wallet_seeds` table
 /// for the producer to drop on its next open (see
 /// `crate::block_producer::db`). A crash between write and delete leaves the
 /// seed in both places; the next startup lands in the "file already matches"
@@ -248,7 +248,7 @@ fn migrate_legacy_seed(path: &Path, data_dir: &Path) -> Result<(), error::InitSe
         &legacy_db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    let Some(legacy_seed) = read_legacy_seed(&conn)? else {
+    let Some((legacy_id, legacy_seed)) = read_legacy_seed(&conn, &legacy_db)? else {
         return Ok(());
     };
 
@@ -276,8 +276,8 @@ fn migrate_legacy_seed(path: &Path, data_dir: &Path) -> Result<(), error::InitSe
             let created_at: Option<i64> = conn
                 .query_row(
                     "SELECT CAST(strftime('%s', creation_time) AS INTEGER)
-                     FROM wallet_seeds",
-                    [],
+                     FROM wallet_seeds WHERE id = ?",
+                    [legacy_id],
                     |row| row.get(0),
                 )
                 .unwrap_or_default();
@@ -307,7 +307,9 @@ fn migrate_legacy_seed(path: &Path, data_dir: &Path) -> Result<(), error::InitSe
         }
     }
 
-    let deleted = conn.execute("DELETE FROM wallet_seeds", [])?;
+    // Scoped to the row that was actually migrated: nothing this run did not
+    // read can be destroyed here.
+    let deleted = conn.execute("DELETE FROM wallet_seeds WHERE id = ?", [legacy_id])?;
     if deleted > 0 {
         tracing::info!(
             "Migrated the wallet seed from the legacy {} into {}",
@@ -319,8 +321,13 @@ fn migrate_legacy_seed(path: &Path, data_dir: &Path) -> Result<(), error::InitSe
 }
 
 /// Read the seed from the legacy `wallet_seeds` table, if the table exists
-/// and holds one.
-fn read_legacy_seed(conn: &Connection) -> Result<Option<StoredSeed>, error::InitSeedStore> {
+/// and holds one, along with the `id` of the row it came from. More than one
+/// row is refused: only one of them can be migrated, and the wallet must not
+/// pick for the operator.
+fn read_legacy_seed(
+    conn: &Connection,
+    legacy_db: &Path,
+) -> Result<Option<(i64, StoredSeed)>, error::InitSeedStore> {
     let has_table: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master
           WHERE type = 'table' AND name = 'wallet_seeds')",
@@ -330,29 +337,43 @@ fn read_legacy_seed(conn: &Connection) -> Result<Option<StoredSeed>, error::Init
     if !has_table {
         return Ok(None);
     }
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM wallet_seeds", [], |row| row.get(0))?;
+    if rows > 1 {
+        return Err(error::InitSeedStore::AmbiguousLegacySeed {
+            legacy_db: legacy_db.to_owned(),
+            rows,
+        });
+    }
     let mut statement = conn.prepare(
-        "SELECT plaintext_mnemonic, initialization_vector,
-                ciphertext_mnemonic, key_salt FROM wallet_seeds",
+        "SELECT id, plaintext_mnemonic, initialization_vector,
+                ciphertext_mnemonic, key_salt FROM wallet_seeds
+         ORDER BY id ASC LIMIT 1",
     )?;
     let row = statement.query_row([], |row| {
+        let id: i64 = row.get("id")?;
         let plaintext_mnemonic: Option<String> = row.get("plaintext_mnemonic")?;
         let iv: Option<Vec<u8>> = row.get("initialization_vector")?;
         let ciphertext: Option<Vec<u8>> = row.get("ciphertext_mnemonic")?;
         let key_salt: Option<Vec<u8>> = row.get("key_salt")?;
-        Ok((plaintext_mnemonic, iv, ciphertext, key_salt))
+        Ok((id, plaintext_mnemonic, iv, ciphertext, key_salt))
     });
     match row {
-        Ok((Some(mnemonic), None, None, None)) => Ok(Some(StoredSeed::Plaintext { mnemonic })),
-        Ok((None, Some(initialization_vector), Some(ciphertext_mnemonic), Some(key_salt))) => {
-            Ok(Some(StoredSeed::Encrypted {
-                initialization_vector,
-                ciphertext_mnemonic,
-                key_salt,
-                kdf: None,
-            }))
+        Ok((id, Some(mnemonic), None, None, None)) => {
+            Ok(Some((id, StoredSeed::Plaintext { mnemonic })))
+        }
+        Ok((id, None, Some(initialization_vector), Some(ciphertext_mnemonic), Some(key_salt))) => {
+            Ok(Some((
+                id,
+                StoredSeed::Encrypted {
+                    initialization_vector,
+                    ciphertext_mnemonic,
+                    key_salt,
+                    kdf: None,
+                },
+            )))
         }
         // Don't print the actual contents, just indicate which values are set.
-        Ok((plaintext_mnemonic, iv, ciphertext, key_salt)) => {
+        Ok((_, plaintext_mnemonic, iv, ciphertext, key_salt)) => {
             Err(error::InitSeedStore::InvalidLegacySeed {
                 plaintext_mnemonic_is_some: plaintext_mnemonic.is_some(),
                 iv_is_some: iv.is_some(),
@@ -532,6 +553,40 @@ mod tests {
             error::InitSeedStore::LegacySeedMismatch { .. }
         ));
         assert_eq!(legacy_seed_rows(&dir), 1, "legacy seed must be untouched");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// More than one legacy seed row: only one of them can be migrated, and
+    /// deleting the rest would destroy a seed the wallet never even read.
+    /// Refuse, and leave every row where it is.
+    #[tokio::test]
+    async fn multiple_legacy_seeds_abort_startup() {
+        let dir = temp_dir("migrate-ambiguous");
+        let conn = write_legacy_db(&dir);
+        for mnemonic in [
+            TEST_MNEMONIC,
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        ] {
+            conn.execute(
+                "INSERT INTO wallet_seeds (plaintext_mnemonic) VALUES (?)",
+                [mnemonic],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let Err(err) = SeedStore::new(&dir) else {
+            panic!("an ambiguous legacy seed must abort")
+        };
+        assert!(matches!(
+            err,
+            error::InitSeedStore::AmbiguousLegacySeed { rows: 2, .. }
+        ));
+        assert!(
+            !dir.join("seed.json").exists(),
+            "no seed may be adopted out of an ambiguous legacy store"
+        );
+        assert_eq!(legacy_seed_rows(&dir), 2, "both legacy seeds must survive");
         std::fs::remove_dir_all(&dir).ok();
     }
 

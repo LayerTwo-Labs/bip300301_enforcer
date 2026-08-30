@@ -194,6 +194,20 @@ impl ToStatus for ParseMnemonic {
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitSeedStore {
     #[error(
+        "the legacy `wallet_seeds` table of {} holds {} seeds, not one",
+        legacy_db.display(),
+        rows,
+    )]
+    #[diagnostic(help(
+        "the wallet cannot tell which seed is the right one, \
+         dump them with `sqlite3 <db.sqlite> 'SELECT * FROM wallet_seeds;'` \
+         and leave only the one to keep before starting again"
+    ))]
+    AmbiguousLegacySeed {
+        legacy_db: std::path::PathBuf,
+        rows: i64,
+    },
+    #[error(
         "invalid legacy wallet seed in `wallet_seeds` (plaintext_mnemonic=`{}`, iv=`{}`, ciphertext=`{}`, key_salt=`{}`)",
         Self::display_is_some(*.plaintext_mnemonic_is_some),
         Self::display_is_some(*.iv_is_some),
