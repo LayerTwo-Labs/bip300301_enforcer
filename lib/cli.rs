@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     env,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     num::NonZeroU64,
@@ -645,6 +646,55 @@ pub(crate) fn redact_embedded_credentials(value: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+/// Command line arguments whose value is a node RPC credential.
+const RPC_CREDENTIAL_ARGS: [&str; 2] = ["-rpcpassword=", "-rpcuser="];
+
+/// Replace the value of every `-rpcpassword=`/`-rpcuser=` argument in `value`
+/// with `[redacted]`.
+///
+/// Subprocesses are invoked with the node's RPC credentials in their argv (see
+/// `bins::BitcoinCli::default_args`), and a failing child echoes its own argv
+/// back at us: the signet miner's Python traceback prints the whole
+/// `bitcoin-cli` command line. Anything carrying a child's command line or
+/// output therefore goes through this before reaching a log or an error
+/// message. Redacting an already redacted value is a no-op, so applying it at
+/// more than one boundary is safe.
+pub(crate) fn redact_rpc_credentials(value: &str) -> Cow<'_, str> {
+    // A credential value runs until the next argument, or until the end of the
+    // string literal quoting it in a traceback.
+    fn value_end(c: char) -> bool {
+        c.is_whitespace() || matches!(c, '\'' | '"' | ',')
+    }
+
+    let mut rest = value;
+    let mut res: Option<String> = None;
+    loop {
+        // Whichever credential argument comes first in what is left.
+        let next = RPC_CREDENTIAL_ARGS
+            .iter()
+            .filter_map(|&arg| rest.find(arg).map(|start| (start, arg)))
+            .min();
+        let Some((arg_start, arg)) = next else {
+            break;
+        };
+        let secret_start = arg_start + arg.len();
+        let secret_end = rest[secret_start..]
+            .find(value_end)
+            .map_or(rest.len(), |offset| secret_start + offset);
+        let redacted = res.get_or_insert_default();
+        redacted.push_str(&rest[..secret_start]);
+        redacted.push_str(REDACTED);
+        rest = &rest[secret_end..];
+    }
+    match res {
+        Some(mut res) => {
+            res.push_str(rest);
+            Cow::Owned(res)
+        }
+        None => Cow::Borrowed(value),
+    }
+}
+
 /// Log the effective value of every argument, one line each, with secrets
 /// masked. This mirrors the configuration dump Bitcoin Core writes at startup:
 /// it makes a log self-describing, so a bug report says exactly what the node
@@ -803,7 +853,7 @@ mod tests {
 
     use super::{
         Config, NetworkPreset, REDACTED, SecretString, UNSET, is_secret_arg,
-        redact_embedded_credentials,
+        redact_embedded_credentials, redact_rpc_credentials,
     };
 
     /// Each preset's `--network-preset` spelling reaches the parameters it
@@ -1049,6 +1099,60 @@ mod tests {
             redact_embedded_credentials("https://SECRETTOKEN@esplora.example/api").as_deref(),
             Some("https://redacted@esplora.example/api"),
         );
+    }
+
+    /// The signet miner dies with a Python traceback whose
+    /// `CalledProcessError` repr is the `bitcoin-cli` argv we handed it, RPC
+    /// password included. That line is logged and returned to gRPC callers, so
+    /// the credentials must not survive it.
+    #[test]
+    fn subprocess_argv_credentials_are_stripped() {
+        assert_eq!(
+            redact_rpc_credentials(
+                "subprocess.CalledProcessError: Command '['bitcoin-cli', \
+                 '-rpcconnect=127.0.0.1', '-rpcuser=alice', '-rpcpassword=hunter2', \
+                 'getblocktemplate']' returned non-zero exit status 1."
+            ),
+            "subprocess.CalledProcessError: Command '['bitcoin-cli', \
+             '-rpcconnect=127.0.0.1', '-rpcuser=[redacted]', '-rpcpassword=[redacted]', \
+             'getblocktemplate']' returned non-zero exit status 1.",
+        );
+
+        // The same credentials as the miner receives them, in a single
+        // whitespace separated `--cli=` argument.
+        assert_eq!(
+            redact_rpc_credentials(
+                "--cli=bitcoin-cli -rpcport=38332 -rpcuser=alice -rpcpassword=hunter2 -rpcwallet=w"
+            ),
+            "--cli=bitcoin-cli -rpcport=38332 -rpcuser=[redacted] \
+             -rpcpassword=[redacted] -rpcwallet=w",
+        );
+
+        // A trailing credential, with nothing to terminate it.
+        assert_eq!(
+            redact_rpc_credentials("bitcoin-cli -rpcpassword=hunter2"),
+            "bitcoin-cli -rpcpassword=[redacted]",
+        );
+
+        // Nothing to strip: the value is passed through untouched.
+        assert_eq!(
+            redact_rpc_credentials("Traceback (most recent call last):"),
+            "Traceback (most recent call last):",
+        );
+    }
+
+    /// Both a log line and the error built from the same output are redacted,
+    /// so a value may pass through twice. The second pass must not eat the
+    /// marker written by the first.
+    #[test]
+    fn rpc_credential_redaction_is_idempotent() {
+        let once = redact_rpc_credentials("bitcoin-cli -rpcpassword=hunter2 getblocktemplate");
+        assert_eq!(
+            redact_rpc_credentials(&once),
+            once,
+            "redacting twice must equal redacting once"
+        );
+        assert!(once.contains(REDACTED));
     }
 
     /// Redaction must not swallow the parts that identify which backend the
