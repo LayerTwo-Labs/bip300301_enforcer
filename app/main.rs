@@ -198,12 +198,43 @@ macro_rules! jsonrpsee_tracer {
     }};
 }
 
+/// Cap how much of an error-response body we surface in the access log. The
+/// body that goes back to the caller is never truncated.
+const ERROR_BODY_LOG_LIMIT: usize = 4 * 1024;
+
+/// Derive the `(code, message)` pair to log for a Connect error response.
+///
+/// Bodies are normally small JSON like
+/// `{"code":"invalid_argument","message":"..."}`, but the message can echo
+/// caller-supplied input, so anything past `ERROR_BODY_LOG_LIMIT` is logged as
+/// a truncated raw view rather than parsed.
+fn connect_error_log_view(body_bytes: &[u8]) -> (String, String) {
+    if body_bytes.len() > ERROR_BODY_LOG_LIMIT {
+        return (
+            "unknown".to_owned(),
+            String::from_utf8_lossy(&body_bytes[..ERROR_BODY_LOG_LIMIT]).into_owned(),
+        );
+    }
+    match buffa::serde_json::from_slice::<connectrpc::ConnectError>(body_bytes) {
+        Ok(err) => (
+            err.code.as_str().to_owned(),
+            err.message.unwrap_or_default(),
+        ),
+        Err(_) => (
+            "unknown".to_owned(),
+            String::from_utf8_lossy(body_bytes).into_owned(),
+        ),
+    }
+}
+
 async fn connect_rpc_access_log(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    /// Cap how much error-response body we buffer for logging.
-    const ERROR_BODY_LOG_LIMIT: usize = 4 * 1024;
+    /// Returned when the handler's own error body could not be buffered. A
+    /// bare `{}` would decode client-side as an unknown code with no message.
+    const BUFFER_FAILURE_BODY: &str =
+        r#"{"code":"internal","message":"failed to buffer error response body"}"#;
 
     let uri = req.uri().clone();
     let request_id_header = http::HeaderName::from_static(REQUEST_ID_HEADER);
@@ -234,30 +265,32 @@ async fn connect_rpc_access_log(
     let procedure = uri.path().to_owned();
 
     // On non-2xx, buffer the body so we can pull the Connect error code
-    // and message out of it. Bodies are small JSON like
-    // `{"code":"invalid_argument","message":"..."}`.
+    // and message out of it. The buffer is also what goes back to the caller,
+    // so it has to hold the whole body — only the logged view is capped.
     if http_status.is_client_error() || http_status.is_server_error() {
-        let (parts, body) = response.into_parts();
-        let body_bytes = axum::body::to_bytes(body, ERROR_BODY_LOG_LIMIT)
-            .await
-            .unwrap_or_else(|err| {
-                tracing::warn!(
+        let (mut parts, body) = response.into_parts();
+        let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+            Ok(body_bytes) => body_bytes,
+            Err(err) => {
+                tracing::error!(
                     procedure, %http_status, duration_ms, request_id,
                     "connect_rpc: failed to buffer error body: {err:#}",
                 );
-                axum::body::Bytes::from_static(b"{}")
-            });
-        let (connect_code, message) =
-            match buffa::serde_json::from_slice::<connectrpc::ConnectError>(&body_bytes) {
-                Ok(err) => (
-                    err.code.as_str().to_owned(),
-                    err.message.unwrap_or_default(),
-                ),
-                Err(_) => (
-                    "unknown".to_owned(),
-                    String::from_utf8_lossy(&body_bytes).into_owned(),
-                ),
-            };
+                // The original body has been consumed, so it can't be
+                // forwarded. Reply with a well-formed Connect error instead.
+                parts.status = http::StatusCode::INTERNAL_SERVER_ERROR;
+                parts.headers.insert(
+                    http::header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("application/json"),
+                );
+                parts.headers.remove(http::header::CONTENT_LENGTH);
+                return axum::response::Response::from_parts(
+                    parts,
+                    axum::body::Body::from(BUFFER_FAILURE_BODY),
+                );
+            }
+        };
+        let (connect_code, message) = connect_error_log_view(&body_bytes);
         if http_status.is_server_error() {
             tracing::error!(
                 procedure, code = %connect_code, duration_ms,
@@ -2086,7 +2119,10 @@ mod tests {
     use futures::channel::oneshot;
     use tokio_util::sync::CancellationToken;
 
-    use super::{resolve_block_file_network_magic, wait_for_error_or_shutdown};
+    use super::{
+        ERROR_BODY_LOG_LIMIT, connect_error_log_view, connect_rpc_access_log,
+        resolve_block_file_network_magic, wait_for_error_or_shutdown,
+    };
 
     #[test]
     fn derives_block_file_magic_from_signet_challenge() {
@@ -2162,5 +2198,81 @@ mod tests {
             wait_for_error_or_shutdown(cancel, err_rx).await.is_ok(),
             "a cancelled sync task dropping its sender is a clean shutdown"
         );
+    }
+
+    /// The access log buffers non-2xx bodies to pull the Connect code out of
+    /// them, and that buffer is what goes back on the wire. Error messages
+    /// echo caller-supplied input (e.g. the address handed to
+    /// `GenerateBlocks`), so a caller can push the body past the log cap —
+    /// which must not cost them the error they asked for.
+    #[tokio::test]
+    async fn oversized_connect_error_body_reaches_the_caller_intact() {
+        use tower::Service as _;
+
+        let error_body = format!(
+            r#"{{"code":"invalid_argument","message":"invalid bitcoin address: {}"}}"#,
+            "x".repeat(8 * 1024)
+        );
+        let handler_body = error_body.clone();
+
+        let mut app = axum::Router::new()
+            .route(
+                "/cusf.mainchain.v1.MiningService/GenerateBlocks",
+                axum::routing::post(move || {
+                    let handler_body = handler_body.clone();
+                    async move {
+                        http::Response::builder()
+                            .status(http::StatusCode::BAD_REQUEST)
+                            .header(http::header::CONTENT_TYPE, "application/json")
+                            .body(axum::body::Body::from(handler_body))
+                            .unwrap()
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn(connect_rpc_access_log));
+
+        let request = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/cusf.mainchain.v1.MiningService/GenerateBlocks")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // `Router` is always ready, so there's no `poll_ready` to drive first.
+        let response = app.call(request).await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+        let served = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            served.as_ref(),
+            error_body.as_bytes(),
+            "the caller must get the handler's error body, not the log buffer"
+        );
+    }
+
+    /// A body within the cap is still parsed, so the access log keeps the
+    /// Connect code and message.
+    #[test]
+    fn small_connect_error_body_is_logged_with_code_and_message() {
+        let body = br#"{"code":"invalid_argument","message":"invalid bitcoin address"}"#;
+        assert_eq!(
+            connect_error_log_view(body),
+            (
+                "invalid_argument".to_owned(),
+                "invalid bitcoin address".to_owned()
+            )
+        );
+    }
+
+    /// Oversized bodies are truncated in the log only.
+    #[test]
+    fn oversized_connect_error_body_is_truncated_in_the_log() {
+        let body = format!(
+            r#"{{"code":"invalid_argument","message":"{}"}}"#,
+            "x".repeat(8 * 1024)
+        );
+        let (code, message) = connect_error_log_view(body.as_bytes());
+        assert_eq!(code, "unknown");
+        assert_eq!(message.len(), ERROR_BODY_LOG_LIMIT);
     }
 }
