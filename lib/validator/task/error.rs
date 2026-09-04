@@ -499,6 +499,13 @@ pub(in crate::validator) enum Sync {
     #[error(transparent)]
     #[fatal(true)]
     LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
+    /// The tip a sync was targeting is no longer reachable, because the node
+    /// reorged onto a chain that does not contain it. Only a fresh sync
+    /// against the node's current tip clears this, so `app::error` classifies
+    /// it as re-syncable by matching this message. Keep the two in sync.
+    #[error("Mainchain tip `{block_hash}` left the active chain during header sync")]
+    #[fatal(false)]
+    MainTipReorged { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
     #[fatal(true)]
     ParseBlockFiles(#[from] parse_block_files::ParseBlockFileError),
