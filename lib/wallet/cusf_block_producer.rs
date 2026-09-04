@@ -89,6 +89,15 @@ impl WalletInner {
                 "wallet is too far behind to replay block-by-block, \
                  checkpointing chain forward and running a full scan instead"
             );
+            // The checkpoint leaves the replay loop below with only the tip
+            // block to connect, so the policy maintenance that connecting a
+            // block performs never runs for the gap. Apply it for the skipped
+            // range first: doing it before the chain moves means a failure
+            // here leaves the wallet tip where it is and the whole crossing is
+            // retried, rather than the gap being skipped for good.
+            let () = self
+                .apply_skipped_blocks_policy(new_tip_hash, blocks_behind)
+                .await?;
             // `full_scan` checkpoints the local chain to the validator tip from
             // validator headers, then scans the chain source for transactions
             // against that checkpoint, so it both closes the gap and recovers the
@@ -196,6 +205,66 @@ impl WalletInner {
 
         self.set_last_synced_now();
 
+        Ok(())
+    }
+
+    /// Drop the sidechain proposals and withdrawal bundles that were settled
+    /// by the `skipped_blocks` blocks ending at (and including) `tip_hash`.
+    ///
+    /// Every block connected one at a time reaches
+    /// [`BlockProducer::apply_connected_block_policy`] via
+    /// [`Self::handle_connect_block`], which is what stops a proposal the chain
+    /// has already settled from being re-proposed in every later coinbase. The
+    /// checkpoint path in [`Self::sync_wallet_to_tip`] connects none of the
+    /// blocks it jumps over, so that maintenance has to be applied for the
+    /// whole skipped range here instead.
+    ///
+    /// The validator already holds every `BlockInfo` in the range, so no block
+    /// is fetched from the node. The range is walked in chunks: it is bounded
+    /// only by the length of the chain, and an initial sync crosses all of it.
+    /// The maintenance is deletes alone, so the order blocks are visited in
+    /// does not matter, and blocks whose settlements were already dropped are
+    /// no-ops.
+    async fn apply_skipped_blocks_policy(
+        &self,
+        tip_hash: BlockHash,
+        skipped_blocks: u32,
+    ) -> Result<(), error::SyncWalletToTip> {
+        // Blocks read from the validator per batch, so that crossing a gap
+        // the length of the chain does not hold every one of its block infos
+        // in memory at once.
+        const CHUNK_BLOCKS: usize = 10_000;
+        tracing::debug!(
+            %skipped_blocks,
+            "applying policy for the blocks skipped by the checkpoint"
+        );
+        let mut block_hash = tip_hash;
+        let mut remaining = skipped_blocks as usize;
+        while remaining > 0 {
+            let chunk = std::cmp::min(remaining, CHUNK_BLOCKS);
+            let block_infos = self
+                .validator()
+                .get_block_infos(&block_hash, chunk.saturating_sub(1))?;
+            for (_header_info, block_info) in &block_infos {
+                let () = self
+                    .producer
+                    .apply_connected_block_policy(block_info)
+                    .await
+                    .map_err(|err| {
+                        error::SyncWalletToTipInner::ApplySkippedBlocksPolicy(
+                            error::SqliteError::from(err),
+                        )
+                    })?;
+            }
+            // `get_block_infos` stops at the first block it has no info for,
+            // which is also the first one that cannot be walked past.
+            if block_infos.len() < chunk {
+                break;
+            }
+            let (oldest_header_info, _block_info) = &block_infos[block_infos.len() - 1];
+            block_hash = oldest_header_info.prev_block_hash;
+            remaining -= block_infos.len();
+        }
         Ok(())
     }
 
