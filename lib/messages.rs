@@ -455,6 +455,7 @@ pub struct CoinbaseMessages {
     messages: Vec<(CoinbaseMessage, usize)>,
     m1_sidechain_proposal_id_to_index: HashMap<SidechainProposalId, usize>,
     m2_ack_slot_to_index: HashMap<SidechainNumber, usize>,
+    m3_proposals: HashSet<(SidechainNumber, [u8; 32])>,
     m4_index: Option<usize>,
     /// Maps M7 slots to commitment and index
     m7_slot_to_commitment_index: HashMap<SidechainNumber, (BmmCommitment, usize)>,
@@ -558,8 +559,16 @@ impl CoinbaseMessages {
                     }
                 }
             }
-            CoinbaseMessage::M3ProposeBundle(_) => {
-                self.messages.push((msg, vout));
+            CoinbaseMessage::M3ProposeBundle(m3) => {
+                // Repeated copies of the same M3 in one coinbase are allowed.
+                // Keep only the first so the second is not mistaken for a
+                // re-proposal of an entry inherited from an ancestor block.
+                if self
+                    .m3_proposals
+                    .insert((m3.sidechain_number, m3.bundle_txid))
+                {
+                    self.messages.push((msg, vout));
+                }
                 Ok(())
             }
         }
