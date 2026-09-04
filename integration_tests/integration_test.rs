@@ -1172,6 +1172,19 @@ pub fn tests(
         },
         crate::test_consecutive_deposits::test_consecutive_deposits,
     ));
+    // Competing deposits wedge the block producer, which only serves templates
+    // in GetBlockTemplate mode.
+    async_trials.push(new_trial_with_setup(
+        "competing_deposits".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_consecutive_deposits::test_competing_deposits,
+    ));
 
     async_trials.push(new_trial_with_setup(
         "blinded_m6_roundtrip".to_string(),
