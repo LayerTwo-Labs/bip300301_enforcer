@@ -53,6 +53,31 @@ pub(in crate::block_producer) fn bmm_auction_winners(
     winners
 }
 
+/// The bids that must be kept out of a block: every bid for a slot whose
+/// winner the block is known to contain, apart from that winner itself.
+///
+/// A slot missing from `forced_winners` keeps all of its bids. Excluding the
+/// losers of a slot whose winner might not be in the block risks settling that
+/// slot with no bid at all.
+pub(in crate::block_producer) fn losing_bmm_bids(
+    seen_bmm_requests: HashMap<SidechainNumber, HashMap<BmmCommitment, HashSet<Txid>>>,
+    forced_winners: &HashMap<SidechainNumber, Txid>,
+) -> Vec<Txid> {
+    seen_bmm_requests
+        .into_iter()
+        .filter_map(|(sidechain_number, requests)| {
+            let winner_txid = *forced_winners.get(&sidechain_number)?;
+            Some(
+                requests
+                    .into_values()
+                    .flatten()
+                    .filter(move |txid| *txid != winner_txid),
+            )
+        })
+        .flatten()
+        .collect()
+}
+
 /// BMM request cleanup happens after the block has been submitted and observed
 /// by the validator. Keep the mined block as the operation's result even if the
 /// best-effort cleanup fails, so callers are not invited to retry an operation
@@ -719,9 +744,11 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+
     use bitcoin::{Amount, BlockHash, Txid, hashes::Hash as _};
 
-    use super::{bmm_auction_winners, finish_bmm_request_cleanup};
+    use super::{bmm_auction_winners, finish_bmm_request_cleanup, losing_bmm_bids};
     use crate::types::{BmmCommitment, SidechainNumber};
 
     #[test]
@@ -753,6 +780,38 @@ mod tests {
 
         assert_eq!(winners[&slot].1, high_txid);
         assert_eq!(winners[&SidechainNumber(8)].1, other_txid);
+    }
+
+    /// A slot's losing bids are only excluded once the block is known to
+    /// contain that slot's winner. A slot whose winner might be squeezed out
+    /// by tx selection keeps every one of its bids, so the slot is not left
+    /// with none.
+    #[test]
+    fn only_settled_slots_exclude_their_losing_bids() {
+        let settled_slot = SidechainNumber(7);
+        let unsettled_slot = SidechainNumber(8);
+        let winner_txid = Txid::from_byte_array([1; 32]);
+        let loser_txid = Txid::from_byte_array([2; 32]);
+        let unsettled_txid = Txid::from_byte_array([3; 32]);
+        let seen_bmm_requests = HashMap::from([
+            (
+                settled_slot,
+                HashMap::from([
+                    (BmmCommitment([1; 32]), HashSet::from([winner_txid])),
+                    (BmmCommitment([2; 32]), HashSet::from([loser_txid])),
+                ]),
+            ),
+            (
+                unsettled_slot,
+                HashMap::from([(BmmCommitment([3; 32]), HashSet::from([unsettled_txid]))]),
+            ),
+        ]);
+        let forced_winners = HashMap::from([(settled_slot, winner_txid)]);
+
+        assert_eq!(
+            losing_bmm_bids(seen_bmm_requests, &forced_winners),
+            vec![loser_txid]
+        );
     }
 
     #[test]
