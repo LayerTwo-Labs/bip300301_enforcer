@@ -11,13 +11,14 @@ use cusf_enforcer_mempool::{
         ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
     },
 };
+use futures::{FutureExt as _, StreamExt as _, stream::FusedStream};
 use tracing::instrument;
 
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    types::{BlindedM6, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
-    validator::Validator,
+    types::{BlindedM6, Event, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
+    validator::{EventsStreamError, Validator},
 };
 
 mod coinbase;
@@ -183,6 +184,93 @@ impl BlockProducer {
             .delete_pending_sidechain_proposals(sidechain_proposal_ids)
             .await
     }
+
+    /// Sync the validator to `tip_hash`, restoring the BMM requests consumed by
+    /// each block that the sync disconnects.
+    ///
+    /// A reorg that arrives block-by-block unwinds through
+    /// [`CusfEnforcer::disconnect_block`], which restores those requests. A
+    /// reorg unwound *inside* the validator's own [`CusfEnforcer::sync_to_tip`]
+    /// never reaches that hook: the validator disconnects those blocks itself,
+    /// reporting them only as [`Event::DisconnectBlock`]. Subscribe before the
+    /// sync starts, so that no disconnect can happen before there is a
+    /// subscriber, and restore for every block it reports.
+    pub(crate) async fn sync_to_tip_restoring_bmm_requests<Signal>(
+        &mut self,
+        shutdown_signal: Signal,
+        tip_hash: BlockHash,
+    ) -> Result<
+        (),
+        SyncToTipError<
+            <Validator as CusfEnforcer>::InvalidBlockReason,
+            <Validator as CusfEnforcer>::SyncError,
+        >,
+    >
+    where
+        Signal: std::future::Future<Output = ()> + Send,
+    {
+        let events = self.inner.validator.subscribe_events();
+        let sync = {
+            let mut validator = self.inner.validator.clone();
+            async move { validator.sync_to_tip(shutdown_signal, tip_hash).await }
+        };
+        let (res, disconnected) = collect_disconnected_blocks(events, sync).await;
+        // Restore even if the sync itself failed: the blocks it disconnected
+        // before failing are gone from the chain either way. Policy SQLite
+        // state is best-effort on disconnect, so a restore failure is logged
+        // rather than failing the sync.
+        for block_hash in disconnected {
+            if let Err(err) = self.inner.db.restore_bmm_requests(&block_hash).await {
+                tracing::error!(
+                    %block_hash,
+                    "failed to restore BMM requests on block disconnect: {:#}",
+                    ErrorChain::new(&err),
+                );
+            }
+        }
+        res
+    }
+}
+
+/// Run `sync` to completion, collecting the block hashes that `events` reports
+/// as disconnected while it runs.
+///
+/// The events are consumed while the sync runs rather than drained once it has
+/// returned: the events channel drops its *oldest* unread messages when it
+/// overflows, and a sync broadcasts every block it disconnects before the first
+/// block it connects, so a reader that keeps up cannot lose a disconnect to a
+/// long catch-up following it.
+async fn collect_disconnected_blocks<Events, Fut>(
+    events: Events,
+    sync: Fut,
+) -> (Fut::Output, Vec<BlockHash>)
+where
+    Events: FusedStream<Item = Result<Event, EventsStreamError>>,
+    Fut: std::future::Future,
+{
+    tokio::pin!(events, sync);
+    let mut disconnected = Vec::new();
+    let mut observe = |event: Option<Result<Event, EventsStreamError>>| match event {
+        Some(Ok(Event::DisconnectBlock { block_hash })) => disconnected.push(block_hash),
+        Some(Ok(Event::ConnectBlock { .. })) | None => (),
+        Some(Err(err)) => tracing::error!(
+            "stopped observing validator events during sync: {:#}",
+            ErrorChain::new(&err),
+        ),
+    };
+    let output = loop {
+        tokio::select! {
+            output = &mut sync => break output,
+            event = events.next(), if !events.is_terminated() => observe(event),
+        }
+    };
+    // A sync that only rolls the tip back has nothing left to fetch, so it can
+    // return without ever yielding to the loop above. Pick up whatever it
+    // broadcast before finishing.
+    while let Some(Some(event)) = events.next().now_or_never() {
+        observe(Some(event));
+    }
+    (output, disconnected)
 }
 
 impl CusfEnforcer for BlockProducer {
@@ -197,10 +285,7 @@ impl CusfEnforcer for BlockProducer {
     where
         Signal: std::future::Future<Output = ()> + Send,
     {
-        self.inner
-            .validator
-            .clone()
-            .sync_to_tip(shutdown_signal, tip_hash)
+        self.sync_to_tip_restoring_bmm_requests(shutdown_signal, tip_hash)
             .await
     }
 
@@ -530,5 +615,80 @@ impl BlockProducer {
             }
             BoolWit::False(_wit) => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{BlockHash, Txid, hashes::Hash as _};
+    use futures::StreamExt as _;
+
+    use super::collect_disconnected_blocks;
+    use crate::types::{BlockInfo, BmmCommitments, Event, HeaderInfo};
+
+    fn block_hash(byte: u8) -> BlockHash {
+        BlockHash::from_byte_array([byte; 32])
+    }
+
+    fn connect_block_event(byte: u8) -> Event {
+        let header = bitcoin::block::Header {
+            version: bitcoin::block::Version::TWO,
+            prev_blockhash: block_hash(byte - 1),
+            merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+            time: 0,
+            bits: bitcoin::CompactTarget::from_consensus(0x2000_0000),
+            nonce: 0,
+        };
+        Event::ConnectBlock {
+            header_info: HeaderInfo {
+                block_hash: header.block_hash(),
+                prev_block_hash: header.prev_blockhash,
+                height: byte as u32,
+                work: header.work(),
+                timestamp: header.time,
+            },
+            block_info: BlockInfo {
+                bmm_commitments: BmmCommitments::new(),
+                coinbase_txid: Txid::all_zeros(),
+                events: Vec::new(),
+            },
+        }
+    }
+
+    /// A sync that only rolls the tip back — `invalidateblock` with nothing
+    /// mined on top — has no blocks left to fetch, so it can return before its
+    /// disconnect events have been observed. They must be collected anyway, or
+    /// the BMM requests those blocks consumed stay deleted.
+    #[tokio::test]
+    async fn disconnects_broadcast_before_the_sync_returns_are_collected() {
+        let events = futures::stream::iter([
+            Ok(Event::DisconnectBlock {
+                block_hash: block_hash(2),
+            }),
+            Ok(Event::DisconnectBlock {
+                block_hash: block_hash(1),
+            }),
+        ])
+        .fuse();
+        let (output, disconnected) =
+            collect_disconnected_blocks(events, std::future::ready("synced")).await;
+        assert_eq!(output, "synced");
+        assert_eq!(disconnected, vec![block_hash(2), block_hash(1)]);
+    }
+
+    /// The blocks the sync connects afterwards are not disconnected blocks.
+    #[tokio::test]
+    async fn connected_blocks_are_not_collected() {
+        let events = futures::stream::iter([
+            Ok(Event::DisconnectBlock {
+                block_hash: block_hash(2),
+            }),
+            Ok(connect_block_event(3)),
+            Ok(connect_block_event(4)),
+        ])
+        .fuse();
+        let (_output, disconnected) =
+            collect_disconnected_blocks(events, std::future::ready(())).await;
+        assert_eq!(disconnected, vec![block_hash(2)]);
     }
 }
