@@ -1866,8 +1866,26 @@ impl BlockHandler<'_> {
             let start_block = Instant::now();
             // We should not call out to `invalidateblock` in case of failures here,
             // as that is handled by the cusf-enforcer-mempool crate.
+            // Connect within a nested txn, committed only once the whole block
+            // is accepted. A rejected block applies coinbase message and tx
+            // diffs before it fails, and those must not survive in the batch
+            // txn, which is committed even when a block is rejected.
             // FIXME: handle disconnects
-            let event = match self.connect_block(rwtxn, block) {
+            let connect_res = {
+                let mut child_rwtxn = dbs.nested_write_txn(rwtxn)?;
+                match self.connect_block(&mut child_rwtxn, block) {
+                    Ok(event) => {
+                        let () = child_rwtxn.commit()?;
+                        Ok(event)
+                    }
+                    Err(err) => {
+                        child_rwtxn.abort();
+                        Err(err)
+                    }
+                }
+            };
+
+            let event = match connect_res {
                 Ok(event) => event,
                 Err(err) => match err.split() {
                     Ok(jfyi) => {
@@ -2927,6 +2945,77 @@ mod tests {
                 .into_diagnostic()?,
             Some(block_a_hash),
             "the valid prefix must be committed before its event is broadcast"
+        );
+        Ok(())
+    }
+
+    /// A rejected block's partial diffs must not survive. `connect_block`
+    /// applies the coinbase message diffs before the tx loop can reject the
+    /// block, so it must run against a nested txn that is aborted, not against
+    /// the batch txn, which is committed even when a block is rejected.
+    #[test]
+    fn rejected_batch_block_leaves_no_partial_diffs() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        let proposal = SidechainProposal {
+            sidechain_number: SidechainNumber(4),
+            description: SidechainDescription(b"partial-diff".to_vec()),
+        };
+        let proposal_id = proposal.compute_id();
+        let m1_script: ScriptBuf = M1ProposeSidechain {
+            sidechain_number: proposal.sidechain_number,
+            description: proposal.description.clone(),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        // The M1 is applied while handling the coinbase; the M8 has no matching
+        // M7, so the block is rejected as non-fatal only afterwards.
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_coinbase_outputs: vec![TxOut {
+                    script_pubkey: m1_script,
+                    value: Amount::ZERO,
+                }],
+                extra_txs: vec![build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash)],
+            },
+        );
+        let block_hash = block.block_hash();
+        {
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            dbs.block_hashes
+                .put_headers(&mut rwtxn, &[(block.header, 0)])
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+        }
+
+        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let rwtxn = dbs.write_txn().into_diagnostic()?;
+        let invalid_block = test_handler(&dbs)
+            .handle_block_batch_and_commit(rwtxn, &[block], &event_tx)
+            .into_diagnostic()?
+            .expect("the block must be reported as invalid");
+
+        assert_eq!(invalid_block.block_hash, block_hash);
+        assert!(
+            event_rx.try_recv().is_err(),
+            "a rejected block must not emit events"
+        );
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        assert!(
+            dbs.proposal_id_to_sidechain
+                .try_get(&rotxn, &proposal_id)
+                .into_diagnostic()?
+                .is_none(),
+            "the rejected block's coinbase diffs must be rolled back"
+        );
+        assert!(
+            dbs.current_chain_tip
+                .try_get(&rotxn, &())
+                .into_diagnostic()?
+                .is_none(),
+            "a rejected block must not become the chain tip"
         );
         Ok(())
     }

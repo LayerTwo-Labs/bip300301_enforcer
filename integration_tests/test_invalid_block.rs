@@ -3,7 +3,7 @@ use std::{str::FromStr as _, time::Duration};
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
-    types::{BmmCommitment, SidechainDescription, op_drivechain_script},
+    types::{BmmCommitment, SidechainDescription, SidechainNumber, op_drivechain_script},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
@@ -38,6 +38,23 @@ pub(crate) const DUPLICATE_M1: BadBlockCase = BadBlockCase {
     expected_log_contains: "rejecting block: M1 sidechain proposal for slot",
 };
 
+/// Slot of the M1 in [`M1_THEN_INVALID_M4`]. Nothing else in the tests
+/// proposes or activates it, so a proposal for it can only come from that
+/// block.
+pub(crate) const PHANTOM_PROPOSAL_SLOT: SidechainNumber = SidechainNumber(4);
+
+/// A block whose coinbase carries a novel M1, followed by an M4 that is
+/// rejected. Unlike the `duplicate_*` cases, whose rejection fires while the
+/// coinbase messages are collected, this one is rejected only after the M1
+/// has been applied to the database. Used by the sync-path test
+/// (`test_invalid_block_during_sync`) to check that the applied M1 does not
+/// survive the rejection.
+pub(crate) const M1_THEN_INVALID_M4: BadBlockCase = BadBlockCase {
+    name: "m1_then_invalid_m4",
+    extra_coinbase_outputs: m1_then_invalid_m4_outputs,
+    expected_log_contains: "Invalid votes: expected 1, but found 2",
+};
+
 const CASES: &[BadBlockCase] = &[
     DUPLICATE_M1,
     BadBlockCase {
@@ -68,6 +85,21 @@ fn duplicate_m1_outputs() -> anyhow::Result<Vec<TxOut>> {
     })?;
     let m1_b: ScriptBuf = proposal.try_into()?;
     Ok(vec![zero_value(m1_a), zero_value(m1_b)])
+}
+
+fn m1_then_invalid_m4_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let m1: ScriptBuf = M1ProposeSidechain {
+        sidechain_number: PHANTOM_PROPOSAL_SLOT,
+        description: SidechainDescription(b"phantom proposal".to_vec()),
+    }
+    .try_into()?;
+    // One vote per active sidechain is required, and only DummySidechain is
+    // active, so two votes are rejected as `InvalidVotes`.
+    let m4: ScriptBuf = M4AckBundles::OneByte {
+        upvotes: vec![M4AckBundles::ABSTAIN_ONE_BYTE; 2],
+    }
+    .try_into()?;
+    Ok(vec![zero_value(m1), zero_value(m4)])
 }
 
 fn duplicate_m2_outputs() -> anyhow::Result<Vec<TxOut>> {

@@ -9,10 +9,20 @@
 //! cusf-enforcer-mempool crate must invalidate it on the node and re-sync to
 //! the resulting tip -- instead of the sync erroring out and leaving the
 //! enforcer dead behind a chain it can never accept.
+//!
+//! The bad block is also chosen so that the rejection fires only *after*
+//! part of the block has been applied to the database: its coinbase carries
+//! a novel M1 and then an invalid M4. The batch sync commits its transaction
+//! even when a block is rejected, so the M1 must be applied in a nested
+//! transaction that is rolled back with the block, or the rejected block's
+//! sidechain proposal leaks into the validator's state.
 
 use std::str::FromStr as _;
 
-use bip300301_enforcer_lib::bins::CommandExt as _;
+use bip300301_enforcer_lib::{
+    bins::CommandExt as _,
+    proto::{self, mainchain::GetSidechainProposalsRequest},
+};
 use bitcoin::BlockHash;
 use futures::channel::mpsc;
 
@@ -24,7 +34,7 @@ use crate::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain,
         WAIT_POLL_INTERVAL_SUBPROCESS, read_enforcer_log, wait_until_every,
     },
-    test_invalid_block::{DUPLICATE_M1, submit_invalid_block},
+    test_invalid_block::{M1_THEN_INVALID_M4, PHANTOM_PROPOSAL_SLOT, submit_invalid_block},
     util::BinPaths,
 };
 
@@ -62,7 +72,7 @@ pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Resu
 
     tracing::info!("killing enforcer, then mining a consensus-invalid block behind its back");
     post_setup.kill_enforcer().await?;
-    let bad_block_hash = submit_invalid_block(&post_setup, &DUPLICATE_M1).await?;
+    let bad_block_hash = submit_invalid_block(&post_setup, &M1_THEN_INVALID_M4).await?;
     // Bury the bad block under a plain block, so that the catch-up sync meets
     // it mid-chain rather than at the tip, and the reorg must also drop a
     // descendant.
@@ -104,12 +114,34 @@ pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Resu
         "the bad block must be caught by the batch sync path, not the live path"
     );
     anyhow::ensure!(
-        log.contains("M1 sidechain proposal for slot"),
+        log.contains("Invalid votes: expected 1, but found 2"),
         "the sync-path rejection must carry the BIP300 reason"
     );
     anyhow::ensure!(
         log.contains("invalidating block that the enforcer reported as invalid during sync"),
         "the invalidation must be driven by the cusf-enforcer-mempool crate"
+    );
+
+    // The M1 was applied before the M4 rejected the block. It must have been
+    // rolled back with the block, not committed along with the rest of the
+    // sync batch.
+    let phantom_proposals = post_setup
+        .validator_service_client
+        .get_sidechain_proposals(GetSidechainProposalsRequest::default())
+        .await?
+        .into_owned()
+        .sidechain_proposals
+        .into_iter()
+        .filter(|proposal| {
+            proto::unwrap_u32(proposal.sidechain_number.clone())
+                == Some(u32::from(PHANTOM_PROPOSAL_SLOT.0))
+        })
+        .count();
+    anyhow::ensure!(
+        phantom_proposals == 0,
+        "the rejected block's M1 for slot {} leaked into the validator's state \
+         ({phantom_proposals} proposal(s) listed for it)",
+        PHANTOM_PROPOSAL_SLOT.0
     );
 
     // The enforcer must be fully live after the recovery: a block mined on the
