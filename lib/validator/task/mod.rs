@@ -378,8 +378,13 @@ impl BlockHandler<'_> {
         })
     }
 
-    /// Core M4 upvote resolver: for each active sidechain, interprets the vote
-    /// value (index into pending bundles, ABSTAIN `0xFFFF`, or ALARM `0xFFFE`).
+    /// Core M4 upvote resolver: votes are matched to the active sidechains in
+    /// order, each interpreted as an index into that sidechain's pending
+    /// bundles, ABSTAIN `0xFFFF`, or ALARM `0xFFFE`.
+    ///
+    /// BIP 300 caps the vote array at one entry per active sidechain, it does
+    /// not require one: a shorter array votes on the leading slots and leaves
+    /// the trailing ones unvoted, exactly as an explicit ABSTAIN would.
     ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m4-ack-bundle>
     fn handle_m4_votes(
@@ -389,9 +394,9 @@ impl BlockHandler<'_> {
     ) -> Result<diff::AckBundles, error::HandleM4Votes> {
         let dbs = self.dbs;
         let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
-        if upvotes.len() != active_sidechains.len() {
-            return Err(error::HandleM4Votes::InvalidVotes {
-                expected: active_sidechains.len(),
+        if upvotes.len() > active_sidechains.len() {
+            return Err(error::HandleM4Votes::TooManyVotes {
+                active_sidechains: active_sidechains.len(),
                 len: upvotes.len(),
             });
         }
@@ -3724,8 +3729,8 @@ mod tests {
             .expect_err("wrong vote count must error");
         assert!(matches!(
             err,
-            error::HandleM4Votes::InvalidVotes {
-                expected: 1,
+            error::HandleM4Votes::TooManyVotes {
+                active_sidechains: 1,
                 len: 2
             }
         ));
@@ -3734,6 +3739,43 @@ mod tests {
             .handle_m4_votes(&rwtxn, &[0])
             .expect_err("upvote with no pending must error");
         assert!(matches!(err, error::HandleM4Votes::UpvoteFailed { .. }));
+        Ok(())
+    }
+
+    /// BIP 300 caps the M4 vote array at one entry per active sidechain, it
+    /// does not require one. A shortened array votes on the leading slots and
+    /// leaves the trailing ones unvoted; only an oversized array is invalid.
+    #[test]
+    fn handle_m4_votes_shortened_array_leaves_trailing_slots_unvoted() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let (sc0, sc1) = (SidechainNumber(0), SidechainNumber(1));
+        for (slot, sidechain_number) in [(0, sc0), (1, sc1)] {
+            dbs.active_sidechains
+                .put_sidechain(&mut rwtxn, &sidechain_number, &test_sidechain(slot, 0))
+                .into_diagnostic()?;
+        }
+        let m6id = test_m6id(0xAA);
+        dbs.active_sidechains
+            .put_pending_m6id(&mut rwtxn, &sc0, m6id, 0)
+            .into_diagnostic()?;
+
+        let diff = test_handler(&dbs)
+            .handle_m4_votes(&rwtxn, &[0])
+            .into_diagnostic()?;
+        assert!(diff.0.contains_key(&sc0));
+        assert!(!diff.0.contains_key(&sc1));
+
+        let err = test_handler(&dbs)
+            .handle_m4_votes(&rwtxn, &[0, M4AckBundles::ABSTAIN_TWO_BYTES, 0])
+            .expect_err("more votes than active sidechains must error");
+        assert!(matches!(
+            err,
+            error::HandleM4Votes::TooManyVotes {
+                active_sidechains: 2,
+                len: 3
+            }
+        ));
         Ok(())
     }
 
