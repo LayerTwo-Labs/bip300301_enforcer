@@ -56,7 +56,7 @@ build *args='':
 
 fmt:
     cargo +nightly fmt --all
-    bunx prettier --write .
+    bunx prettier@3.9.6 --write . # keep in sync with the CI prettier check
     buf format -w proto
 
 # Run integration tests. `--bitcoind` selects the Bitcoin Core build
