@@ -504,6 +504,9 @@ pub(in crate::validator) enum Sync {
     MissingBackgroundChainstate(#[from] super::chainstates::MissingBackgroundChainstate),
     #[error(transparent)]
     #[fatal(true)]
+    NestedWriteTxn(#[from] env::error::NestedWriteTxn),
+    #[error(transparent)]
+    #[fatal(true)]
     ParseBlockFiles(#[from] parse_block_files::ParseBlockFileError),
     #[error(transparent)]
     #[fatal(true)]
