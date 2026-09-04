@@ -4,7 +4,7 @@ use bitcoin::{
     BlockHash,
     hashes::{Hash as _, sha256d},
 };
-use buffa::MessageField;
+use buffa::{Inline, MessageField};
 use buffa_types::google::protobuf::UInt32Value;
 use connectrpc::{
     ConnectError, RequestContext, Response, ServiceRequest, ServiceResult, ServiceStream,
@@ -153,8 +153,8 @@ fn ensure_bip300_activation_height_reached(
 /// to the RPC that was actually called.
 async fn create_and_persist_sidechain_proposal<Request>(
     producer: &BlockProducer,
-    sidechain_id: MessageField<UInt32Value>,
-    declaration: MessageField<SidechainDeclaration>,
+    sidechain_id: MessageField<UInt32Value, Inline<UInt32Value>>,
+    declaration: MessageField<SidechainDeclaration, Inline<SidechainDeclaration>>,
 ) -> Result<crate::types::SidechainProposal, ConnectError>
 where
     Request: buffa::MessageName,

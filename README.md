@@ -133,17 +133,15 @@ $ RUST_LOG=info,bip300301_enforcer=debug cargo run ...
 
 # Working with the proto files
 
-The proto definitions live in the upstream
-[`LayerTwo-Labs/cusf_sidechain_proto`](https://github.com/LayerTwo-Labs/cusf_sidechain_proto)
-repo. We pin a specific commit in [`buf.gen.yaml`](./buf.gen.yaml) and check the
-generated Rust code into [`lib/proto/generated/`](./lib/proto/generated/).
+The proto definitions are vendored under [`proto/`](./proto/), and the generated
+Rust code is checked in under [`lib/proto/generated/`](./lib/proto/generated/).
 Generation is performed by the remote
 [`buf.build/anthropics/buffa`](https://buf.build/anthropics/buffa) (message
-types) and
-[`buf.build/anthropics/connect-rust`](https://buf.build/anthropics/connect-rust)
-(Connect RPC service stubs) plugins.
+types) and [`buf.build/connectrpc/rust`](https://buf.build/connectrpc/rust)
+(Connect RPC service stubs) plugins, pinned in [`buf.gen.yaml`](./buf.gen.yaml)
+to the versions matching the `buffa` and `connectrpc` crates in `Cargo.toml`.
 
-To regenerate (after bumping the `ref:` in `buf.gen.yaml`):
+To regenerate after editing protos:
 
 ```bash
 $ just generate
