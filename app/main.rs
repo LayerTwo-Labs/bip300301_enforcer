@@ -1671,10 +1671,12 @@ async fn main() -> Result<()> {
         // TODO: should actually move away from needing txindex, but that's for another day.
         let () = node_checks::check_txindex(&mainchain_client).await?;
 
-        let magic = signet_challenge
-            .as_deref()
-            .map(compute_signet_magic)
-            .unwrap_or_else(|| info.chain.magic());
+        // Make sure to pass custom network magic bytes from the network preset, if present
+        let magic = match network_params.network_magic {
+            Some(magic) => bitcoin::p2p::Magic::from_bytes(magic),
+            None => info.chain.magic(),
+        };
+
         let (wallet, wallet_chain_source_init) = Wallet::new(
             &wallet_data_dir,
             &cli,

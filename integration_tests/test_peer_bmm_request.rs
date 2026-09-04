@@ -102,16 +102,32 @@ impl PreSetup {
         self,
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> anyhow::Result<PostSetup> {
+        // A bitcoind build that rebrands the P2P magic cannot handshake with
+        // stock Bitcoin Core, so on those flavors the sender runs the same
+        // rebranded build as the miner. Both enforcers are told the magic:
+        // the sender frames its P2P broadcast to the miner node with it, and
+        // the block-file parser expects it as the per-block prefix.
+        let regtest_magic = crate::setup::bitcoind_regtest_magic();
+        let magic_args: Vec<String> = regtest_magic
+            .iter()
+            .map(|magic| format!("--network-magic={magic}"))
+            .collect();
         let sender = {
             // Use a hostname rather than an IP to exercise DNS resolution of
             // p2p broadcast addresses
-            let enforcer_args = vec![format!(
+            let mut enforcer_args = vec![format!(
                 "--p2p-broadcast-addr=localhost:{}",
                 self.miner.reserved_ports.bitcoind_listen.port()
             )];
+            enforcer_args.extend(magic_args.iter().cloned());
+            let bitcoind_kind = if regtest_magic.is_some() {
+                BitcoindKind::Patched
+            } else {
+                BitcoindKind::Unpatched
+            };
             let setup_opts: SetupOpts = SetupOpts {
                 bitcoind_args: Vec::new(),
-                bitcoind_kind: BitcoindKind::Unpatched,
+                bitcoind_kind,
                 enforcer_args,
                 ..Default::default()
             };
@@ -130,7 +146,7 @@ impl PreSetup {
             let setup_opts: SetupOpts<_> = SetupOpts {
                 bitcoind_args,
                 bitcoind_kind: BitcoindKind::Patched,
-                enforcer_args: Vec::new(),
+                enforcer_args: magic_args.clone(),
                 ..Default::default()
             };
             self.miner

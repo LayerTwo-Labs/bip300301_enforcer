@@ -90,10 +90,6 @@ case "$flavor" in
         # A pinned `drynetN` tag has to be named for setup to fetch that one;
         # `alphanet` is a fixed name that setup always fetches.
         case "$flavor" in drynet*) setup_env=("DRYNET_REVISION=$flavor") ;; esac
-        if [ -n "$("$REPO_ROOT/scripts/setup_integration_tests.sh" \
-            --print-regtest-magic "$flavor")" ]; then
-            skip_patterns=('peer_bmm_request')
-        fi
         ;;
     *)
         echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, alphanet, or all)" >&2

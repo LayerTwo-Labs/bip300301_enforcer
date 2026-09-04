@@ -449,23 +449,18 @@ jobs:
           # them as artifacts when a test fails.
           export TMPDIR="$RUNNER_TEMP/it-logs"
           mkdir -p "$TMPDIR"
-          # A build with custom P2P magic gets is unable to hand-shake with 
-          # stock Bitcoin Core on any network, so peer_bmm_request is skipped.
+          # A build that rebrands the P2P magic cannot handshake with stock
+          # Bitcoin Core. Tests that pair nodes read this and run every node
+          # on the rebranded build, passing the magic to the enforcer.
           export BITCOIND_REGTEST_MAGIC='${{ matrix.regtest_magic }}'
-          SKIP_ARGS=()
-          if [ -n "$BITCOIND_REGTEST_MAGIC" ]; then
-            echo "skipped: peer_bmm_request (build rebrands the P2P magic)"
-            SKIP_ARGS+=(--skip peer_bmm_request)
-          fi
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=0
-            "$INTEGRATION_TEST_RUNNER" --skip deposit_withdraw_roundtrip \
-              ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
+            "$INTEGRATION_TEST_RUNNER" --skip deposit_withdraw_roundtrip
           else
             export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=1
-            "$INTEGRATION_TEST_RUNNER" ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
+            "$INTEGRATION_TEST_RUNNER"
           fi
 
       # Did the run end up with a chain worth caching? A run that never needed
