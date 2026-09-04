@@ -1795,6 +1795,7 @@ impl Wallet {
         message: &PushBytesBuf,
         bid_amount: bdk_wallet::bitcoin::Amount,
         locktime: bdk_wallet::bitcoin::absolute::LockTime,
+        unspendable: Vec<bdk_wallet::bitcoin::OutPoint>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, bdk_wallet::error::CreateTxError> {
         let mut builder = wallet.build_tx();
         // BIP301 requires the M8 OP_RETURN at output zero.
@@ -1802,6 +1803,7 @@ impl Wallet {
         builder.nlocktime(locktime);
         builder.add_data(message);
         builder.fee_absolute(bid_amount);
+        builder.unspendable(unspendable);
         builder.finish()
     }
 
@@ -1837,6 +1839,29 @@ impl Wallet {
         stale
     }
 
+    /// [`Self::evict_stale_bmm_requests`], additionally returning the wallet
+    /// outputs the evicted requests created. Eviction alone does not always
+    /// free those outputs: bdk_chain only honours an eviction for a request
+    /// seen in the mempool, and keeps one whose sole anchor is a block that a
+    /// reorg replaced canonical. Coin selection must therefore be told to
+    /// leave them alone — chaining a bid onto a request that can no longer
+    /// confirm makes the new bid unconfirmable too, since its input only
+    /// exists in a block that will never be mined.
+    fn stale_bmm_request_outputs(
+        wallet: &mut bdk_wallet::Wallet,
+        mainchain_tip: bitcoin::BlockHash,
+    ) -> Vec<bdk_wallet::bitcoin::OutPoint> {
+        let stale = Self::evict_stale_bmm_requests(wallet, mainchain_tip);
+        if stale.is_empty() {
+            return Vec::new();
+        }
+        wallet
+            .list_unspent()
+            .map(|utxo| utxo.outpoint)
+            .filter(|outpoint| stale.contains(&outpoint.txid))
+            .collect()
+    }
+
     async fn build_bmm_tx(
         &self,
         sidechain_number: SidechainNumber,
@@ -1852,10 +1877,26 @@ impl Wallet {
         )?;
 
         let mut wallet_write = self.inner.write_wallet().await?;
+        let mut bdk_db = self.inner.locks.db(&wallet_write).await;
+        // A reorg never reaches the wallet as a disconnect, so a request that
+        // bid on a replaced parent is only swept here. Persist, or a restart
+        // reloads the evicted requests and re-locks their inputs.
+        let unspendable = wallet_write
+            .with_mut(|wallet| {
+                let unspendable =
+                    Self::stale_bmm_request_outputs(wallet, prev_mainchain_block_hash);
+                wallet
+                    .persist_async(&mut bdk_db)
+                    .map_ok(|_: bool| unspendable)
+            })
+            .await?;
+        drop(bdk_db);
         let psbt = tokio::task::block_in_place(|| {
-            wallet_write
-                .with_mut(|wallet| Self::build_bmm_psbt(wallet, &message, bid_amount, locktime))
+            wallet_write.with_mut(|wallet| {
+                Self::build_bmm_psbt(wallet, &message, bid_amount, locktime, unspendable)
+            })
         })?;
+        drop(wallet_write);
 
         Ok(psbt)
     }
@@ -2301,6 +2342,7 @@ mod tests {
             &message,
             bid,
             bitcoin::absolute::LockTime::ZERO,
+            Vec::new(),
         )
         .unwrap();
 
@@ -2324,6 +2366,7 @@ mod tests {
             &message,
             Amount::from_sat(1_000),
             bitcoin::absolute::LockTime::ZERO,
+            Vec::new(),
         )
         .unwrap();
         let tx = psbt.unsigned_tx.clone();
@@ -2353,6 +2396,99 @@ mod tests {
                 .all(|outpoint| wallet.list_unspent().any(|utxo| utxo.outpoint == *outpoint)),
             "evicting the stale bid must free its inputs"
         );
+    }
+
+    /// A header whose hash does not depend on the block's transactions, so a
+    /// BMM request can commit to the block it is about to be mined in.
+    fn test_header(prev_blockhash: BlockHash, nonce: u32) -> bitcoin::block::Header {
+        bitcoin::block::Header {
+            version: bitcoin::block::Version::TWO,
+            prev_blockhash,
+            merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+            time: 0,
+            bits: bitcoin::CompactTarget::from_consensus(0x2000_0000),
+            nonce,
+        }
+    }
+
+    /// A request mined in a block that a reorg replaced can never confirm, yet
+    /// bdk keeps it canonical because its only anchor is that orphaned block.
+    /// A bid for the replacement block must therefore not spend its outputs:
+    /// such a bid could only confirm alongside a parent that will never be
+    /// mined.
+    #[test]
+    fn a_reorged_out_bmm_request_does_not_fund_the_next_bid() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        let parent = wallet.local_chain().tip().block_id();
+        let height = parent.height + 1;
+
+        // A bid on block B, mined in B.
+        let header_b = test_header(parent.hash, 0);
+        let message = M8BmmRequest::data(
+            SidechainNumber(3),
+            BmmCommitment([0x33; 32]),
+            header_b.block_hash(),
+        )
+        .unwrap();
+        let request = Wallet::build_bmm_psbt(
+            &mut wallet,
+            &message,
+            Amount::from_sat(1_000),
+            bitcoin::absolute::LockTime::ZERO,
+            Vec::new(),
+        )
+        .unwrap()
+        .unsigned_tx;
+        let request_txid = request.compute_txid();
+        let block_b = bitcoin::Block {
+            header: header_b,
+            txdata: vec![request],
+        };
+        wallet.apply_block(&block_b, height).unwrap();
+        assert!(
+            wallet
+                .list_unspent()
+                .any(|utxo| utxo.outpoint.txid == request_txid),
+            "the request's change must be the only thing left to bid with"
+        );
+
+        // B' replaces B at the same height, orphaning the request.
+        let block_b_prime = bitcoin::Block {
+            header: test_header(parent.hash, 1),
+            txdata: Vec::new(),
+        };
+        let tip = block_b_prime.block_hash();
+        wallet.apply_block(&block_b_prime, height).unwrap();
+
+        let unspendable = Wallet::stale_bmm_request_outputs(&mut wallet, tip);
+        assert!(
+            wallet.list_unspent().all(|utxo| {
+                utxo.outpoint.txid != request_txid || unspendable.contains(&utxo.outpoint)
+            }),
+            "every output of the orphaned request must be withheld from coin selection"
+        );
+
+        // Nothing else is left to bid with, so this build is expected to fail
+        // on coin selection -- the honest outcome, and better than an
+        // unconfirmable bid. Should bdk ever free the request's inputs on its
+        // own, the bid it can then afford must still not chain onto it.
+        let message =
+            M8BmmRequest::data(SidechainNumber(3), BmmCommitment([0x44; 32]), tip).unwrap();
+        if let Ok(psbt) = Wallet::build_bmm_psbt(
+            &mut wallet,
+            &message,
+            Amount::from_sat(1_000),
+            bitcoin::absolute::LockTime::ZERO,
+            unspendable,
+        ) {
+            assert!(
+                psbt.unsigned_tx
+                    .input
+                    .iter()
+                    .all(|input| input.previous_output.txid != request_txid),
+                "a bid must not chain onto a request that a reorg orphaned"
+            );
+        }
     }
 
     /// A BMM request only counts as an M8 when its OP_RETURN sits at output 0,
