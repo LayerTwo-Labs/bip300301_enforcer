@@ -23,7 +23,7 @@ use bitcoin::{
 };
 use bitcoin_jsonrpsee::{
     client::{GetRawTransactionClient, GetRawTransactionVerbose, MainClient as _},
-    jsonrpsee::http_client::HttpClient,
+    jsonrpsee::{core::ClientError, http_client::HttpClient},
 };
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
@@ -1315,6 +1315,10 @@ impl Wallet {
     pub async fn list_wallet_transactions(
         &self,
     ) -> Result<Vec<BDKWalletTransaction>, error::ListWalletTransactions> {
+        /// `RPC_INVALID_ADDRESS_OR_KEY`: `getrawtransaction` reports an unknown
+        /// txid ("No such mempool or blockchain transaction") with this code.
+        const BITCOIN_CORE_RPC_INVALID_ADDRESS_OR_KEY: i32 = -5;
+
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
             let wallet_read = self.inner.read_wallet().await?;
@@ -1370,7 +1374,7 @@ impl Wallet {
                     continue;
                 }
 
-                let transaction_hex = self
+                let transaction_hex = match self
                     .inner
                     .main_client
                     // TODO: get rid of this. It's kind of absurd that we're calling out to getrawtransaction for every input.
@@ -1382,13 +1386,36 @@ impl Wallet {
                         None,
                     )
                     .await
-                    .map_err(|err| error::ListWalletTransactions::FetchTransaction {
-                        txid: input.previous_output.txid,
-                        source: error::BitcoinCoreRPC {
-                            method: "getrawtransaction".to_string(),
-                            error: err,
-                        },
-                    })?;
+                {
+                    Ok(transaction_hex) => transaction_hex,
+                    // A wallet-local unconfirmed tx can outlive the parent that
+                    // funded it: a reorg that orphans the parent leaves Core
+                    // knowing nothing about it, while the wallet keeps the child
+                    // as canonical. Valuing that one input is impossible, but
+                    // that must not take down the listing of every other wallet
+                    // transaction. Skip it: the input contributes nothing, so
+                    // the fee falls back to zero below.
+                    Err(ClientError::Call(err))
+                        if err.code() == BITCOIN_CORE_RPC_INVALID_ADDRESS_OR_KEY =>
+                    {
+                        tracing::warn!(
+                            %txid,
+                            prev_txid = %input.previous_output.txid,
+                            reason = %err.message(),
+                            "unknown wallet transaction input, skipping",
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(error::ListWalletTransactions::FetchTransaction {
+                            txid: input.previous_output.txid,
+                            source: error::BitcoinCoreRPC {
+                                method: "getrawtransaction".to_string(),
+                                error: err,
+                            },
+                        });
+                    }
+                };
 
                 let prev_output =
                     bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)?;
