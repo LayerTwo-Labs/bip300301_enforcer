@@ -98,6 +98,15 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
 
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
+/// The transactions a block template contributes to a new block, before the
+/// withdrawal-payout suffix is appended.
+struct SelectedBlockTxs {
+    txs: Vec<(Transaction, Amount)>,
+    /// Set when the template does not already end with the withdrawal-payout
+    /// suffix txs, so they have to be generated locally.
+    needs_suffix_txs: bool,
+}
+
 impl BlockProducer {
     async fn fetch_block_template(
         &self,
@@ -121,7 +130,7 @@ impl BlockProducer {
     async fn select_block_txs(
         &self,
         mainchain_tip: BlockHash,
-    ) -> Result<Vec<(Transaction, Amount)>, error::SelectBlockTxs> {
+    ) -> Result<SelectedBlockTxs, error::SelectBlockTxs> {
         let template = self
             .fetch_block_template(vec![
                 "segwit".to_string(),
@@ -145,19 +154,13 @@ impl BlockProducer {
         // respects the enforcer's mempool rules and already ends with the
         // withdrawal-payout suffix txs. A `coinbasevalue` template comes from
         // Bitcoin Core, which knows nothing of drivechain rules, so the suffix
-        // txs must be generated locally.
-        let mut res = match template.coinbase_txn_or_value {
-            CoinbaseTxnOrValue::Txn(_) => Vec::new(),
-            CoinbaseTxnOrValue::ValueSats(_) => {
-                let ctips = self.validator().get_ctips()?;
-                self.generate_suffix_txs(&ctips)
-                    .await?
-                    .into_iter()
-                    .map(|tx| (tx, Amount::ZERO))
-                    .collect()
-            }
-        };
+        // txs must be generated locally, once the template's own txs are known.
+        let needs_suffix_txs = matches!(
+            template.coinbase_txn_or_value,
+            CoinbaseTxnOrValue::ValueSats(_)
+        );
 
+        let mut txs = Vec::with_capacity(template.transactions.len());
         for template_tx in template.transactions {
             let txid = template_tx.txid;
             let transaction: Transaction =
@@ -170,10 +173,35 @@ impl BlockProducer {
                     fee: template_tx.fee,
                 }
             })?;
-            res.push((transaction, fee));
+            txs.push((transaction, fee));
         }
 
-        Ok(res)
+        Ok(SelectedBlockTxs {
+            txs,
+            needs_suffix_txs,
+        })
+    }
+
+    /// The withdrawal-payout suffix for a block that pays out to `coinbase_spk`
+    /// with `coinbase_outputs`, and whose transactions are `transactions`.
+    ///
+    /// An M6 must spend the CTIP as it stands *after* the block's own
+    /// transactions: an M5 deposit in the tx set spends the current CTIP and
+    /// creates its successor, so a suffix built against the pre-block CTIPs
+    /// would spend an outpoint the deposit already spent, and the block would
+    /// be rejected as a double spend.
+    async fn generate_block_suffix_txs(
+        &self,
+        coinbase_spk: ScriptBuf,
+        coinbase_outputs: &[TxOut],
+        transactions: &[Transaction],
+        fees: Amount,
+    ) -> Result<Vec<Transaction>, error::GenerateSuffixTxs> {
+        let block =
+            self.finalize_block(coinbase_spk, coinbase_outputs, transactions.to_vec(), fees)?;
+        let ctips = crate::validator::cusf_enforcer::get_ctips_after(self.validator(), &block)?
+            .map_err(|reason| error::GenerateSuffixTxsInner::TemplateRejected { reason })?;
+        Ok(self.generate_suffix_txs(&ctips).await?)
     }
 
     /// Construct a coinbase tx paying out to `coinbase_spk`.
@@ -668,7 +696,7 @@ impl BlockProducer {
             .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
             .await?;
         let selected = self.select_block_txs(mainchain_tip).await?;
-        let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {
+        let winners = bmm_auction_winners(selected.txs.iter().filter_map(|(tx, fee)| {
             let request = crate::messages::parse_m8_tx(tx)?;
             (request.prev_mainchain_block_hash == mainchain_tip).then(|| {
                 (
@@ -681,8 +709,8 @@ impl BlockProducer {
         }));
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
         let mut fees = Amount::ZERO;
-        let mut transactions = Vec::with_capacity(selected.len());
-        for (tx, fee) in selected {
+        let mut transactions = Vec::with_capacity(selected.txs.len());
+        for (tx, fee) in selected.txs {
             if let Some(request) = crate::messages::parse_m8_tx(&tx) {
                 let txid = tx.compute_txid();
                 if winners
@@ -698,6 +726,21 @@ impl BlockProducer {
             transactions.push(tx);
         }
         let () = coinbase_builder.build()?;
+
+        // The suffix goes *after* the template's own txs, and is built against
+        // the treasury state they leave behind, so that an approved bundle
+        // chains onto the CTIP a deposit in the same block created.
+        if selected.needs_suffix_txs {
+            let suffix_txs = self
+                .generate_block_suffix_txs(
+                    coinbase_spk.clone(),
+                    &coinbase_outputs,
+                    &transactions,
+                    fees,
+                )
+                .await?;
+            transactions.extend(suffix_txs);
+        }
 
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),

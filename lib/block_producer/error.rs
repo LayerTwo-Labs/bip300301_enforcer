@@ -184,11 +184,7 @@ impl ToStatus for GetBlockTemplate {
 #[derive(Debug, Diagnostic, Error)]
 pub enum SelectBlockTxs {
     #[error(transparent)]
-    GenerateSuffixTxs(#[from] GetBundleProposals),
-    #[error(transparent)]
     GetBlockTemplate(#[from] GetBlockTemplate),
-    #[error(transparent)]
-    GetCtips(#[from] crate::validator::GetCtipsError),
     #[error("failed to decode transaction `{txid}` from the block template")]
     DecodeTemplateTransaction {
         txid: bitcoin::Txid,
@@ -215,9 +211,7 @@ pub enum SelectBlockTxs {
 impl ToStatus for SelectBlockTxs {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::GenerateSuffixTxs(err) => err.builder(),
             Self::GetBlockTemplate(err) => err.builder(),
-            Self::GetCtips(err) => err.builder(),
             Self::DecodeTemplateTransaction { .. }
             | Self::NegativeTemplateTransactionFee { .. } => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
@@ -250,6 +244,58 @@ impl ToStatus for FinalizeBlock {
             Self::Script(err) => StatusBuilder::new(err),
             Self::SystemTime(err) => StatusBuilder::new(err),
         }
+    }
+}
+
+#[derive(Debug, Error)]
+pub(in crate::block_producer) enum GenerateSuffixTxsInner {
+    #[error(transparent)]
+    FinalizeBlock(#[from] FinalizeBlock),
+    #[error(transparent)]
+    GetBundleProposals(#[from] GetBundleProposals),
+    #[error(transparent)]
+    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
+    /// The validator rejects the template's transactions on top of its own
+    /// tip. Mining them anyway produces a block that Bitcoin Core accepts and
+    /// this enforcer then rejects, so bail out instead.
+    #[error("block template transactions rejected by the validator: {reason}")]
+    TemplateRejected { reason: String },
+}
+
+impl ToStatus for GenerateSuffixTxsInner {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::FinalizeBlock(err) => err.builder(),
+            Self::GetBundleProposals(err) => err.builder(),
+            Self::GetCtipsAfter(err) => StatusBuilder::new(err),
+            // Retryable: the offending transaction has to leave the node's
+            // mempool before a block can be produced.
+            Self::TemplateRejected { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
+        }
+    }
+}
+
+/// Generating the withdrawal-payout suffix for a block template that does not
+/// come with one.
+#[derive(Debug, Diagnostic, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct GenerateSuffixTxs(GenerateSuffixTxsInner);
+
+impl<Err> From<Err> for GenerateSuffixTxs
+where
+    GenerateSuffixTxsInner: From<Err>,
+{
+    fn from(err: Err) -> Self {
+        Self(err.into())
+    }
+}
+
+impl ToStatus for GenerateSuffixTxs {
+    fn builder(&self) -> StatusBuilder<'_> {
+        self.0.builder()
     }
 }
 
@@ -434,6 +480,8 @@ pub enum GenerateBlock {
     #[error(transparent)]
     GenerateSignetBlock(#[from] GenerateSignetBlock),
     #[error(transparent)]
+    GenerateSuffixTxs(#[from] GenerateSuffixTxs),
+    #[error(transparent)]
     Mine(#[from] Mine),
     #[error(transparent)]
     PushBytesBuf(#[from] bitcoin::script::PushBytesError),
@@ -451,6 +499,7 @@ impl ToStatus for GenerateBlock {
             Self::CoinbaseBuilder(err) => err.builder(),
             Self::GenerateCoinbaseTxouts(err) => err.builder(),
             Self::GenerateSignetBlock(err) => err.builder(),
+            Self::GenerateSuffixTxs(err) => err.builder(),
             Self::Mine(err) => err.builder(),
             Self::SelectBlockTxs(err) => err.builder(),
             Self::TryGetMainchainTip(err) => err.builder(),
