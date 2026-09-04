@@ -544,14 +544,19 @@ impl BlockProducer {
             command_args.push(format!("--set-block-time={next_block_time}"));
         };
 
-        let mut command = miner.command("generate", command_args);
+        let mut command = miner.command("generate", &command_args);
         // Important: avoid lingering mining processes that may loop forever with new requests
         command.kill_on_drop(true);
 
         // We want to stream stdout/stderr as they come in, for investigating hanging processes.
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
-        tracing::debug!("Running signet miner: {:?}", command);
+        // The command's own `Debug` would print the node RPC password, which
+        // the `--cli` argument carries.
+        tracing::debug!(
+            "Running signet miner: {}",
+            miner.display_redacted("generate", &command_args)
+        );
 
         let start = std::time::Instant::now();
         let mut child = command.spawn().map_err(bins::CommandError::from)?;
