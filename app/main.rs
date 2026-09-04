@@ -675,6 +675,11 @@ async fn wait_for_error_or_shutdown<E>(
 /// continuously is not hammered.
 const MEMPOOL_RESYNC_DELAY: Duration = Duration::from_secs(1);
 
+/// Pause between re-syncs that are only waiting for the node to make block
+/// bodies available. Polling an AssumeUTXO background sync at
+/// [`MEMPOOL_RESYNC_DELAY`] for the minutes to hours it runs would be noise.
+const NODE_CATCHUP_RESYNC_DELAY: Duration = Duration::from_secs(30);
+
 /// How a single attempt of a re-syncable task failed.
 enum AttemptError<E> {
     /// Classified by the caller's `is_resyncable`.
@@ -689,7 +694,7 @@ enum AttemptError<E> {
 async fn run_with_resync<E, Fut>(
     task_name: &str,
     cancel: &CancellationToken,
-    is_resyncable: impl Fn(&E) -> bool,
+    is_resyncable: impl Fn(&E) -> error::Resync,
     mut attempt: impl FnMut() -> Fut,
 ) -> Result<(), miette::Report>
 where
@@ -703,7 +708,15 @@ where
     // towards the previous burst.
     const RESYNC_BUDGET_RESET: Duration = Duration::from_secs(60);
 
+    // Waiting on the node is bounded too, just far more generously: a
+    // background chainstate that is not actually advancing must not be polled
+    // forever.
+    const MAX_NODE_CATCHUP_WAIT: Duration = Duration::from_secs(12 * 60 * 60);
+
     let mut consecutive = 0usize;
+    // When the failures are the node still catching up: when that wait
+    // started, and how many attempts it has taken.
+    let mut node_catchup: Option<(std::time::Instant, usize)> = None;
     loop {
         let started = std::time::Instant::now();
         let err = match attempt().await {
@@ -711,27 +724,57 @@ where
             Err(AttemptError::Fatal(err)) => return Err(err),
             Err(AttemptError::Task(err)) => err,
         };
-        if !is_resyncable(&err) || cancel.is_cancelled() {
+        if cancel.is_cancelled() {
             return Err(miette::Report::from_err(err)).wrap_err(task_name.to_owned());
         }
-        if started.elapsed() >= RESYNC_BUDGET_RESET {
-            consecutive = 0;
-        }
-        consecutive += 1;
-        if consecutive > MAX_CONSECUTIVE_RESYNCS {
-            return Err(miette::Report::from_err(err)).wrap_err(format!(
-                "{task_name}: gave up after {MAX_CONSECUTIVE_RESYNCS} consecutive re-syncs"
-            ));
-        }
+        let (delay, attempt_no) = match is_resyncable(&err) {
+            error::Resync::No => {
+                return Err(miette::Report::from_err(err)).wrap_err(task_name.to_owned());
+            }
+            error::Resync::AfterNodeCatchesUp => {
+                let (waiting_since, attempts) =
+                    node_catchup.get_or_insert_with(|| (std::time::Instant::now(), 0));
+                *attempts += 1;
+                if waiting_since.elapsed() >= MAX_NODE_CATCHUP_WAIT {
+                    return Err(miette::Report::from_err(err)).wrap_err(format!(
+                        "{task_name}: gave up waiting {MAX_NODE_CATCHUP_WAIT:?} for the node to \
+                         make the block available"
+                    ));
+                }
+                // The first attempts stay quick, since a body that is merely
+                // mid-write is available again almost immediately. Only once
+                // that has plainly failed is this a background sync, which the
+                // consecutive-resync budget is far too short to wait out.
+                let delay = if *attempts <= MAX_CONSECUTIVE_RESYNCS {
+                    MEMPOOL_RESYNC_DELAY
+                } else {
+                    NODE_CATCHUP_RESYNC_DELAY
+                };
+                (delay, *attempts)
+            }
+            error::Resync::Now => {
+                node_catchup = None;
+                if started.elapsed() >= RESYNC_BUDGET_RESET {
+                    consecutive = 0;
+                }
+                consecutive += 1;
+                if consecutive > MAX_CONSECUTIVE_RESYNCS {
+                    return Err(miette::Report::from_err(err)).wrap_err(format!(
+                        "{task_name}: gave up after {MAX_CONSECUTIVE_RESYNCS} consecutive re-syncs"
+                    ));
+                }
+                (MEMPOOL_RESYNC_DELAY, consecutive)
+            }
+        };
         tracing::warn!(
             err = %ErrorChain::new(&err),
-            attempt = consecutive,
+            attempt = attempt_no,
             "{task_name} failed recoverably, re-syncing",
         );
         tokio::select! {
             biased;
             () = cancel.cancelled() => return Ok(()),
-            () = tokio::time::sleep(MEMPOOL_RESYNC_DELAY) => (),
+            () = tokio::time::sleep(delay) => (),
         }
     }
 }
