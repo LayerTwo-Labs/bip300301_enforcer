@@ -53,10 +53,10 @@ pub(in crate::block_producer) fn bmm_auction_winners(
     winners
 }
 
-/// BMM request cleanup happens after the block has been submitted and observed
-/// by the validator. Keep the mined block as the operation's result even if the
-/// best-effort cleanup fails, so callers are not invited to retry an operation
-/// that has already happened.
+/// BMM request cleanup happens before the block is submitted, so that its undo
+/// snapshot exists before the validator can observe the block. Keep the mined
+/// block as the operation's result even if that best-effort cleanup failed, so
+/// callers are not invited to retry an operation that has already happened.
 fn finish_bmm_request_cleanup(
     block_hash: BlockHash,
     result: Result<(), rusqlite::Error>,
@@ -272,9 +272,11 @@ impl BlockProducer {
         Ok(block)
     }
 
-    /// Mine a block
+    /// Mine a block on top of `prev_blockhash`, consuming the BMM requests
+    /// queued against it.
     async fn mine(
         &self,
+        prev_blockhash: &BlockHash,
         coinbase_spk: ScriptBuf,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
@@ -293,6 +295,39 @@ impl BlockProducer {
         block
             .consensus_encode(&mut block_bytes)
             .map_err(error::EncodeBlock)?;
+        let block_hash = block.header.block_hash();
+        // Consume the BMM requests *before* handing the block to Bitcoin Core.
+        // From that point on the validator may connect and disconnect the block
+        // at any time, and a disconnect restores the requests from the undo
+        // snapshot keyed by `block_hash`. Snapshotting afterwards would let that
+        // restore find an empty undo log, and the late snapshot would then move
+        // the still-live requests under a block hash that is never disconnected
+        // again, stranding them there.
+        let cleanup_result = self
+            .db()
+            .delete_bmm_requests(prev_blockhash, &block_hash)
+            .await;
+        if let Err(err) = self.submit_mined_block(block_bytes).await {
+            // A block Bitcoin Core never took is never connected, and so never
+            // disconnected either: nothing else will ever put the requests
+            // consumed above back.
+            if let Err(restore_err) = self.db().restore_bmm_requests(&block_hash).await {
+                tracing::error!(
+                    %block_hash,
+                    "failed to restore BMM requests for unsubmitted block: {:#}",
+                    ErrorChain::new(&restore_err),
+                );
+            }
+            return Err(err);
+        }
+        tracing::info!(%block_hash, %transaction_count, "Submitted block");
+        let () = self.await_block_connection(block_hash).await?;
+        Ok(finish_bmm_request_cleanup(block_hash, cleanup_result))
+    }
+
+    /// Hand an encoded block to Bitcoin Core, turning a rejection reason into
+    /// an error.
+    async fn submit_mined_block(&self, block_bytes: Vec<u8>) -> Result<(), error::Mine> {
         if let Some(reason) = self
             .main_client()
             .submit_block(hex::encode(block_bytes))
@@ -304,10 +339,7 @@ impl BlockProducer {
         {
             return Err(error::Mine::BlockRejected { reason });
         }
-        let block_hash = block.header.block_hash();
-        tracing::info!(%block_hash, %transaction_count, "Submitted block");
-        let () = self.await_block_connection(block_hash).await?;
-        Ok(block_hash)
+        Ok(())
     }
 
     /// Wait until the validator has processed `block_hash`. A successful
@@ -707,13 +739,15 @@ impl BlockProducer {
         );
 
         let block_hash = self
-            .mine(coinbase_spk, &coinbase_outputs, transactions, fees)
+            .mine(
+                &mainchain_tip,
+                coinbase_spk,
+                &coinbase_outputs,
+                transactions,
+                fees,
+            )
             .await?;
-        let cleanup_result = self
-            .db()
-            .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await;
-        Ok(finish_bmm_request_cleanup(block_hash, cleanup_result))
+        Ok(block_hash)
     }
 }
 

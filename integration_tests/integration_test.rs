@@ -1250,5 +1250,17 @@ pub fn tests(
         crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block,
     ));
 
+    async_trials.push(new_trial_with_setup(
+        crate::test_bmm_request_reorg::TEST_NAME.to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_bmm_request_reorg::test_bmm_request_reorg,
+    ));
+
     async_trials
 }

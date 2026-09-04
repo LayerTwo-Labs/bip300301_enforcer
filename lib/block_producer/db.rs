@@ -659,6 +659,37 @@ mod bmm_requests_undo_tests {
         assert_eq!(restored_side, side.as_byte_array().to_vec());
     }
 
+    /// The undo snapshot has to exist before the produced block can be observed
+    /// as connected, which is why the producer takes it before `submitblock`
+    /// rather than after the block has connected: a disconnect processed in
+    /// between finds an empty undo log, and the snapshot landing afterwards
+    /// then consumes a still-live request for a block that is never
+    /// disconnected again.
+    #[test]
+    fn snapshot_before_disconnect_keeps_bmm_request_recoverable() {
+        let prev = block_hash(1);
+        let mined = block_hash(2);
+
+        // The order the producer uses: the disconnect that can follow
+        // submission at any moment finds the undo rows, and restores from them.
+        let mut connection = open_db();
+        insert_request(&connection, 5, &prev);
+        snapshot_and_delete_bmm_requests(&mut connection, &prev, &mined).unwrap();
+        let restored = restore_bmm_requests_from_undo(&mut connection, &mined).unwrap();
+        assert_eq!(restored, 1);
+        assert_eq!(row_count(&connection, "bmm_requests"), 1);
+
+        // Snapshotting only after the disconnect has been processed strands the
+        // request instead: nothing is restored, and the late snapshot then
+        // consumes a row that is still live.
+        let mut connection = open_db();
+        insert_request(&connection, 5, &prev);
+        let restored = restore_bmm_requests_from_undo(&mut connection, &mined).unwrap();
+        assert_eq!(restored, 0);
+        snapshot_and_delete_bmm_requests(&mut connection, &prev, &mined).unwrap();
+        assert_eq!(row_count(&connection, "bmm_requests"), 0);
+    }
+
     /// Blocks that stay on the main chain (never disconnected) must not
     /// accumulate undo rows without bound: only the most recent
     /// `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing blocks are retained, and the
