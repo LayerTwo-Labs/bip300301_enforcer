@@ -284,7 +284,9 @@ where
 #[derive(Debug, Error)]
 pub enum ListHeadersError {
     #[error(transparent)]
-    Iter(#[from] db::error::Iter),
+    DbGet(#[from] db::error::Get),
+    #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
     #[error(transparent)]
     ReadTxn(#[from] env::error::ReadTxn),
 }
@@ -683,36 +685,37 @@ impl Validator {
         }
     }
 
-    // Lists known block heights and their corresponding header hashes in ascending order.
+    // Lists active chain block heights and their corresponding header hashes
+    // in ascending order.
     pub fn list_headers(
         &self,
         start_height: u32,
     ) -> Result<Vec<(u32, BlockHash)>, ListHeadersError> {
         let rotxn = self.dbs.read_txn()?;
-        let mut res: Vec<(u32, BlockHash)> = self
-            .dbs
-            .block_hashes
-            .height()
-            .iter(&rotxn)
-            .map_err(db::error::Iter::from)?
-            .filter_map(|(block_hash, height)| {
-                if height >= start_height {
-                    Ok(Some((height, block_hash)))
-                } else {
-                    Ok(None)
-                }
-            })
-            .collect()
-            .map_err(db::error::Iter::from)?;
+        // Not synced yet, so there is no active chain to list.
+        let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
+            return Ok(Vec::new());
+        };
+        // Headers on stale branches are never removed, so once a fork has been
+        // seen, the height DB holds several hashes at the same height. Walk
+        // back from the tip instead of iterating that DB, so that exactly one
+        // header is listed per height, as consumers (the wallet checkpoint)
+        // require strictly increasing heights.
+        let heights = self.dbs.block_hashes.height();
+        let mut ancestors = self.dbs.block_hashes.ancestor_headers(&rotxn, tip);
+        let mut res = Vec::new();
+        while let Some((block_hash, _header)) = ancestors.next()? {
+            let height = heights.get(&rotxn, &block_hash)?;
+            if height < start_height {
+                break;
+            }
+            res.push((height, block_hash));
+        }
+        res.reverse();
 
-        res.sort_by_key(|(height, _)| *height);
-
-        debug_assert!(
-            res.clone()
-                .is_sorted_by(|(first_height, _), (second_height, _)| {
-                    first_height < second_height
-                })
-        );
+        debug_assert!(res.is_sorted_by(|(first_height, _), (second_height, _)| {
+            first_height < second_height
+        }));
         Ok(res)
     }
 
@@ -820,24 +823,7 @@ mod ctip_sequence_number_tests {
     use bitcoin::{Amount, OutPoint, Txid, hashes::Hash as _};
 
     use super::*;
-    use crate::types::Ctip;
-
-    fn dummy_validator(dir: &std::path::Path) -> Validator {
-        let mainchain_client = jsonrpsee::http_client::HttpClientBuilder::default()
-            .build("http://127.0.0.1:1")
-            .expect("build dummy rpc client");
-        let mainchain_rest_client =
-            MainRestClient::new(url::Url::parse("http://127.0.0.1:1").expect("valid url"));
-        Validator::new(
-            mainchain_client,
-            Some(mainchain_rest_client),
-            None,
-            dir,
-            bitcoin::Network::Regtest,
-            NetworkParams::for_network(bitcoin::Network::Regtest),
-        )
-        .expect("construct validator")
-    }
+    use crate::{types::Ctip, validator::test_utils::dummy_validator};
 
     #[tokio::test]
     async fn get_ctip_sequence_number_after_disconnecting_last_ctip_is_none() {
@@ -869,5 +855,77 @@ mod ctip_sequence_number_tests {
         rwtxn.commit().unwrap();
 
         assert_eq!(validator.get_ctip_sequence_number(sc).unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod list_headers_tests {
+    use bitcoin::hashes::Hash as _;
+
+    use super::*;
+    use crate::validator::test_utils::{dummy_validator, test_block_header};
+
+    /// Headers on stale branches are never removed, so a fork leaves two
+    /// headers at the same height. Only the active chain may be listed: the
+    /// wallet builds a checkpoint out of the result, which requires strictly
+    /// increasing heights.
+    #[test]
+    fn list_headers_lists_active_chain_only() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let validator = dummy_validator(dir.path());
+        let header0 = test_block_header(BlockHash::all_zeros());
+        let header1a = test_block_header(header0.block_hash());
+        // Sibling of `header1a`, on the branch that lost.
+        let mut header1b = test_block_header(header0.block_hash());
+        header1b.nonce = 1;
+        let header2 = test_block_header(header1a.block_hash());
+
+        let mut rwtxn = validator.dbs.write_txn().unwrap();
+        validator
+            .dbs
+            .block_hashes
+            .put_headers(
+                &mut rwtxn,
+                &[(header0, 0), (header1a, 1), (header1b, 1), (header2, 2)],
+            )
+            .unwrap();
+        validator
+            .dbs
+            .current_chain_tip
+            .put(&mut rwtxn, &(), &header2.block_hash())
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        assert_eq!(
+            validator.list_headers(0).unwrap(),
+            vec![
+                (0, header0.block_hash()),
+                (1, header1a.block_hash()),
+                (2, header2.block_hash()),
+            ],
+            "the stale header at height 1 must not be listed"
+        );
+        assert_eq!(
+            validator.list_headers(2).unwrap(),
+            vec![(2, header2.block_hash())],
+            "headers below `start_height` must not be listed"
+        );
+    }
+
+    #[test]
+    fn list_headers_without_chain_tip_is_empty() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let validator = dummy_validator(dir.path());
+        let header0 = test_block_header(BlockHash::all_zeros());
+
+        let mut rwtxn = validator.dbs.write_txn().unwrap();
+        validator
+            .dbs
+            .block_hashes
+            .put_headers(&mut rwtxn, &[(header0, 0)])
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        assert!(validator.list_headers(0).unwrap().is_empty());
     }
 }
