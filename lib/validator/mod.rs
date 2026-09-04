@@ -84,6 +84,26 @@ impl ToStatus for TryGetCtipError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum TryGetCtipWithSequenceError {
+    #[error(transparent)]
+    DbGet(#[from] db::error::Get),
+    #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] env::error::ReadTxn),
+}
+
+impl ToStatus for TryGetCtipWithSequenceError {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::DbGet(err) => StatusBuilder::new(err),
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetCtipsError {
     #[error(transparent)]
     DbIter(#[from] db::error::Iter),
@@ -548,6 +568,35 @@ impl Validator {
         Ok(ctip)
     }
 
+    /// Returns `Some` with the Ctip for the given sidechain number, and the
+    /// sequence number of that Ctip. `None` if there's no Ctip for the given
+    /// sidechain number.
+    /// Both are read within a single snapshot, so that the returned Ctip and
+    /// sequence number are always consistent with each other.
+    pub fn try_get_ctip_with_sequence(
+        &self,
+        sidechain_number: SidechainNumber,
+    ) -> Result<Option<(Ctip, u64)>, TryGetCtipWithSequenceError> {
+        let rotxn = self.dbs.read_txn()?;
+        let Some(ctip) = self
+            .dbs
+            .active_sidechains
+            .ctip()
+            .try_get(&rotxn, &sidechain_number)?
+        else {
+            return Ok(None);
+        };
+        // `ctip_outpoint_to_value_seq` is always written in the same txn as
+        // `ctip`, so within this snapshot an entry for the Ctip outpoint
+        // must exist.
+        let (_sidechain_number, _value, sequence_number) = self
+            .dbs
+            .active_sidechains
+            .ctip_outpoint_to_value_seq()
+            .get(&rotxn, &ctip.outpoint)?;
+        Ok(Some((ctip, sequence_number)))
+    }
+
     /// Returns the Ctip for the specified sidechain, or an error
     /// if there is no Ctip.
     pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
@@ -869,5 +918,54 @@ mod ctip_sequence_number_tests {
         rwtxn.commit().unwrap();
 
         assert_eq!(validator.get_ctip_sequence_number(sc).unwrap(), None);
+    }
+
+    /// The sequence number returned alongside a Ctip must be the sequence
+    /// number of that exact Ctip, and not whatever the sequence number
+    /// happens to be at the time of a second, independent read.
+    #[tokio::test]
+    async fn try_get_ctip_with_sequence_pairs_ctip_with_its_own_sequence() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let validator = dummy_validator(dir.path());
+        let sc = SidechainNumber(1);
+        let ctip = |txid_byte: u8| Ctip {
+            outpoint: OutPoint {
+                txid: Txid::from_byte_array([txid_byte; 32]),
+                vout: 0,
+            },
+            value: Amount::from_sat(1_000),
+        };
+
+        assert!(validator.try_get_ctip_with_sequence(sc).unwrap().is_none());
+
+        for (idx, txid_byte) in [0x33, 0x44, 0x55].into_iter().enumerate() {
+            let mut rwtxn = validator.dbs.write_txn().unwrap();
+            validator
+                .dbs
+                .active_sidechains
+                .put_ctip(&mut rwtxn, sc, &ctip(txid_byte))
+                .unwrap();
+            rwtxn.commit().unwrap();
+
+            let (res_ctip, res_sequence_number) =
+                validator.try_get_ctip_with_sequence(sc).unwrap().unwrap();
+            assert_eq!(res_ctip.outpoint, ctip(txid_byte).outpoint);
+            assert_eq!(res_sequence_number, idx as u64);
+        }
+
+        // Disconnecting the last Ctip must yield the previous Ctip paired
+        // with the previous sequence number.
+        let mut rwtxn = validator.dbs.write_txn().unwrap();
+        validator
+            .dbs
+            .active_sidechains
+            .delete_ctip(&mut rwtxn, sc)
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        let (res_ctip, res_sequence_number) =
+            validator.try_get_ctip_with_sequence(sc).unwrap().unwrap();
+        assert_eq!(res_ctip.outpoint, ctip(0x44).outpoint);
+        assert_eq!(res_sequence_number, 1);
     }
 }
