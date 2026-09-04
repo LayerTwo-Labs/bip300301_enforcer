@@ -170,6 +170,17 @@ where
         crate::messages::create_sidechain_proposal(sidechain_id, &declaration).map_err(
             |err: bitcoin::script::PushBytesError| ConnectError::unknown(format!("{err:#}")),
         )?;
+    // The coinbase carrying the M1 has to fit in a block. A proposal too large
+    // to mine can never confirm, and -- since a pending proposal is only
+    // cleared by the block that includes it -- would stop this node from
+    // producing blocks at all for as long as it sits in the DB.
+    if description.0.len() > crate::messages::MAX_SIDECHAIN_DESCRIPTION_SIZE {
+        return Err(ConnectError::invalid_argument(format!(
+            "sidechain declaration serializes to {} bytes; at most {} fit in a coinbase",
+            description.0.len(),
+            crate::messages::MAX_SIDECHAIN_DESCRIPTION_SIZE,
+        )));
+    }
     tracing::info!("Created sidechain proposal TX output: {:?}", proposal_txout);
     let sidechain_proposal = crate::types::SidechainProposal {
         sidechain_number: sidechain_id,
