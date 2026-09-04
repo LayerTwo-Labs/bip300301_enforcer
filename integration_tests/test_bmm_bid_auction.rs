@@ -1,6 +1,7 @@
 //! Competing BMM bids must resolve to one M7 accept per slot, with the
-//! highest bid winning, losers excluded from the block, stale requests kept
-//! out of later blocks, and losing bids evicted from the enforcer wallet.
+//! highest bid winning, losers excluded from the block together with their
+//! descendants, stale requests kept out of later blocks, and losing bids
+//! evicted from the enforcer wallet.
 //!
 //! The enforcer wallet places at most one bid per tip: a second unconfirmed
 //! bid from the same BDK wallet either chains onto or conflicts with the
@@ -56,6 +57,9 @@ const BIG_LOW_FEERATE_BID: u64 = 30_000;
 /// Inflates the big bid to roughly 10x the small bid's size, putting its fee
 /// rate well below the small bid's.
 const BIG_BID_PAD_OUTPUTS: usize = 40;
+/// The absolute fee of the transaction spending the losing bid's change. If it
+/// were mined, the coinbase would collect it.
+const CHILD_FEE: u64 = 1_000;
 
 fn h_star(label: &str) -> [u8; 32] {
     bitcoin::hashes::sha256::Hash::hash(label.as_bytes()).to_byte_array()
@@ -220,6 +224,57 @@ async fn craft_core_bid(
     Ok(txid)
 }
 
+/// Spend `parent`'s change output — output one, as [`craft_core_bid`] lays it
+/// out — through Bitcoin Core's wallet, returning the child's txid. A losing
+/// bid must leave the block together with its descendants: keeping a child
+/// whose parent was dropped would submit a block with a missing input.
+async fn craft_child_spend(post_setup: &PostSetup, parent: Txid) -> anyhow::Result<Txid> {
+    let parent_tx = get_raw_transaction(post_setup, &parent).await?;
+    let change = parent_tx
+        .output
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("crafted bid {parent} has no change output"))?
+        .value;
+    let address = post_setup
+        .bitcoin_cli
+        .command::<String, _, String, _, _>([], "getnewaddress", [])
+        .run_utf8()
+        .await?
+        .trim()
+        .to_owned();
+    let inputs = serde_json::json!([{"txid": parent.to_string(), "vout": 1}]).to_string();
+    let amount = format!("{:.8}", (change - Amount::from_sat(CHILD_FEE)).to_btc());
+    let mut output = serde_json::Map::new();
+    output.insert(address, serde_json::Value::String(amount));
+    let outputs = serde_json::Value::Array(vec![serde_json::Value::Object(output)]).to_string();
+    let raw = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "createrawtransaction", [inputs, outputs])
+        .run_utf8()
+        .await?;
+    let signed_json = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "signrawtransactionwithwallet", [raw.trim().to_owned()])
+        .run_utf8()
+        .await?;
+    let signed: serde_json::Value = serde_json::from_str(&signed_json)?;
+    anyhow::ensure!(
+        signed["complete"].as_bool() == Some(true),
+        "failed to sign the child of {parent}: {signed}"
+    );
+    let signed_hex = signed["hex"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("signrawtransactionwithwallet returned no hex"))?;
+    let txid = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "sendrawtransaction", [signed_hex.to_owned()])
+        .run_utf8()
+        .await?
+        .trim()
+        .parse::<Txid>()?;
+    Ok(txid)
+}
+
 async fn get_raw_transaction(
     post_setup: &PostSetup,
     txid: &Txid,
@@ -367,7 +422,8 @@ fn coinbase_value(block: &bitcoin::Block) -> Amount {
 
 /// * Round 1: the enforcer outbids a crafted bid on slot 0 while a lone
 ///   crafted bid takes slot 1; one block settles both slots, excludes the
-///   loser, and (self-mining mode) collects the winning bids as fees
+///   loser and the transaction spending its change, and (self-mining mode)
+///   collects the winning bids as fees
 /// * The stale losing bid stays out of the next block
 /// * Round 2: a crafted outside bid outbids the enforcer's own bid, and the
 ///   losing bid's inputs are freed in the wallet
@@ -447,10 +503,18 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         0,
     )
     .await?;
-    tracing::info!(%high_txid, %low_txid, %other_txid, "Placed round 1 bids");
+    // A plain transaction spending the losing bid's change. It is a valid
+    // mempool transaction on its own, so generic tx selection offers it
+    // alongside its parent.
+    let low_child_txid = craft_child_spend(&post_setup, low_txid).await?;
+    tracing::info!(%high_txid, %low_txid, %low_child_txid, %other_txid, "Placed round 1 bids");
     if let Mode::GetBlockTemplate = mode {
-        let () =
-            wait_for_template_txs(&post_setup, vec![high_txid, other_txid], vec![low_txid]).await?;
+        let () = wait_for_template_txs(
+            &post_setup,
+            vec![high_txid, other_txid],
+            vec![low_txid, low_child_txid],
+        )
+        .await?;
     }
 
     let (auction_block, auction_height) =
@@ -463,6 +527,10 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     anyhow::ensure!(
         !auction_txids.contains(&low_txid),
         "the losing slot 0 bid must not be included in the block"
+    );
+    anyhow::ensure!(
+        !auction_txids.contains(&low_child_txid),
+        "a descendant of the losing bid must be dropped with its parent"
     );
     let m7s = coinbase_m7_accepts(&auction_block)?;
     anyhow::ensure!(
@@ -494,11 +562,13 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     }
     tracing::info!("Round 1: auction block settled both slots correctly");
 
-    // The losing bid is now stale, but still sits in Bitcoin Core's mempool.
+    // The losing bid is now stale, but still sits in Bitcoin Core's mempool,
+    // as does the transaction spending its change.
     let (empty_block, _) = mine_and_check_commitment(&mut post_setup, None).await?;
+    let empty_txids = block_txids(&empty_block);
     anyhow::ensure!(
-        !block_txids(&empty_block).contains(&low_txid),
-        "the stale losing bid must not be included in a later block"
+        !empty_txids.contains(&low_txid) && !empty_txids.contains(&low_child_txid),
+        "the stale losing bid and its descendant must not be included in a later block"
     );
     anyhow::ensure!(
         coinbase_m7_accepts(&empty_block)?.is_empty(),

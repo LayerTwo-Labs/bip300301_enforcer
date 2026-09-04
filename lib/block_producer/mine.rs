@@ -34,7 +34,7 @@ use crate::{
     bins::{self, CommandExt as _},
     block_producer::{BlockProducer, error},
     errors::ErrorChain,
-    messages::CoinbaseBuilder,
+    messages::{CoinbaseBuilder, M8BmmRequest},
     types::{BmmCommitment, SidechainNumber},
 };
 
@@ -51,6 +51,45 @@ pub(in crate::block_producer) fn bmm_auction_winners(
         }
     }
     winners
+}
+
+/// Settle the BMM auction over a topologically ordered tx set: drop every
+/// losing bid, and with it every descendant of a losing bid, so that the block
+/// never contains a tx whose parent has been excluded. This mirrors the served
+/// template path, where excluded bids drop together with their descendants when
+/// the template is built.
+///
+/// Returns the retained txs with their fees, and the BMM requests to accept in
+/// the coinbase, both in the input's order.
+fn drop_auction_losers(
+    selected: Vec<(Transaction, Amount)>,
+    winners: &HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)>,
+) -> (Vec<(Transaction, Amount)>, Vec<M8BmmRequest>) {
+    let mut dropped: HashSet<Txid> = HashSet::new();
+    let mut retained = Vec::with_capacity(selected.len());
+    let mut bmm_accepts = Vec::new();
+    for (tx, fee) in selected {
+        let txid = tx.compute_txid();
+        let request = crate::messages::parse_m8_tx(&tx);
+        let is_loser = request.as_ref().is_some_and(|request| {
+            winners
+                .get(&request.sidechain_number)
+                .is_none_or(|(_, winner_txid, _)| *winner_txid != txid)
+        });
+        let spends_dropped = tx
+            .input
+            .iter()
+            .any(|input| dropped.contains(&input.previous_output.txid));
+        if is_loser || spends_dropped {
+            dropped.insert(txid);
+            continue;
+        }
+        if let Some(request) = request {
+            bmm_accepts.push(request);
+        }
+        retained.push((tx, fee));
+    }
+    (retained, bmm_accepts)
 }
 
 /// BMM request cleanup happens after the block has been submitted and observed
@@ -679,21 +718,14 @@ impl BlockProducer {
                 )
             })
         }));
+        let (selected, bmm_accepts) = drop_auction_losers(selected, &winners);
         let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
+        for request in bmm_accepts {
+            coinbase_builder.bmm_accept(request.sidechain_number, request.sidechain_block_hash)?;
+        }
         let mut fees = Amount::ZERO;
         let mut transactions = Vec::with_capacity(selected.len());
         for (tx, fee) in selected {
-            if let Some(request) = crate::messages::parse_m8_tx(&tx) {
-                let txid = tx.compute_txid();
-                if winners
-                    .get(&request.sidechain_number)
-                    .is_none_or(|(_, winner_txid, _)| *winner_txid != txid)
-                {
-                    continue;
-                }
-                coinbase_builder
-                    .bmm_accept(request.sidechain_number, request.sidechain_block_hash)?;
-            }
             fees += fee;
             transactions.push(tx);
         }
@@ -719,10 +751,16 @@ impl BlockProducer {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::{Amount, BlockHash, Txid, hashes::Hash as _};
+    use bitcoin::{
+        Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, absolute::LockTime,
+        hashes::Hash as _, transaction::Version as TxVersion,
+    };
 
-    use super::{bmm_auction_winners, finish_bmm_request_cleanup};
-    use crate::types::{BmmCommitment, SidechainNumber};
+    use super::{bmm_auction_winners, drop_auction_losers, finish_bmm_request_cleanup};
+    use crate::{
+        messages::M8BmmRequest,
+        types::{BmmCommitment, SidechainNumber},
+    };
 
     #[test]
     fn highest_bmm_fee_wins_each_sidechain_slot() {
@@ -753,6 +791,73 @@ mod tests {
 
         assert_eq!(winners[&slot].1, high_txid);
         assert_eq!(winners[&SidechainNumber(8)].1, other_txid);
+    }
+
+    /// A tx spending `parents`, with `spk` as its first output.
+    fn tx_spending(parents: &[Txid], spk: ScriptBuf) -> Transaction {
+        Transaction {
+            version: TxVersion::TWO,
+            lock_time: LockTime::ZERO,
+            input: parents
+                .iter()
+                .map(|txid| TxIn {
+                    previous_output: OutPoint {
+                        txid: *txid,
+                        vout: 0,
+                    },
+                    ..TxIn::default()
+                })
+                .collect(),
+            output: vec![TxOut {
+                script_pubkey: spk,
+                value: Amount::ZERO,
+            }],
+        }
+    }
+
+    #[test]
+    fn losing_bid_drops_its_descendants() {
+        let slot = SidechainNumber(7);
+        let tip = BlockHash::from_byte_array([9; 32]);
+        let winner_commitment = BmmCommitment([1; 32]);
+        let loser_commitment = BmmCommitment([2; 32]);
+        let m8_tx = |commitment| {
+            let spk = M8BmmRequest::script_pubkey(slot, commitment, tip).unwrap();
+            tx_spending(&[Txid::from_byte_array([4; 32])], spk)
+        };
+        let winner_tx = m8_tx(winner_commitment);
+        let loser_tx = m8_tx(loser_commitment);
+        let winner_txid = winner_tx.compute_txid();
+        let loser_txid = loser_tx.compute_txid();
+        // A plain tx spending the losing bid's change, and its own child.
+        let child_tx = tx_spending(&[loser_txid], ScriptBuf::new());
+        let grandchild_tx = tx_spending(&[child_tx.compute_txid()], ScriptBuf::new());
+
+        let winner_bid = Amount::from_sat(2_000);
+        let loser_bid = Amount::from_sat(1_000);
+        let winners = bmm_auction_winners([
+            (slot, winner_commitment, winner_txid, winner_bid),
+            (slot, loser_commitment, loser_txid, loser_bid),
+        ]);
+        let (retained, bmm_accepts) = drop_auction_losers(
+            vec![
+                (winner_tx, winner_bid),
+                (loser_tx, loser_bid),
+                (child_tx, Amount::from_sat(500)),
+                (grandchild_tx, Amount::from_sat(250)),
+            ],
+            &winners,
+        );
+
+        let retained_txids: Vec<_> = retained.iter().map(|(tx, _)| tx.compute_txid()).collect();
+        assert_eq!(retained_txids, vec![winner_txid]);
+        let mut fees = Amount::ZERO;
+        for (_, fee) in &retained {
+            fees += *fee;
+        }
+        assert_eq!(fees, winner_bid);
+        assert_eq!(bmm_accepts.len(), 1);
+        assert_eq!(bmm_accepts[0].sidechain_block_hash, winner_commitment);
     }
 
     #[test]
