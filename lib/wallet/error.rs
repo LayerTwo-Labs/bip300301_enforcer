@@ -971,6 +971,9 @@ impl ToStatus for ListSidechainDepositTransactions {
 
 #[derive(Diagnostic, Debug, Error)]
 pub enum CreateSendPsbt {
+    #[diagnostic(code(create_send_transaction_build_fee_bump))]
+    #[error("cannot replace transaction")]
+    BuildFeeBump(#[source] bdk_wallet::error::BuildFeeBumpError),
     #[error(transparent)]
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     #[error(transparent)]
@@ -985,7 +988,7 @@ pub enum CreateSendPsbt {
 impl ToStatus for CreateSendPsbt {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::UnknownUTXO(_) => {
+            Self::BuildFeeBump(_) | Self::UnknownUTXO(_) => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
             }
             Self::NotUnlocked(err) => err.builder(),
