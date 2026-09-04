@@ -1,5 +1,5 @@
 use bitcoin::OutPoint;
-use buffa::MessageField;
+use buffa::{Inline, MessageField};
 use buffa_types::google::protobuf::{StringValue, Timestamp, UInt32Value, UInt64Value};
 use connectrpc::{ConnectError, error::ErrorCode};
 use thiserror::Error;
@@ -332,28 +332,28 @@ impl From<Error> for ConnectError {
     }
 }
 
-pub fn wrap_string(value: impl Into<String>) -> MessageField<StringValue> {
+pub fn wrap_string(value: impl Into<String>) -> MessageField<StringValue, Inline<StringValue>> {
     MessageField::some(StringValue {
         value: value.into(),
         ..Default::default()
     })
 }
 
-pub fn wrap_u32(value: u32) -> MessageField<UInt32Value> {
+pub fn wrap_u32(value: u32) -> MessageField<UInt32Value, Inline<UInt32Value>> {
     MessageField::some(UInt32Value {
         value,
         ..Default::default()
     })
 }
 
-pub fn wrap_u64(value: u64) -> MessageField<UInt64Value> {
+pub fn wrap_u64(value: u64) -> MessageField<UInt64Value, Inline<UInt64Value>> {
     MessageField::some(UInt64Value {
         value,
         ..Default::default()
     })
 }
 
-pub fn wrap_timestamp(seconds: i64) -> MessageField<Timestamp> {
+pub fn wrap_timestamp(seconds: i64) -> MessageField<Timestamp, Inline<Timestamp>> {
     MessageField::some(Timestamp {
         seconds,
         nanos: 0,
@@ -361,15 +361,15 @@ pub fn wrap_timestamp(seconds: i64) -> MessageField<Timestamp> {
     })
 }
 
-pub fn unwrap_string(field: MessageField<StringValue>) -> Option<String> {
+pub fn unwrap_string(field: MessageField<StringValue, Inline<StringValue>>) -> Option<String> {
     field.into_option().map(|sv| sv.value)
 }
 
-pub fn unwrap_u32(field: MessageField<UInt32Value>) -> Option<u32> {
+pub fn unwrap_u32(field: MessageField<UInt32Value, Inline<UInt32Value>>) -> Option<u32> {
     field.into_option().map(|uv| uv.value)
 }
 
-pub fn unwrap_u64(field: MessageField<UInt64Value>) -> Option<u64> {
+pub fn unwrap_u64(field: MessageField<UInt64Value, Inline<UInt64Value>>) -> Option<u64> {
     field.into_option().map(|uv| uv.value)
 }
 

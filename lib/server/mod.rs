@@ -1,4 +1,4 @@
-use buffa::MessageField;
+use buffa::{Inline, MessageField};
 use buffa_types::google::protobuf::UInt32Value;
 use connectrpc::ConnectError;
 
@@ -32,7 +32,7 @@ pub(crate) fn internal_err<E: std::fmt::Display>(err: E) -> ConnectError {
 /// Decode a `MessageField<UInt32Value>` sidechain id from a request, mapping any
 /// failure to a `ConnectError` carrying the message's name.
 pub(crate) fn parse_sidechain_id<Message: buffa::MessageName>(
-    field: MessageField<UInt32Value>,
+    field: MessageField<UInt32Value, Inline<UInt32Value>>,
     field_name: &str,
 ) -> Result<SidechainNumber, ConnectError> {
     let raw =

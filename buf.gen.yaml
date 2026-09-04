@@ -10,7 +10,7 @@ inputs:
   - directory: proto
 
 plugins:
-  - remote: buf.build/anthropics/buffa:v0.8.0
+  - remote: buf.build/anthropics/buffa:v0.9.1
     out: lib/proto/generated/buffa
     # NB: `reflect_mode=bridge` needs the plugin to see the full file closure
     # in one invocation, or the embedded descriptor pools will not cover the
@@ -23,7 +23,7 @@ plugins:
       - json=true # serde impls for the Connect JSON wire format
       - views=true # zero-copy *View types used by handler signatures
       - reflect_mode=bridge # embed descriptors + emit descriptor_pool(), drives gRPC reflection
-  - remote: buf.build/anthropics/connect-rust:v0.7.0
+  - remote: buf.build/connectrpc/rust:v0.9.0
     out: lib/proto/generated/connect
     opt:
       - file_per_package

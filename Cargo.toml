@@ -27,17 +27,17 @@ bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.100"
 bitcoin-send-tx-p2p = "0.3.0"
-buffa = { version = "0.8", features = ["json"] }
+buffa = { version = "0.9", features = ["json"] }
 # `reflect` is needed by the `reflect_mode=bridge` generated code, which embeds
 # descriptors and exposes `descriptor_pool()` for gRPC server reflection.
-buffa-descriptor = { version = "0.8", features = ["reflect"] }
-buffa-types = { version = "0.8", features = ["json"] }
+buffa-descriptor = { version = "0.9", features = ["reflect"] }
+buffa-types = { version = "0.9", features = ["json"] }
 byteorder = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
-connectrpc = "0.8"
-connectrpc-health = "0.8"
-connectrpc-reflection = "0.8"
+connectrpc = "0.9"
+connectrpc-health = "0.9"
+connectrpc-reflection = "0.9"
 derive_more = "2.0.1"
 dotenvy = "0.15.7"
 either = "1.16.0"
@@ -49,7 +49,6 @@ heed = "0.22.0"
 heed-types = "0.21.0"
 hex = "0.4.3"
 http = "1.4.2"
-http-body = "1.0"
 jiff = { version = "0.2.28", default-features = false }
 jsonrpsee = "0.26.0"
 libtest-mimic = "0.8.2"
