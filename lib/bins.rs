@@ -8,8 +8,15 @@ use crate::proto::{StatusBuilder, ToStatus};
 pub enum CommandError {
     #[error(transparent)]
     FromUtf8(#[from] std::string::FromUtf8Error),
+    // Commands are invoked with the node's RPC credentials in their argv (see
+    // `BitcoinCli::default_args`), which a failing child can echo back at us on
+    // stderr, so the message is redacted before it reaches a log or a gRPC
+    // status.
     #[error("{}", match std::str::from_utf8(.0) {
-        Ok(err_msg) => format!("Command failed with error: `{err_msg}`"),
+        Ok(err_msg) => {
+            let err_msg = crate::cli::redact_rpc_credentials(err_msg);
+            format!("Command failed with error: `{err_msg}`")
+        },
         Err(_) => {
             let stderr_hex = hex::encode(.0);
             format!("Command failed with stderr hex: `{stderr_hex}`")
@@ -51,7 +58,7 @@ impl CommandExt for tokio::process::Command {
         if output.status.success() {
             if !output.stderr.is_empty() {
                 let stderr = match String::from_utf8(output.stderr) {
-                    Ok(err_msgs) => err_msgs,
+                    Ok(err_msgs) => crate::cli::redact_rpc_credentials(&err_msgs).into_owned(),
                     Err(err) => hex::encode(err.into_bytes()),
                 };
                 tracing::warn!("Command ran successfully, but stderr was not empty: `{stderr}`")

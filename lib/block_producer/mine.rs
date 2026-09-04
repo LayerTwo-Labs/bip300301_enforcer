@@ -551,7 +551,12 @@ impl BlockProducer {
         // We want to stream stdout/stderr as they come in, for investigating hanging processes.
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
-        tracing::debug!("Running signet miner: {:?}", command);
+        // The miner is handed `bitcoin-cli`'s full command line, RPC password
+        // included, so the command cannot be logged verbatim.
+        tracing::debug!(
+            "Running signet miner: {}",
+            crate::cli::redact_rpc_credentials(&format!("{command:?}"))
+        );
 
         let start = std::time::Instant::now();
         let mut child = command.spawn().map_err(bins::CommandError::from)?;
@@ -580,6 +585,11 @@ impl BlockProducer {
             let mut lines = reader.lines();
             let mut collected = String::new();
             while let Ok(Some(line)) = lines.next_line().await {
+                // A failing miner prints a `CalledProcessError` whose repr
+                // contains the `bitcoin-cli` argv, RPC password included, so
+                // the credentials go before the line is logged or collected
+                // into the error returned to the caller.
+                let line = crate::cli::redact_rpc_credentials(&line);
                 tracing::warn!(target: "signet_miner::stderr", "{line}");
                 if !collected.is_empty() {
                     collected.push('\n');
