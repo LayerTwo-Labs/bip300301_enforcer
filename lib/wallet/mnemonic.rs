@@ -27,7 +27,7 @@ pub(crate) fn new_mnemonic() -> Result<Mnemonic, bdk_wallet::bip39::Error> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct KdfParams {
+pub struct KdfParams {
     pub memory_kib: u32,
     pub iterations: u32,
     pub parallelism: u32,
@@ -42,7 +42,7 @@ impl KdfParams {
     };
 
     /// What newly encrypted seeds use.
-    pub(in crate::wallet) const CURRENT: Self = Self {
+    pub const CURRENT: Self = Self {
         memory_kib: 64 * 1024,
         iterations: 3,
         parallelism: 1,
@@ -71,7 +71,7 @@ fn stretch_password(
 
 /// Encrypted with AES-256-GCM. Password is stretched
 /// with argon2 to 32 bytes, before being used as the key.
-pub(crate) struct EncryptedMnemonic {
+pub struct EncryptedMnemonic {
     pub initialization_vector: Vec<u8>,
     pub ciphertext_mnemonic: Vec<u8>,
     pub key_salt: Vec<u8>,
@@ -82,7 +82,7 @@ pub(crate) struct EncryptedMnemonic {
 // Encryption/decryption is based off of this blog post, with the addition of the argon2 key stretch.
 // https://backendengineer.io/aes-encryption-rust
 impl EncryptedMnemonic {
-    pub(crate) fn encrypt(
+    pub fn encrypt(
         mnemonic: &Mnemonic,
         password: &str,
         kdf: KdfParams,

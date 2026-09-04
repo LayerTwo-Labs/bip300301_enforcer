@@ -39,7 +39,20 @@ impl WalletInner {
         // 1. Is the wallet tip part of the active chain?
         // 2. Does the wallet have all the blocks up until the block we're trying to connect?
         //    If not, we have to iterate over the missing blocks and connect them first.
-        let wallet_tip = self.get_tip().await?;
+        // An encrypted wallet is locked until the UnlockWallet RPC arrives, and
+        // has no chain to advance until then. Skip the sync rather than
+        // erroring out: the error would take the enforcer task, and with it the
+        // process, down before that RPC could ever be served. The periodic sync
+        // skips a locked wallet the same way, see `sync_lock`. Whatever the
+        // wallet misses meanwhile is replayed by the first `connect_block`
+        // after the unlock, which sees the gap to the new tip.
+        let wallet_tip = match self.get_tip().await {
+            Ok(wallet_tip) => wallet_tip,
+            Err(error::NotUnlocked) => {
+                tracing::warn!("wallet is locked, skipping wallet sync until UnlockWallet");
+                return Ok(());
+            }
+        };
         if wallet_tip.hash == new_tip_hash {
             self.set_last_synced_now();
             return Ok(());
@@ -397,8 +410,15 @@ impl CusfEnforcer for Wallet {
         // `sync_wallet_to_tip` would fail in `get_block_infos` and bubble an
         // error up that prevents the standalone driver from issuing
         // `invalidateblock` to bitcoind.
+        //
+        // A locked wallet is skipped for the same reason: it holds no BMM
+        // requests or mempool state to evict, and failing the block here would
+        // take the enforcer task, and with it the process, down before the
+        // UnlockWallet RPC could be served. It catches up on the first block
+        // connected after the unlock.
+        let wallet_unlocked = self.is_initialized().await;
         match &res {
-            ConnectBlockAction::Accept { remove_mempool_txs } => {
+            ConnectBlockAction::Accept { remove_mempool_txs } if wallet_unlocked => {
                 let () = self
                     .inner
                     .sync_wallet_to_tip(block.block_hash(), Some(block))
@@ -427,6 +447,9 @@ impl CusfEnforcer for Wallet {
                     })?;
                 drop(bdk_db);
                 drop(wallet_write);
+            }
+            ConnectBlockAction::Accept { .. } => {
+                tracing::warn!("wallet is locked, skipping wallet update until UnlockWallet");
             }
             ConnectBlockAction::Reject => (),
         }
