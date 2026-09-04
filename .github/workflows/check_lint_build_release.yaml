@@ -17,10 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: oven-sh/setup-bun@v2
+
+      # Mirrors `just fmt`. Keep the prettier version in sync with the
+      # Justfile.
       - name: Check Prettier formatting
-        uses: actionsx/prettier@v3
-        with:
-          args: --check .
+        run: bunx prettier@3.9.6 --check .
 
   check-generated-proto:
     name: Check Generated Proto
