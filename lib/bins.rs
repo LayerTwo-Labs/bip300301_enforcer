@@ -243,3 +243,96 @@ impl SignetMiner {
         command
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use crate::cli::Config;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bip300301-bins-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config_with_rpc_credentials(dir: &std::path::Path) -> Config {
+        Config::try_parse_from([
+            "bip300301_enforcer",
+            &format!("--data-dir={}", dir.display()),
+            "--node-rpc-user=alice",
+            "--node-rpc-pass=hunter2",
+        ])
+        .expect("should parse")
+    }
+
+    /// Anything in an argument vector is readable by every local user through
+    /// `/proc/<pid>/cmdline`, and the signet miner is handed the whole
+    /// `bitcoin-cli` invocation as its `--cli=` argument, so the password must
+    /// reach `bitcoin-cli` through a cookie file rather than an argument.
+    #[test]
+    fn rpc_credentials_never_reach_a_command_line() {
+        let dir = temp_dir("rpc-cookie");
+        let config = config_with_rpc_credentials(&dir);
+        let bitcoin_cli = config.bitcoin_cli(bitcoin::Network::Signet);
+        let command = bitcoin_cli.command(Vec::<&str>::new(), "getblockcount", Vec::<&str>::new());
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        let cookie_path = bitcoin_cli
+            .rpc_cookie_path
+            .clone()
+            .expect("credentials must be passed as a cookie file");
+        assert!(
+            args.contains(&format!("-rpccookiefile={cookie_path}")),
+            "the cookie file must reach bitcoin-cli, got: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("-rpcpassword=")),
+            "the password leaked into argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("-rpcuser=")),
+            "the user leaked into argv: {args:?}"
+        );
+        assert!(!args.iter().any(|arg| arg.contains("hunter2")));
+        // The exact string the signet miner receives as `--cli=`, and keeps in
+        // its own argv for the whole mining run.
+        assert!(
+            !bitcoin_cli.display_without_chain().contains("hunter2"),
+            "the password leaked into the miner's `--cli=` argument"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&cookie_path).unwrap(),
+            "alice:hunter2",
+            "the cookie must be in the `user:pass` shape bitcoin-cli expects"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A cookie holding the RPC password must not be readable by other users.
+    #[cfg(unix)]
+    #[test]
+    fn rpc_cookie_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = temp_dir("rpc-cookie-permissions");
+        let config = config_with_rpc_credentials(&dir);
+        let cookie_path = config
+            .bitcoin_cli(bitcoin::Network::Signet)
+            .rpc_cookie_path
+            .expect("credentials must be passed as a cookie file");
+
+        let metadata = std::fs::metadata(cookie_path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
