@@ -34,7 +34,13 @@ use cusf_enforcer_mempool::cusf_block_producer::CusfBlockProducer;
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
 use http::{Request, header::HeaderName};
-use jsonrpsee::{core::client::Error, server::middleware::rpc::RpcServiceBuilder};
+use jsonrpsee::{
+    core::client::Error,
+    server::{
+        MethodResponse,
+        middleware::rpc::{RpcServiceBuilder, RpcServiceT},
+    },
+};
 use miette::{Diagnostic, IntoDiagnostic, Result, WrapErr as _, miette};
 use reqwest::Url;
 use thiserror::Error;
@@ -323,6 +329,148 @@ async fn fill_empty_json_body(
     .await
 }
 
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        format!("{payload:#?}")
+    }
+}
+
+/// Ensure a panicking handler responds with an `internal` error. Without this
+/// we'd drop the connection and leave the client with an `unavailable` transport
+/// error.
+async fn connect_rpc_catch_panic(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let request_headers = req.headers().clone();
+    match std::panic::AssertUnwindSafe(next.run(req))
+        .catch_unwind()
+        .await
+    {
+        Ok(response) => response,
+        Err(panic) => {
+            connectrpc::ConnectError::internal(format!("panicked: {}", panic_message(&*panic)))
+                .into_http_response(&request_headers)
+                .map(axum::body::Body::new)
+        }
+    }
+}
+
+/// JSON-RPC middleware answering a panicking method with a JSON-RPC internal
+/// error, instead of leaving the client with a transport error.
+#[derive(Clone, Copy, Debug)]
+struct RpcCatchPanicLayer;
+
+impl<S> tower::Layer<S> for RpcCatchPanicLayer {
+    type Service = RpcCatchPanic<S>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        RpcCatchPanic(service)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RpcCatchPanic<S>(S);
+
+/// Run `call`, and the future it returns, answering a panic in either with a
+/// JSON-RPC internal error for `id`. jsonrpsee runs synchronous methods while
+/// building the future, so guarding only the future would miss those.
+async fn rpc_catch_panic<F, Fut>(id: jsonrpsee::types::Id<'_>, call: F) -> MethodResponse
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = MethodResponse>,
+{
+    let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)) {
+        Ok(future) => future,
+        Err(panic) => return rpc_panic_response(id, panic),
+    };
+    match std::panic::AssertUnwindSafe(future).catch_unwind().await {
+        Ok(response) => response,
+        Err(panic) => rpc_panic_response(id, panic),
+    }
+}
+
+fn rpc_panic_response(
+    id: jsonrpsee::types::Id<'_>,
+    panic: Box<dyn std::any::Any + Send>,
+) -> MethodResponse {
+    MethodResponse::error(
+        id,
+        jsonrpsee::types::ErrorObject::owned(
+            jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+            format!("panicked: {}", panic_message(&*panic)),
+            None::<()>,
+        ),
+    )
+}
+
+impl<S> RpcServiceT for RpcCatchPanic<S>
+where
+    S: RpcServiceT<
+            MethodResponse = MethodResponse,
+            BatchResponse = MethodResponse,
+            NotificationResponse = MethodResponse,
+        > + Send
+        + Sync
+        + Clone
+        + 'static,
+{
+    type MethodResponse = MethodResponse;
+    type BatchResponse = MethodResponse;
+    type NotificationResponse = MethodResponse;
+
+    fn call<'a>(
+        &self,
+        request: jsonrpsee::types::Request<'a>,
+    ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
+        let id = request.id();
+        let service = self.0.clone();
+        async move { rpc_catch_panic(id, || service.call(request)).await }
+    }
+
+    fn batch<'a>(
+        &self,
+        batch: jsonrpsee::server::middleware::rpc::Batch<'a>,
+    ) -> impl Future<Output = Self::BatchResponse> + Send + 'a {
+        let service = self.0.clone();
+        async move { rpc_catch_panic(jsonrpsee::types::Id::Null, || service.batch(batch)).await }
+    }
+
+    fn notification<'a>(
+        &self,
+        notification: jsonrpsee::server::middleware::rpc::Notification<'a>,
+    ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
+        let service = self.0.clone();
+        async move {
+            rpc_catch_panic(jsonrpsee::types::Id::Null, || {
+                service.notification(notification)
+            })
+            .await
+        }
+    }
+}
+
+/// The JSON-RPC middleware for the `getblocktemplate` server. The panic
+/// catcher sits inside the logger, so the logger records the error response
+/// the catcher answers a panic with.
+fn gbt_rpc_middleware() -> RpcServiceBuilder<
+    tower::layer::util::Stack<
+        RpcCatchPanicLayer,
+        tower::layer::util::Stack<
+            jsonrpsee::server::middleware::rpc::layer::RpcLoggerLayer,
+            tower::layer::util::Identity,
+        >,
+    >,
+> {
+    RpcServiceBuilder::new()
+        .rpc_logger(1024)
+        .layer(RpcCatchPanicLayer)
+}
+
 /// For Connect unary GETs, default `encoding` to `json` and `message` to `{}`
 /// when the client omitted them. Other query params are left untouched.
 /// This makes it possible to do a simple curl invocation of GET endpoints:
@@ -386,6 +534,21 @@ async fn fill_connect_get_defaults(
     parts.uri = new_uri;
     next.run(axum::extract::Request::from_parts(parts, body))
         .await
+}
+
+/// Wrap the Connect server's router in its HTTP middleware. Outermost first:
+/// request-id stamping, the access log, the request-shape fixups, and
+/// innermost the panic catcher, so the access log records the `internal`
+/// error the catcher answers a panic with.
+fn with_connect_middleware(router: axum::Router) -> axum::Router {
+    router.layer(
+        tower::ServiceBuilder::new()
+            .layer(set_request_id_layer())
+            .layer(axum::middleware::from_fn(connect_rpc_access_log))
+            .layer(axum::middleware::from_fn(fill_empty_json_body))
+            .layer(axum::middleware::from_fn(fill_connect_get_defaults))
+            .layer(axum::middleware::from_fn(connect_rpc_catch_panic)),
+    )
 }
 
 /// Which of the optional Connect services to register, alongside the ones that
@@ -456,15 +619,8 @@ async fn run_connect_server(
     let router = Arc::new(HealthService::from_arc(Arc::clone(&health_checker))).register(router);
     let router = connectrpc_reflection::install(router, reflector);
 
-    let app = axum::Router::new()
-        .fallback_service(router.into_axum_service())
-        .layer(
-            tower::ServiceBuilder::new()
-                .layer(set_request_id_layer())
-                .layer(axum::middleware::from_fn(connect_rpc_access_log))
-                .layer(axum::middleware::from_fn(fill_empty_json_body))
-                .layer(axum::middleware::from_fn(fill_connect_get_defaults)),
-        );
+    let app =
+        with_connect_middleware(axum::Router::new().fallback_service(router.into_axum_service()));
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -509,11 +665,10 @@ where
         // the endpoint with parallel requests.
         .layer(tower::limit::ConcurrencyLimitLayer::new(1))
         .layer(jsonrpsee_tracer!("gbt_server"));
-    let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
 
     let handle = jsonrpsee::server::Server::builder()
         .set_http_middleware(http_middleware)
-        .set_rpc_middleware(rpc_middleware)
+        .set_rpc_middleware(gbt_rpc_middleware())
         .build(serve_addr)
         .await
         .map_err(|err| miette!("initialize JSON-RPC server at `{serve_addr}`: {err:#}"))?
@@ -1357,13 +1512,7 @@ async fn main() -> Result<()> {
             .map(|l| l.to_string())
             .unwrap_or("unknown".into());
 
-        let payload = match info.payload().downcast_ref::<&str>() {
-            Some(s) => s.to_string(),
-            None => match info.payload().downcast_ref::<String>() {
-                Some(s) => s.clone(),
-                None => format!("{:#?}", info.payload()).to_string(),
-            },
-        };
+        let payload = panic_message(info.payload());
         tracing::error!(location, "Panicked during execution: `{payload}`");
         default_hook(info); // Panics are bad. re-throw!
     }));
@@ -1996,7 +2145,204 @@ mod tests {
     use futures::channel::oneshot;
     use tokio_util::sync::CancellationToken;
 
-    use super::{resolve_block_file_network_magic, wait_for_error_or_shutdown};
+    use super::{
+        gbt_rpc_middleware, resolve_block_file_network_magic, wait_for_error_or_shutdown,
+        with_connect_middleware,
+    };
+
+    /// Panic with `boom` where a `T` is expected, so a handler can panic
+    /// without a dead trailing value to satisfy its return type.
+    fn boom<T>() -> T {
+        panic!("boom")
+    }
+
+    /// Run `fut` under a fresh `tracing` subscriber capturing every level,
+    /// returning its output and everything it logged.
+    ///
+    /// The subscriber is installed only while `fut` itself is polled, so
+    /// logging from tasks `fut` spawns is not captured.
+    async fn capture_logs<F: Future>(fut: F) -> (F::Output, String) {
+        use std::sync::{Arc, Mutex};
+
+        use tracing::instrument::WithSubscriber as _;
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = Sink::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer({
+                let sink = sink.clone();
+                move || sink.clone()
+            })
+            .finish();
+        let output = fut.with_subscriber(subscriber).await;
+        let logs = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        (output, logs)
+    }
+
+    /// A panicking handler must answer with a Connect `internal` error, not
+    /// a dropped connection, and the access log must record that error:
+    /// it has to sit outside the panic catcher.
+    #[tokio::test]
+    async fn connect_rpc_panic_becomes_internal_error() {
+        use tower::ServiceExt as _;
+
+        let app = with_connect_middleware(axum::Router::new().route(
+            "/pkg.Svc/Boom",
+            axum::routing::post(|| async { boom::<&'static str>() }),
+        ));
+        let request = http::Request::post("/pkg.Svc/Boom")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+
+        let (response, logs) = capture_logs(async { app.oneshot(request).await }).await;
+        let response = response.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let err: connectrpc::ConnectError = buffa::serde_json::from_slice(&body).unwrap();
+        assert_eq!(err.code, connectrpc::ErrorCode::Internal);
+        assert_eq!(err.message.as_deref(), Some("panicked: boom"));
+
+        let access_log = logs
+            .lines()
+            .find(|line| line.contains("connect_rpc "))
+            .unwrap_or_else(|| panic!("no access log line in:\n{logs}"));
+        for expected in [
+            "ERROR",
+            r#"procedure="/pkg.Svc/Boom""#,
+            "code=internal",
+            // `message` is the event text to `tracing_subscriber::fmt`, so
+            // it is rendered bare, without a `message=` key.
+            "panicked: boom",
+        ] {
+            assert!(
+                access_log.contains(expected),
+                "{expected:?} not in: {access_log}"
+            );
+        }
+    }
+
+    /// Same for JSON-RPC, through a real server: a JSON-RPC internal error
+    /// with the panic message, whether the method is sync or async.
+    #[tokio::test]
+    async fn json_rpc_panic_becomes_internal_error() {
+        use bitcoin_jsonrpsee::jsonrpsee::{
+            core::client::{ClientT as _, Error},
+            http_client::HttpClient,
+            rpc_params,
+        };
+        use jsonrpsee::server::RpcModule;
+
+        let mut module = RpcModule::new(());
+        module
+            .register_method("boom", |_, _, _| boom::<u32>())
+            .unwrap();
+        module
+            .register_async_method("boom_async", |_, _, _| async { boom::<u32>() })
+            .unwrap();
+        let server = jsonrpsee::server::Server::builder()
+            .set_rpc_middleware(gbt_rpc_middleware())
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = server.start(module);
+
+        let client = HttpClient::builder()
+            .build(format!("http://{addr}"))
+            .unwrap();
+        for method in ["boom", "boom_async"] {
+            let err = client
+                .request::<u32, _>(method, rpc_params![])
+                .await
+                .unwrap_err();
+            let Error::Call(err) = err else {
+                panic!("{method}: expected a JSON-RPC error object, got {err:?}");
+            };
+            assert_eq!(err.code(), jsonrpsee::types::error::INTERNAL_ERROR_CODE);
+            assert_eq!(err.message(), "panicked: boom");
+        }
+        handle.stop().unwrap();
+    }
+
+    /// The JSON-RPC logger must record the internal error a panic turns
+    /// into: it has to sit outside the panic catcher.
+    #[tokio::test]
+    async fn json_rpc_logger_records_panic() {
+        use jsonrpsee::{
+            server::{
+                MethodResponse,
+                middleware::rpc::{Batch, Notification, RpcServiceT},
+            },
+            types::{Id, Request},
+        };
+
+        /// A method that panics once its future is polled.
+        #[derive(Clone)]
+        struct Boom;
+
+        impl RpcServiceT for Boom {
+            type MethodResponse = MethodResponse;
+            type BatchResponse = MethodResponse;
+            type NotificationResponse = MethodResponse;
+
+            fn call<'a>(&self, _: Request<'a>) -> impl Future<Output = MethodResponse> + Send + 'a {
+                std::future::poll_fn(|_| boom())
+            }
+
+            fn batch<'a>(&self, _: Batch<'a>) -> impl Future<Output = MethodResponse> + Send + 'a {
+                std::future::poll_fn(|_| boom())
+            }
+
+            fn notification<'a>(
+                &self,
+                _: Notification<'a>,
+            ) -> impl Future<Output = MethodResponse> + Send + 'a {
+                std::future::poll_fn(|_| boom())
+            }
+        }
+
+        let service = gbt_rpc_middleware().service(Boom);
+        let request = Request::borrowed("boom", None, Id::Number(1));
+
+        // `call` runs synchronous work, including the logger's span setup,
+        // before returning its future, so it must run under the subscriber.
+        let (response, logs) = capture_logs(async { service.call(request).await }).await;
+
+        assert!(response.is_error(), "{}", response.as_json());
+        let logged_response = logs
+            .lines()
+            .find(|line| line.contains("response = "))
+            .unwrap_or_else(|| panic!("no response log line in:\n{logs}"));
+        for expected in [
+            r#"method_call{method="boom"}"#,
+            r#""code":-32603"#,
+            r#""message":"panicked: boom""#,
+        ] {
+            assert!(
+                logged_response.contains(expected),
+                "{expected:?} not in: {logged_response}"
+            );
+        }
+    }
 
     #[test]
     fn derives_block_file_magic_from_signet_challenge() {
