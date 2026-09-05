@@ -7,16 +7,20 @@
 //! enforcer's validated tip stuck behind bitcoind's tip, a terminal state
 //! nothing else can sync past.
 
-use std::str::FromStr as _;
+use std::{collections::HashSet, str::FromStr as _};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::M8BmmRequest,
-    proto::mainchain::{GetBalanceRequest, GetChainTipRequest},
+    proto::mainchain::{
+        CreateNewAddressRequest, GetBalanceRequest, GetChainTipRequest, ListTransactionsRequest,
+        WalletTransaction,
+    },
     types::BmmCommitment,
 };
 use bitcoin::{
-    Amount, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid, consensus::encode::serialize_hex,
+    Amount, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid,
+    consensus::encode::{deserialize_hex, serialize_hex},
     transaction::Version,
 };
 use futures::channel::mpsc;
@@ -68,6 +72,9 @@ pub async fn test_wallet_reorg_multi_block(bin_paths: BinPaths) -> anyhow::Resul
 
     tracing::info!("starting scenario: wallet_reorg");
     wallet_reorg_scenario(&mut post_setup, &bin_paths, &res_tx).await?;
+
+    tracing::info!("starting scenario: orphaned_transactions");
+    orphaned_transactions_scenario(&mut post_setup, &bin_paths, &res_tx).await?;
 
     tracing::info!("starting scenario: rejected_block");
     rejected_block_scenario(&mut post_setup, &bin_paths, &res_tx).await?;
@@ -348,6 +355,219 @@ async fn broadcast_raw_bid(
         .run_utf8()
         .await?;
     Ok((Txid::from_str(txid_str.trim())?, signed_hex))
+}
+
+/// Payments the reorg below orphans. Enough that the standard library's sort,
+/// which only checks its comparator opportunistically, panicked on the old
+/// one in nearly every run rather than in one of six.
+const ORPHANED_PAYMENTS: usize = 24;
+
+async fn bitcoin_cli<Arg: AsRef<std::ffi::OsStr>>(
+    post_setup: &PostSetup,
+    method: &str,
+    args: impl IntoIterator<Item = Arg>,
+) -> anyhow::Result<String> {
+    let output = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], method, args)
+        .run_utf8()
+        .await?;
+    Ok(output.trim().to_owned())
+}
+
+#[derive(Deserialize)]
+struct FundResult {
+    hex: String,
+}
+
+/// The height the wallet reports a transaction confirmed at, if any.
+fn listed_height(tx: &WalletTransaction) -> Option<u32> {
+    tx.confirmation_info
+        .clone()
+        .into_option()
+        .filter(|info| info.block_hash.clone().into_option().is_some())
+        .map(|info| info.height)
+}
+
+/// The time the wallet has for a listed transaction: its confirmation time,
+/// else when the wallet last saw it in the mempool, else nothing.
+fn listed_timestamp(tx: &WalletTransaction) -> Option<i64> {
+    tx.confirmation_info
+        .clone()
+        .into_option()
+        .and_then(|info| info.timestamp.into_option())
+        .map(|timestamp| timestamp.seconds)
+}
+
+/// The TXIDs `ListTransactions` reports at `height` (`None` for unconfirmed).
+fn listed_txids_at(listed: &[WalletTransaction], height: Option<u32>) -> HashSet<Txid> {
+    listed
+        .iter()
+        .filter(|tx| listed_height(tx) == height)
+        .filter_map(|tx| {
+            tx.txid
+                .clone()
+                .into_option()?
+                .decode::<WalletTransaction, _>("txid")
+                .ok()
+        })
+        .collect()
+}
+
+/// Regression scenario for `ListTransactions` panicking on a wallet holding
+/// transactions a reorg has orphaned.
+///
+/// `list_wallet_transactions` (`lib/wallet/mod.rs`) sorts the listing
+/// chronologically. A transaction the wallet only ever saw inside a block has
+/// no mempool `last_seen`, and once a reorg drops that block BDK reports it as
+/// unconfirmed with no timestamp at all. The old comparator ordered those by
+/// TXID and everything else by time. Mixing the two relations is not a total
+/// order, and the standard library's sort panics when it catches that,
+/// taking the RPC down with "user-provided comparison function does not
+/// correctly implement a total order".
+///
+/// Every route back to the wallet would give the payments a time, so all are
+/// cut: they are mined straight into a block, never via the mempool; they
+/// are time-locked to be final at that block and no lower, so that after
+/// invalidating from one block below, bitcoind drops them instead of
+/// returning them to its mempool (from where the enforcer's mempool mirror
+/// would feed them to the wallet as freshly seen; standardness is no lever,
+/// since the harness runs stock Bitcoin Core with `-acceptnonstdtxn`); and
+/// electrs stays down until after the listing, since a sync evicts
+/// transactions the chain source no longer knows.
+async fn orphaned_transactions_scenario(
+    post_setup: &mut PostSetup,
+    bin_paths: &BinPaths,
+    res_tx: &mpsc::UnboundedSender<anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    // Mature enough of bitcoind's coinbases to fund one payment each.
+    let miner_address = bitcoin_cli(post_setup, "getnewaddress", [""; 0]).await?;
+    bitcoin_cli(
+        post_setup,
+        "generatetoaddress",
+        [(ORPHANED_PAYMENTS + 5).to_string(), miner_address.clone()],
+    )
+    .await?;
+    wait_for_wallet_sync(post_setup).await?;
+
+    let enforcer_address = post_setup
+        .wallet_service_client
+        .create_new_address(CreateNewAddressRequest::default())
+        .await?
+        .into_owned()
+        .address;
+    let payment_height: u32 = bitcoin_cli(post_setup, "getblockcount", [""; 0])
+        .await?
+        .parse::<u32>()?
+        + 1;
+    let mut payments = Vec::with_capacity(ORPHANED_PAYMENTS);
+    for _ in 0..ORPHANED_PAYMENTS {
+        // A height lock is final only in blocks above it; bitcoind's wallet
+        // sets the input sequence that makes it count.
+        let unfunded = bitcoin_cli(
+            post_setup,
+            "createrawtransaction",
+            [
+                "[]".to_owned(),
+                format!("{{\"{enforcer_address}\":0.1}}"),
+                (payment_height - 1).to_string(),
+            ],
+        )
+        .await?;
+        let funded: FundResult = serde_json::from_str(
+            &bitcoin_cli(
+                post_setup,
+                "fundrawtransaction",
+                [
+                    unfunded,
+                    r#"{"lockUnspents":true,"fee_rate":10}"#.to_owned(),
+                ],
+            )
+            .await?,
+        )?;
+        let signed: SignResult = serde_json::from_str(
+            &bitcoin_cli(post_setup, "signrawtransactionwithwallet", [funded.hex]).await?,
+        )?;
+        anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
+        payments.push(signed.hex);
+    }
+    let payment_txids: HashSet<Txid> = payments
+        .iter()
+        .map(|hex| Ok(deserialize_hex::<Transaction>(hex)?.compute_txid()))
+        .collect::<anyhow::Result<_>>()?;
+
+    // Straight into a block, bypassing the mempool.
+    bitcoin_cli(
+        post_setup,
+        "generateblock",
+        [miner_address, serde_json::to_string(&payments)?],
+    )
+    .await?;
+    wait_for_wallet_sync(post_setup).await?;
+    let listed = list_transactions(post_setup).await?;
+    anyhow::ensure!(
+        listed_txids_at(&listed, Some(payment_height)) == payment_txids,
+        "expected every payment listed as confirmed at height {payment_height} before the reorg"
+    );
+
+    tracing::info!("orphaning the payments with electrs and the enforcer down");
+    post_setup.kill_enforcer().await?;
+    post_setup.kill_electrs().await?;
+    let fork_block_hash = bitcoin_cli(
+        post_setup,
+        "getblockhash",
+        [(payment_height - 1).to_string()],
+    )
+    .await?;
+    bitcoin_cli(post_setup, "invalidateblock", [fork_block_hash]).await?;
+    // Empty replacement blocks, to a fresh address: the first would otherwise
+    // come out byte-identical to the (also empty) block it replaces, which
+    // bitcoind rejects as already invalidated.
+    let replacement_address = bitcoin_cli(post_setup, "getnewaddress", [""; 0]).await?;
+    for _ in 0..3 {
+        bitcoin_cli(
+            post_setup,
+            "generateblock",
+            [replacement_address.clone(), "[]".to_owned()],
+        )
+        .await?;
+    }
+    post_setup
+        .restart_enforcer(bin_paths, Vec::<String>::new(), res_tx.clone())
+        .await?;
+    wait_for_wallet_sync(post_setup).await?;
+
+    // Pre-fix this call is where the RPC panicked (in most runs; in the rest
+    // the listing came back in an order that depended on which pairs the
+    // sort happened to compare).
+    let listed = list_transactions(post_setup).await?;
+    anyhow::ensure!(
+        listed_txids_at(&listed, None) == payment_txids,
+        "expected exactly the payments listed as unconfirmed after the reorg"
+    );
+    // The precondition of the bug: no time at all, not a mempool sighting.
+    anyhow::ensure!(
+        listed
+            .iter()
+            .all(|tx| listed_height(tx).is_some() || listed_timestamp(tx).is_none()),
+        "the wallet should have no timestamp for the orphaned payments"
+    );
+    let timestamps = listed.iter().map(listed_timestamp).collect::<Vec<_>>();
+    anyhow::ensure!(
+        timestamps.is_sorted(),
+        "ListTransactions must be in chronological order, got {timestamps:?}"
+    );
+
+    post_setup.restart_electrs(bin_paths, res_tx.clone()).await
+}
+
+async fn list_transactions(post_setup: &mut PostSetup) -> anyhow::Result<Vec<WalletTransaction>> {
+    Ok(post_setup
+        .wallet_service_client
+        .list_transactions(ListTransactionsRequest::default())
+        .await?
+        .into_owned()
+        .transactions)
 }
 
 /// Regression scenario for the enforcer fatally crashing while catching up,
