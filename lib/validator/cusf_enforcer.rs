@@ -46,6 +46,8 @@ enum ConnectBlockErrorInner {
     #[error(transparent)]
     ConnectBlock(#[from] Box<<task::error::ConnectBlock as Split>::Fatal>),
     #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error(transparent)]
     DbPut(#[from] db::error::Put),
     #[error(transparent)]
     DbTryGet(#[from] db::error::TryGet),
@@ -236,12 +238,30 @@ fn connect_block_no_commit<'validator>(
         .into_nested()?
     {
         Ok(event) => {
+            // BMM requests bidding on `parent` cannot be mined on top of this
+            // block, but they become valid bids again if this block is
+            // disconnected. Bitcoin Core never dropped them from its own
+            // mempool, and nothing re-announces a tx that never left it, so
+            // evicting them here would lose them for good on a one-block
+            // reorg. Keep them for one more block and evict the generation
+            // before instead, which needs a deeper reorg to become minable.
+            // `BlockProducer::initial_block_template` keeps the retained
+            // generation out of block templates.
+            let grandparent = parent_child_rwtxn
+                .with_child(|child_rotxn| {
+                    validator
+                        .dbs
+                        .block_hashes
+                        .try_get_header_info(child_rotxn, &parent)
+                })?
+                .map(|header_info| header_info.prev_block_hash)
+                .unwrap_or_else(BlockHash::all_zeros);
             let remove_mempool_txs = parent_child_rwtxn
                 .with_child(|child_rotxn| {
                     validator
                         .dbs
                         .block_hashes
-                        .get_seen_bmm_requests_for_parent_block(child_rotxn, parent)
+                        .get_seen_bmm_requests_for_parent_block(child_rotxn, grandparent)
                 })?
                 .into_values()
                 .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
