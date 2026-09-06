@@ -10,6 +10,7 @@ use crate::{
         AmountUnderflowError, BlindedM6, Ctip, Sidechain, SidechainAck, SidechainNumber,
         SidechainProposal, SidechainProposalId, Thresholds,
     },
+    validator::PendingM6ids,
 };
 
 impl BlockProducer {
@@ -178,6 +179,57 @@ impl BlockProducer {
         (acks, stale_acks)
     }
 
+    /// The M4 vote for one sidechain: the position, in the pending set the
+    /// validator indexes votes against, of the first bundle this producer both
+    /// knows and could actually pay out against `ctip`.
+    ///
+    /// Voting for index 0 regardless upvotes whichever bundle happens to be
+    /// first, including one that [`Self::suffix_txs_for_proposals`] would skip
+    /// as unpayable. Since an upvote downvotes every other pending bundle,
+    /// that starves a payable withdrawal queued behind an unpayable one into
+    /// `Failed`, without the unpayable one ever being paid out either.
+    ///
+    /// Returns [`M4AckBundles::ABSTAIN_ONE_BYTE`] when no pending bundle
+    /// qualifies, including when the one that does sits at an index a one-byte
+    /// vote cannot express.
+    fn select_m4_upvote(
+        pending_m6ids: &PendingM6ids,
+        bundle_proposals: Option<&BundleProposals>,
+        ctip: Option<Ctip>,
+    ) -> u8 {
+        // With no treasury to spend, no bundle for this sidechain is payable.
+        let Some(ctip) = ctip else {
+            return M4AckBundles::ABSTAIN_ONE_BYTE;
+        };
+        for (index, (m6id, _info)) in pending_m6ids.iter().enumerate() {
+            // Only bundles we hold ourselves: without the blinded M6 we can
+            // neither tell whether it fits the treasury, nor build the M6 the
+            // upvote is meant to lead to.
+            let proposed = bundle_proposals
+                .into_iter()
+                .flatten()
+                .find(|(proposed_m6id, _, _)| proposed_m6id == m6id);
+            let Some((_, blinded_m6, _)) = proposed else {
+                continue;
+            };
+            // The same predicate [`Self::suffix_txs_for_proposals`] applies:
+            // a bundle spending more than the treasury holds can never be
+            // included, so upvoting it only downvotes the ones that can.
+            let (fee, payout) = (*blinded_m6.fee(), *blinded_m6.payout());
+            if Self::new_treasury_value(ctip.value, fee, payout).is_err() {
+                continue;
+            }
+            // 0xFE and 0xFF are the one-byte ALARM and ABSTAIN sentinels, so a
+            // bundle from there on cannot be voted for -- and every bundle
+            // after it sits at a higher index still.
+            return match u8::try_from(index) {
+                Ok(index) if index < M4AckBundles::ALARM_ONE_BYTE => index,
+                _ => M4AckBundles::ABSTAIN_ONE_BYTE,
+            };
+        }
+        M4AckBundles::ABSTAIN_ONE_BYTE
+    }
+
     /// Extend coinbase txouts for a new block with our drivechain messages:
     /// M1 (propose), M2 (ack), M3 (bundle propose) and M4 (bundle votes).
     pub(crate) async fn extend_coinbase_txouts(
@@ -293,10 +345,11 @@ impl BlockProducer {
             )?;
         }
 
-        for (sidechain_id, m6ids) in self.get_bundle_proposals().await? {
+        let bundle_proposals = self.get_bundle_proposals().await?;
+        for (sidechain_id, m6ids) in &bundle_proposals {
             for (m6id, _blinded_m6, m6id_info) in m6ids {
                 if m6id_info.is_none() {
-                    coinbase_builder.propose_bundle(sidechain_id, m6id)?;
+                    coinbase_builder.propose_bundle(*sidechain_id, *m6id)?;
                 }
             }
         }
@@ -305,7 +358,6 @@ impl BlockProducer {
         // check ran against.
         let active_sidechains = self.validator().get_active_sidechains()?;
         // Ack bundles
-        // TODO: Exclusively ack bundles that are known to us
         if ack_all_proposals
             && !self.m2s_may_activate_unused_slot(
                 coinbase_builder.messages(),
@@ -316,17 +368,18 @@ impl BlockProducer {
             let upvotes = active_sidechains
                 .iter()
                 .map(|sidechain| {
-                    if self
+                    let sidechain_number = sidechain.proposal.sidechain_number;
+                    let pending_m6ids = self
                         .validator()
-                        .get_pending_withdrawals(&sidechain.proposal.sidechain_number)?
-                        .is_empty()
-                    {
-                        Ok(M4AckBundles::ABSTAIN_ONE_BYTE)
-                    } else {
-                        Ok(0)
-                    }
+                        .get_pending_withdrawals(&sidechain_number)?;
+                    let ctip = self.validator().try_get_ctip(sidechain_number)?;
+                    Ok(Self::select_m4_upvote(
+                        &pending_m6ids,
+                        bundle_proposals.get(&sidechain_number),
+                        ctip,
+                    ))
                 })
-                .collect::<Result<_, crate::validator::GetPendingWithdrawalsError>>()?;
+                .collect::<Result<_, error::GenerateCoinbaseTxouts>>()?;
             coinbase_builder.ack_bundles(M4AckBundles::OneByte { upvotes })?;
         }
         let () = coinbase_builder.build()?;
@@ -471,11 +524,13 @@ mod tests {
 
     use crate::{
         block_producer::{BlockProducer, BundleProposals},
+        messages::M4AckBundles,
         types::{
             AmountUnderflowError, BlindedM6, Ctip, PendingM6idInfo, SidechainAck,
             SidechainDescription, SidechainNumber, SidechainProposal, Thresholds,
             op_drivechain_script,
         },
+        validator::PendingM6ids,
     };
 
     fn test_proposal(sidechain_number: SidechainNumber, description: &[u8]) -> SidechainProposal {
@@ -523,6 +578,16 @@ mod tests {
             proposal_height: 1,
         };
         vec![(blinded_m6.compute_m6id(), blinded_m6, Some(info))]
+    }
+
+    /// The validator's pending set for `bundles`, in the order it indexes M4
+    /// votes against.
+    fn pending_m6ids(bundles: &BundleProposals) -> PendingM6ids {
+        let mut pending = PendingM6ids::new();
+        for (m6id, _blinded_m6, info) in bundles {
+            pending.insert(*m6id, info.expect("test fixture is a pending bundle"));
+        }
+        pending
     }
 
     fn ctip(byte: u8) -> Ctip {
@@ -637,6 +702,72 @@ mod tests {
                 .iter()
                 .any(|output| output.value == SECOND_PAYOUT),
             "the second surviving M6 is not the second payable bundle: {second_m6:?}"
+        );
+    }
+
+    /// The ordinary case: the bundle at index 0 is ours and payable, so it
+    /// takes the vote.
+    #[test]
+    fn m4_upvotes_the_first_payable_known_bundle() {
+        let bundles = approved_bundle_paying(PAYOUT);
+        let pending = pending_m6ids(&bundles);
+
+        let upvote = BlockProducer::select_m4_upvote(&pending, Some(&bundles), Some(ctip(0)));
+
+        assert_eq!(upvote, 0);
+    }
+
+    /// A bundle that cannot be paid out must not take the vote. An upvote
+    /// downvotes every *other* pending bundle, so voting for index 0 blindly
+    /// starves the payable withdrawal queued behind an unpayable one into
+    /// `Failed`, while the unpayable one is never paid out either.
+    #[test]
+    fn m4_upvote_skips_an_unpayable_bundle_ahead_of_a_payable_one() {
+        let mut bundles = approved_bundle_paying(TREASURY_VALUE);
+        bundles.extend(approved_bundle_paying(PAYOUT));
+        let pending = pending_m6ids(&bundles);
+
+        let upvote = BlockProducer::select_m4_upvote(&pending, Some(&bundles), Some(ctip(0)));
+
+        assert_eq!(upvote, 1);
+    }
+
+    /// A bundle we don't hold ourselves can be neither checked for payability
+    /// nor turned into the M6 the upvote is meant to lead to, so it is not
+    /// voted for.
+    #[test]
+    fn m4_abstains_when_the_pending_bundle_is_unknown_to_us() {
+        let pending = pending_m6ids(&approved_bundle_paying(PAYOUT));
+        let unknown_to_us = BundleProposals::new();
+
+        assert_eq!(
+            BlockProducer::select_m4_upvote(&pending, None, Some(ctip(0))),
+            M4AckBundles::ABSTAIN_ONE_BYTE
+        );
+        assert_eq!(
+            BlockProducer::select_m4_upvote(&pending, Some(&unknown_to_us), Some(ctip(0))),
+            M4AckBundles::ABSTAIN_ONE_BYTE
+        );
+    }
+
+    /// Nothing payable pending -- whether because the only bundle overdraws
+    /// the treasury, or because there is no treasury at all -- is an
+    /// abstention, not a vote for a bundle that can never be included.
+    #[test]
+    fn m4_abstains_when_no_pending_bundle_is_payable() {
+        let overdrawing = approved_bundle_paying(TREASURY_VALUE);
+        let pending = pending_m6ids(&overdrawing);
+        assert_eq!(
+            BlockProducer::select_m4_upvote(&pending, Some(&overdrawing), Some(ctip(0))),
+            M4AckBundles::ABSTAIN_ONE_BYTE
+        );
+
+        // The same for a sidechain with no treasury: nothing to spend.
+        let payable = approved_bundle_paying(PAYOUT);
+        let pending = pending_m6ids(&payable);
+        assert_eq!(
+            BlockProducer::select_m4_upvote(&pending, Some(&payable), None),
+            M4AckBundles::ABSTAIN_ONE_BYTE
         );
     }
 

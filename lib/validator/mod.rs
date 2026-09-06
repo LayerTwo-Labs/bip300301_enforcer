@@ -33,7 +33,8 @@ mod task;
 #[cfg(test)]
 mod test_utils;
 
-use self::dbs::{Dbs, PendingM6ids};
+use self::dbs::Dbs;
+pub use self::dbs::PendingM6ids;
 pub use self::sync_state_summary::{
     CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
 };

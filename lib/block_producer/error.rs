@@ -77,6 +77,8 @@ pub enum GenerateCoinbaseTxouts {
     PushBytes(#[from] bitcoin::script::PushBytesError),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    TryGetCtip(#[from] crate::validator::TryGetCtipError),
 }
 
 impl ToStatus for GenerateCoinbaseTxouts {
@@ -88,6 +90,7 @@ impl ToStatus for GenerateCoinbaseTxouts {
             Self::GetPendingWithdrawals(err) => err.builder(),
             Self::GetSidechains(err) => err.builder(),
             Self::PushBytes(err) => StatusBuilder::new(err),
+            Self::TryGetCtip(err) => err.builder(),
             Self::Rusqlite(_) => StatusBuilder::new(self),
         }
     }
