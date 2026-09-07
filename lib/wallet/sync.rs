@@ -48,6 +48,20 @@ const ESPLORA_PARALLEL_REQUESTS: usize = 25;
 /// addresses without requiring them to be used.
 const STOP_GAP: usize = 200;
 
+/// The newest checkpoint in `tip`'s chain that `headers` -- the validator's
+/// active chain, ascending by height -- also contains. `None` if the two
+/// chains share no block within the listed range.
+fn fork_checkpoint(
+    tip: &bdk_chain::CheckPoint,
+    headers: &[(u32, bitcoin::BlockHash)],
+) -> Option<bdk_chain::CheckPoint> {
+    tip.iter().find(|checkpoint| {
+        headers
+            .binary_search_by_key(&checkpoint.height(), |(height, _)| *height)
+            .is_ok_and(|idx| headers[idx].1 == checkpoint.hash())
+    })
+}
+
 impl WalletInner {
     pub(in crate::wallet) async fn get_tip(&self) -> Result<bdk_core::BlockId, error::NotUnlocked> {
         let wallet = self.read_wallet().await?;
@@ -259,9 +273,6 @@ impl WalletInner {
             .validator()
             .list_headers(local_chain.tip().height())
             .map_err(error::FullScan::ListHeaders)?;
-        if let Some(up_to_height) = up_to_height {
-            headers.retain(|(height, _)| *height <= up_to_height);
-        }
 
         tracing::debug!(
             "listed {} headers since height {} in {:?}: {} -> {}",
@@ -285,15 +296,50 @@ impl WalletInner {
         // it was handed. A chain rebuilt from the tip has no history below it,
         // so the wallet's own older transactions are exactly what blows it up.
         let tip = local_chain.tip();
-        let tip_height = tip.height();
+        // The listing starts at the wallet tip's height, so the tip is the only
+        // checkpoint it can possibly agree with.
+        let tip_on_active_chain = fork_checkpoint(&tip, &headers).is_some();
+        let base = if tip_on_active_chain || headers.is_empty() {
+            // The wallet tip is still on the validator's chain, or the
+            // validator is behind the wallet and has nothing to extend with.
+            tip.clone()
+        } else {
+            // `list_headers` walks the validator's active chain, so a listing
+            // that starts at the wallet tip's height without containing the
+            // wallet tip means a reorg orphaned the persisted tip while the
+            // wallet was not following along. Extending it would splice the
+            // active chain onto the abandoned branch, and the branch would
+            // never go away: `merge_chains` only evicts a block when the update
+            // covers that block's height with a different hash, which an update
+            // starting above the tip never does. List from the wallet's oldest
+            // checkpoint instead, so that the update covers every orphaned
+            // height, and anchor it at the fork point.
+            tracing::warn!(
+                wallet_tip_height = tip.height(),
+                wallet_tip_hash = %tip.hash(),
+                "wallet tip is not on the validator's chain, \
+                 rebuilding the chain update from the fork point"
+            );
+            let oldest = tip.iter().last().unwrap_or_else(|| tip.clone());
+            headers = self
+                .validator()
+                .list_headers(oldest.height())
+                .map_err(error::FullScan::ListHeaders)?;
+            fork_checkpoint(&tip, &headers).unwrap_or(oldest)
+        };
+        if let Some(up_to_height) = up_to_height {
+            headers.retain(|(height, _)| *height <= up_to_height);
+        }
+
+        let base_height = base.height();
         let block_ids = headers
             .into_iter()
-            // Anything at or below the tip is already covered by the checkpoint
-            // being extended, and `extend` requires strictly ascending heights.
-            .filter(|(height, _)| *height > tip_height)
+            // Anything at or below the checkpoint being extended is already
+            // covered by it, and `extend` requires strictly ascending heights.
+            .filter(|(height, _)| *height > base_height)
             .map(|(height, hash)| bdk_chain::BlockId { height, hash });
 
-        let checkpoint = tip.extend(block_ids).map_err(|last_successful_header| {
+        let checkpoint = base.extend(block_ids).map_err(|last_successful_header| {
             error::FullScan::CreateCheckPointFromHeaders {
                 last_successful_header: Some(last_successful_header),
             }
@@ -459,5 +505,86 @@ impl WalletInner {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bdk_chain::{BlockId, local_chain::LocalChain};
+    use bitcoin::{BlockHash, hashes::Hash as _};
+
+    use super::fork_checkpoint;
+
+    /// A distinct, deterministic block hash per tag.
+    fn block_hash(tag: u8) -> BlockHash {
+        BlockHash::from_byte_array([tag; 32])
+    }
+
+    fn local_chain(blocks: impl IntoIterator<Item = (u32, BlockHash)>) -> LocalChain {
+        LocalChain::from_blocks(blocks.into_iter().collect()).unwrap()
+    }
+
+    /// A listing that starts at the wallet tip's height only agrees with the
+    /// wallet when the tip is still on the validator's chain.
+    #[test]
+    fn tip_on_the_active_chain_is_its_own_fork_point() {
+        let chain = local_chain([(0, block_hash(0)), (1, block_hash(1))]);
+        let tip = chain.tip();
+        let headers = [(1, block_hash(1)), (2, block_hash(2))];
+        assert_eq!(
+            fork_checkpoint(&tip, &headers).map(|checkpoint| checkpoint.block_id()),
+            Some(tip.block_id())
+        );
+
+        let orphaned = local_chain([(0, block_hash(0)), (1, block_hash(0xa1))]);
+        let headers = [(1, block_hash(0xb1)), (2, block_hash(0xb2))];
+        assert!(fork_checkpoint(&orphaned.tip(), &headers).is_none());
+    }
+
+    /// The wallet was not running while the validator reorged away the block
+    /// its tip sits on. Anchoring the update at the fork point makes it carry
+    /// the validator's block at the orphaned height, which is the only thing
+    /// that gets `apply_update` to evict the stale branch.
+    #[test]
+    fn orphaned_tip_is_evicted_by_the_chain_update() {
+        let mut chain = local_chain([
+            (0, block_hash(0)),
+            (1, block_hash(1)),
+            (2, block_hash(2)),
+            (3, block_hash(0xa3)),
+        ]);
+        // The validator's active chain, as `list_headers` reports it once the
+        // listing has been widened to the wallet's oldest checkpoint.
+        let headers = [
+            (0, block_hash(0)),
+            (1, block_hash(1)),
+            (2, block_hash(2)),
+            (3, block_hash(0xb3)),
+            (4, block_hash(0xb4)),
+        ];
+
+        let tip = chain.tip();
+        let base = fork_checkpoint(&tip, &headers).unwrap();
+        assert_eq!(base.height(), 2);
+
+        let block_ids = headers
+            .iter()
+            .filter(|(height, _)| *height > 2)
+            .map(|(height, hash)| BlockId {
+                height: *height,
+                hash: *hash,
+            });
+        let update = base.extend(block_ids).unwrap();
+        let _changeset = chain.apply_update(update).unwrap();
+
+        let expected_tip = BlockId {
+            height: 4,
+            hash: block_hash(0xb4),
+        };
+        assert_eq!(
+            chain.get(3).map(|checkpoint| checkpoint.hash()),
+            Some(block_hash(0xb3))
+        );
+        assert_eq!(chain.tip().block_id(), expected_tip);
     }
 }

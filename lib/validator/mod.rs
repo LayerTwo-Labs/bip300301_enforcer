@@ -284,7 +284,9 @@ where
 #[derive(Debug, Error)]
 pub enum ListHeadersError {
     #[error(transparent)]
-    Iter(#[from] db::error::Iter),
+    DbGet(#[from] db::error::Get),
+    #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
     #[error(transparent)]
     ReadTxn(#[from] env::error::ReadTxn),
 }
@@ -683,29 +685,38 @@ impl Validator {
         }
     }
 
-    // Lists known block heights and their corresponding header hashes in ascending order.
+    // Lists the block heights and their corresponding header hashes of the
+    // active chain, from `start_height` up to the tip, in ascending order.
+    // Empty if the chain tip is not synced, or is below `start_height`.
+    //
+    // Headers of branches that a reorg left behind stay in the DB, so an
+    // iteration over every stored header would report several hashes for the
+    // same height. Walking the tip's ancestry instead yields exactly one hash
+    // per height, which is what callers building a chain out of the result
+    // need.
     pub fn list_headers(
         &self,
         start_height: u32,
     ) -> Result<Vec<(u32, BlockHash)>, ListHeadersError> {
         let rotxn = self.dbs.read_txn()?;
-        let mut res: Vec<(u32, BlockHash)> = self
-            .dbs
-            .block_hashes
-            .height()
-            .iter(&rotxn)
-            .map_err(db::error::Iter::from)?
-            .filter_map(|(block_hash, height)| {
-                if height >= start_height {
-                    Ok(Some((height, block_hash)))
-                } else {
-                    Ok(None)
-                }
-            })
-            .collect()
-            .map_err(db::error::Iter::from)?;
+        let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
+            return Ok(Vec::new());
+        };
+        let mut height = self.dbs.block_hashes.height().get(&rotxn, &tip)?;
+        if height < start_height {
+            return Ok(Vec::new());
+        }
+        let mut ancestors = self.dbs.block_hashes.ancestor_headers(&rotxn, tip);
+        let mut res: Vec<(u32, BlockHash)> = Vec::new();
+        while let Some((block_hash, _header)) = ancestors.next()? {
+            res.push((height, block_hash));
+            if height == start_height {
+                break;
+            }
+            height -= 1;
+        }
 
-        res.sort_by_key(|(height, _)| *height);
+        res.reverse();
 
         debug_assert!(
             res.clone()
