@@ -155,7 +155,7 @@ where
 /// electrs mid-test) and therefore run their own setup, rather than going
 /// through [`new_trial_with_setup`].
 fn new_bespoke_trial<F, Fut>(
-    name: &'static str,
+    name: impl Into<String>,
     bin_paths: &BinPaths,
     file_registry: &TestFileRegistry,
     failure_collector: &TestFailureCollector,
@@ -165,8 +165,9 @@ where
     F: FnOnce(BinPaths) -> Fut + Send + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
+    let name = name.into();
     AsyncTrial::new(
-        name,
+        name.clone(),
         Box::pin({
             let bin_paths = bin_paths.clone();
             async move {
@@ -1212,6 +1213,24 @@ pub fn tests(
         &failure_collector,
         crate::test_wallet_descriptor_fallback::test_wallet_foreign_descriptor,
     ));
+
+    // A locked wallet failed to restart for a different reason in each mode:
+    // `NoMempool` died in the tip-chasing task's wallet sync, `Mempool` at
+    // the wallet mempool task's startup gate.
+    async_trials.extend([Mode::Mempool, Mode::NoMempool].map(|mode| {
+        new_bespoke_trial(
+            format!(
+                "{} (mode: {mode})",
+                crate::test_wallet_encrypted_restart::TEST_NAME
+            ),
+            bin_paths,
+            &file_registry,
+            &failure_collector,
+            move |bin_paths| {
+                crate::test_wallet_encrypted_restart::test_wallet_encrypted_restart(bin_paths, mode)
+            },
+        )
+    }));
 
     async_trials.push(new_bespoke_trial(
         crate::test_wallet_large_gap_sync::TEST_NAME,

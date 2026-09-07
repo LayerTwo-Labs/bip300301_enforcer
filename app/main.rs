@@ -48,7 +48,7 @@ use tower_http::{
     trace::{DefaultOnFailure, TraceLayer},
 };
 use tracing::Instrument;
-use wallet::Wallet;
+use wallet::{Wallet, WalletStatus};
 
 mod error;
 mod file_descriptors;
@@ -1134,27 +1134,10 @@ async fn run_wallet_mempool_task(
     cli: cli::Config,
     cancel: CancellationToken,
 ) -> Result<(), miette::Report> {
-    // The wallet applies every connected block to its BDK store, which requires
-    // an initialized, unlocked wallet regardless of whether templates are
-    // served. Give a nice error message if that is not the case.
-    if !wallet.is_initialized().await {
-        #[derive(Debug, Diagnostic, Error)]
-        #[error(
-            "Wallet-based mempool sync requires an initialized wallet! Create one with the CreateWallet RPC method."
-        )]
-        #[diagnostic(code(wallet_not_initialized))]
-        struct WalletNotInitialized;
-        return Err(WalletNotInitialized.into());
-    }
-
     let gbt = if cli.enable_block_template_server {
-        // The block reward goes to `--coinbase-recipient`, or a fresh wallet
-        // address when it is unset.
         let mining_reward_address = match coinbase_recipient {
             Some(addr) => addr,
-            None => wallet.get_new_address().await.map_err(|err| {
-                miette::Report::from_err(err).wrap_err("failed to get mining reward address")
-            })?,
+            None => wallet_mining_reward_address(&wallet).await?,
         };
         Some(GbtConfig {
             mining_reward_address,
@@ -1175,6 +1158,23 @@ async fn run_wallet_mempool_task(
         cancel,
     )
     .await
+}
+
+/// A fresh wallet address to receive the block reward in served templates,
+/// for when `--coinbase-recipient` is unset.
+async fn wallet_mining_reward_address(wallet: &Wallet) -> Result<bitcoin::Address, miette::Report> {
+    // A locked wallet cannot derive one. Say so, rather than surfacing the
+    // bare NotUnlocked error from the address derivation.
+    if !wallet.is_initialized().await {
+        #[derive(Debug, Diagnostic, Error)]
+        #[error("Serving block templates from a locked wallet requires `--coinbase-recipient`")]
+        #[diagnostic(code(wallet_locked_no_coinbase_recipient))]
+        struct LockedWalletNoCoinbaseRecipient;
+        return Err(LockedWalletNoCoinbaseRecipient.into());
+    }
+    wallet.get_new_address().await.map_err(|err| {
+        miette::Report::from_err(err).wrap_err("failed to get mining reward address")
+    })
 }
 
 fn report_sync_state(validator: &Validator, state_file: &Path) -> Result<SyncStateSummary> {
@@ -1802,9 +1802,22 @@ async fn main() -> Result<()> {
             _ => (None, false),
         };
 
-        if !wallet.is_initialized().await && auto_create {
-            tracing::info!("auto-creating new wallet");
-            wallet.create_wallet(mnemonic, None).await?;
+        // A wallet that is not loaded is not an error. The
+        // enforcer runs without it, and the wallet catches up on the first
+        // block connected after the RPC that loads it. Refusing to start
+        // would put that RPC out of reach.
+        match wallet.status().await {
+            WalletStatus::Unlocked => (),
+            WalletStatus::Locked => {
+                tracing::warn!("wallet seed is encrypted, waiting for UnlockWallet");
+            }
+            WalletStatus::Uninitialized if auto_create => {
+                tracing::info!("auto-creating new wallet");
+                wallet.create_wallet(mnemonic, None).await?;
+            }
+            WalletStatus::Uninitialized => {
+                tracing::warn!("no wallet, waiting for CreateWallet");
+            }
         }
 
         Either::Right(Either::Right(wallet))

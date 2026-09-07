@@ -2,6 +2,7 @@ use std::{fmt::Debug, path::PathBuf};
 
 use bdk_esplora::esplora_client;
 use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
+use connectrpc::ErrorCode::FailedPrecondition;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
 use miette::Diagnostic;
 use serde::Deserialize;
@@ -66,7 +67,7 @@ pub struct NotUnlocked;
 
 impl ToStatus for NotUnlocked {
     fn builder(&self) -> StatusBuilder<'_> {
-        StatusBuilder::new(self)
+        StatusBuilder::new(self).code(FailedPrecondition)
     }
 }
 
