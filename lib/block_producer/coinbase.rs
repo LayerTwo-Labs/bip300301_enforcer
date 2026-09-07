@@ -1,39 +1,85 @@
 use std::collections::{HashMap, HashSet};
 
-use bitcoin::{Amount, BlockHash, OutPoint, Transaction, TxOut};
+use bitcoin::{Amount, BlockHash, OutPoint, Transaction, TxOut, hashes::sha256d};
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 
 use crate::{
-    block_producer::{BlockProducer, BundleProposals, error},
+    block_producer::{BlockProducer, BundleProposals, db::StoredBundleProposals, error},
     messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
     types::{
-        AmountUnderflowError, BlindedM6, Ctip, Sidechain, SidechainAck, SidechainNumber,
+        AmountUnderflowError, BlindedM6, Ctip, M6id, Sidechain, SidechainAck, SidechainNumber,
         SidechainProposal, SidechainProposalId, Thresholds,
     },
 };
 
 impl BlockProducer {
+    /// The stored bundles for `sidechain_id` that still belong to the sidechain
+    /// occupying that slot, identified by `active_description_hash`. A bundle is
+    /// bound to the sidechain that held the slot when it was accepted: once a
+    /// different sidechain holds it, proposing the bundle would pay the previous
+    /// occupant's withdrawals out of the new occupant's treasury, so it is
+    /// dropped. Rows stored before bundles were bound carry no hash, and are
+    /// judged by the slot alone as they were before.
+    fn bundles_bound_to_active_sidechain(
+        sidechain_id: SidechainNumber,
+        stored: StoredBundleProposals,
+        active_description_hash: sha256d::Hash,
+    ) -> Vec<(M6id, BlindedM6<'static>)> {
+        stored
+            .into_iter()
+            .filter_map(|(m6id, blinded_m6, description_hash)| {
+                if description_hash.is_none_or(|hash| hash == active_description_hash) {
+                    return Some((m6id, blinded_m6));
+                }
+                tracing::warn!(
+                    %sidechain_id,
+                    %m6id,
+                    "skipping a stored withdrawal bundle: another sidechain holds the slot now"
+                );
+                None
+            })
+            .collect()
+    }
+
     /// Bundle proposals we've stored, joined with the validator's view of each
     /// one. Proposals for a sidechain that isn't active are dropped: per BIP300
     /// M3, a bundle proposed for an inactive slot is just an ordinary script (a
     /// no-op), so there is nothing to gain by proposing it. Those can sneak in by
     /// activating a sidechain and then reorging it out of existence.
+    ///
+    /// A slot that is active but held by a *different* sidechain than the one
+    /// that authored a bundle drops it just the same, via
+    /// [`Self::bundles_bound_to_active_sidechain`].
     pub(crate) async fn get_bundle_proposals(
         &self,
     ) -> Result<HashMap<SidechainNumber, BundleProposals>, error::GetBundleProposals> {
         let bundle_proposals = self.db().get_bundle_proposals().await?;
-        let active_sidechain_numbers: HashSet<SidechainNumber> = self
+        let active_description_hashes: HashMap<SidechainNumber, sha256d::Hash> = self
             .validator()
             .get_active_sidechains()?
             .into_iter()
-            .map(|sidechain| sidechain.proposal.sidechain_number)
+            .map(|sidechain| {
+                (
+                    sidechain.proposal.sidechain_number,
+                    sidechain.proposal.description.sha256d_hash(),
+                )
+            })
             .collect();
         let res = bundle_proposals
             .into_iter()
             .map(Ok::<_, error::GetBundleProposals>)
             .transpose_into_fallible()
-            .filter_map(|(sidechain_id, m6ids)| {
-                if !active_sidechain_numbers.contains(&sidechain_id) {
+            .filter_map(|(sidechain_id, stored)| {
+                let Some(active_description_hash) = active_description_hashes.get(&sidechain_id)
+                else {
+                    return Ok(None);
+                };
+                let m6ids = Self::bundles_bound_to_active_sidechain(
+                    sidechain_id,
+                    stored,
+                    *active_description_hash,
+                );
+                if m6ids.is_empty() {
                     return Ok(None);
                 }
                 let pending_m6ids = self.validator().get_pending_withdrawals(&sidechain_id)?;
@@ -41,11 +87,7 @@ impl BlockProducer {
                     .into_iter()
                     .map(|(m6id, blinded_m6)| (m6id, blinded_m6, pending_m6ids.get(&m6id).copied()))
                     .collect();
-                if res.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some((sidechain_id, res)))
-                }
+                Ok(Some((sidechain_id, res)))
             })
             .collect()?;
         Ok(res)
@@ -470,7 +512,7 @@ mod tests {
     };
 
     use crate::{
-        block_producer::{BlockProducer, BundleProposals},
+        block_producer::{BlockProducer, BundleProposals, db::StoredBundleProposals},
         types::{
             AmountUnderflowError, BlindedM6, Ctip, PendingM6idInfo, SidechainAck,
             SidechainDescription, SidechainNumber, SidechainProposal, Thresholds,
@@ -523,6 +565,47 @@ mod tests {
             proposal_height: 1,
         };
         vec![(blinded_m6.compute_m6id(), blinded_m6, Some(info))]
+    }
+
+    /// The slot the stored bundles below were accepted for.
+    const BOUND_SLOT: SidechainNumber = SidechainNumber(7);
+
+    /// [`approved_bundle`] as it comes back out of the DB, bound to the
+    /// sidechain `bound_to` describes -- or unbound (`None`), as rows stored
+    /// before bundles were bound to a sidechain are.
+    fn stored_bundle(bound_to: Option<&SidechainProposal>) -> StoredBundleProposals {
+        let hash = bound_to.map(|proposal| proposal.description.sha256d_hash());
+        approved_bundle()
+            .into_iter()
+            .map(|(m6id, blinded_m6, _info)| (m6id, blinded_m6, hash))
+            .collect()
+    }
+
+    /// How many of `stored` are still proposable for [`BOUND_SLOT`], given that
+    /// the sidechain `active` describes holds that slot now.
+    fn bundles_kept(stored: StoredBundleProposals, active: &SidechainProposal) -> usize {
+        let hash = active.description.sha256d_hash();
+        BlockProducer::bundles_bound_to_active_sidechain(BOUND_SLOT, stored, hash).len()
+    }
+
+    /// A bundle accepted while one sidechain held a slot must not be re-proposed
+    /// once another sidechain holds it: an M3 names the slot alone, so it would
+    /// be voted on and paid out of the new occupant's treasury.
+    #[test]
+    fn stored_bundles_of_a_previous_slot_occupant_are_dropped() {
+        let previous = test_proposal(BOUND_SLOT, b"previous");
+        let current = test_proposal(BOUND_SLOT, b"current");
+        let ours = stored_bundle(Some(&current));
+        let theirs = stored_bundle(Some(&previous));
+        let legacy = stored_bundle(None);
+
+        // The sidechain that authored the bundle still holds the slot.
+        assert_eq!(bundles_kept(ours, &current), 1);
+        // A different sidechain holds it now: the bundle is not ours to propose.
+        assert_eq!(bundles_kept(theirs, &current), 0);
+        // A row stored before bundles were bound to a sidechain has no owner to
+        // compare against, and keeps the pre-existing slot-only behaviour.
+        assert_eq!(bundles_kept(legacy, &current), 1);
     }
 
     fn ctip(byte: u8) -> Ctip {

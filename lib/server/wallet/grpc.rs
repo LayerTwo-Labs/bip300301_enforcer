@@ -146,16 +146,19 @@ impl WalletService for crate::wallet::Wallet {
         // be a no-op. Fail fast at ingestion rather than persisting a row that can
         // never be acted on. NB: this gate cannot catch a slot that is deactivated by
         // a reorg *after* a bundle is stored, so the block builder
-        // (`get_bundle_proposals`) also skips inactive-slot bundles.
-        match self.is_sidechain_active(sidechain_id) {
-            Ok(false) => {
+        // (`get_bundle_proposals`) also skips inactive-slot bundles. For the same
+        // reason the bundle is stored bound to the sidechain occupying the slot right
+        // now: a slot that is reactivated by a *different* sidechain is still active,
+        // and the builder re-checks the binding before proposing.
+        let description_hash = match self.active_sidechain_description_hash(sidechain_id) {
+            Ok(None) => {
                 return Err(ConnectError::failed_precondition(format!(
                     "cannot accept a withdrawal bundle for sidechain {sidechain_id}: not active"
                 )));
             }
-            Ok(true) => (),
+            Ok(Some(description_hash)) => description_hash,
             Err(err) => return Err(internal_err(err)),
-        }
+        };
         // Likewise reject bundles for an active slot that has no CTIP: with no
         // treasury UTXO there is nothing for an M6 to spend, so the bundle could
         // never become a valid withdrawal. NB: as with the active-slot gate
@@ -186,7 +189,7 @@ impl WalletService for crate::wallet::Wallet {
             )
         })?;
         let _m6id = self
-            .put_withdrawal_bundle(sidechain_id, &transaction)
+            .put_withdrawal_bundle(sidechain_id, description_hash, &transaction)
             .await
             .map_err(|err| StatusBuilder::new(&err).to_connect_error())?;
         Ok(Response::new(BroadcastWithdrawalBundleResponse::default()))

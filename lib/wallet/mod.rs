@@ -833,11 +833,12 @@ impl Wallet {
     pub async fn put_withdrawal_bundle(
         &self,
         sidechain_number: SidechainNumber,
+        sidechain_description_hash: sha256d::Hash,
         blinded_m6: &BlindedM6<'static>,
     ) -> Result<M6id, rusqlite::Error> {
         self.inner
             .db()
-            .put_withdrawal_bundle(sidechain_number, blinded_m6)
+            .put_withdrawal_bundle(sidechain_number, sidechain_description_hash, blinded_m6)
             .await
     }
 
@@ -1736,6 +1737,23 @@ impl Wallet {
             .any(|sc| sc.proposal.sidechain_number == sidechain_number);
 
         Ok(active)
+    }
+
+    /// The description hash of the sidechain occupying `sidechain_number` right
+    /// now, or `None` if the slot is inactive. Identifies *which* sidechain
+    /// holds the slot, which a slot number alone does not: a slot can be
+    /// reactivated by a different sidechain.
+    pub fn active_sidechain_description_hash(
+        &self,
+        sidechain_number: SidechainNumber,
+    ) -> Result<Option<sha256d::Hash>, validator::GetSidechainsError> {
+        let sidechains = self.inner.validator().get_active_sidechains()?;
+        let description_hash = sidechains
+            .iter()
+            .find(|sc| sc.proposal.sidechain_number == sidechain_number)
+            .map(|sc| sc.proposal.description.sha256d_hash());
+
+        Ok(description_hash)
     }
 
     #[instrument(skip_all, err)]

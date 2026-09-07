@@ -14,8 +14,11 @@ use crate::{
     },
 };
 
-/// Bundle proposals for a single sidechain, as stored (no validator filtering).
-pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>)>;
+/// Bundle proposals for a single sidechain, as stored (no validator filtering),
+/// each with the description hash of the sidechain that occupied the slot when
+/// the bundle was accepted. `None` for rows written before bundles were bound to
+/// a sidechain.
+pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>, Option<sha256d::Hash>)>;
 
 /// Undo rows are kept for this many recently-produced blocks, so that blocks
 /// which stay on the main chain (and are therefore never disconnected) don't
@@ -112,6 +115,18 @@ impl Db {
                  INSERT INTO block_producer_settings (id, ack_all_proposals)
                  VALUES (0, TRUE);",
             ),
+            // Bind each stored bundle to the sidechain that occupied its slot
+            // when the bundle was accepted, so that a bundle is not re-proposed
+            // once a different sidechain takes the slot over. Nullable: SQLite
+            // cannot add a NOT NULL column without a default, and rows written
+            // before this migration have no known owner — those stay unbound.
+            // The `UNIQUE(sidechain_number, bundle_hash)` key above cannot be
+            // widened by `ALTER TABLE`, so the binding is filtered on read
+            // instead (see `BlockProducer::get_bundle_proposals`).
+            M::up(
+                "ALTER TABLE bundle_proposals
+                 ADD COLUMN sidechain_description_hash BLOB;",
+            ),
         ]);
 
         let path = data_dir.join("db.sqlite");
@@ -179,8 +194,10 @@ impl Db {
     ) -> Result<HashMap<SidechainNumber, StoredBundleProposals>, error::GetBundleProposals> {
         // Satisfy clippy with a single function call per lock
         let with_connection = |connection: &Connection| -> Result<_, error::GetBundleProposals> {
-            let mut statement = connection
-                .prepare("SELECT sidechain_number, bundle_hash, bundle_tx FROM bundle_proposals")?;
+            let mut statement = connection.prepare(
+                "SELECT sidechain_number, bundle_hash, bundle_tx, sidechain_description_hash \
+                 FROM bundle_proposals",
+            )?;
             let mut bundle_proposals = HashMap::<_, Vec<_>>::new();
             let () = statement
                 .query_map([], |row| {
@@ -188,18 +205,23 @@ impl Db {
                     let m6id_bytes: [u8; 32] = row.get(1)?;
                     let m6id = M6id::from(m6id_bytes);
                     let bundle_tx_bytes: Vec<u8> = row.get(2)?;
-                    Ok((sidechain_number, m6id, bundle_tx_bytes))
+                    let description_hash: Option<[u8; 32]> = row.get(3)?;
+                    Ok((sidechain_number, m6id, bundle_tx_bytes, description_hash))
                 })?
                 .transpose_into_fallible()
                 .map_err(error::GetBundleProposals::from)
-                .for_each(|(sidechain_number, m6id, bundle_tx_bytes)| {
-                    let bundle_proposal_tx = BlindedM6::deserialize(&bundle_tx_bytes)?;
-                    bundle_proposals
-                        .entry(sidechain_number)
-                        .or_default()
-                        .push((m6id, bundle_proposal_tx));
-                    Ok(())
-                })?;
+                .for_each(
+                    |(sidechain_number, m6id, bundle_tx_bytes, description_hash)| {
+                        let bundle_proposal_tx = BlindedM6::deserialize(&bundle_tx_bytes)?;
+                        let description_hash = description_hash.map(sha256d::Hash::from_byte_array);
+                        bundle_proposals.entry(sidechain_number).or_default().push((
+                            m6id,
+                            bundle_proposal_tx,
+                            description_hash,
+                        ));
+                        Ok(())
+                    },
+                )?;
             Ok(bundle_proposals)
         };
         let connection = self.conn.lock().await;
@@ -338,9 +360,15 @@ impl Db {
         with_connection(&connection)
     }
 
+    /// Store a bundle for `sidechain_number`, bound to the sidechain occupying
+    /// that slot right now, identified by `sidechain_description_hash`. A bundle
+    /// only makes sense for the sidechain that authored it, so the binding is
+    /// re-checked when the bundle is proposed (see
+    /// `BlockProducer::get_bundle_proposals`).
     pub async fn put_withdrawal_bundle(
         &self,
         sidechain_number: SidechainNumber,
+        sidechain_description_hash: sha256d::Hash,
         blinded_m6: &BlindedM6<'static>,
     ) -> Result<M6id, rusqlite::Error> {
         let m6id = blinded_m6.compute_m6id();
@@ -348,13 +376,22 @@ impl Db {
         // because `BlindedM6::deserialize` reads this encoding back, and a
         // finalized M6 has a treasury input anyway.
         let tx_bytes = blinded_m6.serialize();
-        self.conn
-            .lock()
-            .await
-            .execute(
-                "INSERT OR IGNORE INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
-                (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),
-            )?;
+        // The key is `(slot, bundle)` and cannot be widened on an existing DB,
+        // so a re-broadcast re-binds the row to the sidechain broadcasting it
+        // now, rather than being ignored and left bound to a previous occupant.
+        self.conn.lock().await.execute(
+            "INSERT INTO bundle_proposals \
+                 (sidechain_number, bundle_hash, bundle_tx, sidechain_description_hash) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (sidechain_number, bundle_hash) \
+                 DO UPDATE SET sidechain_description_hash = excluded.sidechain_description_hash",
+            (
+                sidechain_number.0,
+                m6id.0.as_byte_array(),
+                tx_bytes,
+                sidechain_description_hash.as_byte_array(),
+            ),
+        )?;
         Ok(m6id)
     }
 
