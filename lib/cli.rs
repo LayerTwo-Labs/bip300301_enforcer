@@ -11,6 +11,7 @@ use clap::{Args, Parser, ValueEnum};
 use thiserror::Error;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format as tracing_format;
+use zeroize::Zeroizing;
 
 use crate::types::NetworkParams;
 
@@ -71,6 +72,9 @@ const LOG_FILENAME: &str = "bip300301_enforcer.log";
 // Sub-par location for the log dir.
 // https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
 const DEFAULT_LOG_DIRNAME: &str = "logs";
+
+/// Cookie file [`Config::bitcoin_cli`] writes under `data_dir`.
+pub const RPC_COOKIE_FILENAME: &str = "enforcer-rpc.cookie";
 
 /// Possible formats for log output.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -719,6 +723,70 @@ fn effective_config_lines(matches: &clap::ArgMatches) -> Vec<String> {
     lines
 }
 
+#[derive(Debug, Error)]
+pub enum WriteRpcCookieError {
+    #[error(
+        "RPC cookie path `{}` contains whitespace, which the signet miner cannot pass on to \
+         bitcoin-cli; set --data-dir to a path without whitespace",
+        path.display()
+    )]
+    PathContainsWhitespace { path: PathBuf },
+    #[error("failed to write RPC cookie file `{}`", path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Write `user:pass` to a 0600 cookie file under `data_dir` and return its
+/// path. Fresh temp file plus rename, like the seed file, so a leftover or
+/// symlinked temp file can never decide the permissions.
+fn write_rpc_cookie(
+    data_dir: &Path,
+    user: &str,
+    pass: &SecretString,
+) -> Result<PathBuf, WriteRpcCookieError> {
+    let path = data_dir.join(RPC_COOKIE_FILENAME);
+    // `bitcoin-cli` resolves a relative `-rpccookiefile` against the node's
+    // datadir.
+    let path = std::path::absolute(&path).map_err(|source| WriteRpcCookieError::Io {
+        path: path.clone(),
+        source,
+    })?;
+
+    // The pinned signet miner splits `--cli=` on spaces, so a path with
+    // whitespace (macOS' default data dir, for one) cannot be passed on.
+    if path.to_string_lossy().contains(char::is_whitespace) {
+        return Err(WriteRpcCookieError::PathContainsWhitespace { path });
+    }
+    let io = |source| WriteRpcCookieError::Io {
+        path: path.clone(),
+        source,
+    };
+    let contents = Zeroizing::new(format!("{user}:{}", pass.expose()));
+    let () = std::fs::create_dir_all(data_dir).map_err(io)?;
+    let tmp_path = path.with_extension("cookie.tmp");
+    {
+        match std::fs::remove_file(&tmp_path) {
+            Ok(()) => (),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => (),
+            Err(err) => return Err(io(err)),
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp_path).map_err(io)?;
+        let () = std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(io)?;
+    }
+    let () = std::fs::rename(&tmp_path, &path).map_err(io)?;
+    Ok(path)
+}
+
 impl Config {
     /// Parse the command line, keeping the raw [`clap::ArgMatches`] alongside
     /// the parsed config so that [`log_effective_config`] can report where each
@@ -739,17 +807,38 @@ impl Config {
         env!("GIT_HASH")
     }
 
-    pub fn bitcoin_cli(&self, network: bitcoin::Network) -> crate::bins::BitcoinCli {
-        crate::bins::BitcoinCli {
+    /// The `bitcoin-cli` invocation for the signet miner.
+    ///
+    /// User/password credentials go through a cookie file: the miner keeps
+    /// this invocation in its argv for the whole run, where any local user can
+    /// read it. No fallback to passing them as arguments; failing to mine
+    /// beats leaking the password.
+    pub fn bitcoin_cli(
+        &self,
+        network: bitcoin::Network,
+    ) -> Result<crate::bins::BitcoinCli, WriteRpcCookieError> {
+        let (rpc_user, rpc_pass, rpc_cookie_path) =
+            match (&self.node_rpc_opts.user, &self.node_rpc_opts.pass) {
+                (Some(user), Some(pass)) => {
+                    let cookie_path = write_rpc_cookie(&self.data_dir, user, pass)?;
+                    (None, None, Some(cookie_path.display().to_string()))
+                }
+                _ => (
+                    self.node_rpc_opts.user.clone(),
+                    self.node_rpc_opts.pass.clone(),
+                    self.node_rpc_opts.cookie_path.clone(),
+                ),
+            };
+        Ok(crate::bins::BitcoinCli {
             path: self.mining_opts.bitcoin_cli_path.clone(),
             network,
-            rpc_user: self.node_rpc_opts.user.clone(),
-            rpc_pass: self.node_rpc_opts.pass.clone(),
-            rpc_cookie_path: self.node_rpc_opts.cookie_path.clone(),
+            rpc_user,
+            rpc_pass,
+            rpc_cookie_path,
             rpc_port: self.node_rpc_opts.addr.port(),
             rpc_host: self.node_rpc_opts.addr.ip().to_string(),
             rpc_wallet: None,
-        }
+        })
     }
 
     pub fn log_formatter(&self) -> LogFormatter {

@@ -22,6 +22,7 @@ mod test_peer_bmm_request;
 mod test_rest_disabled;
 mod test_seed_migration;
 mod test_sidechain_ack_policy;
+mod test_signet_miner_rpc_cookie;
 mod test_unconfirmed_transactions;
 mod test_wallet_descriptor_fallback;
 mod test_wallet_large_gap_sync;

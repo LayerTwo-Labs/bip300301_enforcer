@@ -452,9 +452,9 @@ jobs:
             "$INTEGRATION_TEST_RUNNER" ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"}
           fi
 
-      # Did the run end up with a chain worth caching? A run that never needed
-      # one (the stock matrix skips the only signet test) leaves nothing to
-      # save, and `cache/save` would warn about the missing path.
+      # Did the run end up with a chain worth caching? A run that skipped every
+      # signet test leaves nothing to save, and `cache/save` would warn about
+      # the missing path.
       #
       # This is a shell test rather than `hashFiles` in the save step's `if`,
       # because `hashFiles` only sees paths inside GITHUB_WORKSPACE — the chain
