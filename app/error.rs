@@ -76,7 +76,7 @@ where
                 is_transport_error(err)
             }
             SyncTaskError::InitialSyncEnforcer(InitialSyncError::CusfEnforcer(err)) => {
-                is_block_not_found_on_disk(err)
+                is_block_not_found_on_disk(err) || is_stale_main_tip(err)
             }
             // The crate does not export this variant's error type, so its
             // `ClientError` is only reachable through the source chain.
@@ -95,6 +95,20 @@ where
     ErrorChain::new(err)
         .to_string()
         .contains("Block not found on disk")
+}
+
+// A sync targets a tip read before it started, and the node can reorg onto a
+// chain that does not contain that tip while the sync is running. The sync
+// gives up in that case, since only a sync against the node's current tip can
+// finish. Matched by message, as the enforcer's error type does not survive
+// the crate boundary. See `validator::task::error::Sync::MainTipReorged`.
+fn is_stale_main_tip<E>(err: &E) -> bool
+where
+    E: std::error::Error,
+{
+    ErrorChain::new(err)
+        .to_string()
+        .contains("left the active chain during header sync")
 }
 
 /// Whether a node RPC call failed at the transport layer rather than being
@@ -128,7 +142,7 @@ where
             is_transport_error(err)
         }
         TaskError::InitialSync(InitialSyncError::CusfEnforcer(err)) => {
-            is_block_not_found_on_disk(err)
+            is_block_not_found_on_disk(err) || is_stale_main_tip(err)
         }
         _ => false,
     }
