@@ -1214,6 +1214,14 @@ pub fn tests(
     ));
 
     async_trials.push(new_bespoke_trial(
+        crate::test_wallet_encrypted_restart::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_encrypted_restart::test_wallet_encrypted_restart,
+    ));
+
+    async_trials.push(new_bespoke_trial(
         crate::test_wallet_large_gap_sync::TEST_NAME,
         bin_paths,
         &file_registry,
