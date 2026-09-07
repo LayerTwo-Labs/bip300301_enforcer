@@ -591,7 +591,9 @@ impl BlockProducer {
             collected
         });
 
-        const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(10);
+        // The miner grinds real proof-of-work. On CI this can blow through
+        // the old 10s budget.
+        const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(60);
         let status = tokio::time::timeout(SIGNET_MINER_TIMEOUT, child.wait())
             .await
             .map_err(|_elapsed| {
