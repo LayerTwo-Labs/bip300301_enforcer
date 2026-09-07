@@ -229,6 +229,24 @@ const fn default_electrum_host_port(network: Network) -> Option<(&'static str, u
     }
 }
 
+/// Chronological sort key for a wallet transaction: the confirmation time if
+/// it is confirmed, otherwise the time it was last seen in the mempool. BDK
+/// reports no `last_seen` for a transaction it has not seen since a reorg
+/// orphaned it, and those sort first. The TXID is only a tie-breaker.
+///
+/// Comparing one key per transaction is a total order, which comparing
+/// timestamps for some pairs and TXIDs for the rest is not: those two
+/// relations disagree, so mixing them yields cycles, and the sort panics with
+/// "user-provided comparison function does not correctly implement a total
+/// order" when it notices.
+fn wallet_transaction_sort_key(tx: &BDKWalletTransaction) -> (Option<u64>, Txid) {
+    let timestamp = match tx.chain_position {
+        ChainPosition::Confirmed { anchor, .. } => Some(anchor.confirmation_time),
+        ChainPosition::Unconfirmed { last_seen, .. } => last_seen,
+    };
+    (timestamp, tx.txid)
+}
+
 struct WalletInner {
     main_client: HttpClient,
     producer: BlockProducer,
@@ -1431,43 +1449,7 @@ impl Wallet {
         }
 
         // Make sure that the transaction list is in chronological order.
-        txs.sort_by(|a, b| match (a.chain_position, b.chain_position) {
-            (
-                ChainPosition::Confirmed {
-                    anchor: a_anchor, ..
-                },
-                ChainPosition::Confirmed {
-                    anchor: b_anchor, ..
-                },
-            ) => a_anchor.confirmation_time.cmp(&b_anchor.confirmation_time),
-            (
-                ChainPosition::Confirmed { anchor, .. },
-                ChainPosition::Unconfirmed {
-                    last_seen: Some(last_seen),
-                    first_seen: _,
-                },
-            ) => anchor.confirmation_time.cmp(&last_seen),
-            (
-                ChainPosition::Unconfirmed {
-                    last_seen: Some(last_seen),
-                    first_seen: _,
-                },
-                ChainPosition::Confirmed { anchor, .. },
-            ) => last_seen.cmp(&anchor.confirmation_time),
-            (
-                ChainPosition::Unconfirmed {
-                    last_seen: Some(a_last_seen),
-                    first_seen: _,
-                },
-                ChainPosition::Unconfirmed {
-                    last_seen: Some(b_last_seen),
-                    first_seen: _,
-                },
-            ) => a_last_seen.cmp(&b_last_seen),
-
-            // Fallback to comparing TXIDs
-            (_, _) => a.txid.cmp(&b.txid),
-        });
+        txs.sort_by_key(wallet_transaction_sort_key);
         Ok(txs)
     }
 
@@ -2016,8 +1998,9 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
+    use bdk_chain::{BlockId, ConfirmationBlockTime};
     use bdk_wallet::{
         bip39::Language,
         bitcoin::{Amount, ScriptBuf, script::PushBytesBuf},
@@ -2026,9 +2009,9 @@ mod tests {
     use bitcoin::{BlockHash, hashes::Hash as _};
 
     use super::{
-        BdkWallet, CreateTransactionParams, KeychainKind, LEGACY_COIN_TYPE, M8BmmRequest, Mnemonic,
-        Network, Persistence, Wallet, WalletConfig, WalletInner, WalletSyncSource, error,
-        slip44_coin_type,
+        BDKWalletTransaction, BdkWallet, ChainPosition, CreateTransactionParams, KeychainKind,
+        LEGACY_COIN_TYPE, M8BmmRequest, Mnemonic, Network, Persistence, Txid, Wallet, WalletConfig,
+        WalletInner, WalletSyncSource, error, slip44_coin_type,
     };
     use crate::{
         errors::ErrorChain,
@@ -2462,6 +2445,112 @@ mod tests {
         assert_eq!(
             super::sync_backend_endpoint(&config, Network::Regtest),
             None
+        );
+    }
+
+    fn wallet_tx(
+        txid_byte: u8,
+        chain_position: ChainPosition<ConfirmationBlockTime>,
+    ) -> BDKWalletTransaction {
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: Vec::new(),
+            output: Vec::new(),
+        };
+        BDKWalletTransaction {
+            txid: Txid::from_byte_array([txid_byte; 32]),
+            tx: Arc::new(tx),
+            chain_position,
+            fee: Amount::ZERO,
+            received: Amount::ZERO,
+            sent: Amount::ZERO,
+        }
+    }
+
+    /// A position confirmed at `timestamp`. Only the time matters here, not
+    /// the block the transaction is anchored to.
+    fn confirmed_at(timestamp: u64) -> ChainPosition<ConfirmationBlockTime> {
+        let block_id = BlockId {
+            height: 1,
+            hash: BlockHash::from_byte_array([0xAA; 32]),
+        };
+        ChainPosition::Confirmed {
+            anchor: ConfirmationBlockTime {
+                block_id,
+                confirmation_time: timestamp,
+            },
+            transitively: None,
+        }
+    }
+
+    /// An unconfirmed position. BDK reports no `last_seen` for a transaction
+    /// it has not seen since a reorg orphaned it.
+    fn unconfirmed(last_seen: Option<u64>) -> ChainPosition<ConfirmationBlockTime> {
+        ChainPosition::Unconfirmed {
+            first_seen: last_seen,
+            last_seen,
+        }
+    }
+
+    fn txids(txs: &[BDKWalletTransaction]) -> Vec<Txid> {
+        txs.iter().map(|tx| tx.txid).collect()
+    }
+
+    /// The three positions `list_wallet_transactions` sees, arranged so that
+    /// comparing timestamps for some pairs and TXIDs for the rest is cyclic:
+    /// the confirmed transaction precedes the unconfirmed one by time, which
+    /// precedes the orphaned one by TXID, which precedes the confirmed one by
+    /// TXID.
+    fn intransitive_arrangement() -> [BDKWalletTransaction; 3] {
+        let confirmed = wallet_tx(0x03, confirmed_at(10));
+        let seen = wallet_tx(0x01, unconfirmed(Some(20)));
+        let orphaned = wallet_tx(0x02, unconfirmed(None));
+        [confirmed, seen, orphaned]
+    }
+
+    /// Sorting must be a total order. Switching relation per pair is not one,
+    /// so the answer depended on the order the transactions arrived in.
+    #[test]
+    fn wallet_transactions_sort_in_a_total_order() {
+        let [confirmed, seen, orphaned] = intransitive_arrangement();
+        // Chronological, with the transaction carrying no timestamp first.
+        let expected = [orphaned.txid, confirmed.txid, seen.txid];
+
+        let mut forwards = [confirmed.clone(), seen.clone(), orphaned.clone()];
+        forwards.sort_by_key(super::wallet_transaction_sort_key);
+        let mut backwards = [orphaned, seen, confirmed];
+        backwards.sort_by_key(super::wallet_transaction_sort_key);
+
+        assert_eq!(txids(&forwards), expected);
+        assert_eq!(txids(&backwards), expected);
+    }
+
+    /// The same mix, at a size where the standard library's sort checks the
+    /// comparator it was handed and panics on one that is not a total order.
+    #[test]
+    fn many_wallet_transactions_sort_without_panicking() {
+        const COUNT: u8 = 64;
+
+        // A tiny LCG, so that the timestamps are shuffled with respect to the
+        // TXIDs while the case stays reproducible.
+        let mut seed = 1u64;
+        let mut txs = Vec::with_capacity(COUNT as usize);
+        for i in 0..COUNT {
+            seed = seed.wrapping_mul(2862933555777941757).wrapping_add(1);
+            let chain_position = match i % 3 {
+                0 => confirmed_at(seed >> 58),
+                1 => unconfirmed(Some(seed >> 58)),
+                _ => unconfirmed(None),
+            };
+            txs.push(wallet_tx(i, chain_position));
+        }
+
+        txs.sort_by_key(super::wallet_transaction_sort_key);
+
+        assert!(
+            txs.is_sorted_by_key(super::wallet_transaction_sort_key),
+            "the sorted list must be ordered by its own sort key"
         );
     }
 }
