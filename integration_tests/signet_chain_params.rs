@@ -28,3 +28,14 @@ pub const SIGNET_CHALLENGE_SECRET_KEY: [u8; 32] = [
 /// `COINBASE_MATURITY` (100) so that the earliest coinbases are spendable the
 /// moment a test starts, which is the entire point of caching it.
 pub const SIGNET_CACHED_CHAIN_BLOCKS: u32 = 110;
+
+/// The signet challenge and its address: P2WPKH to the key behind
+/// [`SIGNET_CHALLENGE_SECRET_KEY`]. Not a bare multisig like default signet,
+/// since the enforcer checks it can mine by turning the challenge into an
+/// address and asking the node wallet whether it owns it.
+pub fn signet_challenge(
+    public_key: &bitcoin::CompressedPublicKey,
+) -> (bitcoin::ScriptBuf, bitcoin::Address) {
+    let address = bitcoin::Address::p2wpkh(public_key, bitcoin::Network::Signet);
+    (address.script_pubkey(), address)
+}

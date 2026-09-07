@@ -512,16 +512,18 @@ impl BlockProducer {
             .get_header_info(&self.validator().get_mainchain_tip()?)?;
 
         let getblocktemplate_command = Some(format!(
-            "bitcoin-cli -rpcconnect={} -rpcport={} getblocktemplate",
+            "{} -rpcconnect={} -rpcport={} getblocktemplate",
+            self.config().mining_opts.bitcoin_cli_path.display(),
             self.config().serve_rpc_addr.ip(),
             self.config().serve_rpc_addr.port()
         ));
         let target_block_interval = self.signet_challenge().map(target_block_interval);
 
         let mining_script_path = self.get_signet_miner_path().await?;
+        let bitcoin_cli = self.config().bitcoin_cli(bitcoin::Network::Signet)?;
         let miner = bins::SignetMiner {
             path: mining_script_path,
-            bitcoin_cli: self.config().bitcoin_cli(bitcoin::Network::Signet),
+            bitcoin_cli,
             bitcoin_util: self.config().mining_opts.bitcoin_util_path.clone(),
             block_interval: target_block_interval,
             nbits: None,

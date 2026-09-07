@@ -243,3 +243,68 @@ impl SignetMiner {
         command
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use crate::cli::Config;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bip300301-bins-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config_with_rpc_credentials(dir: &std::path::Path) -> Config {
+        Config::try_parse_from([
+            "bip300301_enforcer",
+            &format!("--data-dir={}", dir.display()),
+            "--node-rpc-user=alice",
+            "--node-rpc-pass=hunter2",
+        ])
+        .expect("should parse")
+    }
+
+    /// A failed cookie write is an error, not a fallback to arguments. A
+    /// regular file as data dir fails the write even as root.
+    #[test]
+    fn unwritable_data_dir_is_an_error() {
+        let dir = temp_dir("rpc-cookie-unwritable");
+        let not_a_dir = dir.join("data");
+        std::fs::write(&not_a_dir, b"").unwrap();
+        let config = config_with_rpc_credentials(&not_a_dir);
+
+        let err = config
+            .bitcoin_cli(bitcoin::Network::Signet)
+            .expect_err("an unwritable data dir must refuse to build a bitcoin-cli invocation");
+        assert!(!err.to_string().contains("hunter2"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A path the miner cannot pass on is an error, not a fallback.
+    #[test]
+    fn data_dir_with_whitespace_is_an_error() {
+        let dir = temp_dir("rpc-cookie-whitespace").join("Application Support");
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = config_with_rpc_credentials(&dir);
+
+        let err = config
+            .bitcoin_cli(bitcoin::Network::Signet)
+            .expect_err("a data dir with whitespace must refuse to build a bitcoin-cli invocation");
+        assert!(
+            err.to_string().contains("whitespace"),
+            "the error must say why: {err}"
+        );
+        assert!(!err.to_string().contains("hunter2"));
+        assert!(
+            !dir.join(crate::cli::RPC_COOKIE_FILENAME).exists(),
+            "no cookie may be written to a path the miner cannot use"
+        );
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+}

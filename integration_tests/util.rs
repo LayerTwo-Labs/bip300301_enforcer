@@ -958,3 +958,49 @@ pub fn expect_block_template(
         .map(|template| *template)
         .ok_or_else(|| anyhow::anyhow!("expected a block template, got a BIP23 proposal verdict"))
 }
+
+/// Everything the enforcer wrote: captured stdout/stderr and the rolling logs
+/// under `enforcer_dir`.
+pub fn enforcer_output(enforcer_dir: &std::path::Path) -> anyhow::Result<Vec<(PathBuf, String)>> {
+    let mut paths = vec![
+        enforcer_dir.join("stdout.txt"),
+        enforcer_dir.join("stderr.txt"),
+    ];
+    let log_dir = enforcer_dir.join("logs");
+    if log_dir.is_dir() {
+        for entry in std::fs::read_dir(&log_dir)? {
+            let path = entry?.path();
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for path in paths {
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => out.push((path, contents)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(anyhow::anyhow!("reading {}: {err}", path.display())),
+        }
+    }
+    anyhow::ensure!(!out.is_empty(), "the enforcer wrote no output to scan");
+    Ok(out)
+}
+
+/// Fail if `needle` appears in any of `files`, without printing the line: it
+/// holds the secret.
+pub fn assert_absent(files: &[(PathBuf, String)], needle: &str, what: &str) -> anyhow::Result<()> {
+    for (path, contents) in files {
+        if let Some(line) = contents.lines().find(|line| line.contains(needle)) {
+            let position = line.find(needle).unwrap_or(0);
+            anyhow::bail!(
+                "{what} leaked into {} at character {position} of a {} line starting `{}`",
+                path.display(),
+                line.len(),
+                line.chars().take(60).collect::<String>(),
+            );
+        }
+    }
+    Ok(())
+}

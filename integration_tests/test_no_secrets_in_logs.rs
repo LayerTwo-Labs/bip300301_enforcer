@@ -7,13 +7,12 @@
 //! the harness's `trace` log level turned on, which is where a leak is most
 //! likely to show up.
 
-use std::path::PathBuf;
-
 use bip300301_enforcer_lib::cli::SecretString;
 
 use crate::{
     integration_test::fund_enforcer,
     setup::{DummySidechain, PostSetup},
+    util::{assert_absent, enforcer_output},
 };
 
 pub const TEST_NAME: &str = "no_secrets_in_logs";
@@ -48,51 +47,6 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
-/// Everything the enforcer writes: both captured streams and every rolling log
-/// file. Missing files are skipped -- `stderr.txt` is empty on a healthy run.
-fn enforcer_output(post_setup: &PostSetup) -> anyhow::Result<Vec<(PathBuf, String)>> {
-    let dir = &post_setup.directories.enforcer_dir;
-    let mut paths = vec![dir.join("stdout.txt"), dir.join("stderr.txt")];
-    let log_dir = dir.join("logs");
-    if log_dir.is_dir() {
-        for entry in std::fs::read_dir(&log_dir)? {
-            let path = entry?.path();
-            if path.is_file() {
-                paths.push(path);
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    for path in paths {
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => out.push((path, contents)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(anyhow::anyhow!("reading {}: {err}", path.display())),
-        }
-    }
-    anyhow::ensure!(!out.is_empty(), "the enforcer wrote no output to scan");
-    Ok(out)
-}
-
-/// Fail with the offending line rather than just a count, so a regression says
-/// where the secret escaped.
-fn assert_absent(files: &[(PathBuf, String)], needle: &str, what: &str) -> anyhow::Result<()> {
-    for (path, contents) in files {
-        if let Some(line) = contents.lines().find(|line| line.contains(needle)) {
-            // The line itself is not printed in full: it contains the secret.
-            let position = line.find(needle).unwrap_or(0);
-            anyhow::bail!(
-                "{what} leaked into {} at character {position} of a {} line starting `{}`",
-                path.display(),
-                line.len(),
-                line.chars().take(60).collect::<String>(),
-            );
-        }
-    }
-    Ok(())
-}
-
 pub async fn test_no_secrets_in_logs(mut post_setup: PostSetup) -> anyhow::Result<()> {
     // Drive real work through the enforcer first, so the logs cover node RPC
     // traffic and wallet activity rather than just startup.
@@ -111,7 +65,7 @@ pub async fn test_no_secrets_in_logs(mut post_setup: PostSetup) -> anyhow::Resul
         .clone()
         .ok_or_else(|| anyhow::anyhow!("harness has no rpc password to check for"))?;
 
-    let files = enforcer_output(&post_setup)?;
+    let files = enforcer_output(&post_setup.directories.enforcer_dir)?;
     let total_bytes: usize = files.iter().map(|(_, contents)| contents.len()).sum();
     tracing::info!(
         "scanning {} enforcer output file(s), {total_bytes} bytes",

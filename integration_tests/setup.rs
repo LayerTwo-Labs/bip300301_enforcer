@@ -78,14 +78,8 @@ impl SignetSetup {
             &bitcoin::secp256k1::Secp256k1::new(),
             &secret_key,
         )?;
-        let signet_challenge = bitcoin::Script::builder()
-            .push_opcode(bitcoin::opcodes::all::OP_PUSHNUM_1)
-            .push_slice(cpk.to_bytes())
-            .push_opcode(bitcoin::opcodes::all::OP_PUSHNUM_1)
-            .push_opcode(bitcoin::opcodes::all::OP_CHECKMULTISIG)
-            .into_script();
-        let signet_challenge_addr =
-            bitcoin::Address::from_script(&cpk.p2wpkh_script_code(), &bitcoin::params::SIGNET)?;
+        let (signet_challenge, signet_challenge_addr) =
+            crate::signet_chain_params::signet_challenge(&cpk);
         let signet_magic = bip300301_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
         tracing::info!(
             signet_challenge = %hex::encode(signet_challenge.as_bytes()),
@@ -100,16 +94,12 @@ impl SignetSetup {
         })
     }
 
-    /// Initialize bitcoind wallet
+    /// Import the signet challenge key, so the wallet can sign blocks.
     async fn init_bitcoind_wallet(&self, bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
         tracing::debug!("Importing secret key");
         let mining_descriptor = {
             use bdk_wallet::miniscript;
             let descriptor = bdk_wallet::descriptor!(wpkh(self.secret_key))?;
-            descriptor.0.to_string_with_secret(&descriptor.1)
-        };
-        let multisig_descriptor = {
-            let descriptor = bdk_wallet::descriptor!(bare(multi(1, self.secret_key)))?;
             descriptor.0.to_string_with_secret(&descriptor.1)
         };
         let import_descriptors_output = bitcoin_cli
@@ -122,19 +112,12 @@ impl SignetSetup {
                         "timestamp": "now",
                         "active": false,
                     },
-                    {
-                        "desc": multisig_descriptor,
-                        "timestamp": "now",
-                        "active": false,
-                    },
                 ])
                 .to_string()],
             )
             .run_utf8()
             .await?;
-        let expected_import_descriptors_output = serde_json::json!([
-            { "success": true }, { "success": true }
-        ]);
+        let expected_import_descriptors_output = serde_json::json!([{ "success": true }]);
         if serde_json::from_str::<serde_json::Value>(&import_descriptors_output)?
             != expected_import_descriptors_output
         {
@@ -866,11 +849,8 @@ async fn mine_cached_signet_chain(
     bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
     let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
 
-    // Pay the coinbases to an address the wallet actually owns, so the whole
-    // point of this chain -- mature, *spendable* coins ready on startup -- is
-    // met. Note this is deliberately not `signet_challenge_addr`: that is
-    // derived from the challenge script code, so it satisfies the signet block
-    // signature but is not an output the wallet can spend from.
+    // A fresh wallet address rather than `signet_challenge_addr`, keeping the
+    // funds tests spend apart from the block-signing key.
     let mining_address = bitcoin_cli
         .command::<String, _, String, _, _>([], "getnewaddress", [])
         .run_utf8()

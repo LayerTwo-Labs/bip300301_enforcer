@@ -407,6 +407,8 @@ pub enum GenerateSignetBlock {
     Mine(#[from] crate::bins::CommandError),
     #[error("signet miner subprocess timed out")]
     Timeout { duration: tokio::time::Duration },
+    #[error(transparent)]
+    WriteRpcCookie(#[from] crate::cli::WriteRpcCookieError),
 }
 
 impl ToStatus for GenerateSignetBlock {
@@ -419,6 +421,7 @@ impl ToStatus for GenerateSignetBlock {
             Self::GetSignetMinerPath(err) => err.builder(),
             Self::Mine(err) => err.builder(),
             Self::Timeout { .. } => StatusBuilder::new(self),
+            Self::WriteRpcCookie(err) => StatusBuilder::new(err),
         }
     }
 }
