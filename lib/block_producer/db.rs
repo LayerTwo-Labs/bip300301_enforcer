@@ -20,7 +20,7 @@ pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>)>;
 /// Undo rows are kept for this many recently-produced blocks, so that blocks
 /// which stay on the main chain (and are therefore never disconnected) don't
 /// accumulate undo rows forever.
-const BMM_REQUESTS_UNDO_RETAINED_BLOCKS: i64 = 100;
+const UNDO_RETAINED_BLOCKS: i64 = 100;
 
 /// The drivechain policy database.
 pub struct Db {
@@ -111,6 +111,18 @@ impl Db {
                  ack_all_proposals BOOLEAN NOT NULL);
                  INSERT INTO block_producer_settings (id, ack_all_proposals)
                  VALUES (0, TRUE);",
+            ),
+            M::up(
+                "CREATE TABLE bundle_proposals_undo
+                (block_hash BLOB NOT NULL,
+                 sidechain_number INTEGER NOT NULL,
+                 bundle_hash BLOB NOT NULL,
+                 bundle_tx BLOB NOT NULL);
+                 CREATE TABLE sidechain_proposals_undo
+                (block_hash BLOB NOT NULL,
+                 sidechain_number INTEGER NOT NULL,
+                 data_hash BLOB NOT NULL,
+                 data BLOB NOT NULL);",
             ),
         ]);
 
@@ -358,26 +370,23 @@ impl Db {
         Ok(m6id)
     }
 
-    // Gets wiped upon generating a new block.
-    pub(crate) async fn delete_bundle_proposals<I>(&self, iter: I) -> Result<(), rusqlite::Error>
+    /// Drop the bundle proposals that the connecting `block_hash` settled. The
+    /// deleted rows are first snapshotted into `bundle_proposals_undo`, keyed by
+    /// that block, so they can be restored (see
+    /// [`Self::restore_bundle_proposals`]) if it is later disconnected by a
+    /// reorg — the validator puts such bundles back to pending, so the producer
+    /// has to be able to keep proposing them.
+    pub(crate) async fn delete_bundle_proposals<I>(
+        &self,
+        block_hash: &bitcoin::BlockHash,
+        iter: I,
+    ) -> Result<(), rusqlite::Error>
     where
         I: IntoIterator<Item = (SidechainNumber, M6id)>,
     {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<usize, rusqlite::Error> {
-            let mut total_deleted = 0;
-            for (sidechain_number, m6id) in iter {
-                let deleted = connection.execute(
-                    "DELETE FROM bundle_proposals where sidechain_number = ?1 AND bundle_hash = ?2;",
-                    (sidechain_number.0, m6id.0.as_byte_array())
-                )?;
-                total_deleted += deleted;
-            }
-            Ok(total_deleted)
-        };
         let total_deleted = {
-            let connection = self.conn.lock().await;
-            with_connection(&connection)?
+            let mut connection = self.conn.lock().await;
+            snapshot_and_delete_bundle_proposals(&mut connection, block_hash, iter)?
         };
 
         if total_deleted > 0 {
@@ -389,33 +398,70 @@ impl Db {
         Ok(())
     }
 
-    // Gets wiped upon generating a new block.
+    /// Restore the bundle proposals that were dropped when `block_hash` was
+    /// connected, moving them back out of `bundle_proposals_undo`. Called when
+    /// `block_hash` is disconnected by a reorg, so that bundles the validator
+    /// has returned to pending are proposed again.
+    pub(crate) async fn restore_bundle_proposals(
+        &self,
+        block_hash: &bitcoin::BlockHash,
+    ) -> Result<(), rusqlite::Error> {
+        let restored = {
+            let mut connection = self.conn.lock().await;
+            restore_bundle_proposals_from_undo(&mut connection, block_hash)?
+        };
+        if restored > 0 {
+            tracing::info!(
+                %block_hash,
+                "restored {restored} bundle proposal(s) from disconnected block",
+            );
+        }
+        Ok(())
+    }
+
+    /// Drop the pending sidechain proposals that the connecting `block_hash`
+    /// carried on-chain. As with [`Self::delete_bundle_proposals`], the deleted
+    /// rows are snapshotted into `sidechain_proposals_undo` first, so that
+    /// [`Self::restore_sidechain_proposals`] can put them back if the block is
+    /// disconnected by a reorg.
     pub(crate) async fn delete_pending_sidechain_proposals<I>(
         &self,
+        block_hash: &bitcoin::BlockHash,
         proposals: I,
     ) -> Result<(), rusqlite::Error>
     where
         I: IntoIterator<Item = SidechainProposalId>,
     {
-        let with_connection = |connection: &Connection| -> Result<usize, rusqlite::Error> {
-            let mut total_deleted = 0;
-            for proposal_id in proposals {
-                let deleted = connection.execute(
-                    "DELETE FROM sidechain_proposals where sidechain_number = ?1 AND data_hash = ?2;",
-                    (proposal_id.sidechain_number.0, proposal_id.description_hash.as_byte_array())
-                )?;
-                total_deleted += deleted;
-            }
-            Ok(total_deleted)
+        let total_deleted = {
+            let mut connection = self.conn.lock().await;
+            snapshot_and_delete_sidechain_proposals(&mut connection, block_hash, proposals)?
         };
-        let connection = self.conn.lock().await;
-        let total_deleted = with_connection(&connection)?;
-        drop(connection);
 
         if total_deleted > 0 {
             tracing::debug!(
                 "deleted {} pending sidechain proposal(s) from SQLite DB",
                 total_deleted
+            );
+        }
+        Ok(())
+    }
+
+    /// Restore the pending sidechain proposals that were dropped when
+    /// `block_hash` was connected, moving them back out of
+    /// `sidechain_proposals_undo`. Called when `block_hash` is disconnected by a
+    /// reorg, so that proposals which are no longer on-chain are re-proposed.
+    pub(crate) async fn restore_sidechain_proposals(
+        &self,
+        block_hash: &bitcoin::BlockHash,
+    ) -> Result<(), rusqlite::Error> {
+        let restored = {
+            let mut connection = self.conn.lock().await;
+            restore_sidechain_proposals_from_undo(&mut connection, block_hash)?
+        };
+        if restored > 0 {
+            tracing::info!(
+                %block_hash,
+                "restored {restored} pending sidechain proposal(s) from disconnected block",
             );
         }
         Ok(())
@@ -493,7 +539,7 @@ fn drop_legacy_wallet_seeds_if_empty(conn: &mut Connection) -> Result<(), rusqli
 /// a single transaction. Called when a block is generated on top of
 /// `prev_blockhash`; the snapshot lets `restore_bmm_requests_from_undo` put the
 /// requests back if that block is later disconnected by a reorg. Undo rows for
-/// blocks beyond the most recent `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing
+/// blocks beyond the most recent `UNDO_RETAINED_BLOCKS` producing
 /// blocks are pruned so the table stays bounded.
 fn snapshot_and_delete_bmm_requests(
     connection: &mut Connection,
@@ -512,20 +558,169 @@ fn snapshot_and_delete_bmm_requests(
         "DELETE FROM bmm_requests where prev_block_hash = ?;",
         [prev_blockhash.as_byte_array()],
     )?;
-    // Keep only the undo rows for the most recently produced blocks, so blocks
-    // that stay on the main chain (and are therefore never disconnected) don't
-    // accumulate undo rows forever.
-    tx.execute(
-        "DELETE FROM bmm_requests_undo \
-         WHERE block_hash NOT IN ( \
-             SELECT block_hash FROM bmm_requests_undo \
-             GROUP BY block_hash \
-             ORDER BY MAX(rowid) DESC \
-             LIMIT ?1 \
-         );",
-        [BMM_REQUESTS_UNDO_RETAINED_BLOCKS],
-    )?;
+    let () = prune_undo_table(&tx, "bmm_requests_undo")?;
     tx.commit()
+}
+
+/// Keep only the undo rows belonging to the most recent
+/// `UNDO_RETAINED_BLOCKS` blocks recorded in `undo_table`, so that blocks which
+/// stay on the main chain (and are therefore never disconnected) don't
+/// accumulate undo rows forever. `undo_table` is a literal in every caller, so
+/// interpolating it is not a user-controlled query.
+fn prune_undo_table(
+    tx: &rusqlite::Transaction<'_>,
+    undo_table: &'static str,
+) -> Result<(), rusqlite::Error> {
+    tx.execute(
+        &format!(
+            "DELETE FROM {undo_table} \
+             WHERE block_hash NOT IN ( \
+                 SELECT block_hash FROM {undo_table} \
+                 GROUP BY block_hash \
+                 ORDER BY MAX(rowid) DESC \
+                 LIMIT ?1 \
+             );"
+        ),
+        [UNDO_RETAINED_BLOCKS],
+    )?;
+    Ok(())
+}
+
+/// Snapshot the bundle proposals settled by the connecting `block_hash` into
+/// `bundle_proposals_undo` and delete them from `bundle_proposals`, within a
+/// single transaction. Returns the number of rows deleted. The snapshot lets
+/// `restore_bundle_proposals_from_undo` put them back if that block is later
+/// disconnected by a reorg, matching the validator, which returns the bundles
+/// to pending. Old undo rows are pruned so the table stays bounded.
+fn snapshot_and_delete_bundle_proposals<I>(
+    connection: &mut Connection,
+    block_hash: &bitcoin::BlockHash,
+    proposals: I,
+) -> Result<usize, rusqlite::Error>
+where
+    I: IntoIterator<Item = (SidechainNumber, M6id)>,
+{
+    // Most connected blocks settle no bundle at all. Don't open a write
+    // transaction (nor re-run the prune) for them.
+    let mut proposals = proposals.into_iter().peekable();
+    if proposals.peek().is_none() {
+        return Ok(0);
+    }
+    let tx = connection.transaction()?;
+    let mut total_deleted = 0;
+    for (sidechain_number, m6id) in proposals {
+        tx.execute(
+            "INSERT INTO bundle_proposals_undo \
+             (block_hash, sidechain_number, bundle_hash, bundle_tx) \
+             SELECT ?1, sidechain_number, bundle_hash, bundle_tx \
+             FROM bundle_proposals WHERE sidechain_number = ?2 AND bundle_hash = ?3;",
+            (
+                block_hash.as_byte_array(),
+                sidechain_number.0,
+                m6id.0.as_byte_array(),
+            ),
+        )?;
+        total_deleted += tx.execute(
+            "DELETE FROM bundle_proposals where sidechain_number = ?1 AND bundle_hash = ?2;",
+            (sidechain_number.0, m6id.0.as_byte_array()),
+        )?;
+    }
+    let () = prune_undo_table(&tx, "bundle_proposals_undo")?;
+    tx.commit()?;
+    Ok(total_deleted)
+}
+
+/// Restore the bundle proposals snapshotted for `block_hash` back into
+/// `bundle_proposals`, removing them from `bundle_proposals_undo`, within a
+/// single transaction. Returns the number of rows restored. Called when
+/// `block_hash` is disconnected by a reorg.
+fn restore_bundle_proposals_from_undo(
+    connection: &mut Connection,
+    block_hash: &bitcoin::BlockHash,
+) -> Result<usize, rusqlite::Error> {
+    let tx = connection.transaction()?;
+    let restored = tx.execute(
+        "INSERT OR IGNORE INTO bundle_proposals \
+         (sidechain_number, bundle_hash, bundle_tx) \
+         SELECT sidechain_number, bundle_hash, bundle_tx \
+         FROM bundle_proposals_undo WHERE block_hash = ?;",
+        [block_hash.as_byte_array()],
+    )?;
+    tx.execute(
+        "DELETE FROM bundle_proposals_undo WHERE block_hash = ?;",
+        [block_hash.as_byte_array()],
+    )?;
+    tx.commit()?;
+    Ok(restored)
+}
+
+/// Snapshot the pending sidechain proposals carried on-chain by the connecting
+/// `block_hash` into `sidechain_proposals_undo` and delete them from
+/// `sidechain_proposals`, within a single transaction. Returns the number of
+/// rows deleted. The counterpart of `snapshot_and_delete_bundle_proposals` for
+/// `sidechain_proposals`.
+fn snapshot_and_delete_sidechain_proposals<I>(
+    connection: &mut Connection,
+    block_hash: &bitcoin::BlockHash,
+    proposals: I,
+) -> Result<usize, rusqlite::Error>
+where
+    I: IntoIterator<Item = SidechainProposalId>,
+{
+    // As above: most connected blocks carry no sidechain proposal.
+    let mut proposals = proposals.into_iter().peekable();
+    if proposals.peek().is_none() {
+        return Ok(0);
+    }
+    let tx = connection.transaction()?;
+    let mut total_deleted = 0;
+    for proposal_id in proposals {
+        tx.execute(
+            "INSERT INTO sidechain_proposals_undo \
+             (block_hash, sidechain_number, data_hash, data) \
+             SELECT ?1, sidechain_number, data_hash, data \
+             FROM sidechain_proposals WHERE sidechain_number = ?2 AND data_hash = ?3;",
+            (
+                block_hash.as_byte_array(),
+                proposal_id.sidechain_number.0,
+                proposal_id.description_hash.as_byte_array(),
+            ),
+        )?;
+        total_deleted += tx.execute(
+            "DELETE FROM sidechain_proposals where sidechain_number = ?1 AND data_hash = ?2;",
+            (
+                proposal_id.sidechain_number.0,
+                proposal_id.description_hash.as_byte_array(),
+            ),
+        )?;
+    }
+    let () = prune_undo_table(&tx, "sidechain_proposals_undo")?;
+    tx.commit()?;
+    Ok(total_deleted)
+}
+
+/// Restore the pending sidechain proposals snapshotted for `block_hash` back
+/// into `sidechain_proposals`, removing them from `sidechain_proposals_undo`,
+/// within a single transaction. Returns the number of rows restored. Called
+/// when `block_hash` is disconnected by a reorg.
+fn restore_sidechain_proposals_from_undo(
+    connection: &mut Connection,
+    block_hash: &bitcoin::BlockHash,
+) -> Result<usize, rusqlite::Error> {
+    let tx = connection.transaction()?;
+    let restored = tx.execute(
+        "INSERT OR IGNORE INTO sidechain_proposals \
+         (sidechain_number, data_hash, data) \
+         SELECT sidechain_number, data_hash, data \
+         FROM sidechain_proposals_undo WHERE block_hash = ?;",
+        [block_hash.as_byte_array()],
+    )?;
+    tx.execute(
+        "DELETE FROM sidechain_proposals_undo WHERE block_hash = ?;",
+        [block_hash.as_byte_array()],
+    )?;
+    tx.commit()?;
+    Ok(restored)
 }
 
 /// Restore the BMM requests snapshotted for `block_hash` back into
@@ -661,14 +856,14 @@ mod bmm_requests_undo_tests {
 
     /// Blocks that stay on the main chain (never disconnected) must not
     /// accumulate undo rows without bound: only the most recent
-    /// `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing blocks are retained, and the
+    /// `UNDO_RETAINED_BLOCKS` producing blocks are retained, and the
     /// oldest snapshot is dropped once that many newer blocks have been produced.
     #[test]
     fn old_undo_rows_are_pruned() {
         let mut connection = open_db();
 
         // Produce `RETAINED + 1` blocks, each consuming a distinct BMM request.
-        let total = super::BMM_REQUESTS_UNDO_RETAINED_BLOCKS + 1;
+        let total = super::UNDO_RETAINED_BLOCKS + 1;
         for i in 0..total {
             let prev = block_hash(i as u8);
             let mined = block_hash((total - i) as u8);
@@ -679,7 +874,7 @@ mod bmm_requests_undo_tests {
         // The table is bounded to the retention window, not the block count.
         assert_eq!(
             distinct_undo_blocks(&connection),
-            super::BMM_REQUESTS_UNDO_RETAINED_BLOCKS
+            super::UNDO_RETAINED_BLOCKS
         );
 
         // The very first block's snapshot has been pruned, so disconnecting it
@@ -694,6 +889,205 @@ mod bmm_requests_undo_tests {
         let newest = block_hash(1);
         assert_eq!(
             restore_bmm_requests_from_undo(&mut connection, &newest).unwrap(),
+            1
+        );
+    }
+}
+
+#[cfg(test)]
+mod proposal_undo_tests {
+    use bitcoin::hashes::{Hash as _, sha256d};
+    use rusqlite::Connection;
+
+    use super::{
+        restore_bundle_proposals_from_undo, restore_sidechain_proposals_from_undo,
+        snapshot_and_delete_bundle_proposals, snapshot_and_delete_sidechain_proposals,
+    };
+    use crate::types::{M6id, SidechainNumber, SidechainProposalId};
+
+    fn block_hash(byte: u8) -> bitcoin::BlockHash {
+        bitcoin::BlockHash::from_byte_array([byte; 32])
+    }
+
+    fn open_db() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        // Verbatim `bundle_proposals` / `sidechain_proposals` schemas plus their
+        // undo tables, matching the migrations in `Db::new`.
+        connection
+            .execute_batch(
+                "CREATE TABLE bundle_proposals
+                    (sidechain_number INTEGER NOT NULL,
+                     bundle_hash BLOB NOT NULL,
+                     bundle_tx BLOB NOT NULL,
+                     UNIQUE(sidechain_number, bundle_hash));
+                 CREATE TABLE bundle_proposals_undo
+                    (block_hash BLOB NOT NULL,
+                     sidechain_number INTEGER NOT NULL,
+                     bundle_hash BLOB NOT NULL,
+                     bundle_tx BLOB NOT NULL);
+                 CREATE TABLE sidechain_proposals
+                    (sidechain_number INTEGER NOT NULL,
+                     data_hash BLOB NOT NULL,
+                     data BLOB NOT NULL,
+                     UNIQUE(sidechain_number, data_hash));
+                 CREATE TABLE sidechain_proposals_undo
+                    (block_hash BLOB NOT NULL,
+                     sidechain_number INTEGER NOT NULL,
+                     data_hash BLOB NOT NULL,
+                     data BLOB NOT NULL);",
+            )
+            .unwrap();
+        connection
+    }
+
+    fn row_count(connection: &Connection, table: &str) -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    /// A bundle proposal dropped when the block that settled it was connected is
+    /// snapshotted, then restored verbatim when that block is disconnected by a
+    /// reorg — the validator returns the bundle to pending, so the producer must
+    /// still be holding it.
+    #[test]
+    fn bundle_proposal_restored_when_connecting_block_disconnected() {
+        let mut connection = open_db();
+
+        let connected = block_hash(1);
+        let m6id = M6id::from([7; 32]);
+        let sidechain_number = SidechainNumber(5);
+        let bundle_tx = vec![0xde, 0xad, 0xbe, 0xef];
+
+        connection
+            .execute(
+                "INSERT INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) \
+                 VALUES (?1, ?2, ?3);",
+                (sidechain_number.0, m6id.0.as_byte_array(), &bundle_tx),
+            )
+            .unwrap();
+
+        let deleted = snapshot_and_delete_bundle_proposals(
+            &mut connection,
+            &connected,
+            [(sidechain_number, m6id)],
+        )
+        .unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(row_count(&connection, "bundle_proposals"), 0);
+        assert_eq!(row_count(&connection, "bundle_proposals_undo"), 1);
+
+        let restored = restore_bundle_proposals_from_undo(&mut connection, &connected).unwrap();
+        assert_eq!(restored, 1);
+        assert_eq!(row_count(&connection, "bundle_proposals_undo"), 0);
+
+        let (restored_number, restored_tx): (u8, Vec<u8>) = connection
+            .query_row(
+                "SELECT sidechain_number, bundle_tx FROM bundle_proposals WHERE bundle_hash = ?;",
+                [m6id.0.as_byte_array()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(restored_number, sidechain_number.0);
+        assert_eq!(restored_tx, bundle_tx);
+    }
+
+    /// A pending sidechain proposal dropped when the block carrying its M1 was
+    /// connected is restored verbatim when that block is disconnected, so the
+    /// proposal goes back out in a later coinbase instead of being lost.
+    #[test]
+    fn sidechain_proposal_restored_when_connecting_block_disconnected() {
+        let mut connection = open_db();
+
+        let connected = block_hash(2);
+        let data = b"my sidechain".to_vec();
+        let proposal_id = SidechainProposalId {
+            sidechain_number: SidechainNumber(3),
+            description_hash: sha256d::Hash::from_byte_array([9; 32]),
+        };
+
+        connection
+            .execute(
+                "INSERT INTO sidechain_proposals (sidechain_number, data_hash, data) \
+                 VALUES (?1, ?2, ?3);",
+                (
+                    proposal_id.sidechain_number.0,
+                    proposal_id.description_hash.as_byte_array(),
+                    &data,
+                ),
+            )
+            .unwrap();
+
+        let deleted =
+            snapshot_and_delete_sidechain_proposals(&mut connection, &connected, [proposal_id])
+                .unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(row_count(&connection, "sidechain_proposals"), 0);
+        assert_eq!(row_count(&connection, "sidechain_proposals_undo"), 1);
+
+        let restored = restore_sidechain_proposals_from_undo(&mut connection, &connected).unwrap();
+        assert_eq!(restored, 1);
+        assert_eq!(row_count(&connection, "sidechain_proposals_undo"), 0);
+
+        let (restored_number, restored_data): (u8, Vec<u8>) = connection
+            .query_row(
+                "SELECT sidechain_number, data FROM sidechain_proposals WHERE data_hash = ?;",
+                [proposal_id.description_hash.as_byte_array()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(restored_number, proposal_id.sidechain_number.0);
+        assert_eq!(restored_data, data);
+    }
+
+    /// Blocks that stay on the main chain must not accumulate undo rows without
+    /// bound: only the most recent `UNDO_RETAINED_BLOCKS` snapshots are kept, so
+    /// an ancient reorg degrades to the pre-fix behaviour rather than growing
+    /// the table forever.
+    #[test]
+    fn old_proposal_undo_rows_are_pruned() {
+        let mut connection = open_db();
+
+        let total = super::UNDO_RETAINED_BLOCKS + 1;
+        for i in 0..total {
+            let m6id = M6id::from([i as u8; 32]);
+            let connected = block_hash((total - i) as u8);
+            connection
+                .execute(
+                    "INSERT INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) \
+                     VALUES (?1, ?2, ?3);",
+                    (0u8, m6id.0.as_byte_array(), vec![0u8]),
+                )
+                .unwrap();
+            let deleted = snapshot_and_delete_bundle_proposals(
+                &mut connection,
+                &connected,
+                [(SidechainNumber(0), m6id)],
+            )
+            .unwrap();
+            assert_eq!(deleted, 1);
+        }
+
+        let distinct_undo_blocks: i64 = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT block_hash) FROM bundle_proposals_undo",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct_undo_blocks, super::UNDO_RETAINED_BLOCKS);
+
+        // The oldest block's snapshot has been pruned; the newest is retained.
+        let oldest = block_hash(total as u8);
+        assert_eq!(
+            restore_bundle_proposals_from_undo(&mut connection, &oldest).unwrap(),
+            0
+        );
+        let newest = block_hash(1);
+        assert_eq!(
+            restore_bundle_proposals_from_undo(&mut connection, &newest).unwrap(),
             1
         );
     }

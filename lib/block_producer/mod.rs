@@ -154,9 +154,12 @@ impl BlockProducer {
 
     /// Policy-table maintenance for a block the validator just accepted: drop the
     /// sidechain proposals and withdrawal bundles that this block settled, so we
-    /// stop re-proposing them in later coinbases.
+    /// stop re-proposing them in later coinbases. The dropped rows are
+    /// snapshotted under `block_hash`, so that `disconnect_block` can put them
+    /// back if the block is later reorged out.
     pub(crate) async fn apply_connected_block_policy(
         &self,
+        block_hash: &BlockHash,
         block_info: &crate::types::BlockInfo,
     ) -> Result<(), rusqlite::Error> {
         let finalized_withdrawal_bundles =
@@ -173,14 +176,14 @@ impl BlockProducer {
         let () = self
             .inner
             .db
-            .delete_bundle_proposals(finalized_withdrawal_bundles)
+            .delete_bundle_proposals(block_hash, finalized_withdrawal_bundles)
             .await?;
         let sidechain_proposal_ids = block_info
             .sidechain_proposals()
             .map(|(_vout, proposal)| proposal.compute_id());
         self.inner
             .db
-            .delete_pending_sidechain_proposals(sidechain_proposal_ids)
+            .delete_pending_sidechain_proposals(block_hash, sidechain_proposal_ids)
             .await
     }
 }
@@ -217,8 +220,10 @@ impl CusfEnforcer for BlockProducer {
         if let ConnectBlockAction::Accept { .. } = &res {
             let block_hash = block.block_hash();
             let block_infos = self.inner.validator.get_block_infos(&block_hash, 0)?;
-            for (_header_info, block_info) in &block_infos {
-                let () = self.apply_connected_block_policy(block_info).await?;
+            for (header_info, block_info) in &block_infos {
+                let () = self
+                    .apply_connected_block_policy(&header_info.block_hash, block_info)
+                    .await?;
             }
         }
         Ok(res)
@@ -249,10 +254,25 @@ impl CusfEnforcer for BlockProducer {
             );
         }
 
-        // Aside from `bmm_requests` (restored above), no disconnect logic is
-        // applied to the rest of the policy DB. Those tables are wiped upon
-        // generating a new block, so sidechain proposals etc. must be re-created
-        // if a block that brought one into existence is disconnected.
+        // Likewise restore the bundle proposals and pending sidechain proposals
+        // that `apply_connected_block_policy` dropped when this block was
+        // connected: the validator returns those bundles and proposals to
+        // pending on disconnect, so the producer has to keep proposing them.
+        if let Err(err) = self.inner.db.restore_bundle_proposals(&block_hash).await {
+            tracing::error!(
+                %block_hash,
+                "failed to restore bundle proposals on block disconnect: {:#}",
+                ErrorChain::new(&err),
+            );
+        }
+        if let Err(err) = self.inner.db.restore_sidechain_proposals(&block_hash).await {
+            tracing::error!(
+                %block_hash,
+                "failed to restore sidechain proposals on block disconnect: {:#}",
+                ErrorChain::new(&err),
+            );
+        }
+
         Ok(res)
     }
 
