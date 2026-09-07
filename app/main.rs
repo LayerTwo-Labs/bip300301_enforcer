@@ -201,87 +201,201 @@ macro_rules! jsonrpsee_tracer {
     }};
 }
 
-async fn connect_rpc_access_log(
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    /// Cap how much error-response body we buffer for logging.
-    const ERROR_BODY_LOG_LIMIT: usize = 4 * 1024;
+#[derive(Clone, Default)]
+struct RpcLogged(Arc<std::sync::atomic::AtomicBool>);
 
-    let uri = req.uri().clone();
-    let request_id_header = http::HeaderName::from_static(REQUEST_ID_HEADER);
-    let request_id = req.headers().get(&request_id_header).cloned();
-
-    let started = std::time::Instant::now();
-    let mut response = next.run(req).await;
-    let duration_ms = started.elapsed().as_millis();
-    let http_status = response.status();
-
-    // Stamp the request id on the response so the caller sees it back.
-    // Connect dispatchers don't preserve headers added by inner tower
-    // layers, so we mirror it here unconditionally.
-    if let Some(ref id) = request_id {
-        response.headers_mut().insert(request_id_header, id.clone());
+impl RpcLogged {
+    fn mark(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
     }
 
-    let request_id = request_id
-        .as_ref()
+    fn is_marked(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// One in-flight RPC as seen by [`ConnectAccessLog`]. Emits the
+/// `connect_rpc` access-log event on [`finish`](Self::finish).
+struct RpcCall {
+    procedure: String,
+    request_id: String,
+    started: std::time::Instant,
+}
+
+impl RpcCall {
+    fn begin(ctx: &connectrpc::RequestContext) -> Self {
+        if let Some(logged) = ctx.extensions().get::<RpcLogged>() {
+            logged.mark();
+        }
+        Self {
+            // Set before interceptors run; don't panic in a logging path if
+            // that ever slips.
+            procedure: ctx.path().unwrap_or("<unknown>").to_owned(),
+            request_id: request_id(ctx.headers()),
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn finish(self, err: Option<&connectrpc::ConnectError>) {
+        let Self {
+            procedure,
+            request_id,
+            started,
+        } = self;
+        let duration_ms = started.elapsed().as_millis();
+        let Some(err) = err else {
+            tracing::info!(
+                procedure,
+                code = "ok",
+                duration_ms,
+                request_id,
+                "connect_rpc"
+            );
+            return;
+        };
+        let code = err.code.as_str();
+        let message = err.message.as_deref().unwrap_or_default();
+        if err.http_status().is_server_error() {
+            tracing::error!(procedure, %code, duration_ms, request_id, message, "connect_rpc");
+        } else {
+            tracing::warn!(procedure, %code, duration_ms, request_id, message, "connect_rpc");
+        }
+    }
+}
+
+/// The request id stamped by [`set_request_id_layer`], or empty.
+fn request_id(headers: &http::HeaderMap) -> String {
+    headers
+        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default()
-        .to_owned();
+        .to_owned()
+}
 
+/// Access log for Connect RPCs. As an interceptor it sees the typed
+/// [`ConnectError`](connectrpc::ConnectError), so the message, which can echo
+/// caller input of any size, is never parsed out of a buffered response body.
+struct ConnectAccessLog;
+
+#[connectrpc::async_trait]
+impl connectrpc::Interceptor for ConnectAccessLog {
+    async fn intercept_unary(
+        &self,
+        req: connectrpc::interceptor::UnaryRequest,
+        next: connectrpc::Next<'_>,
+    ) -> Result<connectrpc::interceptor::UnaryResponse, connectrpc::ConnectError> {
+        let call = RpcCall::begin(&req.ctx);
+        let res = next.run(req).await;
+        call.finish(res.as_ref().err());
+        res
+    }
+
+    async fn intercept_streaming(
+        &self,
+        req: connectrpc::interceptor::StreamRequest,
+        inbound: connectrpc::PayloadStream,
+        next: connectrpc::NextStream<'_>,
+    ) -> Result<connectrpc::interceptor::StreamResponse, connectrpc::ConnectError> {
+        let call = RpcCall::begin(&req.ctx);
+        let mut res = match next.run(req, inbound).await {
+            Ok(res) => res,
+            Err(err) => {
+                call.finish(Some(&err));
+                return Err(err);
+            }
+        };
+        // Only the outbound stream exists so far. Log when it ends, or on
+        // the first error item, which ends the RPC on the wire.
+        res.body = Box::pin(LoggedPayloadStream {
+            inner: res.body,
+            call: Some(call),
+        });
+        Ok(res)
+    }
+}
+
+/// Outbound stream wrapper that emits the access-log event when the stream
+/// completes, fails, or is dropped mid-way (client went away).
+struct LoggedPayloadStream {
+    inner: connectrpc::PayloadStream,
+    call: Option<RpcCall>,
+}
+
+impl LoggedPayloadStream {
+    fn finish(&mut self, err: Option<&connectrpc::ConnectError>) {
+        if let Some(call) = self.call.take() {
+            call.finish(err);
+        }
+    }
+}
+
+impl futures::Stream for LoggedPayloadStream {
+    type Item = Result<connectrpc::Payload, connectrpc::ConnectError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let item = std::task::ready!(self.inner.as_mut().poll_next(cx));
+        match &item {
+            Some(Ok(_)) => {}
+            Some(Err(err)) => self.finish(Some(err)),
+            None => self.finish(None),
+        }
+        std::task::Poll::Ready(item)
+    }
+}
+
+impl Drop for LoggedPayloadStream {
+    fn drop(&mut self) {
+        self.finish(Some(&connectrpc::ConnectError::canceled(
+            "stream dropped before completion",
+        )));
+    }
+}
+
+/// HTTP-level fallback for [`ConnectAccessLog`]: logs the requests that never
+/// reached the interceptor chain, which connectrpc itself does not log.
+async fn connect_rpc_fallback_log(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
     // Connect procedure: `/package.Service/Method`. Logged as-is rather
     // than split — the connect router may be mounted under a non-root
     // path, in which case the URL path carries a prefix we don't want to
     // mis-interpret as the service component.
-    let procedure = uri.path().to_owned();
+    let procedure = req.uri().path().to_owned();
+    let request_id = request_id(req.headers());
+    let logged = RpcLogged::default();
+    req.extensions_mut().insert(logged.clone());
 
-    // On non-2xx, buffer the body so we can pull the Connect error code
-    // and message out of it. Bodies are small JSON like
-    // `{"code":"invalid_argument","message":"..."}`.
-    if http_status.is_client_error() || http_status.is_server_error() {
-        let (parts, body) = response.into_parts();
-        let body_bytes = axum::body::to_bytes(body, ERROR_BODY_LOG_LIMIT)
-            .await
-            .unwrap_or_else(|err| {
-                tracing::warn!(
-                    procedure, %http_status, duration_ms, request_id,
-                    "connect_rpc: failed to buffer error body: {err:#}",
-                );
-                axum::body::Bytes::from_static(b"{}")
-            });
-        let (connect_code, message) =
-            match buffa::serde_json::from_slice::<connectrpc::ConnectError>(&body_bytes) {
-                Ok(err) => (
-                    err.code.as_str().to_owned(),
-                    err.message.unwrap_or_default(),
-                ),
-                Err(_) => (
-                    "unknown".to_owned(),
-                    String::from_utf8_lossy(&body_bytes).into_owned(),
-                ),
-            };
-        if http_status.is_server_error() {
-            tracing::error!(
-                procedure, code = %connect_code, duration_ms,
-                request_id, message = %message, "connect_rpc",
-            );
-        } else {
-            tracing::warn!(
-                procedure, code = %connect_code, duration_ms,
-                request_id, message = %message, "connect_rpc",
-            );
-        }
-        return axum::response::Response::from_parts(parts, axum::body::Body::from(body_bytes));
+    let started = std::time::Instant::now();
+    let response = next.run(req).await;
+    if logged.is_marked() {
+        return response;
     }
+    let duration_ms = started.elapsed().as_millis();
+    let http_status = response.status();
 
-    tracing::info!(
-        procedure,
-        code = "ok",
-        duration_ms,
-        request_id,
-        "connect_rpc",
-    );
+    // No handler ran, so there is no Connect code to report: the framework
+    // rejected the request before dispatch (unknown procedure, wrong verb,
+    // unsupported content type) or a non-RPC route answered.
+    if http_status.is_server_error() {
+        tracing::error!(
+            procedure, %http_status, duration_ms, request_id,
+            "connect_rpc: rejected before dispatch",
+        );
+    } else if http_status.is_client_error() {
+        tracing::warn!(
+            procedure, %http_status, duration_ms, request_id,
+            "connect_rpc: rejected before dispatch",
+        );
+    } else {
+        tracing::info!(
+            procedure, %http_status, duration_ms, request_id,
+            "connect_rpc: served outside the interceptor chain",
+        );
+    }
     response
 }
 
@@ -339,25 +453,53 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Ensure a panicking handler responds with an `internal` error. Without this
-/// we'd drop the connection and leave the client with an `unavailable` transport
-/// error.
+/// Run `fut`, turning a panic into an `internal` Connect error.
+async fn catch_panic<T>(fut: impl Future<Output = T>) -> Result<T, connectrpc::ConnectError> {
+    std::panic::AssertUnwindSafe(fut)
+        .catch_unwind()
+        .await
+        .map_err(|panic| {
+            connectrpc::ConnectError::internal(format!("panicked: {}", panic_message(&*panic)))
+        })
+}
+
+/// Answer a panicking handler with an `internal` error rather than a dropped
+/// connection. Sits inside [`ConnectAccessLog`], so the log records it like
+/// any other handler failure.
+struct ConnectCatchPanic;
+
+#[connectrpc::async_trait]
+impl connectrpc::Interceptor for ConnectCatchPanic {
+    async fn intercept_unary(
+        &self,
+        req: connectrpc::interceptor::UnaryRequest,
+        next: connectrpc::Next<'_>,
+    ) -> Result<connectrpc::interceptor::UnaryResponse, connectrpc::ConnectError> {
+        catch_panic(next.run(req)).await.flatten()
+    }
+
+    async fn intercept_streaming(
+        &self,
+        req: connectrpc::interceptor::StreamRequest,
+        inbound: connectrpc::PayloadStream,
+        next: connectrpc::NextStream<'_>,
+    ) -> Result<connectrpc::interceptor::StreamResponse, connectrpc::ConnectError> {
+        catch_panic(next.run(req, inbound)).await.flatten()
+    }
+}
+
+/// Same for a panic outside the interceptor chain (before dispatch, or in a
+/// non-RPC route). Without this we'd drop the connection and leave the client
+/// with an `unavailable` transport error.
 async fn connect_rpc_catch_panic(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let request_headers = req.headers().clone();
-    match std::panic::AssertUnwindSafe(next.run(req))
-        .catch_unwind()
-        .await
-    {
-        Ok(response) => response,
-        Err(panic) => {
-            connectrpc::ConnectError::internal(format!("panicked: {}", panic_message(&*panic)))
-                .into_http_response(&request_headers)
-                .map(axum::body::Body::new)
-        }
-    }
+    catch_panic(next.run(req)).await.unwrap_or_else(|err| {
+        err.into_http_response(&request_headers)
+            .map(axum::body::Body::new)
+    })
 }
 
 /// JSON-RPC middleware answering a panicking method with a JSON-RPC internal
@@ -536,15 +678,29 @@ async fn fill_connect_get_defaults(
         .await
 }
 
+/// The Connect service for `router`, with its interceptors: the access log
+/// outermost, so it records the error the panic catcher answers with.
+fn connect_service(router: connectrpc::Router) -> connectrpc::ConnectRpcService {
+    router
+        .into_axum_service()
+        .with_interceptor(ConnectAccessLog)
+        .with_interceptor(ConnectCatchPanic)
+}
+
 /// Wrap the Connect server's router in its HTTP middleware. Outermost first:
-/// request-id stamping, the access log, the request-shape fixups, and
-/// innermost the panic catcher, so the access log records the `internal`
-/// error the catcher answers a panic with.
+/// request-id stamping and echoing, the fallback access log, the
+/// request-shape fixups, and innermost the panic catcher, so the fallback
+/// log sees the response it answers a panic with.
 fn with_connect_middleware(router: axum::Router) -> axum::Router {
     router.layer(
         tower::ServiceBuilder::new()
             .layer(set_request_id_layer())
-            .layer(axum::middleware::from_fn(connect_rpc_access_log))
+            // Echo the request id back. Connect dispatchers don't preserve
+            // headers added by inner layers, so this sits outside the service.
+            .layer(tower_http::request_id::PropagateRequestIdLayer::new(
+                http::HeaderName::from_static(REQUEST_ID_HEADER),
+            ))
+            .layer(axum::middleware::from_fn(connect_rpc_fallback_log))
             .layer(axum::middleware::from_fn(fill_empty_json_body))
             .layer(axum::middleware::from_fn(fill_connect_get_defaults))
             .layer(axum::middleware::from_fn(connect_rpc_catch_panic)),
@@ -620,7 +776,7 @@ async fn run_connect_server(
     let router = connectrpc_reflection::install(router, reflector);
 
     let app =
-        with_connect_middleware(axum::Router::new().fallback_service(router.into_axum_service()));
+        with_connect_middleware(axum::Router::new().fallback_service(connect_service(router)));
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -2156,8 +2312,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        gbt_rpc_middleware, resolve_block_file_network_magic, wait_for_error_or_shutdown,
-        with_connect_middleware,
+        connect_service, gbt_rpc_middleware, resolve_block_file_network_magic,
+        wait_for_error_or_shutdown, with_connect_middleware,
     };
 
     /// Panic with `boom` where a `T` is expected, so a handler can panic
@@ -2204,50 +2360,94 @@ mod tests {
         (output, logs)
     }
 
-    /// A panicking handler must answer with a Connect `internal` error, not
-    /// a dropped connection, and the access log must record that error:
-    /// it has to sit outside the panic catcher.
-    #[tokio::test]
-    async fn connect_rpc_panic_becomes_internal_error() {
+    /// POST `{}` to `/pkg.Svc/Boom` on `app`, returning the decoded Connect
+    /// error and everything logged while serving it.
+    async fn post_boom(app: axum::Router) -> (connectrpc::ConnectError, String) {
         use tower::ServiceExt as _;
 
-        let app = with_connect_middleware(axum::Router::new().route(
-            "/pkg.Svc/Boom",
-            axum::routing::post(|| async { boom::<&'static str>() }),
-        ));
         let request = http::Request::post("/pkg.Svc/Boom")
             .header(http::header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from("{}"))
             .unwrap();
-
         let (response, logs) = capture_logs(async { app.oneshot(request).await }).await;
         let response = response.unwrap();
-
         assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let err: connectrpc::ConnectError = buffa::serde_json::from_slice(&body).unwrap();
-        assert_eq!(err.code, connectrpc::ErrorCode::Internal);
-        assert_eq!(err.message.as_deref(), Some("panicked: boom"));
+        (buffa::serde_json::from_slice(&body).unwrap(), logs)
+    }
 
+    /// The single `connect_rpc` line in `logs` carrying each of `expected`.
+    fn assert_access_log(logs: &str, expected: &[&str]) {
         let access_log = logs
             .lines()
-            .find(|line| line.contains("connect_rpc "))
+            .find(|line| line.contains("connect_rpc"))
             .unwrap_or_else(|| panic!("no access log line in:\n{logs}"));
-        for expected in [
-            "ERROR",
-            r#"procedure="/pkg.Svc/Boom""#,
-            "code=internal",
-            // `message` is the event text to `tracing_subscriber::fmt`, so
-            // it is rendered bare, without a `message=` key.
-            "panicked: boom",
-        ] {
+        for expected in expected {
             assert!(
                 access_log.contains(expected),
                 "{expected:?} not in: {access_log}"
             );
         }
+    }
+
+    /// A panicking handler must answer with a Connect `internal` error, not
+    /// a dropped connection, and the access log must record that error:
+    /// the panic catcher has to sit inside the access-log interceptor.
+    #[tokio::test]
+    async fn connect_rpc_panic_becomes_internal_error() {
+        use bip300301_enforcer_lib::proto::mainchain::{StopRequest, StopResponse};
+
+        let router = connectrpc::Router::new().route(
+            "pkg.Svc",
+            "Boom",
+            connectrpc::handler_fn(|_ctx, _req: StopRequest| async {
+                boom::<connectrpc::ServiceResult<StopResponse>>()
+            }),
+        );
+        let app =
+            with_connect_middleware(axum::Router::new().fallback_service(connect_service(router)));
+
+        let (err, logs) = post_boom(app).await;
+        assert_eq!(err.code, connectrpc::ErrorCode::Internal);
+        assert_eq!(err.message.as_deref(), Some("panicked: boom"));
+        assert_access_log(
+            &logs,
+            &[
+                "ERROR",
+                "connect_rpc ",
+                r#"procedure="/pkg.Svc/Boom""#,
+                "code=internal",
+                // `message` is the event text to `tracing_subscriber::fmt`,
+                // so it is rendered bare, without a `message=` key.
+                "panicked: boom",
+            ],
+        );
+    }
+
+    /// A panic outside the interceptor chain is answered by the HTTP-level
+    /// catcher, and the fallback log records the resulting status: it has
+    /// to sit outside the panic catcher.
+    #[tokio::test]
+    async fn connect_rpc_panic_outside_dispatch_becomes_internal_error() {
+        let app = with_connect_middleware(axum::Router::new().route(
+            "/pkg.Svc/Boom",
+            axum::routing::post(|| async { boom::<&'static str>() }),
+        ));
+
+        let (err, logs) = post_boom(app).await;
+        assert_eq!(err.code, connectrpc::ErrorCode::Internal);
+        assert_eq!(err.message.as_deref(), Some("panicked: boom"));
+        assert_access_log(
+            &logs,
+            &[
+                "ERROR",
+                "connect_rpc: rejected before dispatch",
+                r#"procedure="/pkg.Svc/Boom""#,
+                "http_status=500",
+            ],
+        );
     }
 
     /// Same for JSON-RPC, through a real server: a JSON-RPC internal error

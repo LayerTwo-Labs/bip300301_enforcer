@@ -149,6 +149,31 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
         "expected invalid argument for a mainnet address, got: {status}"
     );
 
+    // The rejection echoes the offending address, so the error body grows
+    // with the input. A caller must still get `invalid_argument` back, not an
+    // internal error from whatever sits between the handler and the wire.
+    let oversized_address = "x".repeat(8 * 1024);
+    let status = post_setup
+        .mining_service_client
+        .generate_to_address(GenerateToAddressRequest {
+            blocks: proto::wrap_u32(1),
+            address: oversized_address.clone(),
+        })
+        .await
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("GenerateToAddress succeeded with a garbage address"))?;
+    anyhow::ensure!(
+        status.code == connectrpc::ErrorCode::InvalidArgument,
+        "expected invalid argument for an oversized address, got: {status}"
+    );
+    anyhow::ensure!(
+        status
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains(&oversized_address)),
+        "expected the error to echo the oversized address, got: {status}"
+    );
+
     drop(post_setup);
     Ok(())
 }
