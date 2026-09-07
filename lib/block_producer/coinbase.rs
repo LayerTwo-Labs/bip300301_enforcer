@@ -66,12 +66,17 @@ impl BlockProducer {
         Ok(pending_proposals)
     }
 
+    /// Whether `ack` still matches a proposal that is pending right now. A
+    /// stored ACK can stop matching temporarily -- e.g. while a reorg has
+    /// disconnected the block that registered the proposal -- so a mismatch is
+    /// logged at debug rather than error: it is re-evaluated against the
+    /// pending set on every template.
     fn validate_sidechain_ack(
         ack: &SidechainAck,
         pending_proposals: &HashMap<SidechainNumber, SidechainProposal>,
     ) -> bool {
         let Some(sidechain_proposal) = pending_proposals.get(&ack.sidechain_number) else {
-            tracing::error!(
+            tracing::debug!(
                 "Handle sidechain ACK: could not find proposal: {}",
                 ack.sidechain_number
             );
@@ -81,7 +86,7 @@ impl BlockProducer {
         if description_hash == ack.description_hash {
             true
         } else {
-            tracing::error!(
+            tracing::debug!(
                 "Handle sidechain ACK: invalid actual hash vs. ACK hash: {} != {}",
                 description_hash,
                 ack.description_hash,
@@ -148,8 +153,8 @@ impl BlockProducer {
     }
 
     /// Split the stored ACKs into the ones to emit and the stale ones to
-    /// delete, adding an auto-ACK for every pending proposal left without one
-    /// when `ack_all_proposals` is set. Stale rows are dropped before that,
+    /// skip, adding an auto-ACK for every pending proposal left without one
+    /// when `ack_all_proposals` is set. Stale ACKs are held back before that,
     /// so a stale ACK for a slot cannot suppress the auto-ACK for the
     /// replacement proposal in the same slot.
     fn select_sidechain_acks(
@@ -265,10 +270,18 @@ impl BlockProducer {
             &active_sidechain_proposals,
             ack_all_proposals,
         );
+        // Stale ACKs are skipped, not deleted. Building a template is not a
+        // chain event, and a proposal is missing from the validator's pending
+        // set only for as long as the chain says so: a reorg that disconnects
+        // the block registering a proposal takes it out of the pending set,
+        // and it comes back when the proposal is re-registered on the new
+        // chain. Deleting the row here would silently discard the operator's
+        // vote for a proposal that is about to be votable again, and nothing
+        // restores policy rows on disconnect. `nack_sidechain` remains the way
+        // to withdraw an ACK on purpose.
         for stale_ack in stale_acks {
-            self.db().delete_sidechain_ack(&stale_ack).await?;
-            tracing::info!(
-                "Unable to handle sidechain ack, deleted: {}",
+            tracing::debug!(
+                "Not acking sidechain {}: no matching pending proposal",
                 stale_ack.sidechain_number
             );
         }
@@ -768,8 +781,10 @@ mod tests {
         assert!(stale_acks.is_empty());
     }
 
+    /// An ACK whose proposal is not pending is held back from the coinbase.
+    /// The stored row itself is kept: `extend_coinbase_txouts` only skips it.
     #[test]
-    fn stale_ack_is_deleted_without_auto_ack() {
+    fn stale_ack_is_not_acked_without_auto_ack() {
         let slot = SidechainNumber(7);
         let stale = SidechainAck {
             sidechain_number: slot,
@@ -781,5 +796,36 @@ mod tests {
 
         assert!(acks.is_empty());
         assert_eq!(stale_acks.len(), 1);
+    }
+
+    /// A proposal leaves the validator's pending set when a reorg disconnects
+    /// the block that registered it, and comes back once it is re-registered
+    /// on the new chain. The stored ACK is stale only for as long as that
+    /// lasts, so the same row must be emitted again afterwards -- which is why
+    /// a template that finds it stale must not delete it.
+    #[test]
+    fn stored_ack_is_acked_again_once_its_proposal_is_pending_again() {
+        let slot = SidechainNumber(7);
+        let proposal = test_proposal(slot, b"desc");
+        let description_hash = proposal.description.sha256d_hash();
+        let ack = SidechainAck {
+            sidechain_number: slot,
+            description_hash,
+        };
+
+        // Reorged out: nothing to ack, but the row survives the template.
+        let (acks, stale_acks) =
+            BlockProducer::select_sidechain_acks(vec![ack.clone()], &HashMap::new(), false);
+        assert!(acks.is_empty());
+        assert_eq!(stale_acks.len(), 1);
+        assert_eq!(stale_acks[0].description_hash, description_hash);
+
+        // Re-registered on the new chain: the very same stored ACK is emitted.
+        let pending = HashMap::from_iter([(slot, proposal)]);
+        let (acks, stale_acks) = BlockProducer::select_sidechain_acks(vec![ack], &pending, false);
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0].sidechain_number, slot);
+        assert_eq!(acks[0].description_hash, description_hash);
+        assert!(stale_acks.is_empty());
     }
 }
