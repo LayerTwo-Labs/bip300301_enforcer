@@ -51,7 +51,7 @@ use tower_http::{
     trace::{DefaultOnFailure, TraceLayer},
 };
 use tracing::Instrument;
-use wallet::Wallet;
+use wallet::{Wallet, WalletStatus};
 
 mod error;
 mod file_descriptors;
@@ -1861,9 +1861,19 @@ async fn main() -> Result<()> {
             _ => (None, false),
         };
 
-        if !wallet.is_initialized().await && auto_create {
-            tracing::info!("auto-creating new wallet");
-            wallet.create_wallet(mnemonic, None).await?;
+        match wallet.status().await {
+            WalletStatus::Unlocked => (),
+            // The seed is already persisted, so there is nothing to
+            // auto-create. Leave it to the UnlockWallet RPC instead of
+            // refusing to start, which would put that RPC out of reach.
+            WalletStatus::Locked => {
+                tracing::info!("wallet seed is encrypted, waiting for UnlockWallet");
+            }
+            WalletStatus::Uninitialized if auto_create => {
+                tracing::info!("auto-creating new wallet");
+                wallet.create_wallet(mnemonic, None).await?;
+            }
+            WalletStatus::Uninitialized => (),
         }
 
         Either::Right(Either::Right(wallet))

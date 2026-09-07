@@ -229,6 +229,16 @@ const fn default_electrum_host_port(network: Network) -> Option<(&'static str, u
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WalletStatus {
+    /// No seed has been persisted.
+    Uninitialized,
+    /// An encrypted seed is persisted but not loaded.
+    Locked,
+    /// The BDK wallet is loaded and serving.
+    Unlocked,
+}
+
 struct WalletInner {
     main_client: HttpClient,
     producer: BlockProducer,
@@ -237,6 +247,7 @@ struct WalletInner {
     /// ensure at build time that the correct order is applied.
     locks: locks::WalletLocks,
     seed_store: SeedStore,
+    seed_is_encrypted: bool,
     sync_state: sync_state::SharedSyncState,
     config: Config,
 }
@@ -528,7 +539,9 @@ impl WalletInner {
         // We can just go ahead and unlock the wallet right away.
         let seed_store = SeedStore::new(data_dir)?;
 
-        let bitcoin_wallet = match seed_store.read_mnemonic().await? {
+        let stored_seed = seed_store.read_mnemonic().await?;
+        let seed_is_encrypted = matches!(stored_seed, Some(Either::Right(_)));
+        let bitcoin_wallet = match stored_seed {
             Some(Either::Left(mnemonic)) => {
                 tracing::debug!("found plaintext mnemonic, going straight to initialization");
                 let initialized = WalletInner::initialize_wallet_from_mnemonic(
@@ -556,9 +569,20 @@ impl WalletInner {
             magic,
             locks: locks::WalletLocks::new(bitcoin_wallet, wallet_database),
             seed_store,
+            seed_is_encrypted,
             sync_state,
         };
         Ok((inner, chain_source_init))
+    }
+
+    async fn status(&self) -> WalletStatus {
+        if self.locks.read_slot().await.is_some() {
+            WalletStatus::Unlocked
+        } else if self.seed_is_encrypted {
+            WalletStatus::Locked
+        } else {
+            WalletStatus::Uninitialized
+        }
     }
 
     async fn read_wallet(&self) -> Result<RwLockReadGuardSome<'_, BdkWallet>, error::NotUnlocked> {
@@ -905,6 +929,11 @@ impl Wallet {
         self.inner.try_full_scan().await
     }
 
+    pub async fn status(&self) -> WalletStatus {
+        self.inner.status().await
+    }
+
+    /// Whether the BDK wallet is loaded, i.e. [`WalletStatus::Unlocked`].
     pub async fn is_initialized(&self) -> bool {
         self.inner.locks.read_slot().await.is_some()
     }

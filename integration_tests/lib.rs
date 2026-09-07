@@ -26,6 +26,7 @@ mod test_sidechain_ack_policy;
 mod test_signet_miner_rpc_cookie;
 mod test_unconfirmed_transactions;
 mod test_wallet_descriptor_fallback;
+mod test_wallet_encrypted_restart;
 mod test_wallet_large_gap_sync;
 mod test_wallet_less_block_template;
 mod test_wallet_reorg_multi_block;
