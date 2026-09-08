@@ -25,7 +25,11 @@ message WalletTransaction {
 }
 
 service WalletService {
+  // Deprecated: use `BlockProducerService.ProposeWithdrawalBundle`, which
+  // takes the same request and needs no wallet. This RPC is a thin alias
+  // for it and will be removed.
   rpc BroadcastWithdrawalBundle(BroadcastWithdrawalBundleRequest) returns (BroadcastWithdrawalBundleResponse) {
+    option deprecated = true;
     option idempotency_level = IDEMPOTENT;
   }
   rpc CreateBmmCriticalDataTransaction(CreateBmmCriticalDataTransactionRequest) returns (CreateBmmCriticalDataTransactionResponse);

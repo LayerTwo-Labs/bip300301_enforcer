@@ -157,6 +157,12 @@ message GetBlockProducerStateResponse {
   repeated WithdrawalBundleAck explicit_bundle_acks = 6;
 }
 
+message ProposeWithdrawalBundleRequest {
+  google.protobuf.UInt32Value sidechain_id = 1;
+  google.protobuf.BytesValue transaction = 2;
+}
+message ProposeWithdrawalBundleResponse {}
+
 // Manages drivechain policies for voting on sidechain proposals and withdrawal
 // bundles.
 service BlockProducerService {
@@ -190,6 +196,13 @@ service BlockProducerService {
   // Set which pending withdrawal bundles are upvoted without an explicit
   // `SetWithdrawalBundleAck`.
   rpc SetWithdrawalBundlePolicy(SetWithdrawalBundlePolicyRequest) returns (SetWithdrawalBundlePolicyResponse);
+
+  // Store a withdrawal bundle so the block producer proposes it (M3). A bundle
+  // reaches only the block producer database, so a sidechain with no mainchain
+  // wallet still proposes one.
+  rpc ProposeWithdrawalBundle(ProposeWithdrawalBundleRequest) returns (ProposeWithdrawalBundleResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
 
   // Block-producer / operator state that is not (yet) reflected on-chain:
   // sidechain proposals authored here but not yet mined into a coinbase, plus
