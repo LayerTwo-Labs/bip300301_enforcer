@@ -63,7 +63,8 @@ where
     ///
     /// A node RPC transport failure is recoverable on the same terms, as in
     /// [`enforcer_task_is_resyncable`], and the enforcer's own initial sync
-    /// can also fail on a transient node error.
+    /// can also fail on a transient node error, or on a reorg that lands while
+    /// it is syncing.
     pub fn is_resyncable(&self) -> bool {
         let (Self::SyncTask(inner) | Self::InitialSync(inner)) = self else {
             return false;
@@ -76,7 +77,7 @@ where
                 is_transport_error(err)
             }
             SyncTaskError::InitialSyncEnforcer(InitialSyncError::CusfEnforcer(err)) => {
-                is_block_not_found_on_disk(err)
+                is_block_not_found_on_disk(err) || is_block_not_in_active_chain(err)
             }
             // The crate does not export this variant's error type, so its
             // `ClientError` is only reachable through the source chain.
@@ -95,6 +96,19 @@ where
     ErrorChain::new(err)
         .to_string()
         .contains("Block not found on disk")
+}
+
+// A reorg while the enforcer is syncing leaves the hash it was walking from off
+// the active chain, and the sync rightly refuses to continue against a chain
+// the node has abandoned. Only a re-sync clears it, since the new tip is picked
+// up at the start of the next sync.
+fn is_block_not_in_active_chain<E>(err: &E) -> bool
+where
+    E: std::error::Error,
+{
+    ErrorChain::new(err)
+        .to_string()
+        .contains("Block not in active chain")
 }
 
 /// Whether a node RPC call failed at the transport layer rather than being
@@ -128,7 +142,7 @@ where
             is_transport_error(err)
         }
         TaskError::InitialSync(InitialSyncError::CusfEnforcer(err)) => {
-            is_block_not_found_on_disk(err)
+            is_block_not_found_on_disk(err) || is_block_not_in_active_chain(err)
         }
         _ => false,
     }
@@ -142,13 +156,24 @@ mod tests {
     };
     use jsonrpsee::core::ClientError;
 
-    use super::MempoolTask;
+    use super::{MempoolTask, is_block_not_in_active_chain};
 
     type Task = MempoolTask<DefaultEnforcer>;
 
     fn transport() -> ClientError {
         ClientError::Transport("connection closed before message completed".into())
     }
+
+    /// Stands in for the enforcer's sync error, which arrives with the message
+    /// `validator::task::error::Sync::BlockNotInActiveChain` renders behind a
+    /// `#[source]`.
+    #[derive(Debug, thiserror::Error)]
+    #[error("enforcer sync error")]
+    struct EnforcerSync(#[source] BlockNotInActiveChain);
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("Block not in active chain: `{0}`")]
+    struct BlockNotInActiveChain(&'static str);
 
     #[test]
     fn a_transport_error_is_resyncable() {
@@ -162,6 +187,21 @@ mod tests {
             ))
             .is_resyncable(),
             "nor during the initial sync"
+        );
+    }
+
+    #[test]
+    fn a_block_not_in_active_chain_error_is_resyncable() {
+        let reorged = EnforcerSync(BlockNotInActiveChain(
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+        ));
+        assert!(
+            is_block_not_in_active_chain(&reorged),
+            "a reorg during header sync must re-sync against the new tip, not exit"
+        );
+        assert!(
+            !is_block_not_in_active_chain(&transport()),
+            "an unrelated failure must not be mistaken for a reorg"
         );
     }
 
