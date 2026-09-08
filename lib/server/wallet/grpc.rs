@@ -10,7 +10,7 @@ use crate::{
     convert,
     errors::ErrorChain,
     proto::{
-        StatusBuilder, ToStatus,
+        ToStatus,
         common::ReverseHex,
         mainchain::{
             BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse,
@@ -29,8 +29,10 @@ use crate::{
         mainchain_service::WalletService,
         unwrap_string, unwrap_u32, unwrap_u64, wrap_timestamp, wrap_u32,
     },
-    server::{internal_err, invalid_field_value, missing_field, parse_sidechain_id},
-    types::BlindedM6,
+    server::{
+        internal_err, invalid_field_value, missing_field, parse_sidechain_id,
+        store_withdrawal_bundle,
+    },
     wallet::{CreateTransactionParams, error::WalletInitialization},
 };
 
@@ -141,54 +143,16 @@ impl WalletService for crate::wallet::Wallet {
         } = request.to_owned_message();
         let sidechain_id =
             parse_sidechain_id::<BroadcastWithdrawalBundleRequest>(sidechain_id, "sidechain_id")?;
-        // Reject bundles for sidechains that are not active: an inactive slot has no
-        // treasury to withdraw from and, per BIP300 M3, a bundle proposed for it would
-        // be a no-op. Fail fast at ingestion rather than persisting a row that can
-        // never be acted on. NB: this gate cannot catch a slot that is deactivated by
-        // a reorg *after* a bundle is stored, so the block builder
-        // (`get_bundle_proposals`) also skips inactive-slot bundles.
-        match self.is_sidechain_active(sidechain_id) {
-            Ok(false) => {
-                return Err(ConnectError::failed_precondition(format!(
-                    "cannot accept a withdrawal bundle for sidechain {sidechain_id}: not active"
-                )));
-            }
-            Ok(true) => (),
-            Err(err) => return Err(internal_err(err)),
-        }
-        // Likewise reject bundles for an active slot that has no CTIP: with no
-        // treasury UTXO there is nothing for an M6 to spend, so the bundle could
-        // never become a valid withdrawal. NB: as with the active-slot gate
-        // above, this cannot cover a CTIP that a reorg removes *after* a bundle
-        // is stored. In that state the block producer skips the bundle when
-        // building the M6 suffix and it ages out unpaid.
-        match self.validator().try_get_ctip(sidechain_id) {
-            Ok(None) => {
-                return Err(ConnectError::failed_precondition(format!(
-                    "cannot accept a withdrawal bundle for sidechain {sidechain_id}: no treasury UTXO"
-                )));
-            }
-            Ok(Some(_)) => (),
-            Err(err) => return Err(internal_err(err)),
-        }
         let transaction_bytes: Vec<u8> = transaction
             .into_option()
             .ok_or_else(|| missing_field::<BroadcastWithdrawalBundleRequest>("transaction"))?
             .value;
-        // A blinded M6 is a zero-input tx that Core/sidechains serialize in legacy
-        // form, which rust-bitcoin's standard decoder cannot parse;
-        // `BlindedM6::deserialize` handles that fallback and validates the bundle.
-        let transaction = BlindedM6::deserialize(&transaction_bytes).map_err(|err| {
-            invalid_field_value::<BroadcastWithdrawalBundleRequest, _>(
-                "transaction",
-                &hex::encode(&transaction_bytes),
-                err,
-            )
-        })?;
-        let _m6id = self
-            .put_withdrawal_bundle(sidechain_id, &transaction)
-            .await
-            .map_err(|err| StatusBuilder::new(&err).to_connect_error())?;
+        let _m6id = store_withdrawal_bundle::<BroadcastWithdrawalBundleRequest>(
+            self.producer(),
+            sidechain_id,
+            &transaction_bytes,
+        )
+        .await?;
         Ok(Response::new(BroadcastWithdrawalBundleResponse::default()))
     }
 

@@ -23,6 +23,7 @@ use crate::{
         mainchain::{
             AckAllProposalsPolicy, CreateSidechainProposalRequest, CreateSidechainProposalResponse,
             GetBlockProducerStateRequest, GetBlockProducerStateResponse, PendingSidechainProposal,
+            ProposeWithdrawalBundleRequest, ProposeWithdrawalBundleResponse,
             SetAckAllProposalsRequest, SetAckAllProposalsResponse, SetSidechainAckRequest,
             SetSidechainAckResponse, SetWithdrawalBundleAckRequest, SetWithdrawalBundleAckResponse,
             SetWithdrawalBundlePolicyRequest, SetWithdrawalBundlePolicyResponse,
@@ -33,7 +34,10 @@ use crate::{
         mainchain_service::BlockProducerService,
         wrap_u32,
     },
-    server::{internal_err, invalid_field_value, missing_field, parse_sidechain_id},
+    server::{
+        internal_err, invalid_field_value, missing_field, parse_sidechain_id,
+        store_withdrawal_bundle,
+    },
     types::{Event, M6id},
 };
 
@@ -303,6 +307,31 @@ impl BlockProducerService for BlockProducer {
             .await
             .map_err(internal_err)?;
         Ok(Response::new(SetWithdrawalBundlePolicyResponse::default()))
+    }
+
+    async fn propose_withdrawal_bundle(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, ProposeWithdrawalBundleRequest>,
+    ) -> ServiceResult<ProposeWithdrawalBundleResponse> {
+        let ProposeWithdrawalBundleRequest {
+            sidechain_id,
+            transaction,
+            ..
+        } = request.to_owned_message();
+        let sidechain_id =
+            parse_sidechain_id::<ProposeWithdrawalBundleRequest>(sidechain_id, "sidechain_id")?;
+        let transaction_bytes: Vec<u8> = transaction
+            .into_option()
+            .ok_or_else(|| missing_field::<ProposeWithdrawalBundleRequest>("transaction"))?
+            .value;
+        let _m6id = store_withdrawal_bundle::<ProposeWithdrawalBundleRequest>(
+            self,
+            sidechain_id,
+            &transaction_bytes,
+        )
+        .await?;
+        Ok(Response::new(ProposeWithdrawalBundleResponse::default()))
     }
 
     async fn set_withdrawal_bundle_ack(

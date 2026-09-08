@@ -40,10 +40,7 @@ use crate::{
     convert,
     errors::ErrorChain,
     messages::{self, M8BmmRequest},
-    types::{
-        BDKWalletTransaction, BlindedM6, BmmCommitment, Ctip, M6id, SidechainNumber,
-        SidechainProposal,
-    },
+    types::{BDKWalletTransaction, BmmCommitment, Ctip, SidechainNumber, SidechainProposal},
     validator::{self, Validator},
     wallet::{
         error::WalletInitialization,
@@ -851,17 +848,6 @@ impl Wallet {
         self.inner
             .db()
             .nack_sidechain(sidechain_number, data_hash)
-            .await
-    }
-
-    pub async fn put_withdrawal_bundle(
-        &self,
-        sidechain_number: SidechainNumber,
-        blinded_m6: &BlindedM6<'static>,
-    ) -> Result<M6id, rusqlite::Error> {
-        self.inner
-            .db()
-            .put_withdrawal_bundle(sidechain_number, blinded_m6)
             .await
     }
 
