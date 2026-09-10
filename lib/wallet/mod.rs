@@ -1868,8 +1868,17 @@ impl Wallet {
 
         let mut wallet_write = self.inner.write_wallet().await?;
         let psbt = tokio::task::block_in_place(|| {
+            // The RPC's earlier check predates potentially slow wallet-lock
+            // acquisition. Never build a bid already expired at this point.
+            let tip = self.inner.validator().get_mainchain_tip()?;
+            if tip
+                != crate::convert::bdk_block_hash_to_bitcoin_block_hash(prev_mainchain_block_hash)
+            {
+                return Err(error::BuildBmmTx::StaleParent);
+            }
             wallet_write
                 .with_mut(|wallet| Self::build_bmm_psbt(wallet, &message, bid_amount, locktime))
+                .map_err(error::BuildBmmTx::from)
         })?;
 
         Ok(psbt)
@@ -2182,6 +2191,137 @@ mod tests {
             .await
             .expect("an empty database must yield a freshly created wallet");
         wallet.peek_address(KeychainKind::External, 0).to_string()
+    }
+
+    #[tokio::test]
+    async fn full_scan_upgrade_invalidates_a_later_sync_snapshot() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let wallet = open_wallet(&mut database, Network::Bitcoin, Some(0))
+            .await
+            .unwrap();
+        let locks = super::locks::WalletLocks::new(Some(wallet), database);
+        let snapshot;
+        let writer = locks
+            .upgrade({
+                let scan = locks.upgradable_read().await.unwrap();
+                let reader = locks.read().await.unwrap();
+                snapshot = locks.revision();
+                drop(reader);
+                scan
+            })
+            .await;
+        drop(writer);
+        assert!(locks.write_if_unchanged(snapshot).await.unwrap().is_none());
+        let reader = locks.read().await.unwrap();
+        let fresh = locks.revision();
+        drop(reader);
+        assert!(locks.write_if_unchanged(fresh).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn sync_snapshot_rejects_writer_and_wallet_slot_changes() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let wallet = open_wallet(&mut database, Network::Bitcoin, Some(0))
+            .await
+            .unwrap();
+        let locks = super::locks::WalletLocks::new(Some(wallet), database);
+
+        let reader = locks.read().await.unwrap();
+        let snapshot = locks.revision();
+        let _owned_request = super::sync::transaction_sync_request(&reader);
+        drop(reader);
+        // The production request owns its data: a writer must remain available
+        // while that request is alive and a backend has not yet returned.
+        let writer = tokio::time::timeout(std::time::Duration::from_secs(1), locks.write())
+            .await
+            .expect("network snapshot must not retain a wallet lock")
+            .unwrap();
+        drop(writer);
+        assert!(locks.write_if_unchanged(snapshot).await.unwrap().is_none());
+
+        let reader = locks.read().await.unwrap();
+        let before_lock = locks.revision();
+        drop(reader);
+        let saved = locks.write_slot().await.take().unwrap();
+        assert!(
+            locks
+                .write_if_unchanged(before_lock)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(locks.read().await.is_err());
+        *locks.write_slot().await = Some(saved);
+        assert!(
+            locks
+                .write_if_unchanged(before_lock)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let reader = locks.read().await.unwrap();
+        let fresh = locks.revision();
+        drop(reader);
+        drop(locks.write_if_unchanged(fresh).await.unwrap().unwrap());
+        // Two responses from the same snapshot cannot both apply.
+        assert!(locks.write_if_unchanged(fresh).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn transaction_sync_preserves_scripts_and_expected_history_without_chain_tip() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        wallet.reveal_next_address(KeychainKind::External);
+        wallet.reveal_next_address(KeychainKind::Internal);
+        let mut request = super::sync::transaction_sync_request(&wallet);
+        let mut reference = wallet
+            .start_sync_with_revealed_spks_at(request.start_time())
+            .build();
+        assert!(request.chain_tip().is_none());
+        assert!(reference.chain_tip().is_some());
+        assert_eq!(request.start_time(), reference.start_time());
+        let scripts = |request: &mut bdk_chain::bdk_core::spk_client::SyncRequest<_>| {
+            request
+                .iter_spks_with_expected_txids()
+                .map(|entry| (entry.spk, entry.expected_txids))
+                .collect::<Vec<_>>()
+        };
+        let actual = scripts(&mut request);
+        assert!(actual.iter().any(|(_, txids)| !txids.is_empty()));
+        assert_eq!(actual, scripts(&mut reference));
+        assert_eq!(
+            request.iter_txids().collect::<Vec<_>>(),
+            reference.iter_txids().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            request.iter_outpoints().collect::<Vec<_>>(),
+            reference.iter_outpoints().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn transaction_sync_does_not_request_an_esplora_checkpoint() {
+        use bdk_esplora::EsploraAsyncExt as _;
+        let (external, internal) = descriptors(Network::Bitcoin);
+        let wallet = bdk_wallet::Wallet::create(external, internal)
+            .network(Network::Bitcoin)
+            .create_wallet_no_persist()
+            .unwrap();
+        let request = super::sync::transaction_sync_request(&wallet);
+        assert_eq!(request.progress().spks_remaining, 0);
+        // No scripts means no transaction queries. Supplying a chain tip would
+        // nevertheless make the real backend query /blocks and fail here.
+        // The closed local listener avoids any external service dependency.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let client = bdk_esplora::esplora_client::Builder::new(&endpoint)
+            .build_async()
+            .unwrap();
+        let response = client.sync(request, 1).await.unwrap();
+        assert!(response.chain_update.is_none());
     }
 
     async fn empty_database(dir: &temp_dir::TempDir) -> Persistence {
