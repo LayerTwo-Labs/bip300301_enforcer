@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use bdk_chain::bdk_core;
+use bdk_chain::{bdk_core, keychain_txout::SyncRequestBuilderExt as _};
 use bdk_esplora::EsploraAsyncExt as _;
 use futures::TryFutureExt;
 use tokio::time::Instant;
@@ -39,6 +39,25 @@ impl SyncWriteGuard<'_> {
 }
 
 const ESPLORA_PARALLEL_REQUESTS: usize = 25;
+
+/// Request transactions without delegating the wallet's chain to the backend.
+/// BDK's wallet helper also supplies a chain tip, causing both supported
+/// backends to return a checkpoint that this enforcer intentionally rejects.
+/// Preserve its revealed scripts and expected transaction histories so missing
+/// mempool transactions can still be detected and evicted.
+pub(super) fn transaction_sync_request(
+    wallet: &bdk_wallet::Wallet,
+) -> bdk_core::spk_client::SyncRequest<(bdk_wallet::KeychainKind, u32)> {
+    bdk_core::spk_client::SyncRequest::builder()
+        .revealed_spks_from_indexer(wallet.spk_index(), ..)
+        .expected_spk_txids(wallet.tx_graph().list_expected_spk_txids(
+            wallet.local_chain(),
+            wallet.local_chain().tip().block_id(),
+            wallet.spk_index(),
+            ..,
+        ))
+        .build()
+}
 
 async fn bounded_sync_fetch<T>(fetch: impl Future<Output = T>) -> Result<T, error::WalletSync> {
     sync_fetch_with_deadline(fetch, std::time::Duration::from_secs(120)).await
@@ -231,7 +250,7 @@ impl WalletInner {
             }
         };
         let revision = self.locks.revision();
-        let request = wallet_read.start_sync_with_revealed_spks().build();
+        let request = transaction_sync_request(&wallet_read);
         drop(wallet_read);
 
         tracing::trace!(
