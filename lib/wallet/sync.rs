@@ -72,42 +72,6 @@ async fn sync_fetch_with_deadline<T>(
         .map_err(|_| error::WalletSync::EsploraSyncDeadline)
 }
 
-#[cfg(test)]
-mod deadline_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn stalled_fetch_releases_guard_without_applying_update() {
-        let lock = async_lock::RwLock::new(0_u32);
-        let attempt = async {
-            let _guard = lock.upgradable_read().await;
-            sync_fetch_with_deadline(
-                std::future::pending::<()>(),
-                std::time::Duration::from_millis(10),
-            )
-            .await?;
-            panic!("timed-out fetch must never reach application/persistence");
-            #[allow(unreachable_code)]
-            Ok::<(), error::WalletSync>(())
-        };
-        assert!(matches!(
-            attempt.await,
-            Err(error::WalletSync::EsploraSyncDeadline)
-        ));
-        let guard = lock.try_write().expect("timeout must release wallet guard");
-        assert_eq!(*guard, 0);
-    }
-
-    #[tokio::test]
-    async fn completed_fetch_preserves_result() {
-        assert_eq!(bounded_sync_fetch(async { 42_u32 }).await.unwrap(), 42);
-        let result: Result<(), &str> = bounded_sync_fetch(async { Err("backend failure") })
-            .await
-            .unwrap();
-        assert_eq!(result, Err("backend failure"));
-    }
-}
-
 /// Number of consecutive unused addresses that a full scan must observe before
 /// considering a keychain exhausted. Larger than the BIP44 gap limit of 20,
 /// since a recovered seed may have been used by a wallet that hands out
@@ -532,5 +496,39 @@ impl WalletInner {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stalled_fetch_releases_guard_without_applying_update() {
+        let lock = async_lock::RwLock::new(0_u32);
+        let attempt = async {
+            let _guard = lock.upgradable_read().await;
+            sync_fetch_with_deadline(
+                std::future::pending::<()>(),
+                std::time::Duration::from_millis(10),
+            )
+            .await
+            .map(|()| panic!("timed-out fetch must never reach application/persistence"))
+        };
+        assert!(matches!(
+            attempt.await,
+            Err(error::WalletSync::EsploraSyncDeadline)
+        ));
+        let value = *lock.try_write().expect("timeout must release wallet guard");
+        assert_eq!(value, 0);
+    }
+
+    #[tokio::test]
+    async fn completed_fetch_preserves_result() {
+        assert_eq!(bounded_sync_fetch(async { 42_u32 }).await.unwrap(), 42);
+        let result: Result<(), &str> = bounded_sync_fetch(async { Err("backend failure") })
+            .await
+            .unwrap();
+        assert_eq!(result, Err("backend failure"));
     }
 }

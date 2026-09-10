@@ -2201,11 +2201,16 @@ mod tests {
             .await
             .unwrap();
         let locks = super::locks::WalletLocks::new(Some(wallet), database);
-        let scan = locks.upgradable_read().await.unwrap();
-        let reader = locks.read().await.unwrap();
-        let snapshot = locks.revision();
-        drop(reader);
-        let writer = locks.upgrade(scan).await;
+        let snapshot;
+        let writer = locks
+            .upgrade({
+                let scan = locks.upgradable_read().await.unwrap();
+                let reader = locks.read().await.unwrap();
+                snapshot = locks.revision();
+                drop(reader);
+                scan
+            })
+            .await;
         drop(writer);
         assert!(locks.write_if_unchanged(snapshot).await.unwrap().is_none());
         let reader = locks.read().await.unwrap();
