@@ -1868,8 +1868,17 @@ impl Wallet {
 
         let mut wallet_write = self.inner.write_wallet().await?;
         let psbt = tokio::task::block_in_place(|| {
+            // The RPC's earlier check predates potentially slow wallet-lock
+            // acquisition. Never build a bid already expired at this point.
+            let tip = self.inner.validator().get_mainchain_tip()?;
+            if tip
+                != crate::convert::bdk_block_hash_to_bitcoin_block_hash(prev_mainchain_block_hash)
+            {
+                return Err(error::BuildBmmTx::StaleParent);
+            }
             wallet_write
                 .with_mut(|wallet| Self::build_bmm_psbt(wallet, &message, bid_amount, locktime))
+                .map_err(error::BuildBmmTx::from)
         })?;
 
         Ok(psbt)
@@ -2182,6 +2191,78 @@ mod tests {
             .await
             .expect("an empty database must yield a freshly created wallet");
         wallet.peek_address(KeychainKind::External, 0).to_string()
+    }
+
+    #[tokio::test]
+    async fn full_scan_upgrade_invalidates_a_later_sync_snapshot() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let wallet = open_wallet(&mut database, Network::Bitcoin, Some(0))
+            .await
+            .unwrap();
+        let locks = super::locks::WalletLocks::new(Some(wallet), database);
+        let scan = locks.upgradable_read().await.unwrap();
+        let reader = locks.read().await.unwrap();
+        let snapshot = locks.revision();
+        drop(reader);
+        let writer = locks.upgrade(scan).await;
+        drop(writer);
+        assert!(locks.write_if_unchanged(snapshot).await.unwrap().is_none());
+        let reader = locks.read().await.unwrap();
+        let fresh = locks.revision();
+        drop(reader);
+        assert!(locks.write_if_unchanged(fresh).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn sync_snapshot_rejects_writer_and_wallet_slot_changes() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let mut database = empty_database(&dir).await;
+        let wallet = open_wallet(&mut database, Network::Bitcoin, Some(0))
+            .await
+            .unwrap();
+        let locks = super::locks::WalletLocks::new(Some(wallet), database);
+
+        let reader = locks.read().await.unwrap();
+        let snapshot = locks.revision();
+        let _owned_request = reader.start_sync_with_revealed_spks().build();
+        drop(reader);
+        // The production request owns its data: a writer must remain available
+        // while that request is alive and a backend has not yet returned.
+        let writer = tokio::time::timeout(std::time::Duration::from_secs(1), locks.write())
+            .await
+            .expect("network snapshot must not retain a wallet lock")
+            .unwrap();
+        drop(writer);
+        assert!(locks.write_if_unchanged(snapshot).await.unwrap().is_none());
+
+        let reader = locks.read().await.unwrap();
+        let before_lock = locks.revision();
+        drop(reader);
+        let saved = locks.write_slot().await.take().unwrap();
+        assert!(
+            locks
+                .write_if_unchanged(before_lock)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(locks.read().await.is_err());
+        *locks.write_slot().await = Some(saved);
+        assert!(
+            locks
+                .write_if_unchanged(before_lock)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let reader = locks.read().await.unwrap();
+        let fresh = locks.revision();
+        drop(reader);
+        drop(locks.write_if_unchanged(fresh).await.unwrap().unwrap());
+        // Two responses from the same snapshot cannot both apply.
+        assert!(locks.write_if_unchanged(fresh).await.unwrap().is_none());
     }
 
     async fn empty_database(dir: &temp_dir::TempDir) -> Persistence {

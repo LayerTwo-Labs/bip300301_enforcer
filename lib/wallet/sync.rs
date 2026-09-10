@@ -9,10 +9,8 @@ use tokio::time::Instant;
 use tracing::instrument;
 
 use crate::wallet::{
-    BdkWallet, ChainSourceClient, Persistence, WalletInner, error,
-    locks::FullScanGuard,
-    sync_state::SharedSyncState,
-    util::{RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
+    BdkWallet, ChainSourceClient, Persistence, WalletInner, error, locks::FullScanGuard,
+    sync_state::SharedSyncState, util::RwLockWriteGuardSome,
 };
 
 /// Write-locked wallet and database, plus the sync state to stamp on commit.
@@ -41,6 +39,55 @@ impl SyncWriteGuard<'_> {
 }
 
 const ESPLORA_PARALLEL_REQUESTS: usize = 25;
+
+async fn bounded_sync_fetch<T>(fetch: impl Future<Output = T>) -> Result<T, error::WalletSync> {
+    sync_fetch_with_deadline(fetch, std::time::Duration::from_secs(120)).await
+}
+
+async fn sync_fetch_with_deadline<T>(
+    fetch: impl Future<Output = T>,
+    deadline: std::time::Duration,
+) -> Result<T, error::WalletSync> {
+    tokio::time::timeout(deadline, fetch)
+        .await
+        .map_err(|_| error::WalletSync::EsploraSyncDeadline)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stalled_fetch_releases_guard_without_applying_update() {
+        let lock = async_lock::RwLock::new(0_u32);
+        let attempt = async {
+            let _guard = lock.upgradable_read().await;
+            sync_fetch_with_deadline(
+                std::future::pending::<()>(),
+                std::time::Duration::from_millis(10),
+            )
+            .await?;
+            panic!("timed-out fetch must never reach application/persistence");
+            #[allow(unreachable_code)]
+            Ok::<(), error::WalletSync>(())
+        };
+        assert!(matches!(
+            attempt.await,
+            Err(error::WalletSync::EsploraSyncDeadline)
+        ));
+        let guard = lock.try_write().expect("timeout must release wallet guard");
+        assert_eq!(*guard, 0);
+    }
+
+    #[tokio::test]
+    async fn completed_fetch_preserves_result() {
+        assert_eq!(bounded_sync_fetch(async { 42_u32 }).await.unwrap(), 42);
+        let result: Result<(), &str> = bounded_sync_fetch(async { Err("backend failure") })
+            .await
+            .unwrap();
+        assert_eq!(result, Err("backend failure"));
+    }
+}
 
 /// Number of consecutive unused addresses that a full scan must observe before
 /// considering a keychain exhausted. Larger than the BIP44 gap limit of 20,
@@ -169,12 +216,12 @@ impl WalletInner {
     ) -> Result<Option<SyncWriteGuard<'_>>, error::WalletSync> {
         let start = SystemTime::now();
         tracing::trace!("starting wallet sync");
-        // Hold an upgradable lock for the duration of the sync, to prevent other
-        // updates to the wallet between fetching an update via the chain source,
-        // and applying the update.
+        // Snapshot under a read lock, then release it before network I/O.
+        // Every possible writer invalidates the revision; stale responses are
+        // discarded under the reacquired write lock rather than merged blindly.
         // Don't error out here if the wallet is locked, just skip the sync.
         let wallet_read = {
-            match self.read_wallet_upgradable().await {
+            match self.read_wallet().await {
                 Ok(wallet_read) => wallet_read,
                 // "Accepted" errors, that aren't really errors in this case.
                 Err(error::NotUnlocked) => {
@@ -183,8 +230,9 @@ impl WalletInner {
                 }
             }
         };
-        tracing::trace!("acquired upgradable read lock on wallet");
+        let revision = self.locks.revision();
         let request = wallet_read.start_sync_with_revealed_spks().build();
+        drop(wallet_read);
 
         tracing::trace!(
             spks = request.progress().spks_remaining,
@@ -208,9 +256,13 @@ impl WalletInner {
                 ("electrum", self.record_sync_backend_result(result)?)
             }
             ChainSourceClient::Esplora(esplora_client) => {
-                let result = esplora_client
-                    .sync(request, ESPLORA_PARALLEL_REQUESTS)
-                    .await;
+                // Bound only the read-only network phase. Cancelling the
+                // apply/persist phase could leave memory ahead of disk.
+                // No wallet guard is held during this network phase.
+                let result =
+                    bounded_sync_fetch(esplora_client.sync(request, ESPLORA_PARALLEL_REQUESTS))
+                        .await;
+                let result = self.record_sync_backend_result(result)?;
                 ("esplora", self.record_sync_backend_result(result)?)
             }
         };
@@ -227,8 +279,10 @@ impl WalletInner {
         }
 
         tracing::trace!("applying update");
-        // Upgrade wallet lock
-        let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
+        let Some(mut wallet_write) = self.locks.write_if_unchanged(revision).await? else {
+            tracing::debug!("discarding wallet sync response after concurrent wallet change");
+            return Ok(None);
+        };
         wallet_write.with_mut(|wallet| wallet.apply_update(update))?;
         // The update re-adopts any stale BMM request that still sits in the
         // chain source's mempool view, re-locking its inputs. Evict again
@@ -408,7 +462,7 @@ impl WalletInner {
 
         // Applying the update reveals addresses up to the last active index of
         // each keychain, so that the persist below records which index we're at.
-        let mut wallet_write = RwLockUpgradableReadGuardSome::upgrade(wallet_read).await;
+        let mut wallet_write = self.locks.upgrade(wallet_read).await;
         let mut bdk_db = self.locks.db(&wallet_write).await;
 
         // A full scan re-adopts stale BMM requests still in the chain
