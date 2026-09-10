@@ -15,7 +15,8 @@ use bip300301_enforcer_lib::{
         common::{ConsensusHex, ReverseHex},
         mainchain::{
             BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, GetChainTipRequest,
-            GetSidechainsRequest, ListUnspentOutputsRequest,
+            GetSeenBmmRequestsRequest, GetSeenBmmRequestsResponse, GetSidechainsRequest,
+            ListUnspentOutputsRequest,
         },
     },
     types::{BmmCommitment, SidechainNumber},
@@ -36,6 +37,10 @@ const OTHER_SLOT: SidechainNumber = SidechainNumber(1);
 const LOW_BID: u64 = 2_000;
 const HIGH_BID: u64 = 25_000;
 const OTHER_SLOT_BID: u64 = 7_000;
+/// Round 1 runs a contested auction on both slots at once. This sits between
+/// the two slot 0 bids, so the bids interleave across slots by size and each
+/// slot must still settle on its own winner.
+const OTHER_SLOT_LOSING_BID: u64 = 4_000;
 const LOSING_BID: u64 = 10_000;
 const OUTSIDE_BID: u64 = 40_000;
 /// Must exceed [`LOSING_BID`]: if coin selection reuses the freed UTXO while
@@ -81,6 +86,42 @@ async fn chain_tip(post_setup: &mut PostSetup) -> anyhow::Result<(ReverseHex, Bl
         .clone()
         .decode::<BlockHeaderInfo, _>("block_hash")?;
     Ok((proto_hash, hash, height))
+}
+
+/// Read the bids the enforcer holds for one parent block, richest first.
+async fn seen_bids(
+    post_setup: &PostSetup,
+    prev_block_hash: ReverseHex,
+    slot: Option<SidechainNumber>,
+) -> anyhow::Result<Vec<(Txid, SidechainNumber, u64, BmmCommitment)>> {
+    let requests = post_setup
+        .validator_service_client
+        .get_seen_bmm_requests(GetSeenBmmRequestsRequest {
+            prev_block_hash: MessageField::some(prev_block_hash),
+            sidechain_number: slot
+                .map(|slot| proto::wrap_u32(slot.0.into()))
+                .unwrap_or_default(),
+        })
+        .await?
+        .into_owned()
+        .requests;
+    requests
+        .into_iter()
+        .map(|request| {
+            let txid = request
+                .txid
+                .into_option()
+                .ok_or_else(|| anyhow::anyhow!("expected `txid` in BmmRequest"))?
+                .decode::<GetSeenBmmRequestsResponse, _>("txid")?;
+            let critical_hash = request
+                .critical_hash
+                .into_option()
+                .ok_or_else(|| anyhow::anyhow!("expected `critical_hash` in BmmRequest"))?
+                .decode::<GetSeenBmmRequestsResponse, _>("critical_hash")?;
+            let slot = u8::try_from(request.sidechain_number)?;
+            Ok((txid, SidechainNumber(slot), request.bid_sats, critical_hash))
+        })
+        .collect()
 }
 
 /// Create a BMM request via the enforcer wallet gRPC, returning its txid.
@@ -429,13 +470,14 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     let h_high = h_star("round 1 winning bid");
     let h_low = h_star("round 1 losing bid");
     let h_other = h_star("round 1 other slot bid");
+    let h_other_losing = h_star("round 1 other slot losing bid");
     let (prev_bytes, prev_hash, tip_height) = chain_tip(&mut post_setup).await?;
     let high_txid = create_wallet_bid(
         &mut post_setup,
         DummySidechain::SIDECHAIN_NUMBER,
         HIGH_BID,
         &h_high,
-        prev_bytes,
+        prev_bytes.clone(),
         tip_height,
     )
     .await?;
@@ -457,10 +499,80 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         0,
     )
     .await?;
-    tracing::info!(%high_txid, %low_txid, %other_txid, "Placed round 1 bids");
+    let other_losing_txid = craft_core_bid(
+        &post_setup,
+        OTHER_SLOT,
+        OTHER_SLOT_LOSING_BID,
+        &h_other_losing,
+        prev_hash,
+        0,
+    )
+    .await?;
+    tracing::info!(
+        %high_txid, %low_txid, %other_txid, %other_losing_txid,
+        "Placed round 1 bids: two contested slots"
+    );
+
+    let slot_0_bids = vec![
+        (
+            high_txid,
+            DummySidechain::SIDECHAIN_NUMBER,
+            HIGH_BID,
+            BmmCommitment(h_high),
+        ),
+        (
+            low_txid,
+            DummySidechain::SIDECHAIN_NUMBER,
+            LOW_BID,
+            BmmCommitment(h_low),
+        ),
+    ];
+    let other_slot_bids = vec![
+        (
+            other_txid,
+            OTHER_SLOT,
+            OTHER_SLOT_BID,
+            BmmCommitment(h_other),
+        ),
+        (
+            other_losing_txid,
+            OTHER_SLOT,
+            OTHER_SLOT_LOSING_BID,
+            BmmCommitment(h_other_losing),
+        ),
+    ];
+    // Every slot's bids arrive in one answer, richest first, so the two slots
+    // interleave by size. The enforcer reads a new transaction from Core over
+    // ZMQ, so it sees a bid a moment after Core does.
+    let () = wait_until("the enforcer to see all four bids", || async {
+        let bids = seen_bids(&post_setup, prev_bytes.clone(), None).await?;
+        Ok(bids
+            == vec![
+                slot_0_bids[0],
+                other_slot_bids[0],
+                other_slot_bids[1],
+                slot_0_bids[1],
+            ])
+    })
+    .await?;
+    for (slot, expected) in [
+        (DummySidechain::SIDECHAIN_NUMBER, &slot_0_bids),
+        (OTHER_SLOT, &other_slot_bids),
+    ] {
+        let slot_bids = seen_bids(&post_setup, prev_bytes.clone(), Some(slot)).await?;
+        anyhow::ensure!(
+            slot_bids == *expected,
+            "slot {} must answer with its own bids alone, got {slot_bids:?}",
+            slot.0
+        );
+    }
     if let Mode::GetBlockTemplate = mode {
-        let () =
-            wait_for_template_txs(&post_setup, vec![high_txid, other_txid], vec![low_txid]).await?;
+        let () = wait_for_template_txs(
+            &post_setup,
+            vec![high_txid, other_txid],
+            vec![low_txid, other_losing_txid],
+        )
+        .await?;
     }
 
     let (auction_block, auction_height) =
@@ -471,8 +583,8 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         "the winning bids must be included in the block"
     );
     anyhow::ensure!(
-        !auction_txids.contains(&low_txid),
-        "the losing slot 0 bid must not be included in the block"
+        !auction_txids.contains(&low_txid) && !auction_txids.contains(&other_losing_txid),
+        "neither slot's losing bid may be included in the block"
     );
     let m7s = coinbase_m7_accepts(&auction_block)?;
     anyhow::ensure!(
@@ -502,19 +614,27 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
             coinbase_value(&auction_block)
         );
     }
+    // A mined bid leaves the mempool, so it stops being a bid. Each slot's
+    // winner drops out, and only the two losers still sit there.
+    let () = wait_until("the bids the block took to drop out", || async {
+        let after_block = seen_bids(&post_setup, prev_bytes.clone(), None).await?;
+        Ok(after_block == vec![other_slot_bids[1], slot_0_bids[1]])
+    })
+    .await?;
     tracing::info!("Round 1: auction block settled both slots correctly");
 
-    // The losing bid is now stale, but still sits in Bitcoin Core's mempool.
+    // The losing bids are now stale, but still sit in Bitcoin Core's mempool.
     let (empty_block, _) = mine_and_check_commitment(&mut post_setup, None).await?;
+    let empty_block_txids = block_txids(&empty_block);
     anyhow::ensure!(
-        !block_txids(&empty_block).contains(&low_txid),
-        "the stale losing bid must not be included in a later block"
+        !empty_block_txids.contains(&low_txid) && !empty_block_txids.contains(&other_losing_txid),
+        "a stale losing bid must not be included in a later block"
     );
     anyhow::ensure!(
         coinbase_m7_accepts(&empty_block)?.is_empty(),
         "expected no M7 accepts in a block mined without fresh bids"
     );
-    tracing::info!("Stale losing bid stayed out of the next block");
+    tracing::info!("Stale losing bids stayed out of the next block");
 
     let () = wait_for_wallet_sync(&mut post_setup).await?;
     let h_losing = h_star("round 2 losing bid");
@@ -525,7 +645,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
         DummySidechain::SIDECHAIN_NUMBER,
         LOSING_BID,
         &h_losing,
-        prev_bytes,
+        prev_bytes.clone(),
         tip_height,
     )
     .await?;
@@ -545,6 +665,29 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     )
     .await?;
     tracing::info!(%losing_txid, %outside_txid, "Placed round 2 bids");
+
+    // Round 1's losing bid is still in Bitcoin Core's mempool, but it is
+    // built on a parent block the chain has moved past. It cannot be mined
+    // now, so this round must not read it as a competitor.
+    let () = wait_until("the enforcer to see both round 2 bids", || async {
+        let bids = seen_bids(&post_setup, prev_bytes.clone(), None).await?;
+        Ok(bids
+            == vec![
+                (
+                    outside_txid,
+                    DummySidechain::SIDECHAIN_NUMBER,
+                    OUTSIDE_BID,
+                    BmmCommitment(h_outside),
+                ),
+                (
+                    losing_txid,
+                    DummySidechain::SIDECHAIN_NUMBER,
+                    LOSING_BID,
+                    BmmCommitment(h_losing),
+                ),
+            ])
+    })
+    .await?;
     if let Mode::GetBlockTemplate = mode {
         let () = wait_for_template_txs(&post_setup, vec![outside_txid], vec![losing_txid]).await?;
     }

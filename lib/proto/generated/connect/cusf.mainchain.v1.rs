@@ -2356,6 +2356,18 @@ pub type OwnedGetCtipResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<GetSeenBmmRequestsRequestView<'static>>`.
+pub type OwnedGetSeenBmmRequestsRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetSeenBmmRequestsResponseView<'static>>`.
+pub type OwnedGetSeenBmmRequestsResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsResponseView<
+        'static,
+    >,
+>;
 ///Shorthand for `OwnedView<GetSidechainProposalsRequestView<'static>>`.
 pub type OwnedGetSidechainProposalsRequestView = ::buffa::view::OwnedView<
     crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSidechainProposalsRequestView<
@@ -2735,6 +2747,48 @@ for ::buffa::view::OwnedView<
     }
 }
 impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+    /// An `OwnedView` still holds the buffer it was decoded from, so
+    /// its large fields can be handed to the response body by
+    /// reference count instead of copied. The bare view impl above
+    /// cannot do this: it has borrows but no buffer to name.
+    fn encode_segments(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::connectrpc::EncodedBody, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body_segments(
+            self.reborrow(),
+            self.bytes(),
+            codec,
+        )
+    }
+}
+impl ::connectrpc::Encodable<
     crate::proto::generated::buffa::cusf::mainchain::v1::GetSidechainProposalsResponse,
 >
 for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSidechainProposalsResponseView<
@@ -3072,6 +3126,12 @@ pub const VALIDATOR_SERVICE_GET_CTIP_SPEC: ::connectrpc::Spec = ::connectrpc::Sp
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the `GetSeenBmmRequests` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
+pub const VALIDATOR_SERVICE_GET_SEEN_BMM_REQUESTS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.ValidatorService/GetSeenBmmRequests",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
 /// Static [`Spec`](::connectrpc::Spec) for the `GetSidechainProposals` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
 pub const VALIDATOR_SERVICE_GET_SIDECHAIN_PROPOSALS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
         "/cusf.mainchain.v1.ValidatorService/GetSidechainProposals",
@@ -3327,6 +3387,29 @@ pub trait ValidatorService: Send + Sync + 'static {
         Output = ::connectrpc::ServiceResult<
             impl ::connectrpc::Encodable<
                 crate::proto::generated::buffa::cusf::mainchain::v1::GetCtipResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Fetches the live BMM requests (M8) built on a mainchain block.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn get_seen_bmm_requests<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsResponse,
             > + Send + use<'a, Self>,
         >,
     > + Send;
@@ -3730,6 +3813,35 @@ impl<S: ValidatorService> ValidatorServiceExt for S {
             .with_spec(VALIDATOR_SERVICE_GET_CTIP_SPEC)
             .route_view_idempotent(
                 VALIDATOR_SERVICE_SERVICE_NAME,
+                "GetSeenBmmRequests",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.get_seen_bmm_requests(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(VALIDATOR_SERVICE_GET_SEEN_BMM_REQUESTS_SPEC)
+            .route_view_idempotent(
+                VALIDATOR_SERVICE_SERVICE_NAME,
                 "GetSidechainProposals",
                 {
                     let svc = ::std::sync::Arc::clone(&self);
@@ -4025,6 +4137,12 @@ impl<T: ValidatorService> ::connectrpc::Dispatcher for ValidatorServiceServer<T>
                         .with_spec(VALIDATOR_SERVICE_GET_CTIP_SPEC),
                 )
             }
+            "GetSeenBmmRequests" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(VALIDATOR_SERVICE_GET_SEEN_BMM_REQUESTS_SPEC),
+                )
+            }
             "GetSidechainProposals" => {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
@@ -4235,6 +4353,28 @@ impl<T: ValidatorService> ::connectrpc::Dispatcher for ValidatorServiceServer<T>
                         .await?
                         .encode::<
                             crate::proto::generated::buffa::cusf::mainchain::v1::GetCtipResponse,
+                        >(format)
+                })
+            }
+            "GetSeenBmmRequests" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                        ctx.decode_options(),
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsRequest,
+                    >::from_parts(&req, &body);
+                    svc.get_seen_bmm_requests(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsResponse,
                         >(format)
                 })
             }
@@ -4834,6 +4974,51 @@ where
                 &self.transport,
                 &self.config,
                 VALIDATOR_SERVICE_GET_CTIP_SPEC
+                    .with_origin(::connectrpc::SpecOrigin::Client),
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the GetSeenBmmRequests RPC. Sends a request to /cusf.mainchain.v1.ValidatorService/GetSeenBmmRequests.
+    pub async fn get_seen_bmm_requests(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.get_seen_bmm_requests_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GetSeenBmmRequests RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn get_seen_bmm_requests_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetSeenBmmRequestsRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetSeenBmmRequestsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                VALIDATOR_SERVICE_GET_SEEN_BMM_REQUESTS_SPEC
                     .with_origin(::connectrpc::SpecOrigin::Client),
                 request,
                 options,
