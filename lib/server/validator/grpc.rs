@@ -15,21 +15,24 @@ use crate::{
             GetBlockInfoResponse, GetBmmHStarCommitmentRequest, GetBmmHStarCommitmentResponse,
             GetChainInfoRequest, GetChainInfoResponse, GetChainTipRequest, GetChainTipResponse,
             GetCoinbasePSBTRequest, GetCoinbasePSBTResponse, GetCtipRequest, GetCtipResponse,
-            GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
-            GetSidechainsResponse, GetTwoWayPegDataRequest, GetTwoWayPegDataResponse,
-            GetWithdrawalBundleProposalsRequest, GetWithdrawalBundleProposalsResponse, Network,
-            StopRequest, StopResponse, SubscribeEventsRequest, SubscribeEventsResponse,
-            SubscribeHeaderSyncProgressRequest, SubscribeHeaderSyncProgressResponse,
-            get_block_info_response, get_bmm_h_star_commitment_response,
-            get_chain_info_response::Bip300Constants, get_ctip_response::Ctip,
+            GetSeenBmmRequestsRequest, GetSeenBmmRequestsResponse, GetSidechainProposalsRequest,
+            GetSidechainProposalsResponse, GetSidechainsRequest, GetSidechainsResponse,
+            GetTwoWayPegDataRequest, GetTwoWayPegDataResponse, GetWithdrawalBundleProposalsRequest,
+            GetWithdrawalBundleProposalsResponse, Network, StopRequest, StopResponse,
+            SubscribeEventsRequest, SubscribeEventsResponse, SubscribeHeaderSyncProgressRequest,
+            SubscribeHeaderSyncProgressResponse, get_block_info_response,
+            get_bmm_h_star_commitment_response, get_chain_info_response::Bip300Constants,
+            get_ctip_response::Ctip, get_seen_bmm_requests_response,
             get_sidechain_proposals_response::SidechainProposal,
             get_sidechains_response::SidechainInfo, get_withdrawal_bundle_proposals_response,
         },
         mainchain_service::ValidatorService,
         wrap_u32,
     },
-    server::{internal_err, missing_field, parse_sidechain_id, validator::Server},
-    types::Thresholds,
+    server::{
+        internal_err, invalid_field_value, missing_field, parse_sidechain_id, validator::Server,
+    },
+    types::{SidechainNumber, Thresholds},
 };
 
 /// Age of a sidechain proposal at the given mainchain tip height. A proposal
@@ -302,6 +305,65 @@ impl ValidatorService for Server {
             GetCtipResponse::default()
         };
         Ok(Response::new(response))
+    }
+
+    async fn get_seen_bmm_requests(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetSeenBmmRequestsRequest>,
+    ) -> ServiceResult<GetSeenBmmRequestsResponse> {
+        use crate::proto::mainchain::GetSeenBmmRequestsRequest;
+        let GetSeenBmmRequestsRequest {
+            prev_block_hash,
+            sidechain_number,
+            ..
+        } = request.to_owned_message();
+        let prev_block_hash = prev_block_hash
+            .into_option()
+            .ok_or_else(|| missing_field::<GetSeenBmmRequestsRequest>("prev_block_hash"))?
+            .decode_status::<GetSeenBmmRequestsRequest, _>("prev_block_hash")?;
+        let sidechain_number = match crate::proto::unwrap_u32(sidechain_number) {
+            None => None,
+            Some(raw) => Some(SidechainNumber::try_from(raw).map_err(|err| {
+                invalid_field_value::<GetSeenBmmRequestsRequest, _>(
+                    "sidechain_number",
+                    &raw.to_string(),
+                    err,
+                )
+            })?),
+        };
+        let seen = self
+            .validator
+            .get_seen_bmm_requests_for_parent_block(prev_block_hash)
+            .map_err(internal_err)?;
+        let mut requests = Vec::new();
+        for (slot, commitments) in seen {
+            if sidechain_number.is_some_and(|wanted| wanted != slot) {
+                continue;
+            }
+            for (commitment, txids) in commitments {
+                for txid in txids {
+                    // A seen request outlives its transaction. One the
+                    // mempool dropped cannot win.
+                    let Some(fee) = self
+                        .validator
+                        .bmm_bid_fee(txid)
+                        .await
+                        .map_err(internal_err)?
+                    else {
+                        continue;
+                    };
+                    requests.push(get_seen_bmm_requests_response::BmmRequest {
+                        sidechain_number: slot.0 as u32,
+                        txid: MessageField::some(ReverseHex::encode(&txid)),
+                        critical_hash: MessageField::some(ConsensusHex::encode(&commitment)),
+                        bid_sats: fee.to_sat(),
+                    });
+                }
+            }
+        }
+        requests.sort_by_key(|request| std::cmp::Reverse(request.bid_sats));
+        Ok(Response::new(GetSeenBmmRequestsResponse { requests }))
     }
 
     async fn get_sidechain_proposals(

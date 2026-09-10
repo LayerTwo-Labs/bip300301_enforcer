@@ -422,6 +422,18 @@ pub struct Validator {
     network_params: NetworkParams,
 }
 
+/// Reports whether Core answered that it holds no such mempool entry.
+///
+/// Core answers RPC_INVALID_ADDRESS_OR_KEY for a transaction it does not hold.
+/// Every other error means the answer is unknown, not that the bid is absent.
+fn absent_from_mempool(err: &jsonrpsee::core::ClientError) -> bool {
+    const RPC_INVALID_ADDRESS_OR_KEY: i32 = -5;
+    matches!(
+        err,
+        jsonrpsee::core::ClientError::Call(err) if err.code() == RPC_INVALID_ADDRESS_OR_KEY
+    )
+}
+
 impl Validator {
     /// `mainchain_rest_client` is `None` when Core is running without its REST
     /// interface; header sync then falls back to batched JSON-RPC.
@@ -802,6 +814,26 @@ impl Validator {
         Ok(res)
     }
 
+    /// The absolute fee of `txid` in the node's mempool, or `None` if the
+    /// entry is unavailable.
+    pub async fn bmm_bid_fee(
+        &self,
+        txid: Txid,
+    ) -> Result<Option<Amount>, jsonrpsee::core::ClientError> {
+        use bitcoin_jsonrpsee::MainClient as _;
+        match self.mainchain_client.get_mempool_entry(txid).await {
+            Ok(entry) => Ok(Some(entry.fees.base)),
+            Err(err) => {
+                if absent_from_mempool(&err) {
+                    tracing::debug!(%txid, "skipping BMM bid without a mempool entry");
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
     pub fn get_seen_bmm_requests_for_parent_block(
         &self,
         parent_block_hash: BlockHash,
@@ -815,6 +847,29 @@ impl Validator {
             .block_hashes
             .get_seen_bmm_requests_for_parent_block(&rotxn, parent_block_hash)?;
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod bmm_bid_fee_tests {
+    use bitcoin::{Txid, hashes::Hash as _};
+
+    use crate::validator::test_utils::dummy_validator;
+
+    // A node the validator cannot reach must report the failure. A caller that
+    // read `None` here would price a raise against no rival at all.
+    #[tokio::test]
+    async fn an_unreachable_node_is_an_error() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let validator = dummy_validator(dir.path());
+        let err = validator
+            .bmm_bid_fee(Txid::from_byte_array([0x11; 32]))
+            .await
+            .expect_err("a dead node must not read as an empty mempool");
+        assert!(
+            matches!(err, jsonrpsee::core::ClientError::Transport(_)),
+            "{err:?}"
+        );
     }
 }
 
@@ -916,5 +971,35 @@ mod list_headers_tests {
             vec![(2, header2.block_hash())],
             "headers below `start_height` must not be listed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin_jsonrpsee::jsonrpsee::{
+        core::ClientError,
+        types::{ErrorObjectOwned, error::ErrorCode},
+    };
+
+    use super::absent_from_mempool;
+
+    #[test]
+    fn only_code_minus_five_means_the_bid_left_the_mempool() {
+        let absent = ClientError::Call(ErrorObjectOwned::owned(
+            -5,
+            "Transaction not in mempool",
+            None::<()>,
+        ));
+        assert!(absent_from_mempool(&absent));
+    }
+
+    #[test]
+    fn an_unreachable_core_does_not_mean_the_bid_left_the_mempool() {
+        // A caller that reads these as absent reports an empty auction, and
+        // then bids the minimum against rivals it never saw.
+        assert!(!absent_from_mempool(&ClientError::RequestTimeout));
+        assert!(!absent_from_mempool(&ClientError::Call(
+            ErrorObjectOwned::from(ErrorCode::InternalError)
+        )));
     }
 }
