@@ -493,6 +493,8 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GetBundleProposals),
+    #[error("Failed to read the fee a BMM bid pays")]
+    BmmBidFee(#[source] jsonrpsee::core::ClientError),
     #[error("Failed to read the sidechain ACK policy")]
     GetAckPolicy(#[source] rusqlite::Error),
     #[error("Failed to read the withdrawal bundle policy")]

@@ -101,6 +101,10 @@ service ValidatorService {
   rpc GetCtip(GetCtipRequest) returns (GetCtipResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+  // Fetches the live BMM requests (M8) built on a mainchain block.
+  rpc GetSeenBmmRequests(GetSeenBmmRequestsRequest) returns (GetSeenBmmRequestsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
   rpc GetSidechainProposals(GetSidechainProposalsRequest) returns (GetSidechainProposalsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
@@ -280,6 +284,27 @@ message GetCtipResponse {
     uint64 sequence_number = 4;
   }
   optional Ctip ctip = 1;
+}
+
+message GetSeenBmmRequestsRequest {
+  // Mainchain block the requests are built on.
+  cusf.common.v1.ReverseHex prev_block_hash = 1;
+
+  // If set, return for this sidechain slot alone.
+  google.protobuf.UInt32Value sidechain_number = 2;
+}
+message GetSeenBmmRequestsResponse {
+  message BmmRequest {
+    uint32 sidechain_number = 1;
+    cusf.common.v1.ReverseHex txid = 2;
+    // The sidechain block the request commits to.
+    cusf.common.v1.ConsensusHex critical_hash = 3;
+    // Fee the M8 pays, in sats. The fee is the bid.
+    uint64 bid_sats = 4;
+  }
+
+  // Sorted richest bid first.
+  repeated BmmRequest requests = 1;
 }
 
 message GetSidechainProposalsRequest {}

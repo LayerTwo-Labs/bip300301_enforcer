@@ -110,23 +110,6 @@ impl BlockProducer {
         &self.inner.db
     }
 
-    /// The absolute fee of `txid` in the node's mempool, or `None` if the
-    /// entry is unavailable.
-    async fn bmm_bid_fee(&self, txid: Txid) -> Option<bitcoin::Amount> {
-        use bitcoin_jsonrpsee::MainClient as _;
-        match self.main_client().get_mempool_entry(txid).await {
-            Ok(entry) => Some(entry.fees.base),
-            Err(err) => {
-                tracing::debug!(
-                    %txid,
-                    "skipping BMM bid without a mempool entry: {:#}",
-                    ErrorChain::new(&err),
-                );
-                None
-            }
-        }
-    }
-
     pub fn last_gbt_error(&self) -> Option<String> {
         self.inner.last_gbt_error.read().clone()
     }
@@ -384,7 +367,12 @@ impl BlockProducer {
                         // A bid may have left the mempool since it was seen
                         // (e.g. replaced). It cannot win, and excluding it is
                         // harmless.
-                        let Some(fee) = self.bmm_bid_fee(*txid).await else {
+                        let Some(fee) = self
+                            .validator()
+                            .bmm_bid_fee(*txid)
+                            .await
+                            .map_err(error::InitialBlockTemplateInner::BmmBidFee)?
+                        else {
                             continue;
                         };
                         bids.push((*sidechain_number, *commitment, *txid, fee));
