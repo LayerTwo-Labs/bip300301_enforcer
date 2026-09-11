@@ -42,7 +42,10 @@ use tokio::{
 
 use crate::{
     signet_chain_params::{SIGNET_CACHED_CHAIN_BLOCKS, SIGNET_CHALLENGE_SECRET_KEY},
-    util::{AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer, VarError},
+    util::{
+        AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer, FileDumpConfig, TestFileRegistry,
+        VarError,
+    },
 };
 
 #[derive(strum::Display, Clone, Copy, Debug)]
@@ -298,7 +301,6 @@ pub fn new_bitcoind(
         signet_challenge: signet_setup
             .as_ref()
             .map(|setup| setup.signet_challenge.clone()),
-        accept_nonstd_txns: bitcoind_kind.accept_nonstd_txns(),
         txindex: true,
         zmq_sequence_port: reserved_ports.bitcoind_zmq_sequence.port(),
     })
@@ -1011,6 +1013,35 @@ impl Directories {
             enforcer_dir,
         })
     }
+
+    /// Register this node's bitcoind and enforcer logs, so a failing test
+    /// dumps them.
+    ///
+    /// `label_suffix` names the node in a test that runs more than one, and
+    /// so would otherwise print four identically labelled logs.
+    pub fn register_files(
+        &self,
+        file_registry: &TestFileRegistry,
+        test_name: &str,
+        label_suffix: Option<&str>,
+    ) {
+        let label = |what: &str| match label_suffix {
+            Some(suffix) => format!("{what} ({suffix})"),
+            None => what.to_owned(),
+        };
+        for (dir, what) in [
+            (&self.bitcoin_dir, "Bitcoin Core"),
+            (&self.enforcer_dir, "Enforcer"),
+        ] {
+            for stream in ["stdout", "stderr"] {
+                file_registry.register_file(
+                    test_name,
+                    dir.join(format!("{stream}.txt")),
+                    FileDumpConfig::new().with_label(label(&format!("{what} {stream}"))),
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1018,24 +1049,6 @@ pub enum BitcoindKind {
     #[default]
     Patched,
     Unpatched,
-}
-
-impl BitcoindKind {
-    /// Whether nodes of this kind run with `-acceptnonstdtxn`. Only
-    /// genuinely stock Bitcoin Core gets the flag — on drivechain-patched
-    /// builds OP_DRIVECHAIN txs are supposed to be *standard*, and running
-    /// them with standardness disabled would mask policy regressions that
-    /// break deposits on mainnet (where the flag is unavailable).
-    pub fn accept_nonstd_txns(self) -> bool {
-        match self {
-            // `BITCOIND_UNPATCHED` always points at a stock release.
-            Self::Unpatched => true,
-            // `BITCOIND` is drivechain-patched unless the run says
-            // otherwise: the stock flavors (env files and CI matrix
-            // entries) set `BITCOIND_HAS_DRIVECHAIN=0`.
-            Self::Patched => std::env::var("BITCOIND_HAS_DRIVECHAIN").is_ok_and(|v| v == "0"),
-        }
-    }
 }
 
 pub fn bitcoind_regtest_magic() -> Option<String> {

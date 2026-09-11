@@ -1,0 +1,19 @@
+# Tests that cannot run against stock Bitcoin Core, one `--skip` substring per
+# line. Blank lines and `#` comments are ignored.
+#
+# Stock Core lacks the consensus rules that repurpose the NOP opcodes, and
+# treats an OP_DRIVECHAIN output as non-standard. No node in the suite is given
+# `-acceptnonstdtxn` -- standardness is the property several of these tests
+# exist to check, and it is unavailable on mainnet anyway -- so on stock these
+# fail at `sendrawtransaction` with -26 "scriptpubkey" instead of testing
+# anything. Every other test runs, exercising RPC, block-parser, p2p and
+# mempool integration against upstream Core.
+#
+# Read by scripts/run_integration_tests.sh and by the CI integration-test job,
+# which is the only thing keeping the two in step.
+blinded_m6_roundtrip
+consecutive_deposits
+deposit_withdraw_roundtrip
+peer_deposit_relay
+sidechain_ack_policy
+withdrawal_bundle_policy

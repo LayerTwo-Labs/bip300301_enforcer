@@ -213,20 +213,18 @@ fi
 # --- Write env files, one per --bitcoind flavor of `just test-it` ---
 # Deps paths are absolute (shared across worktrees); the enforcer binary stays
 # relative since `target/` is per-worktree and tests run with cwd at the worktree root.
-# The files differ in which builds the BITCOIND* vars point at and in
-# BITCOIND_HAS_DRIVECHAIN (see `BitcoindKind::accept_nonstd_txns` in
-# integration_tests/setup.rs for the standardness rationale). The stock
+# The files differ in which builds the BITCOIND* vars point at. The stock
 # flavors use the same binary for BITCOIND and BITCOIND_UNPATCHED,
-# mirroring the stock CI matrix entries.
+# mirroring the stock CI matrix entries. Which tests a stock build cannot run
+# is not recorded here but in stock-skip-patterns.txt, keyed on flavor.
 write_env_file() {
-    local env_file="$1" bins_dir="$2" unpatched_dir="$3" has_drivechain="$4"
-    local regtest_magic="${5:-}"
-    local signet_chain_dir="${6:-$SIGNET_CHAIN_DIR}"
-    local op_drivechain="${7:-}"
+    local env_file="$1" bins_dir="$2" unpatched_dir="$3"
+    local regtest_magic="${4:-}"
+    local signet_chain_dir="${5:-$SIGNET_CHAIN_DIR}"
+    local op_drivechain="${6:-}"
     cat > "$env_file" <<EOF
 BIP300301_ENFORCER='target/debug/bip300301_enforcer'
 BITCOIND='$bins_dir/bitcoind'
-BITCOIND_HAS_DRIVECHAIN='$has_drivechain'
 BITCOIND_OP_DRIVECHAIN='$op_drivechain'
 BITCOIND_REGTEST_MAGIC='$regtest_magic'
 BITCOIND_UNPATCHED='$unpatched_dir/bitcoind'
@@ -240,15 +238,15 @@ EOF
 }
 
 echo
-write_env_file "$REPO_ROOT/integrationtests.env" "$PATCHED_DIR" "$UNPATCHED_DIR" 1
-write_env_file "$REPO_ROOT/integrationtests.unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR" 0
+write_env_file "$REPO_ROOT/integrationtests.env" "$PATCHED_DIR" "$UNPATCHED_DIR"
+write_env_file "$REPO_ROOT/integrationtests.unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR"
 for channel in $ECASH_CHANNELS; do
-    write_env_file "$REPO_ROOT/integrationtests.$channel.env" "$(ecash_dir "$channel")" "$UNPATCHED_DIR" 1 \
+    write_env_file "$REPO_ROOT/integrationtests.$channel.env" "$(ecash_dir "$channel")" "$UNPATCHED_DIR" \
         "$(ecash_regtest_magic "$channel")" "$(ecash_signet_chain_dir "$channel")" "$(ecash_op_drivechain "$channel")"
 done
 for v in $ALL_BITCOIN_VERSIONS; do
     STOCK_DIR="$DEPS_DIR/bitcoin-stock-$v"
-    write_env_file "$REPO_ROOT/integrationtests.stock-$v.env" "$STOCK_DIR" "$STOCK_DIR" 0
+    write_env_file "$REPO_ROOT/integrationtests.stock-$v.env" "$STOCK_DIR" "$STOCK_DIR"
 done
 
 echo "Deps cache: $DEPS_DIR"
