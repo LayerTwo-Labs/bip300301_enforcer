@@ -716,9 +716,6 @@ pub struct Bitcoind {
     pub rpc_port: u16,
     pub rpc_host: String,
     pub signet_challenge: Option<bitcoin::ScriptBuf>,
-    /// Add `-acceptnonstdtxn`. Only set for stock Bitcoin Core nodes; see
-    /// [`crate::setup::BitcoindKind::accept_nonstd_txns`].
-    pub accept_nonstd_txns: bool,
     pub txindex: bool,
     pub zmq_sequence_port: u16,
 }
@@ -774,9 +771,6 @@ impl Bitcoind {
             "-server".to_owned(),
             format!("-zmqpubsequence=tcp://127.0.0.1:{}", self.zmq_sequence_port),
         ];
-        if self.accept_nonstd_txns {
-            default_args.push("-acceptnonstdtxn".to_owned());
-        }
         match self.onion_ports {
             Some((listen_port, control_port)) => {
                 default_args.push(format!("-bind=127.0.0.1:{listen_port}=onion"));

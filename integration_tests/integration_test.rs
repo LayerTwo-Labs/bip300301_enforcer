@@ -26,8 +26,8 @@ use crate::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
         wait_for_pending_proposal, wait_for_tx_in_mempool, wait_until,
     },
-    test_bmm_bid_auction, test_peer_bmm_request, test_unconfirmed_transactions,
-    test_zmq_sequence_gap,
+    test_bmm_bid_auction, test_peer_bmm_request, test_peer_deposit_relay,
+    test_unconfirmed_transactions, test_zmq_sequence_gap,
     util::{AsyncTrial, BinPaths, FileDumpConfig, TestFailureCollector, TestFileRegistry},
 };
 
@@ -155,7 +155,7 @@ where
 /// electrs mid-test) and therefore run their own setup, rather than going
 /// through [`new_trial_with_setup`].
 fn new_bespoke_trial<F, Fut>(
-    name: &'static str,
+    name: impl Into<String>,
     bin_paths: &BinPaths,
     file_registry: &TestFileRegistry,
     failure_collector: &TestFailureCollector,
@@ -165,8 +165,9 @@ where
     F: FnOnce(BinPaths) -> Fut + Send + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
+    let name: String = name.into();
     AsyncTrial::new(
-        name,
+        name.clone(),
         Box::pin({
             let bin_paths = bin_paths.clone();
             async move {
@@ -1048,6 +1049,26 @@ pub fn tests(
         )
     }));
     async_trials.push(peer_bmm_request_trial);
+    // A deposit that has to survive Bitcoin Core's relay policy to reach the
+    // node that mines it. Standardness is enforced on both networks.
+    async_trials.extend([Network::Regtest, Network::Signet].map(|network| {
+        new_bespoke_trial(
+            test_peer_deposit_relay::trial_name(network),
+            bin_paths,
+            &file_registry,
+            &failure_collector,
+            {
+                let file_registry = file_registry.clone();
+                move |bin_paths| {
+                    test_peer_deposit_relay::test_peer_deposit_relay(
+                        bin_paths,
+                        network,
+                        file_registry,
+                    )
+                }
+            },
+        )
+    }));
     // Competing BMM bids, in both block production modes: the enforcer's own
     // template server (GetBlockTemplate) and `GenerateToAddress` self-mining
     // (Mempool).

@@ -16,6 +16,20 @@ use crate::{
     validator::{self, Validator},
 };
 
+/// The gRPC code for a failed `sendrawtransaction`.
+///
+/// A JSON-RPC error means the node looked at the transaction and refused it,
+/// most often because it does not carry the drivechain rules and so reads an
+/// OP_DRIVECHAIN output as non-standard (`-26 scriptpubkey`). Retrying is
+/// futile until the node itself is changed, which is what `FailedPrecondition`
+/// tells a caller. Anything else is a failure to reach the node at all.
+fn broadcast_error_code(err: &JsonRpcError) -> connectrpc::ErrorCode {
+    match err {
+        JsonRpcError::Call(_) => connectrpc::ErrorCode::FailedPrecondition,
+        _ => connectrpc::ErrorCode::Unavailable,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Diagnostic, Error)]
 #[diagnostic(
     code(electrum_error),
@@ -772,10 +786,14 @@ pub enum CreateDeposit {
 impl ToStatus for CreateDeposit {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::BroadcastTx(_)
-            | Self::BroadcastNonstandardTx { .. }
-            | Self::BroadcastUnsuccessful { .. }
-            | Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
+            Self::BroadcastTx(err) => StatusBuilder::new(self).code(broadcast_error_code(err)),
+            Self::BroadcastNonstandardTx { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::Unavailable)
+            }
+            Self::BroadcastUnsuccessful { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
+            Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
             Self::OutputAmountOverflow(err) => err.builder(),
             Self::ApplyUnconfirmedTx(err) => err.builder(),
             Self::Psbt(err) => err.builder(),
@@ -1030,7 +1048,10 @@ impl ToStatus for SendWalletTransaction {
         match self {
             Self::CreateSendPsbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
-            Self::BroadcastTx(_) | Self::OpDrivechainNotSupported => StatusBuilder::new(self),
+            Self::BroadcastTx(err) => StatusBuilder::new(self).code(broadcast_error_code(err)),
+            Self::OpDrivechainNotSupported => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
             Self::ApplyUnconfirmedTx(err) => err.builder(),
         }
     }
