@@ -256,7 +256,6 @@ async fn assumeutxo_snapshot(
         rpc_port: rpc_port.port(),
         rpc_host: "127.0.0.1".to_owned(),
         signet_challenge: None,
-        accept_nonstd_txns: BitcoindKind::Patched.accept_nonstd_txns(),
         txindex: false,
         zmq_sequence_port: zmq_sequence_port.port(),
     };

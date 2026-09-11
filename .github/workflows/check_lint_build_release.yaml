@@ -418,22 +418,18 @@ jobs:
           ./scripts/verify_reflection.sh
 
       - name: Run integration tests
-        # Stock Bitcoin Core rejects drivechain deposit transactions with
-        # `mempool-script-verify-flag-failed (NOPx reserved for soft-fork
-        # upgrades)` — the consensus rules repurposing those opcodes only
-        # live in the drivechain-patched builds — so we skip
-        # `deposit_withdraw_roundtrip` on stock. The remaining tests
-        # exercise RPC, block-parser, p2p, and mempool integration with
-        # upstream Bitcoin Core. Drivechain-patched builds (`matrix.zip`
+        # Stock Bitcoin Core lacks the consensus rules that repurpose the NOP
+        # opcodes, and treats OP_DRIVECHAIN outputs as non-standard, so the
+        # tests listed in scripts/stock-skip-patterns.txt cannot run there.
+        # That file is shared with scripts/run_integration_tests.sh so the two
+        # skip lists cannot drift. Drivechain-patched builds (`matrix.zip`
         # entries) run the full suite.
         #
-        # BITCOIND_HAS_DRIVECHAIN=0 tells the harness that BITCOIND is a
-        # stock build, so it spawns it with -acceptnonstdtxn. Patched
-        # builds run with real standardness policy — with the flag,
-        # IsStandardTx is disabled and a patched build whose OP_DRIVECHAIN
-        # outputs classify as non-standard would pass the deposit test
-        # here while rejecting deposits with -26 "scriptpubkey" in
-        # production, where chain=main forbids the flag.
+        # No node is ever spawned with -acceptnonstdtxn: standardness is what
+        # several of these tests check, it is unavailable on mainnet, and
+        # disabling it would let a patched build whose OP_DRIVECHAIN outputs
+        # classify as non-standard pass here while rejecting deposits with
+        # -26 "scriptpubkey" in production.
         run: |
           export BIP300301_ENFORCER="$RUNNER_TEMP/integration-test-binaries/bip300301_enforcer"
           INTEGRATION_TEST_RUNNER="$RUNNER_TEMP/integration-test-binaries/integration_tests"
@@ -455,11 +451,13 @@ jobs:
           export BITCOIND_REGTEST_MAGIC='${{ matrix.regtest_magic }}'
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
-            export BITCOIND_HAS_DRIVECHAIN=0
-            "$INTEGRATION_TEST_RUNNER" --skip deposit_withdraw_roundtrip
+            skips=()
+            while IFS= read -r pattern; do
+              skips+=(--skip "$pattern")
+            done < <(grep -vE '^[[:space:]]*(#|$)' scripts/stock-skip-patterns.txt)
+            "$INTEGRATION_TEST_RUNNER" "${skips[@]}"
           else
             export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
-            export BITCOIND_HAS_DRIVECHAIN=1
             "$INTEGRATION_TEST_RUNNER"
           fi
 

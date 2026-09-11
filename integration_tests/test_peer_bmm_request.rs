@@ -24,7 +24,7 @@ use crate::{
         WAIT_POLL_INTERVAL_SUBPROCESS, wait_for_port_free, wait_for_tx_in_mempool, wait_until,
         wait_until_every,
     },
-    util::{self, BinPaths, FileDumpConfig, TestFileRegistry},
+    util::{self, BinPaths, TestFileRegistry},
 };
 
 struct Directories<'a> {
@@ -35,41 +35,11 @@ struct Directories<'a> {
 }
 
 impl Directories<'_> {
-    fn register_files_label_suffix(
-        file_registry: &TestFileRegistry,
-        test_name: &str,
-        directories: &crate::setup::Directories,
-        label_suffix: &str,
-    ) {
-        // Register specific files with their own configurations
-        file_registry.register_file(
-            test_name,
-            directories.bitcoin_dir.join("stdout.txt"),
-            FileDumpConfig::new().with_label(format!("Bitcoin Core stdout ({label_suffix})")),
-        );
-
-        file_registry.register_file(
-            test_name,
-            directories.bitcoin_dir.join("stderr.txt"),
-            FileDumpConfig::new().with_label(format!("Bitcoin Core stderr ({label_suffix})")),
-        );
-
-        file_registry.register_file(
-            test_name,
-            directories.enforcer_dir.join("stdout.txt"),
-            FileDumpConfig::new().with_label(format!("Enforcer stdout ({label_suffix})")),
-        );
-
-        file_registry.register_file(
-            test_name,
-            directories.enforcer_dir.join("stderr.txt"),
-            FileDumpConfig::new().with_label(format!("Enforcer stderr ({label_suffix})")),
-        );
-    }
-
     fn register_files(&self, file_registry: &TestFileRegistry, test_name: &str) {
-        Self::register_files_label_suffix(file_registry, test_name, self.miner, "miner");
-        Self::register_files_label_suffix(file_registry, test_name, self.sender, "sender");
+        self.miner
+            .register_files(file_registry, test_name, Some("miner"));
+        self.sender
+            .register_files(file_registry, test_name, Some("sender"));
     }
 }
 

@@ -65,6 +65,10 @@ fmt:
 # ecash-com/bitcoin alphanet build), or all (every flavor in the CI matrix,
 # continuing past failures); remaining args go to the test runner.
 # 
+# Some flavors skip tests that cannot pass on them. Naming a flavor *and* a
+# test filter overrides those skips, so `just test-it --bitcoind unpatched
+# peer_deposit_relay` reaches a test that a bare `--bitcoind unpatched` hides.
+#
 # The signet tests need a chain with mature (spendable) coinbases, which costs
 # real proof-of-work to mine. The harness mines one on first use into
 # SIGNET_CHAIN_DIR and reuses it thereafter, so the first run here is a couple

@@ -13,17 +13,25 @@
 #
 # Remaining args go to the test runner. Missing dependencies are downloaded
 # via setup_integration_tests.sh on first use.
+#
+# Some flavors skip tests that cannot pass on them (see skip_patterns below).
+# Naming a specific FLAVOR *and* a filter that narrows the run overrides those
+# skips: that combination is a deliberate "run exactly this, on exactly that
+# build", and is how you reach a test the flavor would otherwise hide. A bare
+# `--bitcoind FLAVOR` still skips, so CI is unaffected, and `--bitcoind all`
+# mirrors CI and never overrides.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 flavor='bitcoin-patched'
+flavor_explicit=''
 rest=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --bitcoind=*) flavor="${1#*=}"; shift ;;
-        --bitcoind) flavor="${2:?--bitcoind requires a value}"; shift 2 ;;
+        --bitcoind=*) flavor="${1#*=}"; flavor_explicit=1; shift ;;
+        --bitcoind) flavor="${2:?--bitcoind requires a value}"; flavor_explicit=1; shift 2 ;;
         *) rest+=("$1"); shift ;;
     esac
 done
@@ -45,7 +53,8 @@ if [ "$flavor" = 'all' ]; then
     for f in "${flavors[@]}"; do
         echo "=== integration tests (--bitcoind $f) ==="
         log="$logdir/$f.log"
-        if "${BASH_SOURCE[0]}" --bitcoind "$f" ${rest[@]+"${rest[@]}"} 2>&1 | tee "$log"; then
+        if KEEP_FLAVOR_SKIPS=1 "${BASH_SOURCE[0]}" --bitcoind "$f" \
+            ${rest[@]+"${rest[@]}"} 2>&1 | tee "$log"; then
             status=0
         else
             status=1
@@ -82,9 +91,11 @@ env_file="integrationtests.$flavor.env"
 case "$flavor" in
     bitcoin-patched) env_file='integrationtests.env' ;;
     unpatched | stock-*)
-        # Stock Bitcoin Core lacks the drivechain consensus rules
-        # (BIP300 opcodes), matching the stock CI matrix entries.
-        skip_patterns=('deposit_withdraw_roundtrip')
+        # Shared with the CI integration-test job, which applies the same
+        # list; see the file for why each entry cannot run on stock.
+        while IFS= read -r pattern; do
+            skip_patterns+=("$pattern")
+        done < <(grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/scripts/stock-skip-patterns.txt")
         ;;
     drynet* | alphanet)
         # A pinned `drynetN` tag has to be named for setup to fetch that one;
@@ -117,10 +128,37 @@ if [ ${#skip_patterns[@]} -gt 0 ]; then
     # user-supplied filter); `--skip` is substring matching, so a listing
     # filtered by the pattern is exactly the excluded set. The `skipped: `
     # prefix is what the `--bitcoind all` summary parses.
-    listing=$(run_tests --list ${rest[@]+"${rest[@]}"} | sed -n 's/: test$//p')
+    # A caller-supplied `--list` would collide with the one added here, which
+    # the runner rejects outright, so drop it from the args we reuse.
+    list_args=()
+    for arg in ${rest[@]+"${rest[@]}"}; do
+        [ "$arg" = '--list' ] || list_args+=("$arg")
+    done
+    listing=$(run_tests --list ${list_args[@]+"${list_args[@]}"} | sed -n 's/: test$//p')
+    # Did the caller narrow the run? Rather than re-parsing the test runner's
+    # arguments here, ask it: a selection smaller than the whole suite means
+    # its filter matched. That way `--exact`, a caller's own `--skip`, and any
+    # future filtering flag are all accounted for by the parser that owns them.
+    force=''
+    if [ -n "$flavor_explicit" ] && [ -z "${KEEP_FLAVOR_SKIPS:-}" ] \
+        && [ "$listing" != "$(run_tests --list | sed -n 's/: test$//p')" ]; then
+        force=1
+    fi
     for pattern in "${skip_patterns[@]}"; do
+        matched=$(printf '%s\n' "$listing" | grep -aF "$pattern" || true)
+        if [ -n "$force" ]; then
+            # Say so, loudly: these normally do not run on this build, so a
+            # failure here is expected rather than a regression.
+            if [ -n "$matched" ]; then
+                printf '%s\n' "$matched" \
+                    | sed "s/^/forced (normally skipped on $flavor): /"
+            fi
+            continue
+        fi
         skip_args+=('--skip' "$pattern")
-        printf '%s\n' "$listing" | grep -aF "$pattern" | sed 's/^/skipped: /' || true
+        if [ -n "$matched" ]; then
+            printf '%s\n' "$matched" | sed 's/^/skipped: /'
+        fi
     done
 fi
 
