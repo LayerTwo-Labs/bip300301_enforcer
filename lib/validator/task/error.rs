@@ -106,9 +106,12 @@ pub(in crate::validator) enum HandleM4Votes {
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
-    #[error("Invalid votes: expected {expected}, but found {len}")]
+    #[error("Invalid votes: at most {active_sidechains} expected, but found {len}")]
     #[fatal(false)]
-    InvalidVotes { expected: usize, len: usize },
+    TooManyVotes {
+        active_sidechains: usize,
+        len: usize,
+    },
     #[error(
         "No pending withdrawal for sidechain `{}` at index `{}`",
         .sidechain_number,
