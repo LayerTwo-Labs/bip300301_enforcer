@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_broadcast::TrySendError;
-use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
+use bitcoin::{Block, BlockHash, OutPoint, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
 };
@@ -20,11 +20,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     errors::ErrorChain,
-    messages::parse_m8_tx,
+    messages::{parse_m8_tx, parse_op_drivechain},
     proto::mainchain::HeaderSyncProgress,
     types::{Ctip, Event, SidechainNumber},
     validator::{
         Validator,
+        dbs::SeenDeposits,
         task::{self, BlockHandler, error::ValidateTransaction as ValidateTransactionError},
     },
 };
@@ -46,6 +47,8 @@ enum ConnectBlockErrorInner {
     #[error(transparent)]
     ConnectBlock(#[from] Box<<task::error::ConnectBlock as Split>::Fatal>),
     #[error(transparent)]
+    Db(Box<db::Error>),
+    #[error(transparent)]
     DbPut(#[from] db::error::Put),
     #[error(transparent)]
     DbTryGet(#[from] db::error::TryGet),
@@ -55,6 +58,12 @@ enum ConnectBlockErrorInner {
     NestedWriteTxn(#[from] env::error::NestedWriteTxn),
     #[error(transparent)]
     WriteTxn(#[from] env::error::WriteTxn),
+}
+
+impl From<db::Error> for ConnectBlockErrorInner {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 impl From<db::error::Range> for ConnectBlockErrorInner {
@@ -236,7 +245,7 @@ fn connect_block_no_commit<'validator>(
         .into_nested()?
     {
         Ok(event) => {
-            let remove_mempool_txs = parent_child_rwtxn
+            let mut remove_mempool_txs: HashSet<Txid> = parent_child_rwtxn
                 .with_child(|child_rotxn| {
                     validator
                         .dbs
@@ -246,6 +255,17 @@ fn connect_block_no_commit<'validator>(
                 .into_values()
                 .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
                 .collect();
+            // The competing deposits that this block did not connect can never
+            // be connected either, as they do not spend the treasury UTXO that
+            // it created. Nothing else evicts them, and block production wedges
+            // on them for as long as they are mirrored.
+            let obsolete_seen_deposits = parent_child_rwtxn.with_child_mut(|child_rwtxn| {
+                validator.dbs.take_obsolete_seen_deposits(child_rwtxn)
+            })?;
+            for (ctip, seen_deposits) in obsolete_seen_deposits {
+                let first_deposit = seen_deposits.get(&ctip.outpoint).copied();
+                remove_mempool_txs.extend(competing_deposits(&seen_deposits, first_deposit));
+            }
             Ok(ConnectBlockRwTxnAction::Accept {
                 event,
                 remove_mempool_txs,
@@ -354,6 +374,31 @@ where
     }
 }
 
+/// An M5 deposit into an empty treasury does not spend a treasury UTXO, so
+/// competing first deposits for the same slot are not double-spends of each
+/// other, and all of them enter the mempool. Only the deposits of a single
+/// chain can ever be connected, so the deposits of the other chains must be
+/// reported as conflicts, and evicted once the treasury exists.
+///
+/// Returns the first deposit of the chain that `tx` extends, which is `txid`
+/// itself if `tx` starts a new chain.
+fn deposit_chain_root(seen_deposits: &SeenDeposits, tx: &Transaction, txid: Txid) -> Txid {
+    tx.input
+        .iter()
+        .find_map(|input| seen_deposits.get(&input.previous_output).copied())
+        .unwrap_or(txid)
+}
+
+/// Txids of the seen deposits that are not part of the chain rooted at
+/// `first_deposit`. See [`deposit_chain_root`].
+fn competing_deposits(seen_deposits: &SeenDeposits, first_deposit: Option<Txid>) -> HashSet<Txid> {
+    seen_deposits
+        .iter()
+        .filter(|(_, root)| Some(**root) != first_deposit)
+        .map(|(outpoint, _)| outpoint.txid)
+        .collect()
+}
+
 impl CusfEnforcer for Validator {
     type InvalidBlockReason = InvalidBlockReason;
     type SyncError = SyncError;
@@ -448,7 +493,7 @@ impl CusfEnforcer for Validator {
         // the transaction will not be accepted into the mempool.
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
         let res = if handler.validate_tx(&mut rwtxn, tx)? {
-            let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
+            let (mut conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
                 let txid = tx.compute_txid();
                 let conflicts_with = {
                     let mut seen_bmm_request_txs = self
@@ -476,7 +521,6 @@ impl CusfEnforcer for Validator {
                         bmm_request.sidechain_block_hash,
                     )
                     .map_err(db::Error::from)?;
-                rwtxn.commit()?;
 
                 /// Weight, in wu, of the BMM accept (M7) coinbase output that block
                 /// production appends for an accepted BMM request (M8).
@@ -492,6 +536,48 @@ impl CusfEnforcer for Validator {
             } else {
                 (HashSet::new(), 0)
             };
+            // Treasury outputs that this tx creates for slots whose treasury
+            // does not exist yet, ie. the M5 deposits that
+            // `deposit_chain_root` must reconcile. A deposit into a slot that
+            // already has a ctip must spend it, so competing deposits there
+            // are ordinary double-spends that never coexist in the mempool,
+            // and an inactive slot has no treasury at all.
+            let active_sidechains = &self.dbs.active_sidechains;
+            let mut new_treasury_vouts = Vec::new();
+            for (vout, output) in tx.output.iter().enumerate() {
+                let Ok((_input, sidechain_number)) =
+                    parse_op_drivechain(output.script_pubkey.as_bytes())
+                else {
+                    continue;
+                };
+                if !active_sidechains
+                    .sidechain()
+                    .contains_key(&rwtxn, &sidechain_number)
+                    .map_err(db::Error::from)?
+                    || active_sidechains
+                        .ctip()
+                        .contains_key(&rwtxn, &sidechain_number)
+                        .map_err(db::Error::from)?
+                {
+                    continue;
+                }
+                new_treasury_vouts.push((sidechain_number, vout as u32));
+            }
+            if !new_treasury_vouts.is_empty() {
+                let txid = tx.compute_txid();
+                for (sidechain_number, vout) in new_treasury_vouts {
+                    let seen_deposits = self.dbs.get_seen_deposits(&rwtxn, sidechain_number)?;
+                    let first_deposit = deposit_chain_root(&seen_deposits, tx, txid);
+                    conflicts_with.extend(competing_deposits(&seen_deposits, Some(first_deposit)));
+                    let () = self.dbs.put_seen_deposit(
+                        &mut rwtxn,
+                        sidechain_number,
+                        OutPoint { txid, vout },
+                        first_deposit,
+                    )?;
+                }
+            }
+            rwtxn.commit()?;
             TxAcceptAction::Accept {
                 conflicts_with,
                 weight_tweak,
@@ -545,11 +631,16 @@ pub(crate) fn get_ctips_after(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use bitcoin::{Amount, OutPoint, Transaction, Txid, hashes::Hash as _};
     use miette::IntoDiagnostic as _;
 
+    use super::{SeenDeposits, competing_deposits, deposit_chain_root};
     use crate::{
         messages::CoinbaseBuilder,
-        types::{BmmCommitment, SidechainNumber},
+        types::{BmmCommitment, Ctip, SidechainNumber},
+        validator::test_utils::create_test_dbs,
     };
 
     /// `TxAcceptAction::weight_tweak` is specified in weight units, so the
@@ -570,6 +661,138 @@ mod tests {
             ));
         };
         assert_eq!(192, bmm_accept_txout.weight().to_wu() as i64);
+        Ok(())
+    }
+
+    fn dummy_txid(byte: u8) -> Txid {
+        Txid::from_byte_array([byte; 32])
+    }
+
+    /// Spend the treasury outpoints (`txid`, 0) of the provided txids.
+    fn tx_spending(txids: &[Txid]) -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: txids
+                .iter()
+                .map(|txid| bitcoin::TxIn {
+                    previous_output: OutPoint {
+                        txid: *txid,
+                        vout: 0,
+                    },
+                    script_sig: bitcoin::ScriptBuf::new(),
+                    sequence: bitcoin::Sequence::MAX,
+                    witness: bitcoin::Witness::new(),
+                })
+                .collect(),
+            output: Vec::new(),
+        }
+    }
+
+    /// Seen deposits for a chain `a0 -> a1 -> a2` into an empty treasury, and
+    /// a competing first deposit `b0`.
+    fn competing_seen_deposits() -> (SeenDeposits, [Txid; 4]) {
+        let [a0, a1, a2, b0] = [0xa0, 0xa1, 0xa2, 0xb0].map(dummy_txid);
+        let seen_deposits = [(a0, a0), (a1, a0), (a2, a0), (b0, b0)]
+            .into_iter()
+            .map(|(txid, first_deposit)| (OutPoint { txid, vout: 0 }, first_deposit))
+            .collect();
+        (seen_deposits, [a0, a1, a2, b0])
+    }
+
+    /// A deposit that extends a seen chain of deposits into an empty treasury
+    /// is compatible with every other deposit in that chain, however deep it
+    /// is, and conflicts only with the deposits of competing chains.
+    #[test]
+    fn deposit_conflicts_are_limited_to_competing_chains() {
+        let (seen_deposits, [a0, a1, a2, b0]) = competing_seen_deposits();
+        // A deposit extending the tip of the `a0` chain is itself part of that
+        // chain, and conflicts with `b0` only.
+        let a3 = dummy_txid(0xa3);
+        let first_deposit = deposit_chain_root(&seen_deposits, &tx_spending(&[a2]), a3);
+        assert_eq!(first_deposit, a0);
+        assert_eq!(
+            competing_deposits(&seen_deposits, Some(first_deposit)),
+            HashSet::from_iter([b0])
+        );
+        // A deposit that starts a new chain conflicts with every deposit of
+        // both seen chains.
+        let c0 = dummy_txid(0xc0);
+        let first_deposit = deposit_chain_root(&seen_deposits, &tx_spending(&[]), c0);
+        assert_eq!(first_deposit, c0);
+        assert_eq!(
+            competing_deposits(&seen_deposits, Some(first_deposit)),
+            HashSet::from_iter([a0, a1, a2, b0])
+        );
+    }
+
+    /// Competing deposits into the same empty treasury must all be retained,
+    /// per slot, until a block creates the treasury. The deposits that lost
+    /// are then evicted, and the slot is no longer tracked.
+    #[test]
+    fn obsolete_seen_deposits_are_taken_once_the_treasury_exists() -> miette::Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let sidechain_number = SidechainNumber(1);
+        let (seen_deposits, [a0, a1, _a2, b0]) = competing_seen_deposits();
+        for (outpoint, first_deposit) in &seen_deposits {
+            let () = dbs
+                .put_seen_deposit(&mut rwtxn, sidechain_number, *outpoint, *first_deposit)
+                .into_diagnostic()?;
+        }
+        assert_eq!(
+            dbs.get_seen_deposits(&rwtxn, sidechain_number)
+                .into_diagnostic()?,
+            seen_deposits
+        );
+        // Deposits are not reported for other slots.
+        assert!(
+            dbs.get_seen_deposits(&rwtxn, SidechainNumber(2))
+                .into_diagnostic()?
+                .is_empty()
+        );
+        // While the treasury does not exist, the seen deposits are still
+        // needed to reconcile further deposits.
+        assert!(
+            dbs.take_obsolete_seen_deposits(&mut rwtxn)
+                .into_diagnostic()?
+                .is_empty()
+        );
+        // Connecting `a1` creates the treasury, so the losers of the race are
+        // reported for eviction, and the slot is dropped.
+        let ctip = Ctip {
+            outpoint: OutPoint { txid: a1, vout: 0 },
+            value: Amount::ONE_BTC,
+        };
+        let _seq: u64 = dbs
+            .active_sidechains
+            .put_ctip(&mut rwtxn, sidechain_number, &ctip)
+            .into_diagnostic()?;
+        let obsolete = dbs
+            .take_obsolete_seen_deposits(&mut rwtxn)
+            .into_diagnostic()?;
+        let [(obsolete_ctip, obsolete_seen_deposits)] = obsolete.as_slice() else {
+            return Err(miette::miette!(
+                "expected exactly one slot's seen deposits, got {}",
+                obsolete.len()
+            ));
+        };
+        assert_eq!(obsolete_ctip.outpoint, ctip.outpoint);
+        assert_eq!(
+            competing_deposits(
+                obsolete_seen_deposits,
+                obsolete_seen_deposits.get(&ctip.outpoint).copied()
+            ),
+            // Only the `b0` chain lost: `a0` and `a2` belong to the chain that
+            // `a1` extends, and remain connectable.
+            HashSet::from_iter([b0])
+        );
+        assert_eq!(a0, obsolete_seen_deposits[&ctip.outpoint]);
+        assert!(
+            dbs.get_seen_deposits(&rwtxn, sidechain_number)
+                .into_diagnostic()?
+                .is_empty()
+        );
         Ok(())
     }
 }
