@@ -278,6 +278,15 @@ impl ValidatorService for Server {
         } = request.to_owned_message();
         let sidechain_number =
             parse_sidechain_id::<GetCtipRequest>(sidechain_number, "sidechain_number")?;
+        // A validator that is still replaying the chain has a Ctip for every
+        // deposit it has connected so far, which is indistinguishable from the
+        // Ctip at the tip -- and no Ctip at all for a slot whose first deposit
+        // it has not reached yet, which is indistinguishable from an unfunded
+        // slot. Callers build M5 deposits out of this, so refuse rather than
+        // answer for a past height.
+        if !self.validator.is_synced_to_tip() {
+            return Err(ConnectError::unavailable("Validator is not synced"));
+        }
         let ctip = self
             .validator
             .try_get_ctip(sidechain_number)
