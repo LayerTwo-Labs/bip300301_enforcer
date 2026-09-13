@@ -49,11 +49,32 @@ where
     ZmqNotReachable { zmq_addr_sequence: String },
 }
 
+/// Whether, and on what schedule, re-syncing can clear a failed task.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Resync {
+    /// Re-syncing cannot clear this.
+    No,
+    /// Re-sync promptly, within the caller's consecutive-resync budget.
+    Now,
+    /// The node knows the block header but cannot serve the body yet, and
+    /// clears that on its own. An AssumeUTXO background sync takes minutes to
+    /// hours, so this waits on a slower schedule and outside the burst budget,
+    /// which exists to bound a node that is failing outright.
+    AfterNodeCatchesUp,
+}
+
+impl Resync {
+    /// [`Resync::Now`] if `cond` holds, [`Resync::No`] otherwise.
+    fn now_if(cond: bool) -> Self {
+        if cond { Self::Now } else { Self::No }
+    }
+}
+
 impl<Enforcer> MempoolTask<Enforcer>
 where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
 {
-    /// Whether a fresh mempool sync can clear this.
+    /// Whether, and on what schedule, a fresh mempool sync can clear this.
     ///
     /// bitcoind drops ZMQ notifications once the publisher's high-water mark
     /// is reached. The sync task rightly refuses to continue across the gap
@@ -64,37 +85,49 @@ where
     /// A node RPC transport failure is recoverable on the same terms, as in
     /// [`enforcer_task_is_resyncable`], and the enforcer's own initial sync
     /// can also fail on a transient node error.
-    pub fn is_resyncable(&self) -> bool {
+    pub fn is_resyncable(&self) -> Resync {
         let (Self::SyncTask(inner) | Self::InitialSync(inner)) = self else {
-            return false;
+            return Resync::No;
         };
         match inner {
             SyncTaskError::SequenceStream(_)
-            | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_)) => true,
+            | SyncTaskError::InitialSyncEnforcer(InitialSyncError::SequenceStream(_)) => {
+                Resync::Now
+            }
             SyncTaskError::JsonRpc(err)
             | SyncTaskError::InitialSyncEnforcer(InitialSyncError::JsonRpc(err)) => {
-                is_transport_error(err)
+                Resync::now_if(is_transport_error(err))
             }
-            SyncTaskError::InitialSyncEnforcer(InitialSyncError::CusfEnforcer(err)) => {
-                is_block_not_found_on_disk(err)
+            SyncTaskError::InitialSyncEnforcer(InitialSyncError::CusfEnforcer(err))
+                if is_transient_missing_block_body(err) =>
+            {
+                Resync::AfterNodeCatchesUp
             }
             // The crate does not export this variant's error type, so its
             // `ClientError` is only reachable through the source chain.
-            SyncTaskError::Request(_) => chain_has_transport_error(inner),
-            _ => false,
+            SyncTaskError::Request(_) => Resync::now_if(chain_has_transport_error(inner)),
+            _ => Resync::No,
         }
     }
 }
 
-// Bitcoin Core responds with 'Block not found on disk' if it knows the header
-// but the data cannot be read (yet). Happens regularly while syncing blocks.
-fn is_block_not_found_on_disk<E>(err: &E) -> bool
+/// Whether the node knows the block's header but cannot serve its body yet.
+///
+/// Bitcoin Core answers `Block not found on disk` when the data cannot be read
+/// (yet), which happens regularly while syncing blocks, and `Block not
+/// available (not fully downloaded)` for a block an AssumeUTXO background sync
+/// has not reached. Both clear once the node has the body.
+///
+/// `Block not available (pruned data)` is deliberately not matched: the node
+/// discarded that body on purpose and will never serve it, so no amount of
+/// re-syncing clears it.
+fn is_transient_missing_block_body<E>(err: &E) -> bool
 where
     E: std::error::Error,
 {
-    ErrorChain::new(err)
-        .to_string()
-        .contains("Block not found on disk")
+    let msg = ErrorChain::new(err).to_string();
+    msg.contains("Block not found on disk")
+        || msg.contains("Block not available (not fully downloaded)")
 }
 
 /// Whether a node RPC call failed at the transport layer rather than being
@@ -114,23 +147,25 @@ fn chain_has_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
     })
 }
 
-/// Whether a fresh sync can clear this. The no-mempool counterpart of
-/// [`MempoolTask::is_resyncable`].
-pub fn enforcer_task_is_resyncable<Enforcer>(err: &TaskError<Enforcer>) -> bool
+/// Whether, and on what schedule, a fresh sync can clear this. The no-mempool
+/// counterpart of [`MempoolTask::is_resyncable`].
+pub fn enforcer_task_is_resyncable<Enforcer>(err: &TaskError<Enforcer>) -> Resync
 where
     Enforcer: CusfEnforcer,
 {
     match err {
         TaskError::ZmqSequence(_) | TaskError::InitialSync(InitialSyncError::SequenceStream(_)) => {
-            true
+            Resync::Now
         }
         TaskError::JsonRpc(err) | TaskError::InitialSync(InitialSyncError::JsonRpc(err)) => {
-            is_transport_error(err)
+            Resync::now_if(is_transport_error(err))
         }
-        TaskError::InitialSync(InitialSyncError::CusfEnforcer(err)) => {
-            is_block_not_found_on_disk(err)
+        TaskError::InitialSync(InitialSyncError::CusfEnforcer(err))
+            if is_transient_missing_block_body(err) =>
+        {
+            Resync::AfterNodeCatchesUp
         }
-        _ => false,
+        _ => Resync::No,
     }
 }
 
@@ -141,10 +176,18 @@ mod tests {
         mempool::SyncTaskError,
     };
     use jsonrpsee::core::ClientError;
+    use thiserror::Error;
 
-    use super::MempoolTask;
+    use super::{MempoolTask, Resync, is_transient_missing_block_body};
 
     type Task = MempoolTask<DefaultEnforcer>;
+
+    /// Stands in for the enforcer's own sync error, whose inner type is not
+    /// reachable from here. Only its `Display` matters: a node response is
+    /// classified by message.
+    #[derive(Debug, Error)]
+    #[error("{0}")]
+    struct NodeResponse(&'static str);
 
     fn transport() -> ClientError {
         ClientError::Transport("connection closed before message completed".into())
@@ -152,32 +195,62 @@ mod tests {
 
     #[test]
     fn a_transport_error_is_resyncable() {
-        assert!(
+        assert_eq!(
             Task::SyncTask(SyncTaskError::JsonRpc(transport())).is_resyncable(),
+            Resync::Now,
             "bitcoind closing an idle connection must not kill a mempool sync"
         );
-        assert!(
+        assert_eq!(
             Task::InitialSync(SyncTaskError::InitialSyncEnforcer(
                 InitialSyncError::JsonRpc(transport())
             ))
             .is_resyncable(),
+            Resync::Now,
             "nor during the initial sync"
         );
     }
 
     #[test]
     fn an_answered_rpc_error_is_not_resyncable() {
-        assert!(
-            !Task::SyncTask(SyncTaskError::JsonRpc(ClientError::RequestTimeout)).is_resyncable(),
+        assert_eq!(
+            Task::SyncTask(SyncTaskError::JsonRpc(ClientError::RequestTimeout)).is_resyncable(),
+            Resync::No,
             "re-syncing does not clear an error the node itself reported"
         );
     }
 
     #[test]
     fn an_ended_sequence_stream_is_not_resyncable() {
-        assert!(
-            !Task::SyncTask(SyncTaskError::SequenceStreamEnded).is_resyncable(),
+        assert_eq!(
+            Task::SyncTask(SyncTaskError::SequenceStreamEnded).is_resyncable(),
+            Resync::No,
             "widening to transport errors must not sweep in the rest of the enum"
+        );
+    }
+
+    /// Bitcoin Core has more than one way of saying "I know that header, but I
+    /// cannot serve the body yet". Matching only the first one exits the
+    /// process on the second, which is what an AssumeUTXO node answers for
+    /// every block its background chainstate has not validated yet.
+    #[test]
+    fn a_missing_block_body_is_waited_out() {
+        for msg in [
+            "Block not found on disk",
+            "Block not available (not fully downloaded)",
+        ] {
+            assert!(
+                is_transient_missing_block_body(&NodeResponse(msg)),
+                "the node clears `{msg}` on its own, so it must not be fatal"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pruned_block_body_is_not_resyncable() {
+        assert!(
+            !is_transient_missing_block_body(&NodeResponse("Block not available (pruned data)")),
+            "a pruned body is gone for good, and retrying for hours would only \
+             hide that"
         );
     }
 }
