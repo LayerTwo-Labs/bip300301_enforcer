@@ -144,14 +144,13 @@ jobs:
         run: cargo shear --deny-warnings
 
   # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs`, and the ecash
-  # builds (the pinned drynet tag plus the rolling channel builds) out of
-  # `scripts/setup_integration_tests.sh`, and emits the integration-test
-  # matrix. Keeping the list of stock versions in
+  # channel builds out of `scripts/setup_integration_tests.sh`, and emits the
+  # integration-test matrix. Keeping the list of stock versions in
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
   # matrix can't drift — a unit test (`ci_versions_match_majors`) asserts
-  # the two are consistent. The drynet tag lives in the setup script so
-  # local `just test-it --bitcoind drynetN` runs and CI exercise the same
-  # release.
+  # the two are consistent. The channel list lives in the setup script so
+  # local `just test-it --bitcoind <channel>` runs and CI exercise the same
+  # builds.
   compute-integration-matrix:
     name: Compute integration-test matrix
     runs-on: ubuntu-latest
@@ -177,11 +176,6 @@ jobs:
               exit 1
             fi
           done
-          DRYNET_TAG=$(grep -oE '^DRYNET_DEFAULT_REVISION="[^"]+"' scripts/setup_integration_tests.sh | cut -d'"' -f2)
-          if [ -z "$DRYNET_TAG" ]; then
-            echo "could not parse DRYNET_DEFAULT_REVISION from scripts/setup_integration_tests.sh" >&2
-            exit 1
-          fi
           # Every entry carries a display `name` plus exactly one of `zip`
           # (drivechain-patched, from releases.drivechain.info), `ecash` (an
           # ecash-com/bitcoin branch build, from releases.ecash.com) or
@@ -189,9 +183,7 @@ jobs:
           # tests). Steps key off those fields, not off which entry they are.
           # `grpc_checks` marks the one entry that also runs the
           # flavor-independent gRPC reflection checks.
-          DRYNET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic "$DRYNET_TAG")
           ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
-          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\",\"regtest_magic\":\"$DRYNET_MAGIC\"}"
           for channel in $(./scripts/setup_integration_tests.sh --print-channels); do
             if ! echo "$channel" | grep -qE '^[a-z0-9]+$'; then
               echo "invalid ecash channel name from scripts/setup_integration_tests.sh: '$channel'" >&2

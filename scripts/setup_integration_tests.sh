@@ -29,27 +29,16 @@ fi
 BITCOIN_VERSION="${ALL_BITCOIN_VERSIONS%%$'\n'*}"
 ELECTRS_VERSION="v3.2.0"
 PATCHED_REVISION="latest"
-# Drivechain-patched Bitcoin Core fork from ecash-com/bitcoin. Bump when a
-# new drynet tag is published on releases.drivechain.info. CI parses this
-# literal out of this script (see compute-integration-matrix in
-# .github/workflows/check_lint_build_release.yaml) — keep the
-# `DRYNET_DEFAULT_REVISION="..."` shape. Override with the DRYNET_REVISION
-# env var (`just test-it --bitcoind drynetN` does this) to fetch a
-# different tag.
-DRYNET_DEFAULT_REVISION="drynet4"
-DRYNET_REVISION="${DRYNET_REVISION:-$DRYNET_DEFAULT_REVISION}"
 # Rolling builds of ecash-com/bitcoin branches, published on releases.ecash.com
-# on every push to them. Tested alongside the pinned tag so that L1 changes
-# which break the enforcer surface here, rather than when the next tag is cut.
-# scripts/fetch_ecash_bitcoin.sh downloads and provenance-checks them; CI
-# reads this list via `--print-channels`.
+# on every push to them. Tested alongside bitcoin-patched so that L1 changes
+# which break the enforcer surface here. scripts/fetch_ecash_bitcoin.sh
+# downloads and provenance-checks them; CI reads this list via
+# `--print-channels`.
 ECASH_CHANNELS="alphanet betanet"
-ECASH_REVISIONS="$DRYNET_REVISION $ECASH_CHANNELS"
 
 # Regtest P2P magic of an ecash build, empty when it uses the stock bytes.
 ecash_regtest_magic() {
     case "$1" in
-        drynet4)  echo "eca5d434" ;;
         alphanet) echo "eca5a134" ;;
         betanet)  echo "eca5b134" ;;
         *)        echo "" ;;
@@ -64,14 +53,12 @@ ecash_op_drivechain() {
         *)       echo "" ;;
     esac
 }
-DRYNET_REGTEST_MAGIC="$(ecash_regtest_magic "$DRYNET_REVISION")"
 
 # Print the `--bitcoind` flavor of each CI matrix entry, one per line, and
 # exit. Lets run_integration_tests.sh (`--bitcoind all`) reuse this
 # script's parsing instead of re-grepping the constants.
 if [ "${1:-}" = '--print-flavors' ]; then
     echo 'bitcoin-patched'
-    echo "$DRYNET_DEFAULT_REVISION"
     for c in $ECASH_CHANNELS; do
         echo "$c"
     done
@@ -92,16 +79,15 @@ fi
 
 # Print an ecash build's regtest magic (empty if it uses the stock bytes) and
 # exit, so CI and run_integration_tests.sh read it from here rather than
-# repeating the literal. Takes the flavor as an argument, defaulting to
-# DRYNET_REVISION like the rest of the script.
+# repeating the literal. Takes the flavor as an argument.
 if [ "${1:-}" = '--print-regtest-magic' ]; then
-    ecash_regtest_magic "${2:-$DRYNET_REVISION}"
+    ecash_regtest_magic "${2:?--print-regtest-magic needs a flavor}"
     exit 0
 fi
 
 # Likewise for an ecash build's OP_DRIVECHAIN opcode.
 if [ "${1:-}" = '--print-op-drivechain' ]; then
-    ecash_op_drivechain "${2:-$DRYNET_REVISION}"
+    ecash_op_drivechain "${2:?--print-op-drivechain needs a flavor}"
     exit 0
 fi
 
@@ -128,14 +114,14 @@ ecash_signet_chain_dir() {
 
 # `releases.drivechain.info` only publishes patched bitcoin for
 # x86_64-{linux,darwin,windows}. arm64 falls back to the x86_64 darwin
-# build (Rosetta). Stock Bitcoin Core and the ecash builds have native arm64
-# darwin builds.
+# build (Rosetta). Stock Bitcoin Core and the ecash channel builds have
+# native arm64 darwin builds.
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 case "$OS-$ARCH" in
-    linux-x86_64)  STOCK_TARGET="x86_64-linux-gnu";    PATCHED_TARGET="x86_64-unknown-linux-gnu"; DRYNET_TARGET="x86_64-unknown-linux-gnu" ;;
-    darwin-x86_64) STOCK_TARGET="x86_64-apple-darwin"; PATCHED_TARGET="x86_64-apple-darwin";      DRYNET_TARGET="x86_64-apple-darwin" ;;
-    darwin-arm64)  STOCK_TARGET="arm64-apple-darwin";  PATCHED_TARGET="x86_64-apple-darwin";      DRYNET_TARGET="aarch64-apple-darwin" ;;
+    linux-x86_64)  STOCK_TARGET="x86_64-linux-gnu";    PATCHED_TARGET="x86_64-unknown-linux-gnu"; ECASH_TARGET="x86_64-unknown-linux-gnu" ;;
+    darwin-x86_64) STOCK_TARGET="x86_64-apple-darwin"; PATCHED_TARGET="x86_64-apple-darwin";      ECASH_TARGET="x86_64-apple-darwin" ;;
+    darwin-arm64)  STOCK_TARGET="arm64-apple-darwin";  PATCHED_TARGET="x86_64-apple-darwin";      ECASH_TARGET="aarch64-apple-darwin" ;;
     *) echo "Unsupported platform: $OS-$ARCH (no patched binary published)" >&2; exit 1 ;;
 esac
 
@@ -181,25 +167,10 @@ else
     echo "Patched bitcoin: cached"
 fi
 
-# --- ecash Bitcoin Core: the pinned drynet tag ---
-# One HEAD request still catches a re-published tag.
-ECASH_DIR="$(ecash_dir "$DRYNET_REVISION")"
-ECASH_ZIP="L1-ecash-bitcoin-$DRYNET_REVISION-$DRYNET_TARGET"
-PUBLISHED="$(remote_zip_version "$ECASH_ZIP" || true)"
-CACHED="$(cat "$ECASH_DIR/.remote-version" 2>/dev/null || true)"
-if [ ! -x "$ECASH_DIR/bitcoind" ] ||
-    { [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$CACHED" ]; }; then
-    echo "Downloading ecash bitcoin $DRYNET_REVISION ($DRYNET_TARGET)..."
-    fetch_drivechain_zip "$ECASH_ZIP" "$ECASH_DIR"
-    printf '%s\n' "$PUBLISHED" > "$ECASH_DIR/.remote-version"
-else
-    echo "ecash bitcoin $DRYNET_REVISION: cached"
-fi
-
 # --- ecash Bitcoin Core: the rolling channel builds ---
 # Re-downloaded whenever a channel's published commit changes.
 for channel in $ECASH_CHANNELS; do
-    "$REPO_ROOT/scripts/fetch_ecash_bitcoin.sh" "$channel" "$DRYNET_TARGET" "$(ecash_dir "$channel")"
+    "$REPO_ROOT/scripts/fetch_ecash_bitcoin.sh" "$channel" "$ECASH_TARGET" "$(ecash_dir "$channel")"
 done
 
 # --- Stock Bitcoin Core, one per CI_BITCOIN_CORE_VERSIONS entry ---
@@ -271,9 +242,9 @@ EOF
 echo
 write_env_file "$REPO_ROOT/integrationtests.env" "$PATCHED_DIR" "$UNPATCHED_DIR" 1
 write_env_file "$REPO_ROOT/integrationtests.unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR" 0
-for rev in $ECASH_REVISIONS; do
-    write_env_file "$REPO_ROOT/integrationtests.$rev.env" "$(ecash_dir "$rev")" "$UNPATCHED_DIR" 1 \
-        "$(ecash_regtest_magic "$rev")" "$(ecash_signet_chain_dir "$rev")" "$(ecash_op_drivechain "$rev")"
+for channel in $ECASH_CHANNELS; do
+    write_env_file "$REPO_ROOT/integrationtests.$channel.env" "$(ecash_dir "$channel")" "$UNPATCHED_DIR" 1 \
+        "$(ecash_regtest_magic "$channel")" "$(ecash_signet_chain_dir "$channel")" "$(ecash_op_drivechain "$channel")"
 done
 for v in $ALL_BITCOIN_VERSIONS; do
     STOCK_DIR="$DEPS_DIR/bitcoin-stock-$v"
@@ -281,4 +252,4 @@ for v in $ALL_BITCOIN_VERSIONS; do
 done
 
 echo "Deps cache: $DEPS_DIR"
-echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|drynetN|alphanet|betanet|all]"
+echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|alphanet|betanet|all]"

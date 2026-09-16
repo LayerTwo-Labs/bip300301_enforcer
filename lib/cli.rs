@@ -317,11 +317,9 @@ pub struct NodeRpcConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
 pub enum NetworkPreset {
-    /// Dry run forknet v4: mainnet fork at block 961632. Hours-scale thresholds
-    Drynet4,
-    /// Alphanet forknet: mainnet fork at block 963648. Hours-scale thresholds
+    /// Alphanet: mainnet fork at block 963648. Hours-scale thresholds
     Alphanet,
-    /// Betanet forknet: mainnet fork at block 967680. Mainnet-scale
+    /// Betanet: mainnet fork at block 967680. Mainnet-scale
     /// thresholds, with unused slots activating at 51%
     Betanet,
     /// Integration-test-only preset: SHORT thresholds with BIP300/301
@@ -334,7 +332,6 @@ pub enum NetworkPreset {
 impl NetworkPreset {
     pub const fn params(self) -> NetworkParams {
         match self {
-            Self::Drynet4 => NetworkParams::drynet4(),
             Self::Alphanet => NetworkParams::alphanet(),
             Self::Betanet => NetworkParams::betanet(),
             Self::TestActivation => NetworkParams::test_activation(),
@@ -938,7 +935,6 @@ mod tests {
                 .expect("--network-preset was given")
                 .params()
         };
-        assert_eq!(params("drynet4").bip300_activation_height, 961_632);
         assert_eq!(params("alphanet").bip300_activation_height, 963_648);
         assert_eq!(params("betanet").bip300_activation_height, 967_680);
     }
@@ -954,13 +950,13 @@ mod tests {
             Config::try_parse_from(argv)
         };
 
-        // drynet4's regtest bytes, which differ from the preset's mainnet ones.
+        // betanet's regtest bytes, which differ from the preset's mainnet ones.
         let cli =
-            parse(&["--network-preset=drynet4", "--network-magic=eca5d434"]).expect("should parse");
-        assert_eq!(cli.network_magic, Some([0xec, 0xa5, 0xd4, 0x34]));
+            parse(&["--network-preset=betanet", "--network-magic=eca5b134"]).expect("should parse");
+        assert_eq!(cli.network_magic, Some([0xec, 0xa5, 0xb1, 0x34]));
         assert_eq!(
             cli.network_preset.unwrap().params().network_magic,
-            Some([0xec, 0xa5, 0xd4, 0x04]),
+            Some([0xec, 0xa5, 0xb1, 0x04]),
             "the preset still carries its own value; main.rs is what prefers the flag"
         );
 
