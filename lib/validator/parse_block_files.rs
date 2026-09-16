@@ -1107,6 +1107,10 @@ mod tests {
             crate::types::NetworkParams::alphanet().network_magic,
             Some([0xec, 0xa5, 0xa1, 0x04]),
         );
+        assert_eq!(
+            crate::types::NetworkParams::betanet().network_magic,
+            Some([0xec, 0xa5, 0xb1, 0x04]),
+        );
         // Non-preset runs keep the stock magic for their chain.
         assert_eq!(
             crate::types::NetworkParams::for_network(Network::Bitcoin).network_magic,

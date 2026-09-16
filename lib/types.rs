@@ -56,6 +56,11 @@ impl Thresholds {
         unused_sidechain_slot_activation_threshold: 1815,
     };
 
+    pub const BETANET: Self = Self {
+        unused_sidechain_slot_activation_threshold: 1008,
+        ..Self::MAINNET
+    };
+
     /// Dev-friendly values used on every non-mainnet network so a full
     /// activation/withdrawal cycle takes seconds rather than weeks.
     pub const SHORT: Self = Self {
@@ -153,6 +158,19 @@ impl NetworkParams {
             bip300_activation_height: 963_648,
             datadir_suffix: Some("alphanet"),
             network_magic: Some([0xec, 0xa5, 0xa1, 0x04]),
+        }
+    }
+
+    /// Betanet: the successor to [`Self::alphanet`], a mainnet fork at the
+    /// retarget boundary 967,680 (2016 × 480), trialing
+    /// [`Thresholds::BETANET`] at mainnet scale. The build rebrands the P2P
+    /// magic with `b1` in place of alphanet's `a1`.
+    pub const fn betanet() -> Self {
+        Self {
+            thresholds: Thresholds::BETANET,
+            bip300_activation_height: 967_680,
+            datadir_suffix: Some("betanet"),
+            network_magic: Some([0xec, 0xa5, 0xb1, 0x04]),
         }
     }
 

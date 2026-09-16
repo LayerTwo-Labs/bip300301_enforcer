@@ -321,6 +321,9 @@ pub enum NetworkPreset {
     Drynet4,
     /// Alphanet forknet: mainnet fork at block 963648. Hours-scale thresholds
     Alphanet,
+    /// Betanet forknet: mainnet fork at block 967680. Mainnet-scale
+    /// thresholds, with unused slots activating at 51%
+    Betanet,
     /// Integration-test-only preset: SHORT thresholds with BIP300/301
     /// activating at height 10, so tests can exercise the activation-height
     /// machinery on a fresh chain. Hidden from --help
@@ -333,6 +336,7 @@ impl NetworkPreset {
         match self {
             Self::Drynet4 => NetworkParams::drynet4(),
             Self::Alphanet => NetworkParams::alphanet(),
+            Self::Betanet => NetworkParams::betanet(),
             Self::TestActivation => NetworkParams::test_activation(),
         }
     }
@@ -908,6 +912,7 @@ mod tests {
         };
         assert_eq!(params("drynet4").bip300_activation_height, 961_632);
         assert_eq!(params("alphanet").bip300_activation_height, 963_648);
+        assert_eq!(params("betanet").bip300_activation_height, 967_680);
     }
 
     /// `--network-magic` overrides every automatic/configured source, since a
