@@ -7,7 +7,7 @@ updates:
     open-pull-requests-limit: 10
     groups:
       # connectrpc pins buffa with a hard requirement, so the
-      # two stacks can must move together
+      # two stacks must move together
       buffa:
         patterns:
           - "buffa"
@@ -15,6 +15,12 @@ updates:
           - "connectrpc"
           - "connectrpc-*"
       cargo-minor-and-patch:
+        # An explicit "*" is required: a group without patterns
+        # outranks any wildcard pattern in dependabot's group
+        # assignment, which would pull buffa-*/connectrpc-* out of
+        # the buffa group above.
+        patterns:
+          - "*"
         update-types:
           - "minor"
           - "patch"
