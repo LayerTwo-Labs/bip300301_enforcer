@@ -1032,38 +1032,40 @@ mod tests {
         );
     }
 
-    /// The eCash drynet4 build rebrands the P2P magic, so its block files are
-    /// prefixed with `eca5d434` on regtest rather than the stock `fabfb5da`.
-    /// The fixture is a real `blk00000.dat` from that build (6 blocks, trimmed
-    /// of Core's 16 MiB preallocation), so this covers the actual on-disk bytes
-    /// rather than a hand-built approximation of them.
+    /// The eCash betanet build rebrands the P2P magic, so its block files are
+    /// prefixed with `eca5b134` on regtest rather than the stock `fabfb5da`.
+    /// The fixture is a real `blk00000.dat` from that build (6 blocks mined
+    /// with `-blocksxor=0`, trimmed of Core's 16 MiB preallocation), so this
+    /// covers the actual on-disk bytes rather than a hand-built approximation
+    /// of them.
     #[test]
-    fn parses_drynet4_block_file_with_magic_override() {
-        const DRYNET4_REGTEST_MAGIC: [u8; 4] = [0xec, 0xa5, 0xd4, 0x34];
+    fn parses_betanet_block_file_with_magic_override() {
+        const BETANET_REGTEST_MAGIC: [u8; 4] = [0xec, 0xa5, 0xb1, 0x34];
         let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("validator/testdata/drynet4-blk00000.dat");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("validator/testdata/betanet-blk00000.dat");
 
         // Without the override the stock regtest magic is expected, so the very
-        // first entry is rejected — this is the drynet4 CI failure in miniature.
+        // first entry is rejected: a rebranded build's block files cannot be
+        // read at all without the preset's magic.
         let mut stock = BlockFileParser::new(None, path.clone(), Network::Regtest, None)
             .expect("failed to create parser");
         assert!(
             matches!(
                 stock.next_block(),
                 Err(ParseBlockFileError::InvalidMagic { found, expected, offset: 0 })
-                    if found == DRYNET4_REGTEST_MAGIC && expected == REGTEST_MAGIC
+                    if found == BETANET_REGTEST_MAGIC && expected == REGTEST_MAGIC
             ),
             "expected an InvalidMagic error naming both magics"
         );
 
         // With it, the file parses.
         let mut parser =
-            BlockFileParser::new(None, path, Network::Regtest, Some(DRYNET4_REGTEST_MAGIC))
+            BlockFileParser::new(None, path, Network::Regtest, Some(BETANET_REGTEST_MAGIC))
                 .expect("failed to create parser");
         let parsed_blocks = parser.all_blocks().expect("failed to parse blocks");
         assert_eq!(parsed_blocks.len(), 6);
 
-        // drynet4 keeps the stock regtest genesis, so the first block hash is
+        // betanet keeps the stock regtest genesis, so the first block hash is
         // the same one the stock-magic fixtures above start from. That the
         // hashes come out valid at all is what shows the bodies were read at
         // the right offsets, not just that a 4 byte comparison passed.
@@ -1075,11 +1077,11 @@ mod tests {
             hashes,
             vec![
                 "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
-                "2cd78956c677f440d390231b96c5c26a03e20716af154db1af5c00ecf302a4bf",
-                "79ae853fa583459d786ea473cdc319d060bb8635e746184a25e961aba06531c3",
-                "04556cadf7e795ae9d538128f442bea1e5969ca0c2f3fd3438c3af6b18678964",
-                "511ec89755094aaa7b047624479a34219dd3d24e6572f9a620134cb031a60943",
-                "2ce34554bfbc65e49f157fefcd4707722c26fe92b8ae99f7f91341910c96c1a8",
+                "6b2fdce120c94f5c5c691501a33e6519ecbecf738c8982ece58a4d142c4c31d8",
+                "40852cc36c81d1c5cff6d0d99ff39ede37b8171b0b114496a7cc4eca8003ca01",
+                "0895de75dd767f3e35a903381b4178777f63726ff14083544a8101173795e10d",
+                "2a2e438dadd503b098383a591cb1b9865f71be6204eaa5b835e9cbc6576030cd",
+                "3fe1a7f271613ab118ff18eb13ebd69ad5e564d24334ef6fe5eacccc24ef7d65",
             ]
         );
 
@@ -1099,10 +1101,6 @@ mod tests {
     /// would fail to parse a real fork node's block files.
     #[test]
     fn fork_presets_carry_their_rebranded_magic() {
-        assert_eq!(
-            crate::types::NetworkParams::drynet4().network_magic,
-            Some([0xec, 0xa5, 0xd4, 0x04]),
-        );
         assert_eq!(
             crate::types::NetworkParams::alphanet().network_magic,
             Some([0xec, 0xa5, 0xa1, 0x04]),

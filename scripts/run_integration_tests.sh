@@ -7,7 +7,6 @@
 #   bitcoin-patched  LayerTwo-Labs bitcoin-patched
 #   unpatched        newest stock Bitcoin Core release
 #   stock-X.Y        a specific stock release from CI_BITCOIN_CORE_VERSIONS
-#   drynetN          the ecash-com/bitcoin drynet fork at that tag
 #   alphanet         the rolling build of ecash-com/bitcoin's alphanet branch
 #   betanet          the rolling build of ecash-com/bitcoin's betanet branch
 #   all              every flavor in the CI matrix, continuing past failures
@@ -77,7 +76,6 @@ if [ "$flavor" = 'all' ]; then
     exit "$overall"
 fi
 
-setup_env=()
 skip_patterns=()
 env_file="integrationtests.$flavor.env"
 case "$flavor" in
@@ -87,13 +85,10 @@ case "$flavor" in
         # (BIP300 opcodes), matching the stock CI matrix entries.
         skip_patterns=('deposit_withdraw_roundtrip')
         ;;
-    drynet* | alphanet | betanet)
-        # A pinned `drynetN` tag has to be named for setup to fetch that one;
-        # the channels are fixed names that setup always fetches.
-        case "$flavor" in drynet*) setup_env=("DRYNET_REVISION=$flavor") ;; esac
-        ;;
+    # The ecash channels: fixed names that setup always fetches.
+    alphanet | betanet) ;;
     *)
-        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, alphanet, betanet, or all)" >&2
+        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, alphanet, betanet, or all)" >&2
         exit 1
         ;;
 esac
@@ -103,7 +98,7 @@ esac
 cd "$REPO_ROOT"
 
 if [ ! -f "$env_file" ]; then
-    env ${setup_env[@]+"${setup_env[@]}"} "$REPO_ROOT/scripts/setup_integration_tests.sh"
+    "$REPO_ROOT/scripts/setup_integration_tests.sh"
 fi
 cargo build
 

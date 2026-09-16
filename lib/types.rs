@@ -72,12 +72,12 @@ impl Thresholds {
         unused_sidechain_slot_activation_threshold: 5,
     };
 
-    /// Shared by every mainnet-fork preset. These put a sidechain activation
-    /// at a ~6h vote window and a withdrawal bundle at ~12h of votes within a
-    /// ~24h window: a full activation/deposit/withdrawal cycle is
-    /// exercisable in about a day and a half, while voting still plays
-    /// out over enough blocks to be meaningful, unlike [`Self::SHORT`].
-    pub const FORKNET: Self = Self {
+    /// Alphanet's hours-scale values. These put a sidechain activation at a
+    /// ~6h vote window and a withdrawal bundle at ~12h of votes within a ~24h
+    /// window: a full activation/deposit/withdrawal cycle is exercisable in
+    /// about a day and a half, while voting still plays out over enough
+    /// blocks to be meaningful, unlike [`Self::SHORT`].
+    pub const ALPHANET: Self = Self {
         withdrawal_bundle_max_age: 144,
         withdrawal_bundle_inclusion_threshold: 72,
         used_sidechain_slot_proposal_max_age: 144,
@@ -104,10 +104,10 @@ impl Thresholds {
     }
 }
 
-/// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for dry-run
-/// forknet presets, the height at which BIP 300/301 enforcement activates.
-/// Selected either implicitly from the node's reported network, or explicitly
-/// via `--network-preset` (each forknet dry run is one preset).
+/// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for the
+/// mainnet-fork presets, the height at which BIP 300/301 enforcement
+/// activates. Selected either implicitly from the node's reported network, or
+/// explicitly via `--network-preset` (one per fork).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetworkParams {
     pub thresholds: Thresholds,
@@ -138,27 +138,13 @@ impl NetworkParams {
         }
     }
 
-    /// Dry run forknet v4 (v1–v3 are retired): mainnet fork at block 961,632,
-    /// hours-scale thresholds. Unlike the earlier drynets, this build rebrands
-    /// the P2P magic instead of reusing mainnet's `f9beb4d9`, so its block
-    /// files need the override.
-    pub const fn drynet4() -> Self {
-        Self {
-            thresholds: Thresholds::FORKNET,
-            bip300_activation_height: 961_632,
-            datadir_suffix: Some("drynet4"),
-            network_magic: Some([0xec, 0xa5, 0xd4, 0x04]),
-            op_drivechain: OpDrivechain::NOP5,
-        }
-    }
-
-    /// Alphanet: mainnet fork one retarget period after [`Self::drynet4`], at
-    /// the retarget boundary 963,648 (2016 × 478), same hours-scale
-    /// thresholds. Like drynet4 the build rebrands the P2P magic, `a1` for
-    /// alphanet in place of drynet4's `d4`.
+    /// Alphanet: mainnet fork at the retarget boundary 963,648 (2016 × 478),
+    /// running [`Thresholds::ALPHANET`]. The build rebrands the P2P magic
+    /// instead of reusing mainnet's `f9beb4d9`, so its block files need the
+    /// override.
     pub const fn alphanet() -> Self {
         Self {
-            thresholds: Thresholds::FORKNET,
+            thresholds: Thresholds::ALPHANET,
             bip300_activation_height: 963_648,
             datadir_suffix: Some("alphanet"),
             network_magic: Some([0xec, 0xa5, 0xa1, 0x04]),

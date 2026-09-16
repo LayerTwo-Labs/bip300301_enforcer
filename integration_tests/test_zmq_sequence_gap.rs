@@ -6,8 +6,8 @@
 //! `Mode::Mempool` drives the mempool sync task, `Mode::NoMempool` the
 //! tip-chasing task that is the default mode.
 //!
-//! Observed on drynet4 roughly every 1–3 hours once the chain was mining at
-//! ~1 block/2.5s, each occurrence costing a process restart. Raising
+//! Observed on a mainnet fork roughly every 1–3 hours once the chain was
+//! mining at ~1 block/2.5s, each occurrence costing a process restart. Raising
 //! `-zmqpubsequencehwm` to 100000 reduced the rate but did not eliminate it.
 //!
 //! Forced deterministically here with `-zmqpubsequencehwm=1`: a one-slot queue
@@ -78,8 +78,8 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
     // messages back-to-back from inside a single RPC — faster than the
     // subscriber can drain a one-slot queue, so the publisher drops some.
     //
-    // This is what drynet4 hits organically: at ~1 block/2.5s the enforcer is
-    // busy applying blocks while messages keep arriving.
+    // This is what a fast-mining fork hits organically: at ~1 block/2.5s the
+    // enforcer is busy applying blocks while messages keep arriving.
     post_setup
         .bitcoin_cli
         .command::<String, _, _, _, _>([], "generatetoaddress", ["1".to_owned(), address.clone()])

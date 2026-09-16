@@ -99,7 +99,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
 
     // A bitcoind build that rebrands the P2P magic writes its own bytes as the
     // per-block prefix in blk*.dat, so the parser has to be told which to
-    // expect. Without this the drynet4 flavor cannot parse block files at all.
+    // expect. Without this the rebranded flavors cannot parse block files at all.
     let mut enforcer_args = Vec::new();
     if let Some(magic) = crate::setup::bitcoind_regtest_magic() {
         tracing::info!("Node build uses a non-stock regtest magic: {magic}");
