@@ -34,10 +34,17 @@ esac
 for tool in curl jq unzip gh; do
     command -v "$tool" >/dev/null || { echo "'$tool' is required" >&2; exit 1; }
 done
-if ! gh attestation verify --help 2>/dev/null | grep -q -- '--source-digest'; then
-    echo "gh $(gh --version | head -1) is too old for the attestation flags used here; upgrade gh" >&2
-    exit 1
-fi
+# Capture the help text rather than piping it into `grep -q`: under pipefail
+# grep's early exit can SIGPIPE gh before it finishes writing, and the
+# pipeline then fails on a gh that supports the flags just fine.
+GH_ATTESTATION_HELP="$(gh attestation verify --help 2>/dev/null || true)"
+case "$GH_ATTESTATION_HELP" in
+    *--source-digest*) ;;
+    *)
+        echo "gh $(gh --version | head -1) is too old for the attestation flags used here; upgrade gh" >&2
+        exit 1
+        ;;
+esac
 
 CHANNEL_URL="$ECASH_RELEASES/$ECASH_PROJECT/$CHANNEL"
 ZIP_NAME="$ECASH_PROJECT-$TARGET.zip"
