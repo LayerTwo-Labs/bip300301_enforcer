@@ -182,18 +182,18 @@ jobs:
             echo "could not parse DRYNET_DEFAULT_REVISION from scripts/setup_integration_tests.sh" >&2
             exit 1
           fi
-          # Every entry carries a display `name` plus either `zip` (a
-          # drivechain-patched build fetched from releases.drivechain.info,
-          # runs the full suite) or `version` (a stock release fetched from
-          # bitcoincore.org, skips drivechain-consensus tests). Steps key
-          # off those fields, not off which entry they are. `grpc_checks`
-          # marks the one entry that also runs the flavor-independent gRPC
-          # reflection checks.
+          # Every entry carries a display `name` plus exactly one of `zip`
+          # (drivechain-patched, from releases.drivechain.info), `ecash` (an
+          # ecash-com/bitcoin branch build, from releases.ecash.com) or
+          # `version` (stock, from bitcoincore.org; skips drivechain-consensus
+          # tests). Steps key off those fields, not off which entry they are.
+          # `grpc_checks` marks the one entry that also runs the
+          # flavor-independent gRPC reflection checks.
           DRYNET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic "$DRYNET_TAG")
           ALPHANET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic alphanet)
           ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
           ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\",\"regtest_magic\":\"$DRYNET_MAGIC\"}"
-          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin alphanet\",\"zip\":\"L1-ecash-bitcoin-alphanet\",\"regtest_magic\":\"$ALPHANET_MAGIC\"}"
+          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin alphanet\",\"ecash\":\"alphanet\",\"regtest_magic\":\"$ALPHANET_MAGIC\"}"
           for v in $VERSIONS; do
             ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
           done
@@ -256,7 +256,12 @@ jobs:
     env:
       ELECTRS_VERSION: v3.2.0
       GRPCURL_VERSION: "1.9.3"
+      # Which Bitcoin Core build this entry runs against; for cache keys.
+      BITCOIND_BUILD: ${{ matrix.zip || matrix.ecash || matrix.version }}
     steps:
+      # First, so the download steps can use repo scripts.
+      - uses: actions/checkout@v7
+
       - name: Download drivechain-patched Bitcoin Core (${{ matrix.name }})
         if: matrix.zip
         run: |
@@ -270,6 +275,12 @@ jobs:
           chmod +x bitcoin-bins/bitcoin-cli
           chmod +x bitcoin-bins/bitcoin-util
           popd
+
+      - name: Download ecash-com/bitcoin (${{ matrix.name }})
+        # Provenance-verified; same script `just test-it --bitcoind alphanet` uses.
+        if: matrix.ecash
+        run: |
+          ./scripts/fetch_ecash_bitcoin.sh '${{ matrix.ecash }}' x86_64-unknown-linux-gnu ../bitcoin-bins
 
       - name: Download Bitcoin Core (stock ${{ matrix.version }})
         if: matrix.version
@@ -294,7 +305,7 @@ jobs:
         # `BITCOIND_UNPATCHED`. For the stock matrix we reuse the same
         # stock binary; for the drivechain-patched jobs we still want a
         # stock 30.2 alongside the patched binaries.
-        if: matrix.zip
+        if: matrix.zip || matrix.ecash
         run: |
           pushd ..
           wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
@@ -331,8 +342,6 @@ jobs:
           cd ${{ runner.temp }}/electrs
           cargo build --locked --release
 
-      - uses: actions/checkout@v7
-
       # The assumeutxo integration test derives a `loadtxoutset` snapshot
       # from the committed blocks fixture on first run and caches it (see
       # `integration_tests/test_node_requirements.rs`). Persist that cache
@@ -344,7 +353,7 @@ jobs:
         with:
           path: integration_tests/testdata/assumeutxo/.cache
           key:
-            assumeutxo-snapshot-${{ matrix.zip || matrix.version }}-${{
+            assumeutxo-snapshot-${{ env.BITCOIND_BUILD }}-${{
             hashFiles('integration_tests/testdata/assumeutxo/fixtures.json') }}
 
       - name: Download integration-test binaries
@@ -368,18 +377,17 @@ jobs:
       # Keyed on the file holding the values that define the chain, so ordinary
       # harness edits keep the cache and a real change invalidates it. The
       # bitcoind build is in the key too, since this caches a datadir written
-      # by that binary: `zip` for the drivechain-patched flavors, `version` for
-      # stock (exactly one of the two is set per matrix entry). A restored
-      # chain that doesn't match the challenge is detected and re-mined rather
-      # than used, but nothing detects a datadir from a different flavor — so
-      # the key has to keep those apart.
+      # by that binary (BITCOIND_BUILD, see the job env). A restored chain that
+      # doesn't match the challenge is detected and re-mined rather than used,
+      # but nothing detects a datadir from a different flavor — so the key has
+      # to keep those apart.
       - name: Restore pre-mined signet chain
         id: cache-signet-chain
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/signet-chain
           key:
-            signet-chain-${{ matrix.zip || matrix.version }}-${{
+            signet-chain-${{ env.BITCOIND_BUILD }}-${{
             hashFiles('integration_tests/signet_chain_params.rs') }}
 
       # Verify gRPC server reflection with real schema-free clients
@@ -425,7 +433,7 @@ jobs:
         # `deposit_withdraw_roundtrip` on stock. The remaining tests
         # exercise RPC, block-parser, p2p, and mempool integration with
         # upstream Bitcoin Core. Drivechain-patched builds (`matrix.zip`
-        # entries) run the full suite.
+        # and `matrix.ecash` entries) run the full suite.
         #
         # BITCOIND_HAS_DRIVECHAIN=0 tells the harness that BITCOIND is a
         # stock build, so it spawns it with -acceptnonstdtxn. Patched

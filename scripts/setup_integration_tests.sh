@@ -41,6 +41,8 @@ DRYNET_REVISION="${DRYNET_REVISION:-$DRYNET_DEFAULT_REVISION}"
 # The rolling build of ecash-com/bitcoin's `alphanet` branch, republished on
 # every push to it. Tested alongside the pinned tag so that L1 changes which
 # break the enforcer surface here, rather than when the next tag is cut.
+# Published on releases.ecash.com; scripts/fetch_ecash_bitcoin.sh downloads
+# and provenance-checks it.
 ALPHANET_REVISION="alphanet"
 ECASH_REVISIONS="$DRYNET_REVISION $ALPHANET_REVISION"
 
@@ -99,8 +101,8 @@ ecash_signet_chain_dir() {
 
 # `releases.drivechain.info` only publishes patched bitcoin for
 # x86_64-{linux,darwin,windows}. arm64 falls back to the x86_64 darwin
-# build (Rosetta). Stock Bitcoin Core and the ecash drynet builds have
-# native arm64 darwin builds.
+# build (Rosetta). Stock Bitcoin Core and the ecash builds have native arm64
+# darwin builds.
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 case "$OS-$ARCH" in
@@ -164,25 +166,25 @@ else
     echo "Patched bitcoin: cached"
 fi
 
-# --- ecash Bitcoin Core, one per ECASH_REVISIONS entry ---
-# `drynetN` is a pinned tag and never changes; `alphanet` is rebuilt on every
-# push to that branch, so a cached copy of it goes stale silently. Both are
-# checked against what is published rather than assumed fresh, which costs one
-# HEAD request each and keeps a single code path.
-for rev in $ECASH_REVISIONS; do
-    ECASH_DIR="$(ecash_dir "$rev")"
-    ECASH_ZIP="L1-ecash-bitcoin-$rev-$DRYNET_TARGET"
-    PUBLISHED="$(remote_zip_version "$ECASH_ZIP" || true)"
-    CACHED="$(cat "$ECASH_DIR/.remote-version" 2>/dev/null || true)"
-    if [ ! -x "$ECASH_DIR/bitcoind" ] ||
-        { [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$CACHED" ]; }; then
-        echo "Downloading ecash bitcoin $rev ($DRYNET_TARGET)..."
-        fetch_drivechain_zip "$ECASH_ZIP" "$ECASH_DIR"
-        printf '%s\n' "$PUBLISHED" > "$ECASH_DIR/.remote-version"
-    else
-        echo "ecash bitcoin $rev: cached"
-    fi
-done
+# --- ecash Bitcoin Core: the pinned drynet tag ---
+# One HEAD request still catches a re-published tag.
+ECASH_DIR="$(ecash_dir "$DRYNET_REVISION")"
+ECASH_ZIP="L1-ecash-bitcoin-$DRYNET_REVISION-$DRYNET_TARGET"
+PUBLISHED="$(remote_zip_version "$ECASH_ZIP" || true)"
+CACHED="$(cat "$ECASH_DIR/.remote-version" 2>/dev/null || true)"
+if [ ! -x "$ECASH_DIR/bitcoind" ] ||
+    { [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$CACHED" ]; }; then
+    echo "Downloading ecash bitcoin $DRYNET_REVISION ($DRYNET_TARGET)..."
+    fetch_drivechain_zip "$ECASH_ZIP" "$ECASH_DIR"
+    printf '%s\n' "$PUBLISHED" > "$ECASH_DIR/.remote-version"
+else
+    echo "ecash bitcoin $DRYNET_REVISION: cached"
+fi
+
+# --- ecash Bitcoin Core: the rolling alphanet build ---
+# Re-downloaded whenever the published commit changes.
+"$REPO_ROOT/scripts/fetch_ecash_bitcoin.sh" "$ALPHANET_REVISION" "$DRYNET_TARGET" \
+    "$(ecash_dir "$ALPHANET_REVISION")"
 
 # --- Stock Bitcoin Core, one per CI_BITCOIN_CORE_VERSIONS entry ---
 # The newest doubles as BITCOIND_UNPATCHED for the drivechain-patched
