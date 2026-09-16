@@ -465,7 +465,7 @@ dependencies = [
  "connectrpc-health",
  "connectrpc-reflection",
  "cusf-enforcer-mempool",
- "educe 0.7.6",
+ "educe 0.8.1",
  "either",
  "futures",
  "http",
@@ -1301,6 +1301,18 @@ name = "educe"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e451fac8dd8dece16234604bf1efce6e90fddd8ab6ad4d66eec0eca5160959dd"
+dependencies = [
+ "enum-ordinalize",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "educe"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebdb1f8f8d2815bbe7b369a7da10343c82026a4503b68bd1279ba557611e96d"
 dependencies = [
  "enum-ordinalize",
  "proc-macro2",
