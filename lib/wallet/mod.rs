@@ -929,12 +929,16 @@ impl Wallet {
     }
 
     fn create_deposit_op_drivechain_output(
+        op_drivechain: crate::types::OpDrivechain,
         sidechain_number: SidechainNumber,
         sidechain_ctip_amount: Amount,
         value: Amount,
     ) -> Result<bdk_wallet::bitcoin::TxOut, crate::types::AmountOverflowError> {
-        let deposit_txout =
-            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value)?;
+        let deposit_txout = op_drivechain.create_m5_deposit_output(
+            sidechain_number,
+            sidechain_ctip_amount,
+            value,
+        )?;
 
         Ok(bdk_wallet::bitcoin::TxOut {
             script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
@@ -983,6 +987,7 @@ impl Wallet {
 
     /// [`bdk_wallet::TxOrdering`] for deposit txs
     fn deposit_txordering(
+        op_drivechain: crate::types::OpDrivechain,
         sidechain_addrs: HashMap<Vec<u8>, SidechainNumber>,
     ) -> bdk_wallet::TxOrdering {
         use std::cmp::Ordering;
@@ -1022,12 +1027,11 @@ impl Wallet {
         // classify as an op_drivechain output or an
         // op_return address
         fn classify_txout(
+            op_drivechain: crate::types::OpDrivechain,
             sidechain_addrs: &HashMap<Vec<u8>, SidechainNumber>,
             txout: &bdk_wallet::bitcoin::TxOut,
         ) -> TxOutKind {
-            if let Ok((_, sidechain_id)) =
-                crate::messages::parse_op_drivechain(txout.script_pubkey.as_bytes())
-            {
+            if let Ok((_, sidechain_id)) = op_drivechain.parse(txout.script_pubkey.as_bytes()) {
                 return TxOutKind::OpDrivechain(sidechain_id);
             }
             if let Some(address) =
@@ -1041,8 +1045,8 @@ impl Wallet {
         let output_sort = {
             let hmac_engine = hmac_engine();
             move |txout_l: &bdk_wallet::bitcoin::TxOut, txout_r: &bdk_wallet::bitcoin::TxOut| match (
-                classify_txout(&sidechain_addrs, txout_l),
-                classify_txout(&sidechain_addrs, txout_r),
+                classify_txout(op_drivechain, &sidechain_addrs, txout_l),
+                classify_txout(op_drivechain, &sidechain_addrs, txout_r),
             ) {
                 (TxOutKind::OpDrivechain(_) | TxOutKind::OpReturnAddress(_), TxOutKind::Other) => {
                     Ordering::Less
@@ -1092,12 +1096,12 @@ impl Wallet {
         sidechain_ctip: Option<&Ctip>,
         fee: Option<Amount>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateDepositPsbt> {
-        let sidechain_number = match crate::messages::parse_op_drivechain(
-            op_drivechain_output.script_pubkey.as_bytes(),
-        ) {
-            Ok((_, sidechain_number)) => sidechain_number,
-            Err(_) => return Err(error::CreateDepositPsbt::ParseSidechainNumber),
-        };
+        let op_drivechain = self.validator().network_params().op_drivechain;
+        let sidechain_number =
+            match op_drivechain.parse(op_drivechain_output.script_pubkey.as_bytes()) {
+                Ok((_, sidechain_number)) => sidechain_number,
+                Err(_) => return Err(error::CreateDepositPsbt::ParseSidechainNumber),
+            };
         // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
         // Ctip.
         let ctip_foreign_utxo = match sidechain_ctip {
@@ -1151,6 +1155,7 @@ impl Wallet {
                     }
 
                     builder.ordering(Self::deposit_txordering(
+                        op_drivechain,
                         [(
                             sidechain_address_data.as_bytes().to_owned(),
                             sidechain_number,
@@ -1220,6 +1225,7 @@ impl Wallet {
             .map(|ctip| ctip.value)
             .unwrap_or(Amount::ZERO);
         let op_drivechain_output = Self::create_deposit_op_drivechain_output(
+            self.inner.validator().network_params().op_drivechain,
             sidechain_number,
             sidechain_ctip_amount,
             value,
@@ -1489,6 +1495,7 @@ impl Wallet {
     pub async fn list_sidechain_deposit_transactions(
         &self,
     ) -> Result<Vec<SidechainDepositTransaction>, error::ListSidechainDepositTransactions> {
+        let op_drivechain = self.validator().network_params().op_drivechain;
         self.list_wallet_transactions()
             .await?
             .into_iter()
@@ -1499,7 +1506,7 @@ impl Wallet {
                     return Ok(None);
                 };
                 let Ok((_, sidechain_number)) =
-                    crate::messages::parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
+                    op_drivechain.parse(&treasury_output.script_pubkey.to_bytes())
                 else {
                     return Ok(None);
                 };

@@ -1892,6 +1892,13 @@ async fn main() -> Result<()> {
             "Derived network magic from signet challenge"
         );
     }
+    if let Some(op_drivechain) = cli.op_drivechain {
+        network_params.op_drivechain = op_drivechain.into();
+        tracing::info!(
+            op_drivechain = %network_params.op_drivechain.opcode(),
+            "Overriding OP_DRIVECHAIN opcode"
+        );
+    }
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which

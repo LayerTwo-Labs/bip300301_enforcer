@@ -902,6 +902,11 @@ impl Enforcer {
             format!("--serve-grpc-addr=127.0.0.1:{}", self.serve_grpc_port),
             format!("--serve-rpc-addr=127.0.0.1:{}", self.serve_rpc_port),
         ];
+        // A build that moved OP_DRIVECHAIN has to be named on a chain without
+        // a preset, or the enforcer would not recognise its treasury outputs.
+        if let Some(op_drivechain) = crate::setup::bitcoind_op_drivechain() {
+            default_args.push(format!("--op-drivechain={op_drivechain}"));
+        }
 
         if let Some(node_blocks_dir) = &self.node_blocks_dir {
             default_args.push(format!("--node-blocks-dir={}", node_blocks_dir.display()));

@@ -1044,6 +1044,28 @@ pub fn bitcoind_regtest_magic() -> Option<String> {
         .filter(|magic| !magic.is_empty())
 }
 
+/// The opcode the bitcoind under test reserves for `OP_DRIVECHAIN`, as the
+/// enforcer's `--op-drivechain` spells it (`nop5` or `nop8`). Unset for
+/// builds that follow BIP300. Every enforcer the harness spawns gets it as
+/// that flag; [`op_drivechain`] resolves it for tests that build treasury
+/// scripts by hand.
+pub fn bitcoind_op_drivechain() -> Option<String> {
+    std::env::var("BITCOIND_OP_DRIVECHAIN")
+        .ok()
+        .filter(|opcode| !opcode.is_empty())
+}
+
+pub fn op_drivechain() -> anyhow::Result<bip300301_enforcer_lib::types::OpDrivechain> {
+    use bip300301_enforcer_lib::types::OpDrivechain;
+    match bitcoind_op_drivechain().as_deref() {
+        None | Some("nop5") => Ok(OpDrivechain::NOP5),
+        Some("nop8") => Ok(OpDrivechain::NOP8),
+        Some(other) => {
+            anyhow::bail!("unknown BITCOIND_OP_DRIVECHAIN `{other}` (expected nop5 or nop8)")
+        }
+    }
+}
+
 fn bitcoind_path(
     bin_paths: &BinPaths,
     bitcoind_kind: BitcoindKind,

@@ -3,7 +3,7 @@ use std::{str::FromStr as _, time::Duration};
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
-    types::{BmmCommitment, SidechainDescription, SidechainNumber, op_drivechain_script},
+    types::{BmmCommitment, SidechainDescription, SidechainNumber},
 };
 use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
@@ -470,7 +470,7 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
             ..TxIn::default()
         }],
         output: vec![TxOut {
-            script_pubkey: op_drivechain_script(DummySidechain::SIDECHAIN_NUMBER),
+            script_pubkey: crate::setup::op_drivechain()?.script(DummySidechain::SIDECHAIN_NUMBER),
             value: input_value - M5_TX_FEE,
         }],
     };
