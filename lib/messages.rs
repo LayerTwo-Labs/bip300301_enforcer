@@ -25,7 +25,7 @@ use crate::{
     errors::ErrorChain,
     proto::{StatusBuilder, ToStatus},
     types::{
-        AmountOverflowError, BmmCommitment, M6id, OP_DRIVECHAIN, SidechainDeclaration,
+        AmountOverflowError, BmmCommitment, M6id, OpDrivechain, SidechainDeclaration,
         SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalId,
         WithdrawalBundleVote,
     },
@@ -845,18 +845,6 @@ pub(crate) fn parse_m8_tx(transaction: &Transaction) -> Option<M8BmmRequest> {
     }
 }
 
-pub fn parse_op_drivechain(input: &[u8]) -> IResult<&[u8], SidechainNumber> {
-    let (input, _op_drivechain_tag) =
-        tag([OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8()].as_slice())(input)?;
-    let (input, sidechain_number) = take(1usize)(input)?;
-    let sidechain_number = sidechain_number[0];
-    let (input, _) = tag([OP_TRUE.to_u8()].as_slice())(input)?;
-    // A treasury UTXO MUST have a `scriptPubKey` of the following form:
-    // `OP_DRIVECHAIN OP_PUSHBYTES_1 <S> OP_TRUE`.
-    let (input, _) = eof(input)?;
-    Ok((input, SidechainNumber::from(sidechain_number)))
-}
-
 pub fn try_parse_op_return_address(script: &Script) -> Option<Vec<u8>> {
     let mut instructions = script.instructions();
     let Some(Ok(Instruction::Op(OP_RETURN))) = instructions.next() else {
@@ -871,26 +859,42 @@ pub fn try_parse_op_return_address(script: &Script) -> Option<Vec<u8>> {
     Some(address.as_bytes().to_owned())
 }
 
-pub fn create_m5_deposit_output(
-    sidechain_number: SidechainNumber,
-    old_ctip_amount: Amount,
-    deposit_amount: Amount,
-) -> Result<TxOut, AmountOverflowError> {
-    let script_pubkey = ScriptBuf::from_bytes(vec![
-        OP_DRIVECHAIN.to_u8(),
-        OP_PUSHBYTES_1.to_u8(),
-        sidechain_number.into(),
-        OP_TRUE.to_u8(),
-    ]);
-    // All deposits increase the amount locked in the OP_DRIVECHAIN output; a
-    // checked add rejects an out-of-range deposit value instead of panicking.
-    let value = old_ctip_amount
-        .checked_add(deposit_amount)
-        .ok_or(AmountOverflowError)?;
-    Ok(TxOut {
-        script_pubkey,
-        value,
-    })
+impl OpDrivechain {
+    /// Parse a treasury script built by [`Self::script`] back into its
+    /// sidechain number. A treasury UTXO MUST have a `scriptPubKey` of
+    /// exactly the form `OP_DRIVECHAIN OP_PUSHBYTES_1 <S> OP_TRUE`, under
+    /// this network's opcode.
+    pub fn parse(self, input: &[u8]) -> IResult<&[u8], SidechainNumber> {
+        let (input, _op_drivechain_tag) =
+            tag([self.opcode().to_u8(), OP_PUSHBYTES_1.to_u8()].as_slice())(input)?;
+        let (input, sidechain_number) = take(1usize)(input)?;
+        let sidechain_number = sidechain_number[0];
+        let (input, _) = tag([OP_TRUE.to_u8()].as_slice())(input)?;
+        let (input, _) = eof(input)?;
+        Ok((input, SidechainNumber::from(sidechain_number)))
+    }
+
+    /// BIP300 M5: the deposit output for `sidechain_number`, which is this
+    /// network's treasury script holding the previous treasury value plus the
+    /// deposit.
+    pub fn create_m5_deposit_output(
+        self,
+        sidechain_number: SidechainNumber,
+        old_ctip_amount: Amount,
+        deposit_amount: Amount,
+    ) -> Result<TxOut, AmountOverflowError> {
+        let script_pubkey = self.script(sidechain_number);
+        // All deposits increase the amount locked in the OP_DRIVECHAIN output;
+        // a checked add rejects an out-of-range deposit value instead of
+        // panicking.
+        let value = old_ctip_amount
+            .checked_add(deposit_amount)
+            .ok_or(AmountOverflowError)?;
+        Ok(TxOut {
+            script_pubkey,
+            value,
+        })
+    }
 }
 
 pub fn create_op_return_output<Msg>(
@@ -934,61 +938,68 @@ enum M6idErrorInner {
 #[error("M6id error")]
 pub struct M6idError(#[from] M6idErrorInner);
 
-pub fn compute_m6id(
-    mut tx: Transaction,
-    previous_treasury_utxo_total: Amount,
-) -> Result<(M6id, SidechainNumber), M6idError> {
-    // Check that a new treasury UTXO is created at index 0
-    let Some((first_output, payout_outputs)) = tx.output.split_first_mut() else {
-        return Err(M6idErrorInner::MissingTreasuryOutput.into());
-    };
-    let (_, sidechain_number) = parse_op_drivechain(first_output.script_pubkey.as_bytes())
-        .map_err(|err| M6idErrorInner::InvalidSpk {
-            script_pubkey: first_output.script_pubkey.clone(),
-            source: err.to_owned(),
-        })?;
-    // Set `T_n` equal to the `nValue` of the treasury UTXO created in this `M6`.
-    let t_n = first_output.value;
-    // Remove the single input spending the previous treasury UTXO from the `vin`
-    // vector, so that the `vin` vector is empty.
-    match tx.input.len() {
-        0 => return Err(M6idErrorInner::MissingTreasuryInput.into()),
-        1 => (),
-        n_inputs => return Err(M6idErrorInner::ManyInputs { n_inputs }.into()),
+impl OpDrivechain {
+    /// BIP300 M6: the blinded id of the withdrawal bundle `tx`, given the
+    /// treasury value it spends. Recognises the treasury output under this
+    /// network's opcode.
+    pub fn compute_m6id(
+        self,
+        mut tx: Transaction,
+        previous_treasury_utxo_total: Amount,
+    ) -> Result<(M6id, SidechainNumber), M6idError> {
+        // Check that a new treasury UTXO is created at index 0
+        let Some((first_output, payout_outputs)) = tx.output.split_first_mut() else {
+            return Err(M6idErrorInner::MissingTreasuryOutput.into());
+        };
+        let (_, sidechain_number) =
+            self.parse(first_output.script_pubkey.as_bytes())
+                .map_err(|err| M6idErrorInner::InvalidSpk {
+                    script_pubkey: first_output.script_pubkey.clone(),
+                    source: err.to_owned(),
+                })?;
+        // Set `T_n` equal to the `nValue` of the treasury UTXO created in this `M6`.
+        let t_n = first_output.value;
+        // Remove the single input spending the previous treasury UTXO from the `vin`
+        // vector, so that the `vin` vector is empty.
+        match tx.input.len() {
+            0 => return Err(M6idErrorInner::MissingTreasuryInput.into()),
+            1 => (),
+            n_inputs => return Err(M6idErrorInner::ManyInputs { n_inputs }.into()),
+        }
+        tx.input.clear();
+        // Compute `P_total` by summing the `nValue`s of all pay out outputs in this
+        // `M6`, so `P_total` = sum of `nValue`s of all outputs of this `M6` except for
+        // the new treasury UTXO at index 0.
+        let p_total: Amount = payout_outputs
+            .iter()
+            .map(|o| o.value)
+            .checked_sum()
+            .ok_or(M6idErrorInner::WithdrawalAmountOverflow)?;
+        // Compute `F_total = T_n-1 - T_n - P_total`, since we know that `T_n = T_n-1 -
+        // P_total - F_total`, `T_n-1` was passed as an argument, and `T_n` and
+        // `P_total` were computed in previous steps..
+        let t_n_minus_1 = previous_treasury_utxo_total;
+        let total_output_amount = t_n
+            .checked_add(p_total)
+            .ok_or(M6idErrorInner::TotalOutputAmountOverflow)?;
+        let f_total = t_n_minus_1
+            .checked_sub(total_output_amount)
+            .ok_or_else(|| M6idErrorInner::InsufficientTreasury {
+                spend_sats: total_output_amount.to_sat(),
+                treasury_sats: t_n_minus_1.to_sat(),
+            })?;
+        // Encode `F_total` as `F_total_be_bytes`, an array of 8 bytes encoding the 64
+        // bit unsigned integer in big endian order.
+        let f_total_be_bytes: [u8; 8] = f_total.to_sat().to_be_bytes();
+        // Replace the treasury output with the fee output
+        let fee_output = TxOut {
+            script_pubkey: ScriptBuf::new_op_return(f_total_be_bytes),
+            value: Amount::ZERO,
+        };
+        *first_output = fee_output;
+        // At this point we have constructed `M6_blinded`
+        Ok((M6id(tx.compute_txid()), sidechain_number))
     }
-    tx.input.clear();
-    // Compute `P_total` by summing the `nValue`s of all pay out outputs in this
-    // `M6`, so `P_total` = sum of `nValue`s of all outputs of this `M6` except for
-    // the new treasury UTXO at index 0.
-    let p_total: Amount = payout_outputs
-        .iter()
-        .map(|o| o.value)
-        .checked_sum()
-        .ok_or(M6idErrorInner::WithdrawalAmountOverflow)?;
-    // Compute `F_total = T_n-1 - T_n - P_total`, since we know that `T_n = T_n-1 -
-    // P_total - F_total`, `T_n-1` was passed as an argument, and `T_n` and
-    // `P_total` were computed in previous steps..
-    let t_n_minus_1 = previous_treasury_utxo_total;
-    let total_output_amount = t_n
-        .checked_add(p_total)
-        .ok_or(M6idErrorInner::TotalOutputAmountOverflow)?;
-    let f_total = t_n_minus_1
-        .checked_sub(total_output_amount)
-        .ok_or_else(|| M6idErrorInner::InsufficientTreasury {
-            spend_sats: total_output_amount.to_sat(),
-            treasury_sats: t_n_minus_1.to_sat(),
-        })?;
-    // Encode `F_total` as `F_total_be_bytes`, an array of 8 bytes encoding the 64
-    // bit unsigned integer in big endian order.
-    let f_total_be_bytes: [u8; 8] = f_total.to_sat().to_be_bytes();
-    // Replace the treasury output with the fee output
-    let fee_output = TxOut {
-        script_pubkey: ScriptBuf::new_op_return(f_total_be_bytes),
-        value: Amount::ZERO,
-    };
-    *first_output = fee_output;
-    // At this point we have constructed `M6_blinded`
-    Ok((M6id(tx.compute_txid()), sidechain_number))
 }
 
 // Move all non-consensus components out of Bitcoin Core.
@@ -1129,21 +1140,33 @@ mod tests {
         Ok(())
     }
 
-    // ── parse_op_drivechain / op_drivechain_script roundtrip ──
+    // ── OpDrivechain::script / OpDrivechain::parse roundtrip ──
 
     #[test]
     fn op_drivechain_script_roundtrip() -> miette::Result<()> {
-        use crate::types::op_drivechain_script;
-
-        for n in [0u8, 1, 42, 255] {
-            let sc = SidechainNumber(n);
-            let script = op_drivechain_script(sc);
-            let bytes = script.to_bytes();
-            let (_rest, parsed_sc) = parse_op_drivechain(&bytes)
-                .map_err(|err| miette::miette!("parse failed for sc {n}: {err}"))?;
-            assert_eq!(parsed_sc, sc, "sidechain number mismatch for {n}");
+        for op_drivechain in [OpDrivechain::NOP5, OpDrivechain::NOP8] {
+            for n in [0u8, 1, 42, 255] {
+                let sc = SidechainNumber(n);
+                let bytes = op_drivechain.script(sc).to_bytes();
+                let (_rest, parsed_sc) = op_drivechain
+                    .parse(&bytes)
+                    .map_err(|err| miette::miette!("parse failed for sc {n}: {err}"))?;
+                assert_eq!(parsed_sc, sc, "sidechain number mismatch for {n}");
+            }
         }
         Ok(())
+    }
+
+    /// A treasury script is only a treasury script under the opcode its
+    /// network reserves: betanet's `OP_NOP8` parser must not accept an
+    /// `OP_NOP5` script, and vice versa.
+    #[test]
+    fn op_drivechain_parse_rejects_the_other_opcode() {
+        let sc = SidechainNumber(1);
+        let nop5_script = OpDrivechain::NOP5.script(sc).to_bytes();
+        let nop8_script = OpDrivechain::NOP8.script(sc).to_bytes();
+        assert!(OpDrivechain::NOP8.parse(&nop5_script).is_err());
+        assert!(OpDrivechain::NOP5.parse(&nop8_script).is_err());
     }
 
     /// BIP 300/301 message scripts have explicit exact-length rules (M2/M3
@@ -1209,25 +1232,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_op_drivechain_rejects_invalid_scripts() {
+    fn op_drivechain_parse_rejects_invalid_scripts() {
         // Empty input
-        assert!(parse_op_drivechain(&[]).is_err());
+        assert!(OpDrivechain::NOP5.parse(&[]).is_err());
         // Just OP_RETURN (wrong opcode)
-        assert!(parse_op_drivechain(&[OP_RETURN.to_u8(), 0x01, 0x00]).is_err());
+        assert!(
+            OpDrivechain::NOP5
+                .parse(&[OP_RETURN.to_u8(), 0x01, 0x00])
+                .is_err()
+        );
         // Missing OP_TRUE at end
         assert!(
-            parse_op_drivechain(&[OP_DRIVECHAIN.to_u8(), OP_PUSHBYTES_1.to_u8(), 0x01]).is_err()
+            OpDrivechain::NOP5
+                .parse(&[
+                    OpDrivechain::NOP5.opcode().to_u8(),
+                    OP_PUSHBYTES_1.to_u8(),
+                    0x01
+                ])
+                .is_err()
         );
         // Junk at the end
         assert!(
-            parse_op_drivechain(&[
-                OP_DRIVECHAIN.to_u8(),
-                OP_PUSHBYTES_1.to_u8(),
-                0x01,
-                OP_TRUE.to_u8(),
-                0xAB,
-            ])
-            .is_err()
+            OpDrivechain::NOP5
+                .parse(&[
+                    OpDrivechain::NOP5.opcode().to_u8(),
+                    OP_PUSHBYTES_1.to_u8(),
+                    0x01,
+                    OP_TRUE.to_u8(),
+                    0xAB,
+                ])
+                .is_err()
         );
     }
 
@@ -1278,17 +1312,19 @@ mod tests {
     #[test]
     fn create_m5_deposit_output_value_and_script() -> miette::Result<()> {
         let sc = SidechainNumber(3);
-        let output =
-            create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000)).unwrap();
+        let output = OpDrivechain::NOP5
+            .create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000))
+            .unwrap();
         assert_eq!(output.value, Amount::from_sat(6_000));
         let bytes = output.script_pubkey.to_bytes();
-        let (_, parsed_sc) =
-            parse_op_drivechain(&bytes).map_err(|err| miette::miette!("parse failed: {err}"))?;
+        let (_, parsed_sc) = OpDrivechain::NOP5
+            .parse(&bytes)
+            .map_err(|err| miette::miette!("parse failed: {err}"))?;
         assert_eq!(parsed_sc, sc);
 
-        let output =
-            create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100))
-                .unwrap();
+        let output = OpDrivechain::NOP5
+            .create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100))
+            .unwrap();
         assert_eq!(output.value, Amount::from_sat(100));
         Ok(())
     }
@@ -1297,7 +1333,7 @@ mod tests {
     fn create_m5_deposit_output_rejects_overflow() {
         // A deposit value that overflows the treasury total must error rather
         // than panic on the addition.
-        let result = create_m5_deposit_output(
+        let result = OpDrivechain::NOP5.create_m5_deposit_output(
             SidechainNumber(0),
             Amount::from_sat(u64::MAX),
             Amount::from_sat(1),
@@ -1315,7 +1351,7 @@ mod tests {
         payouts: &[Amount],
     ) -> Transaction {
         let mut output = vec![TxOut {
-            script_pubkey: crate::types::op_drivechain_script(sidechain_number),
+            script_pubkey: OpDrivechain::NOP5.script(sidechain_number),
             value: new_treasury_value,
         }];
         output.extend(payouts.iter().map(|value| TxOut {
@@ -1334,38 +1370,41 @@ mod tests {
     fn compute_m6id_valid_inputs() -> miette::Result<()> {
         let sc = SidechainNumber(1);
         // Standard case with non-zero fee
-        let (m6id, parsed_sc) = compute_m6id(
-            build_m6_tx(sc, Amount::from_sat(6_000), &[Amount::from_sat(3_000)]),
-            Amount::from_sat(10_000),
-        )
-        .into_diagnostic()?;
+        let (m6id, parsed_sc) = OpDrivechain::NOP5
+            .compute_m6id(
+                build_m6_tx(sc, Amount::from_sat(6_000), &[Amount::from_sat(3_000)]),
+                Amount::from_sat(10_000),
+            )
+            .into_diagnostic()?;
         assert_eq!(parsed_sc, sc);
         assert_ne!(m6id.0, bitcoin::Txid::all_zeros());
 
         // Zero fee (old = new + payouts) is valid
         assert!(
-            compute_m6id(
-                build_m6_tx(sc, Amount::from_sat(3_000), &[Amount::from_sat(2_000)]),
-                Amount::from_sat(5_000),
-            )
-            .is_ok()
+            OpDrivechain::NOP5
+                .compute_m6id(
+                    build_m6_tx(sc, Amount::from_sat(3_000), &[Amount::from_sat(2_000)]),
+                    Amount::from_sat(5_000),
+                )
+                .is_ok()
         );
 
         // Multiple payouts
         assert!(
-            compute_m6id(
-                build_m6_tx(
-                    sc,
-                    Amount::from_sat(4_000),
-                    &[
-                        Amount::from_sat(1_000),
-                        Amount::from_sat(2_000),
-                        Amount::from_sat(500),
-                    ],
-                ),
-                Amount::from_sat(10_000),
-            )
-            .is_ok()
+            OpDrivechain::NOP5
+                .compute_m6id(
+                    build_m6_tx(
+                        sc,
+                        Amount::from_sat(4_000),
+                        &[
+                            Amount::from_sat(1_000),
+                            Amount::from_sat(2_000),
+                            Amount::from_sat(500),
+                        ],
+                    ),
+                    Amount::from_sat(10_000),
+                )
+                .is_ok()
         );
         Ok(())
     }
@@ -1377,12 +1416,17 @@ mod tests {
             Amount::from_sat(5_000),
             &[Amount::from_sat(2_000)],
         );
-        let (id1, _) = compute_m6id(tx1.clone(), Amount::from_sat(8_000)).into_diagnostic()?;
-        let (id1_again, _) =
-            compute_m6id(tx1.clone(), Amount::from_sat(8_000)).into_diagnostic()?;
+        let (id1, _) = OpDrivechain::NOP5
+            .compute_m6id(tx1.clone(), Amount::from_sat(8_000))
+            .into_diagnostic()?;
+        let (id1_again, _) = OpDrivechain::NOP5
+            .compute_m6id(tx1.clone(), Amount::from_sat(8_000))
+            .into_diagnostic()?;
         assert_eq!(id1, id1_again);
 
-        let (id2, _) = compute_m6id(tx1, Amount::from_sat(9_000)).into_diagnostic()?;
+        let (id2, _) = OpDrivechain::NOP5
+            .compute_m6id(tx1, Amount::from_sat(9_000))
+            .into_diagnostic()?;
         assert_ne!(id1, id2);
         Ok(())
     }
@@ -1398,32 +1442,46 @@ mod tests {
         };
 
         // No outputs → MissingTreasuryOutput
-        assert!(compute_m6id(tx_with(|t| t.output.clear()), Amount::from_sat(1_000)).is_err());
+        assert!(
+            OpDrivechain::NOP5
+                .compute_m6id(tx_with(|t| t.output.clear()), Amount::from_sat(1_000))
+                .is_err()
+        );
 
         // No inputs → MissingTreasuryInput
-        assert!(compute_m6id(tx_with(|t| t.input.clear()), Amount::from_sat(2_000)).is_err());
+        assert!(
+            OpDrivechain::NOP5
+                .compute_m6id(tx_with(|t| t.input.clear()), Amount::from_sat(2_000))
+                .is_err()
+        );
 
         // Multiple inputs → ManyInputs
         assert!(
-            compute_m6id(
-                tx_with(|t| t.input.push(bitcoin::TxIn::default())),
-                Amount::from_sat(7_000),
-            )
-            .is_err()
+            OpDrivechain::NOP5
+                .compute_m6id(
+                    tx_with(|t| t.input.push(bitcoin::TxIn::default())),
+                    Amount::from_sat(7_000),
+                )
+                .is_err()
         );
 
         // First output isn't OP_DRIVECHAIN → InvalidSpk
         assert!(
-            compute_m6id(
-                tx_with(|t| t.output[0].script_pubkey = ScriptBuf::new()),
-                Amount::from_sat(2_000),
-            )
-            .is_err()
+            OpDrivechain::NOP5
+                .compute_m6id(
+                    tx_with(|t| t.output[0].script_pubkey = ScriptBuf::new()),
+                    Amount::from_sat(2_000),
+                )
+                .is_err()
         );
 
         // Spend > old treasury → InsufficientTreasury
         let overspending = build_m6_tx(sc, Amount::from_sat(5_000), &[Amount::from_sat(3_000)]);
-        assert!(compute_m6id(overspending, Amount::from_sat(7_000)).is_err());
+        assert!(
+            OpDrivechain::NOP5
+                .compute_m6id(overspending, Amount::from_sat(7_000))
+                .is_err()
+        );
     }
 
     /// BIP300 M4 forces the encoding: `OneByte` stops one short of the alarm

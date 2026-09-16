@@ -16,7 +16,7 @@ use bitcoin::{
     hashes::{Hash as _, sha256d},
     opcodes::{
         OP_TRUE,
-        all::{OP_NOP5, OP_RETURN},
+        all::{OP_NOP5, OP_NOP8, OP_RETURN},
     },
     script::{Instruction, Instructions},
 };
@@ -121,6 +121,8 @@ pub struct NetworkParams {
     /// P2P message-start bytes.`None` means the stock magic for the
     /// reported network.
     pub network_magic: Option<[u8; 4]>,
+    /// The opcode the node's build reserves for `OP_DRIVECHAIN`.
+    pub op_drivechain: OpDrivechain,
 }
 
 impl NetworkParams {
@@ -132,6 +134,7 @@ impl NetworkParams {
             bip300_activation_height: 0,
             datadir_suffix: None,
             network_magic: None,
+            op_drivechain: OpDrivechain::NOP5,
         }
     }
 
@@ -145,6 +148,7 @@ impl NetworkParams {
             bip300_activation_height: 961_632,
             datadir_suffix: Some("drynet4"),
             network_magic: Some([0xec, 0xa5, 0xd4, 0x04]),
+            op_drivechain: OpDrivechain::NOP5,
         }
     }
 
@@ -158,19 +162,22 @@ impl NetworkParams {
             bip300_activation_height: 963_648,
             datadir_suffix: Some("alphanet"),
             network_magic: Some([0xec, 0xa5, 0xa1, 0x04]),
+            op_drivechain: OpDrivechain::NOP5,
         }
     }
 
     /// Betanet: the successor to [`Self::alphanet`], a mainnet fork at the
     /// retarget boundary 967,680 (2016 × 480), trialing
     /// [`Thresholds::BETANET`] at mainnet scale. The build rebrands the P2P
-    /// magic with `b1` in place of alphanet's `a1`.
+    /// magic with `b1` in place of alphanet's `a1`, and moves `OP_DRIVECHAIN`
+    /// from `OP_NOP5` to `OP_NOP8`.
     pub const fn betanet() -> Self {
         Self {
             thresholds: Thresholds::BETANET,
             bip300_activation_height: 967_680,
             datadir_suffix: Some("betanet"),
             network_magic: Some([0xec, 0xa5, 0xb1, 0x04]),
+            op_drivechain: OpDrivechain::NOP8,
         }
     }
 
@@ -182,6 +189,7 @@ impl NetworkParams {
             bip300_activation_height: 10,
             datadir_suffix: Some("test-activation"),
             network_magic: None,
+            op_drivechain: OpDrivechain::NOP5,
         }
     }
 }
@@ -892,15 +900,34 @@ impl From<bitcoin::FeeRate> for FeePolicy {
     }
 }
 
-pub const OP_DRIVECHAIN: Opcode = OP_NOP5;
+/// The opcode a network's node build reserves for `OP_DRIVECHAIN`, which
+/// marks a sidechain's treasury output. BIP300 repurposes `OP_NOP5`, as does
+/// every drivechain-patched build up to alphanet; betanet moved it to
+/// `OP_NOP8`. It is therefore a network parameter, see
+/// [`NetworkParams::op_drivechain`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpDrivechain(Opcode);
 
-/// Create an OP_DRIVECHAIN script for the specified sidechain
-pub fn op_drivechain_script(sidechain_number: SidechainNumber) -> ScriptBuf {
-    let mut res = ScriptBuf::new();
-    res.push_opcode(OP_DRIVECHAIN);
-    res.push_slice([sidechain_number.0]);
-    res.push_opcode(OP_TRUE);
-    res
+impl OpDrivechain {
+    /// `OP_NOP5` (`0xb4`), as specified by BIP300.
+    pub const NOP5: Self = Self(OP_NOP5);
+    /// `OP_NOP8` (`0xb7`), which betanet uses instead.
+    pub const NOP8: Self = Self(OP_NOP8);
+
+    pub const fn opcode(self) -> Opcode {
+        self.0
+    }
+
+    /// The treasury script for `sidechain_number`:
+    /// `OP_DRIVECHAIN OP_PUSHBYTES_1 <S> OP_TRUE`. [`Self::parse`] reads it
+    /// back.
+    pub fn script(self, sidechain_number: SidechainNumber) -> ScriptBuf {
+        let mut res = ScriptBuf::new();
+        res.push_opcode(self.0);
+        res.push_slice([sidechain_number.0]);
+        res.push_opcode(OP_TRUE);
+        res
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -1091,6 +1118,7 @@ impl<'a> BlindedM6<'a> {
     // TODO: remove sidechain_number param
     pub fn into_m6(
         self,
+        op_drivechain: OpDrivechain,
         sidechain_number: SidechainNumber,
         treasury_outpoint: OutPoint,
         treasury_value: Amount,
@@ -1109,7 +1137,7 @@ impl<'a> BlindedM6<'a> {
                 .checked_sub(fee)
                 .ok_or(AmountUnderflowError)?;
             bitcoin::TxOut {
-                script_pubkey: op_drivechain_script(sidechain_number),
+                script_pubkey: op_drivechain.script(sidechain_number),
                 value,
             }
         };

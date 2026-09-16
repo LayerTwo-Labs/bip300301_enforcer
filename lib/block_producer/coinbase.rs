@@ -7,9 +7,9 @@ use crate::{
     block_producer::{BlockProducer, BundleProposals, error},
     messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
     types::{
-        AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, M6id, Sidechain,
-        SidechainAck, SidechainNumber, SidechainProposal, SidechainProposalId, Thresholds,
-        WithdrawalBundlePolicy, WithdrawalBundleVote,
+        AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, M6id, NetworkParams,
+        OpDrivechain, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
+        SidechainProposalId, WithdrawalBundlePolicy, WithdrawalBundleVote,
     },
 };
 
@@ -441,13 +441,14 @@ impl BlockProducer {
     /// with its successor CTIP. BIP300 requires the replacement treasury output
     /// at index zero.
     fn finalize_m6(
+        op_drivechain: OpDrivechain,
         sidechain_id: SidechainNumber,
         ctip: Ctip,
         blinded_m6: BlindedM6<'_>,
     ) -> Result<(Transaction, Ctip), AmountUnderflowError> {
         let new_value =
             Self::new_treasury_value(ctip.value, *blinded_m6.fee(), *blinded_m6.payout())?;
-        let m6 = blinded_m6.into_m6(sidechain_id, ctip.outpoint, ctip.value)?;
+        let m6 = blinded_m6.into_m6(op_drivechain, sidechain_id, ctip.outpoint, ctip.value)?;
         let successor = Ctip {
             outpoint: OutPoint {
                 txid: m6.compute_txid(),
@@ -470,13 +471,13 @@ impl BlockProducer {
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
     ) -> Result<Vec<Transaction>, error::GetBundleProposals> {
-        let thresholds = self.validator().network_params().thresholds;
+        let params = self.validator().network_params();
         let used_slots = Self::used_slots(&self.validator().get_active_sidechains()?);
         let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
         Ok(Self::suffix_txs_for_proposals(
             bundle_proposals,
             ctips,
-            &thresholds,
+            &params,
         ))
     }
 
@@ -493,14 +494,14 @@ impl BlockProducer {
     fn suffix_txs_for_proposals(
         bundle_proposals: HashMap<SidechainNumber, BundleProposals>,
         ctips: &HashMap<SidechainNumber, Ctip>,
-        thresholds: &Thresholds,
+        params: &NetworkParams,
     ) -> Vec<Transaction> {
         let mut res = Vec::new();
         for (sidechain_id, m6ids) in bundle_proposals {
             let mut ctip = None;
             for (m6id, blinded_m6, m6id_info) in m6ids {
                 let Some(m6id_info) = m6id_info else { continue };
-                if m6id_info.vote_count <= thresholds.withdrawal_bundle_inclusion_threshold {
+                if m6id_info.vote_count <= params.thresholds.withdrawal_bundle_inclusion_threshold {
                     continue;
                 }
                 let current_ctip = if let Some(ctip) = ctip {
@@ -530,7 +531,7 @@ impl BlockProducer {
                 // behind it could pay out either, so the output is the same.)
                 let (fee, payout) = (*blinded_m6.fee(), *blinded_m6.payout());
                 let Ok((m6, successor_ctip)) =
-                    Self::finalize_m6(sidechain_id, current_ctip, blinded_m6)
+                    Self::finalize_m6(params.op_drivechain, sidechain_id, current_ctip, blinded_m6)
                 else {
                     tracing::warn!(
                         %sidechain_id,
@@ -565,9 +566,9 @@ mod tests {
     use crate::{
         block_producer::{BlockProducer, BundleProposals},
         types::{
-            AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, PendingM6idInfo,
-            SidechainAck, SidechainDescription, SidechainNumber, SidechainProposal, Thresholds,
-            op_drivechain_script,
+            AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, NetworkParams,
+            OpDrivechain, PendingM6idInfo, SidechainAck, SidechainDescription, SidechainNumber,
+            SidechainProposal, Thresholds,
         },
     };
 
@@ -579,6 +580,8 @@ mod tests {
     }
 
     const THRESHOLDS: Thresholds = Thresholds::SHORT;
+    /// Regtest: [`THRESHOLDS`] and the BIP300 `OP_DRIVECHAIN` opcode.
+    const PARAMS: NetworkParams = NetworkParams::for_network(bitcoin::Network::Regtest);
     const TREASURY_VALUE: Amount = Amount::from_sat(1_000_000);
     const FEE_SATS: u64 = 1_000;
     const PAYOUT: Amount = Amount::from_sat(50_000);
@@ -640,8 +643,7 @@ mod tests {
             HashMap::from_iter([(NO_CTIP, approved_bundle()), (WITH_CTIP, approved_bundle())]);
         let ctips = HashMap::from_iter([(WITH_CTIP, ctip(1))]);
 
-        let suffix_txs =
-            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &THRESHOLDS);
+        let suffix_txs = BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS);
 
         // The payable sidechain still gets its M6, spending its own CTIP.
         assert_eq!(suffix_txs.len(), 1);
@@ -660,7 +662,7 @@ mod tests {
     fn suffix_txs_are_empty_when_no_sidechain_has_a_ctip() {
         let bundle_proposals = HashMap::from_iter([(SidechainNumber(0), approved_bundle())]);
         let suffix_txs =
-            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &HashMap::new(), &THRESHOLDS);
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &HashMap::new(), &PARAMS);
         assert!(suffix_txs.is_empty());
     }
 
@@ -683,8 +685,7 @@ mod tests {
         let bundle_proposals = HashMap::from_iter([(SIDECHAIN, bundles)]);
         let ctips = HashMap::from_iter([(SIDECHAIN, ctip(0))]);
 
-        let suffix_txs =
-            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &THRESHOLDS);
+        let suffix_txs = BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS);
 
         let [first_m6, second_m6] = suffix_txs.as_slice() else {
             panic!("expected exactly the two payable M6s, got {suffix_txs:?}");
@@ -790,13 +791,17 @@ mod tests {
             value: Amount::from_sat(200_000),
         };
 
-        let (first_m6, first_successor) =
-            BlockProducer::finalize_m6(sidechain_id, initial_ctip, test_blinded_m6(1_000, 50_000))
-                .unwrap();
+        let (first_m6, first_successor) = BlockProducer::finalize_m6(
+            OpDrivechain::NOP5,
+            sidechain_id,
+            initial_ctip,
+            test_blinded_m6(1_000, 50_000),
+        )
+        .unwrap();
         let first_txid = first_m6.compute_txid();
         assert_eq!(
             first_m6.output[0].script_pubkey,
-            op_drivechain_script(sidechain_id)
+            OpDrivechain::NOP5.script(sidechain_id)
         );
         assert_eq!(
             first_successor.outpoint,
@@ -808,6 +813,7 @@ mod tests {
         assert_eq!(first_successor.value, Amount::from_sat(149_000));
 
         let (second_m6, second_successor) = BlockProducer::finalize_m6(
+            OpDrivechain::NOP5,
             sidechain_id,
             first_successor,
             test_blinded_m6(2_000, 25_000),

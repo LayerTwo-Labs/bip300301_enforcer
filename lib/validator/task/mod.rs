@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     messages::{
         CoinbaseMessage, CoinbaseMessages, M1ProposeSidechain, M2AckSidechain, M3ProposeBundle,
-        M4AckBundles, M7BmmAccept, compute_m6id, parse_m8_tx, parse_op_drivechain,
+        M4AckBundles, M7BmmAccept, parse_m8_tx,
     },
     proto::mainchain::HeaderSyncProgress,
     types::{
@@ -654,7 +654,10 @@ impl BlockHandler<'_> {
         transaction: Transaction,
         old_treasury_value: Amount,
     ) -> Result<(M6id, SidechainNumber, usize, PendingM6idInfo), error::HandleM5M6> {
-        let (m6id, sidechain_number) = compute_m6id(transaction, old_treasury_value)?;
+        let (m6id, sidechain_number) = self
+            .params
+            .op_drivechain
+            .compute_m6id(transaction, old_treasury_value)?;
 
         let pending_m6ids = self
             .dbs
@@ -715,8 +718,10 @@ impl BlockHandler<'_> {
         let new_ctips = {
             let mut new_ctips = HashMap::<SidechainNumber, Ctip>::new();
             for (vout, output) in transaction.output.iter().enumerate() {
-                if let Ok((_input, sidechain_number)) =
-                    parse_op_drivechain(output.script_pubkey.as_bytes())
+                if let Ok((_input, sidechain_number)) = self
+                    .params
+                    .op_drivechain
+                    .parse(output.script_pubkey.as_bytes())
                 {
                     // An OP_DRIVECHAIN output only designates a treasury UTXO
                     // for an *active* sidechain slot. On the mainchain
@@ -800,7 +805,7 @@ impl BlockHandler<'_> {
                     // violation.
                     assert_eq!(
                         sidechain_number, sidechain_number_,
-                        "invariant violation: parse_op_drivechain returned different \
+                        "invariant violation: OpDrivechain::parse returned different \
                         sidechain numbers for the same output",
                     );
                     let sequence_number = dbs
@@ -2329,10 +2334,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        messages::{M4AckBundles, M8BmmRequest, create_m5_deposit_output},
+        messages::{M4AckBundles, M8BmmRequest},
         types::{
-            BmmCommitment, BmmCommitments, Ctip, M6id, SidechainDescription, SidechainNumber,
-            SidechainProposal,
+            BmmCommitment, BmmCommitments, Ctip, M6id, OpDrivechain, SidechainDescription,
+            SidechainNumber, SidechainProposal,
         },
         validator::test_utils::{create_test_dbs, test_block_header, test_m6id, test_sidechain},
     };
@@ -2386,8 +2391,9 @@ mod tests {
         old_ctip_value: Amount,
         deposit_amount: Amount,
     ) -> Transaction {
-        let treasury_output =
-            create_m5_deposit_output(sidechain_number, old_ctip_value, deposit_amount).unwrap();
+        let treasury_output = OpDrivechain::NOP5
+            .create_m5_deposit_output(sidechain_number, old_ctip_value, deposit_amount)
+            .unwrap();
         let address_output = TxOut {
             script_pubkey: ScriptBuf::new_op_return(
                 bitcoin::script::PushBytesBuf::try_from(b"sidechain_address".to_vec()).unwrap(),
@@ -2421,7 +2427,11 @@ mod tests {
                 previous_output: input_outpoint,
                 ..TxIn::default()
             }],
-            output: vec![create_m5_deposit_output(slot, Amount::ZERO, value).unwrap()],
+            output: vec![
+                OpDrivechain::NOP5
+                    .create_m5_deposit_output(slot, Amount::ZERO, value)
+                    .unwrap(),
+            ],
         }
     }
 
@@ -3176,8 +3186,9 @@ mod tests {
         // A deposit that creates the treasury UTXO but omits the required
         // address OP_RETURN output. Per BIP300 it must be rejected, not
         // accepted with an empty address.
-        let treasury_output =
-            create_m5_deposit_output(sc, old_value, Amount::from_sat(3_000)).unwrap();
+        let treasury_output = OpDrivechain::NOP5
+            .create_m5_deposit_output(sc, old_value, Amount::from_sat(3_000))
+            .unwrap();
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -3352,7 +3363,8 @@ mod tests {
 
         // Sanity check: the output really does parse as a treasury UTXO.
         assert_eq!(
-            parse_op_drivechain(tx.output[0].script_pubkey.as_bytes())
+            OpDrivechain::NOP5
+                .parse(tx.output[0].script_pubkey.as_bytes())
                 .expect("output should parse as OP_DRIVECHAIN")
                 .1,
             inactive,

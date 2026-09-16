@@ -13,7 +13,7 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format as tracing_format;
 use zeroize::Zeroizing;
 
-use crate::types::NetworkParams;
+use crate::types::{NetworkParams, OpDrivechain};
 
 const DEFAULT_NODE_RPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 18443));
@@ -342,6 +342,25 @@ impl NetworkPreset {
     }
 }
 
+/// The opcode the node's build reserves for `OP_DRIVECHAIN`, see
+/// [`OpDrivechain`].
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+pub enum OpDrivechainOpcode {
+    /// OP_NOP5 (0xb4): BIP300, and every build up to alphanet
+    Nop5,
+    /// OP_NOP8 (0xb7): betanet
+    Nop8,
+}
+
+impl From<OpDrivechainOpcode> for OpDrivechain {
+    fn from(opcode: OpDrivechainOpcode) -> Self {
+        match opcode {
+            OpDrivechainOpcode::Nop5 => Self::NOP5,
+            OpDrivechainOpcode::Nop8 => Self::NOP8,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, ValueEnum)]
 pub enum WalletSyncSource {
     /// Communicates over the Electrum protocol.
@@ -494,6 +513,14 @@ pub struct Config {
     // only needed for tests and dev purposes.
     #[arg(long, value_parser = parse_network_magic, hide = true)]
     pub network_magic: Option<[u8; 4]>,
+    /// The opcode the node's build reserves for `OP_DRIVECHAIN`. Overrides the
+    /// value from `--network-preset` or the node's reported network.
+    //
+    // Hidden for the same reason as `--network-magic`: a preset is the
+    // intended way to get this. Only the integration tests run a build that
+    // moved the opcode on a chain without a preset.
+    #[arg(long, value_enum, hide = true)]
+    pub op_drivechain: Option<OpDrivechainOpcode>,
     /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
     /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
@@ -898,6 +925,7 @@ mod tests {
         Config, NetworkPreset, REDACTED, SecretString, UNSET, is_secret_arg,
         redact_embedded_credentials,
     };
+    use crate::types::OpDrivechain;
 
     /// Each preset's `--network-preset` spelling reaches the parameters it
     /// names, activation height included.
@@ -948,6 +976,32 @@ mod tests {
         assert!(parse(&["--network-magic=eca5d4"]).is_err());
         assert!(parse(&["--network-magic=eca5d40400"]).is_err());
         assert!(parse(&["--network-magic=nothex!!"]).is_err());
+    }
+
+    /// Betanet moved `OP_DRIVECHAIN`, and the integration tests run its
+    /// build on regtest, where no preset applies, so the harness names the
+    /// opcode directly. This only works while the flag keeps this spelling.
+    #[test]
+    fn op_drivechain_flag_overrides_the_network_default() {
+        let cli = Config::try_parse_from(["bip300301_enforcer", "--op-drivechain=nop8"])
+            .expect("should parse");
+        assert_eq!(
+            cli.op_drivechain.map(OpDrivechain::from),
+            Some(OpDrivechain::NOP8)
+        );
+        assert!(
+            Config::try_parse_from(["bip300301_enforcer", "--op-drivechain=nop6"]).is_err(),
+            "only opcodes some build actually reserves are accepted"
+        );
+        // The preset carries the same value, so a betanet run needs no flag.
+        assert_eq!(
+            NetworkPreset::Betanet.params().op_drivechain,
+            OpDrivechain::NOP8
+        );
+        assert_eq!(
+            NetworkPreset::Alphanet.params().op_drivechain,
+            OpDrivechain::NOP5
+        );
     }
 
     /// Presets share thresholds and even fork heights with each other, but

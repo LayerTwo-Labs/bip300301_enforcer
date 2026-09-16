@@ -1,9 +1,6 @@
 use std::{str::FromStr as _, time::Duration};
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    types::{SidechainNumber, op_drivechain_script},
-};
+use bip300301_enforcer_lib::{bins::CommandExt as _, types::SidechainNumber};
 use bitcoin::{
     Amount, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid, consensus::encode::serialize_hex,
     transaction::Version,
@@ -90,7 +87,7 @@ pub async fn test_inactive_slot_drivechain_output(mut post_setup: PostSetup) -> 
         }],
         output: vec![
             TxOut {
-                script_pubkey: op_drivechain_script(INACTIVE_SLOT),
+                script_pubkey: crate::setup::op_drivechain()?.script(INACTIVE_SLOT),
                 value: Amount::ZERO,
             },
             TxOut {
