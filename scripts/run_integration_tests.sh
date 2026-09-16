@@ -9,6 +9,7 @@
 #   stock-X.Y        a specific stock release from CI_BITCOIN_CORE_VERSIONS
 #   drynetN          the ecash-com/bitcoin drynet fork at that tag
 #   alphanet         the rolling build of ecash-com/bitcoin's alphanet branch
+#   betanet          the rolling build of ecash-com/bitcoin's betanet branch
 #   all              every flavor in the CI matrix, continuing past failures
 #
 # Remaining args go to the test runner. Missing dependencies are downloaded
@@ -86,13 +87,13 @@ case "$flavor" in
         # (BIP300 opcodes), matching the stock CI matrix entries.
         skip_patterns=('deposit_withdraw_roundtrip')
         ;;
-    drynet* | alphanet)
+    drynet* | alphanet | betanet)
         # A pinned `drynetN` tag has to be named for setup to fetch that one;
-        # `alphanet` is a fixed name that setup always fetches.
+        # the channels are fixed names that setup always fetches.
         case "$flavor" in drynet*) setup_env=("DRYNET_REVISION=$flavor") ;; esac
         ;;
     *)
-        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, alphanet, or all)" >&2
+        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, drynetN, alphanet, betanet, or all)" >&2
         exit 1
         ;;
 esac
