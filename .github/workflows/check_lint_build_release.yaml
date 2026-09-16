@@ -144,7 +144,7 @@ jobs:
         run: cargo shear --deny-warnings
 
   # Parses `CI_BITCOIN_CORE_VERSIONS` out of `lib/version.rs`, and the ecash
-  # builds (the pinned drynet tag plus the rolling alphanet build) out of
+  # builds (the pinned drynet tag plus the rolling channel builds) out of
   # `scripts/setup_integration_tests.sh`, and emits the integration-test
   # matrix. Keeping the list of stock versions in
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
@@ -190,10 +190,17 @@ jobs:
           # `grpc_checks` marks the one entry that also runs the
           # flavor-independent gRPC reflection checks.
           DRYNET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic "$DRYNET_TAG")
-          ALPHANET_MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic alphanet)
           ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
           ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $DRYNET_TAG\",\"zip\":\"L1-ecash-bitcoin-$DRYNET_TAG\",\"regtest_magic\":\"$DRYNET_MAGIC\"}"
-          ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin alphanet\",\"ecash\":\"alphanet\",\"regtest_magic\":\"$ALPHANET_MAGIC\"}"
+          for channel in $(./scripts/setup_integration_tests.sh --print-channels); do
+            if ! echo "$channel" | grep -qE '^[a-z0-9]+$'; then
+              echo "invalid ecash channel name from scripts/setup_integration_tests.sh: '$channel'" >&2
+              exit 1
+            fi
+            MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic "$channel")
+            OP_DRIVECHAIN=$(./scripts/setup_integration_tests.sh --print-op-drivechain "$channel")
+            ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $channel\",\"ecash\":\"$channel\",\"regtest_magic\":\"$MAGIC\",\"op_drivechain\":\"$OP_DRIVECHAIN\"}"
+          done
           for v in $VERSIONS; do
             ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
           done
@@ -461,6 +468,10 @@ jobs:
           # Bitcoin Core. Tests that pair nodes read this and run every node
           # on the rebranded build, passing the magic to the enforcer.
           export BITCOIND_REGTEST_MAGIC='${{ matrix.regtest_magic }}'
+          # A build that moved OP_DRIVECHAIN (betanet) is named to every
+          # enforcer the harness spawns, and to the tests that hand-build
+          # treasury outputs.
+          export BITCOIND_OP_DRIVECHAIN='${{ matrix.op_drivechain }}'
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
             export BITCOIND_HAS_DRIVECHAIN=0

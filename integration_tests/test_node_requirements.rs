@@ -228,13 +228,22 @@ async fn run_enforcer_until_exit(setup: &PreSetup, bitcoind: &Bitcoind) -> anyho
 /// generation cost. A corrupt cache file cannot cause silent breakage:
 /// `loadtxoutset` re-verifies the content hash against the node's
 /// chainparams entry.
+///
+/// The snapshot's metadata names the network magic of the bitcoind that
+/// dumped it, and `loadtxoutset` rejects a snapshot from a different magic as
+/// an unrecognized network. The rebranded builds share this cache directory
+/// with each other and with stock, so the cache key carries the magic too.
 async fn assumeutxo_snapshot(
     setup: &PreSetup,
     fixture: &SnapshotFixture,
     blocks: &[&str],
 ) -> anyhow::Result<std::path::PathBuf> {
     let cache_dir = assumeutxo_fixture_path(".cache");
-    let snapshot_path = cache_dir.join(format!("utxos-{}.dat", fixture.txoutset_hash));
+    let magic_suffix = crate::setup::bitcoind_regtest_magic()
+        .map(|magic| format!("-{magic}"))
+        .unwrap_or_default();
+    let snapshot_path =
+        cache_dir.join(format!("utxos-{}{magic_suffix}.dat", fixture.txoutset_hash));
     if snapshot_path.exists() {
         tracing::info!("Using cached UTXO snapshot: {}", snapshot_path.display());
         return Ok(snapshot_path);

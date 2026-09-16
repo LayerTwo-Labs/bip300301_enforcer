@@ -200,11 +200,12 @@ $ just test-it --bitcoind unpatched       # against the newest stock Bitcoin Cor
 $ just test-it --bitcoind stock-30.2      # against a specific stock release
 $ just test-it --bitcoind drynet4         # against the ecash-com/bitcoin drynet fork
 $ just test-it --bitcoind alphanet        # against the rolling ecash-com/bitcoin alphanet build
+$ just test-it --bitcoind betanet         # against the rolling ecash-com/bitcoin betanet build
 $ just test-it --bitcoind all             # against every flavor in the CI matrix
 ```
 
-The alphanet build is fetched from
-[releases.ecash.com](https://releases.ecash.com) and its build provenance
+The alphanet and betanet builds are fetched from
+[releases.ecash.com](https://releases.ecash.com) and their build provenance
 verified with `gh attestation verify`, so the
 [GitHub CLI](https://cli.github.com) must be installed (no login needed).
 
