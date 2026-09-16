@@ -1,9 +1,10 @@
 use std::{
+    collections::HashMap,
     num::NonZeroU64,
     path::{Path, PathBuf},
 };
 
-use bitcoin::{Amount, OutPoint};
+use bitcoin::{Amount, OutPoint, Txid};
 use fallible_iterator::FallibleIterator;
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
@@ -320,6 +321,11 @@ pub enum CreateDbsError {
 pub type ProposalIdToSidechain =
     DatabaseUnique<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>;
 
+/// Unconfirmed M5 deposits into the empty treasury of a single sidechain slot.
+/// Maps the treasury outpoint that each deposit creates to the txid of the
+/// first deposit in its chain.
+pub type SeenDeposits = HashMap<OutPoint, Txid>;
+
 #[derive(Clone)]
 pub(super) struct Dbs {
     env: Env,
@@ -330,10 +336,14 @@ pub(super) struct Dbs {
     pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub proposal_id_to_sidechain: ProposalIdToSidechain,
+    /// Mempool state rather than chain state: used for determining conflicts
+    /// between unconfirmed M5 deposits into an empty treasury. Only ever
+    /// populated for slots whose treasury does not exist yet.
+    seen_deposits: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<SeenDeposits>>,
 }
 
 impl Dbs {
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 5;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -361,6 +371,8 @@ impl Dbs {
         let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
         let proposal_id_to_sidechain =
             DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
+        let seen_deposits =
+            DatabaseUnique::create(&env, &mut rwtxn, "sidechain_number_to_seen_deposits")?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -372,7 +384,59 @@ impl Dbs {
             _leading_by_50: leading_by_50,
             _previous_votes: previous_votes,
             proposal_id_to_sidechain,
+            seen_deposits,
         })
+    }
+
+    /// Seen unconfirmed deposits into the empty treasury of a sidechain slot.
+    pub fn get_seen_deposits(
+        &self,
+        rotxn: &RoTxn,
+        sidechain_number: SidechainNumber,
+    ) -> Result<SeenDeposits, db::Error> {
+        Ok(self
+            .seen_deposits
+            .try_get(rotxn, &sidechain_number)?
+            .unwrap_or_default())
+    }
+
+    pub fn put_seen_deposit(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: SidechainNumber,
+        outpoint: OutPoint,
+        first_deposit: Txid,
+    ) -> Result<(), db::Error> {
+        let mut seen_deposits = self.get_seen_deposits(rwtxn, sidechain_number)?;
+        let _ = seen_deposits.insert(outpoint, first_deposit);
+        self.seen_deposits
+            .put(rwtxn, &sidechain_number, &seen_deposits)?;
+        Ok(())
+    }
+
+    /// Seen deposits are only tracked while the treasury for a slot does not
+    /// exist yet, so once a block has created it, they are obsolete. Delete
+    /// and return the seen deposits for every such slot, paired with the ctip
+    /// that now exists.
+    pub fn take_obsolete_seen_deposits(
+        &self,
+        rwtxn: &mut RwTxn,
+    ) -> Result<Vec<(Ctip, SeenDeposits)>, db::Error> {
+        let seen_deposits: Vec<(SidechainNumber, SeenDeposits)> =
+            self.seen_deposits.iter(rwtxn)?.collect()?;
+        let mut res = Vec::new();
+        for (sidechain_number, seen_deposits) in seen_deposits {
+            let Some(ctip) = self
+                .active_sidechains
+                .ctip()
+                .try_get(rwtxn, &sidechain_number)?
+            else {
+                continue;
+            };
+            let _ = self.seen_deposits.delete(rwtxn, &sidechain_number)?;
+            res.push((ctip, seen_deposits));
+        }
+        Ok(res)
     }
 
     pub fn read_txn(&self) -> Result<RoTxn<'_, heed::WithTls>, env::error::ReadTxn> {
