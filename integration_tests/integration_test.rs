@@ -333,6 +333,21 @@ pub async fn wait_for_wallet_sync(post_setup: &mut PostSetup) -> anyhow::Result<
 
 /// Block until electrs has indexed up to bitcoind's tip.
 ///
+/// "Indexed" means the tip block's transactions are visible through electrs's
+/// history index, not merely that electrs reports the tip height. The harness
+/// runs mempool-electrs, whose `Indexer::update` applies new headers to its
+/// chain tip *before* fetching and indexing the blocks ("must rollback blocks
+/// before rolling forward"), so `/blocks/tip/height` reports the new height
+/// while `/scripthash/:hash/txs` still knows nothing about the new blocks. A
+/// full scan sequenced on the height alone can run inside that window and
+/// silently miss outputs in the newest blocks. Blocks are indexed in order and
+/// history is the last index written, so the tip block's coinbase showing up
+/// in its payout script's history closes the window for every block below it.
+///
+/// The block at the target height is also checked against bitcoind's hash, so
+/// after a reorg this waits for electrs to have followed it, not just to have
+/// reached the height on the stale branch.
+///
 /// The test harness runs the enforcer with `--wallet-skip-periodic-sync`, so
 /// each full scan runs exactly once, at the point the test drives it, with no
 /// later retry to paper over a chain source that was still catching up. Every
@@ -348,34 +363,132 @@ pub async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> 
         .await?
         .trim()
         .parse()?;
-    let url = format!(
-        "http://127.0.0.1:{}/blocks/tip/height",
+    let target_hash = post_setup
+        .bitcoin_cli
+        .command::<String, _, _, _, _>([], "getblockhash", [target_height.to_string()])
+        .run_utf8()
+        .await?
+        .trim()
+        .to_owned();
+    let base_url = format!(
+        "http://127.0.0.1:{}",
         post_setup.reserved_ports.electrs_electrum_http.port()
     );
-    tracing::debug!("waiting for electrs to index up to block {target_height}");
+    tracing::debug!("waiting for electrs to index up to block {target_height} ({target_hash})");
 
     let client = reqwest::Client::new();
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
         // electrs returns 5xx while it is still opening its index, so a
         // failed request here is expected rather than fatal.
-        let indexed_height: Option<u32> = match client.get(&url).send().await {
-            Ok(response) => response
-                .text()
-                .await
-                .ok()
-                .and_then(|body| body.trim().parse().ok()),
-            Err(_) => None,
-        };
-        if indexed_height.is_some_and(|height| height >= target_height) {
-            return Ok(());
-        }
+        let missing =
+            match electrs_indexed_through(&client, &base_url, target_height, &target_hash).await {
+                Ok(()) => return Ok(()),
+                Err(missing) => missing,
+            };
         anyhow::ensure!(
             std::time::Instant::now() < deadline,
-            "electrs did not index up to block {target_height} within {TIMEOUT:?} \
-             (stuck at {indexed_height:?})"
+            "electrs did not index up to block {target_height} within {TIMEOUT:?} ({missing})"
         );
         sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// One probe for [`wait_for_electrs_tip`]: whether electrs's history index
+/// covers `target_hash`, the block bitcoind has at `target_height`.
+///
+/// `Err` describes what is still missing, for the timeout message. Transport
+/// errors and non-2xx responses count as missing: electrs 404s a block it has
+/// the header for but has not stored yet, and 5xxs while opening its index.
+async fn electrs_indexed_through(
+    client: &reqwest::Client,
+    base_url: &str,
+    target_height: u32,
+    target_hash: &str,
+) -> Result<(), String> {
+    use bitcoin::hashes::Hash as _;
+
+    async fn get(client: &reqwest::Client, url: String) -> Result<String, String> {
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|err| format!("GET {url}: {err}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|err| format!("GET {url}: {err}"))?;
+        if !status.is_success() {
+            return Err(format!("GET {url}: {status}: {}", body.trim()));
+        }
+        Ok(body)
+    }
+
+    let tip_height: u32 = get(client, format!("{base_url}/blocks/tip/height"))
+        .await?
+        .trim()
+        .parse()
+        .map_err(|err| format!("electrs tip height: {err}"))?;
+    if tip_height < target_height {
+        return Err(format!("electrs tip is at {tip_height}"));
+    }
+
+    let hash = get(client, format!("{base_url}/block-height/{target_height}")).await?;
+    if hash.trim() != target_hash {
+        return Err(format!(
+            "electrs has {} at height {target_height}, bitcoind has {target_hash}",
+            hash.trim()
+        ));
+    }
+
+    // The block's transactions are stored before its history is indexed, so
+    // finding the coinbase here does not yet prove anything; it only gives us
+    // a script whose history must contain the coinbase once indexing is done.
+    let txids: Vec<String> =
+        serde_json::from_str(&get(client, format!("{base_url}/block/{target_hash}/txids")).await?)
+            .map_err(|err| format!("block {target_hash} txids: {err}"))?;
+    let coinbase = txids
+        .first()
+        .ok_or_else(|| format!("block {target_hash} has no transactions"))?;
+    let tx: serde_json::Value =
+        serde_json::from_str(&get(client, format!("{base_url}/tx/{coinbase}")).await?)
+            .map_err(|err| format!("coinbase {coinbase}: {err}"))?;
+    // electrs does not index provably unspendable outputs, so an OP_RETURN
+    // output never shows up in any history.
+    let Some(script) = tx["vout"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|vout| vout["scriptpubkey_type"].as_str() != Some("op_return"))
+        .find_map(|vout| vout["scriptpubkey"].as_str())
+    else {
+        tracing::debug!(
+            "coinbase {coinbase} of block {target_height} has no indexable output, \
+             accepting electrs at the tip height alone"
+        );
+        return Ok(());
+    };
+    let script = bitcoin::ScriptBuf::from_hex(script)
+        .map_err(|err| format!("coinbase {coinbase} scriptpubkey: {err}"))?;
+    let scripthash = bitcoin::hashes::sha256::Hash::hash(script.as_bytes());
+
+    // Newest confirmed transactions first, so the tip block's coinbase is on
+    // the first page as soon as it is indexed.
+    let history: Vec<serde_json::Value> = serde_json::from_str(
+        &get(client, format!("{base_url}/scripthash/{scripthash}/txs")).await?,
+    )
+    .map_err(|err| format!("scripthash {scripthash} history: {err}"))?;
+    if history
+        .iter()
+        .any(|tx| tx["txid"].as_str() == Some(coinbase.as_str()))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "electrs is at height {tip_height} but coinbase {coinbase} of block \
+             {target_height} is not in its history index yet"
+        ))
     }
 }
 
