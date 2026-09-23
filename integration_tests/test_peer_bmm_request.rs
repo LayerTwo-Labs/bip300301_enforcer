@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt,
+    messages::CoinbaseMessage,
     proto::{
         self,
-        common::ConsensusHex,
+        common::{ConsensusHex, ReverseHex},
         mainchain::{
             BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, CreateNewAddressRequest,
             GetBalanceRequest, GetChainTipRequest, SendTransactionRequest, SendTransactionResponse,
@@ -55,6 +56,81 @@ struct PostSetup {
 struct PreSetup {
     miner: crate::setup::PreSetup,
     sender: crate::setup::PreSetup,
+}
+
+/// The BMM-relevant parts of a block template. The enforcer admits a
+/// standalone M8 to its mempool mirror; only block-template finalization
+/// synthesizes the M7 that accepts it.
+struct BmmTemplateState {
+    txids: HashSet<bitcoin::Txid>,
+    /// Sidechain block hashes accepted by the coinbase's M7s for
+    /// [`DummySidechain`]
+    m7_hashes: Vec<[u8; 32]>,
+}
+
+async fn bmm_template_state(
+    post_setup: &crate::setup::PostSetup,
+) -> anyhow::Result<BmmTemplateState> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+
+    let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+    request.capabilities.insert("coinbasetxn".to_owned());
+    let template = crate::util::expect_block_template(
+        post_setup.gbt_client.get_block_template(request).await?,
+    )?;
+    let txids = template
+        .transactions
+        .iter()
+        .map(|transaction| transaction.txid)
+        .collect();
+    let bitcoin_jsonrpsee::client::CoinbaseTxnOrValue::Txn(coinbase_tx) =
+        template.coinbase_txn_or_value
+    else {
+        anyhow::bail!("template has no `coinbasetxn`");
+    };
+    let coinbase: bitcoin::Transaction = bitcoin::consensus::deserialize(&coinbase_tx.data)?;
+    let m7_hashes = coinbase
+        .output
+        .iter()
+        .filter_map(
+            |output| match CoinbaseMessage::parse(&output.script_pubkey) {
+                Ok(([], CoinbaseMessage::M7BmmAccept(m7)))
+                    if m7.sidechain_number == DummySidechain::SIDECHAIN_NUMBER =>
+                {
+                    Some(m7.sidechain_block_hash.0)
+                }
+                _ => None,
+            },
+        )
+        .collect();
+    Ok(BmmTemplateState { txids, m7_hashes })
+}
+
+async fn create_bmm_request(
+    post_setup: &crate::setup::PostSetup,
+    tip_height: u32,
+    tip_block_hash: ReverseHex,
+    sidechain_block_hash: [u8; 32],
+    bid_sats: u64,
+) -> anyhow::Result<bitcoin::Txid> {
+    let Some(txid) = post_setup
+        .wallet_service_client
+        .create_bmm_critical_data_transaction(CreateBmmCriticalDataTransactionRequest {
+            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            value_sats: proto::wrap_u64(bid_sats),
+            height: proto::wrap_u32(tip_height),
+            critical_hash: MessageField::some(ConsensusHex::encode(&sidechain_block_hash)),
+            prev_bytes: MessageField::some(tip_block_hash),
+        })
+        .await?
+        .into_owned()
+        .txid
+        .into_option()
+        .and_then(|txid| proto::unwrap_string(txid.hex))
+    else {
+        anyhow::bail!("Failed to create BMM critical data tx")
+    };
+    Ok(txid.parse()?)
 }
 
 impl PreSetup {
@@ -218,24 +294,43 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         use bitcoin::hashes::Hash;
         bitcoin::hashes::sha256::Hash::hash(b"dummy sidechain block").to_byte_array()
     };
-    let Some(bmm_request_txid) = post_setup
-        .sender
-        .wallet_service_client
-        .create_bmm_critical_data_transaction(CreateBmmCriticalDataTransactionRequest {
-            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            value_sats: proto::wrap_u64(10_000),
-            height: proto::wrap_u32(tip_height),
-            critical_hash: MessageField::some(ConsensusHex::encode(&sidechain_block_hash)),
-            prev_bytes: MessageField::some(tip_block_hash),
-        })
-        .await?
-        .into_owned()
-        .txid
-        .into_option()
-        .and_then(|txid| proto::unwrap_string(txid.hex))
-    else {
-        anyhow::bail!("Failed to create BMM critical data tx")
+    let losing_sidechain_block_hash: [u8; 32] = {
+        use bitcoin::hashes::Hash;
+        bitcoin::hashes::sha256::Hash::hash(b"losing dummy sidechain block").to_byte_array()
     };
+    let preexisting = bmm_template_state(&post_setup.miner).await?;
+    anyhow::ensure!(
+        preexisting.m7_hashes.is_empty(),
+        "test precondition failed: miner already proposed an M7 for the sidechain"
+    );
+    // The miner places a competing, lower bid for the same sidechain slot
+    // first, so the sender's bid arrives second and must displace it.
+    let losing_bmm_request_txid = create_bmm_request(
+        &post_setup.miner,
+        tip_height,
+        tip_block_hash.clone(),
+        losing_sidechain_block_hash,
+        10_000,
+    )
+    .await?;
+    tracing::info!(%losing_bmm_request_txid, "Created competing BMM request tx successfully");
+    let () = wait_until(
+        "miner enforcer to accept the competing M8 and synthesize its M7",
+        || async {
+            let state = bmm_template_state(&post_setup.miner).await?;
+            Ok(state.txids.contains(&losing_bmm_request_txid)
+                && state.m7_hashes == [losing_sidechain_block_hash])
+        },
+    )
+    .await?;
+    let bmm_request_txid = create_bmm_request(
+        &post_setup.sender,
+        tip_height,
+        tip_block_hash,
+        sidechain_block_hash,
+        20_000,
+    )
+    .await?;
     tracing::info!(%bmm_request_txid, "Created BMM request tx successfully");
     // In addition to the p2p broadcast, the enforcer submits the BMM request
     // to its own node via `sendrawtransaction`, so it should be in the
@@ -243,14 +338,24 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     let sender_mempool_entry = post_setup
         .sender
         .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getmempoolentry", [bmm_request_txid.clone()])
+        .command::<String, _, _, _, _>([], "getmempoolentry", [bmm_request_txid.to_string()])
         .run_utf8()
         .await?;
     tracing::debug!(%sender_mempool_entry);
     // Wait for the BMM request to reach the miner node's mempool over p2p.
-    let () = wait_for_tx_in_mempool(
-        &post_setup.miner.bitcoin_cli,
-        &bmm_request_txid.parse::<bitcoin::Txid>()?,
+    let () = wait_for_tx_in_mempool(&post_setup.miner.bitcoin_cli, &bmm_request_txid).await?;
+    // Reaching the miner's Core mempool is not sufficient: wait until the
+    // enforcer has independently accepted the M8 into its mirror. Both M8s
+    // stay in Core's mempool, but the template must carry only the higher bid,
+    // with a single M7 accepting it.
+    let () = wait_until(
+        "miner enforcer to replace the competing M8 and its M7",
+        || async {
+            let state = bmm_template_state(&post_setup.miner).await?;
+            Ok(state.txids.contains(&bmm_request_txid)
+                && !state.txids.contains(&losing_bmm_request_txid)
+                && state.m7_hashes == [sidechain_block_hash])
+        },
     )
     .await?;
     // Check that the tx entered the sender node's mempool via RPC broadcast,
@@ -321,6 +426,9 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
 /// * Miner proposes and activates a sidechain
 /// * Miner funds Sender's wallet
 /// * Sender creates a BMM request, and broadcasts it to Miner node
+/// * Miner places a competing, lower BMM request for the same sidechain
+/// * Miner accepts the sender's standalone M8 before an M7 exists, drops the
+///   conflicting lower bid, and synthesizes a single M7 for the sender's bid
 pub async fn test_peer_bmm_request(
     bin_paths: BinPaths,
     file_registry: TestFileRegistry,
