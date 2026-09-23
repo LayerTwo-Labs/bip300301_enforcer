@@ -467,6 +467,8 @@ pub enum CoinbaseMessagesError {
     },
     #[error("M2 that acks proposal for slot `{slot}` already included at index `{index}`")]
     DuplicateM2 { index: usize, slot: SidechainNumber },
+    #[error("M3 already included at index `{index}`")]
+    MultipleM3 { index: usize },
     #[error("M4 already included at index `{index}`")]
     DuplicateM4 { index: usize },
     #[error("M7 for slot `{slot}` already included at index `{index}`")]
@@ -478,6 +480,7 @@ impl ToStatus for CoinbaseMessagesError {
         match self {
             Self::DuplicateM1 { .. }
             | Self::DuplicateM2 { .. }
+            | Self::MultipleM3 { .. }
             | Self::DuplicateM4 { .. }
             | Self::DuplicateM7 { .. } => StatusBuilder::new(self),
         }
@@ -491,6 +494,7 @@ pub struct CoinbaseMessages {
     messages: Vec<(CoinbaseMessage, usize)>,
     m1_sidechain_proposal_id_to_index: HashMap<SidechainProposalId, usize>,
     m2_ack_slot_to_index: HashMap<SidechainNumber, usize>,
+    m3_index: Option<usize>,
     m4_index: Option<usize>,
     /// Maps M7 slots to commitment and index
     m7_slot_to_commitment_index: HashMap<SidechainNumber, (BmmCommitment, usize)>,
@@ -512,6 +516,10 @@ impl CoinbaseMessages {
         self.m2_ack_slot_to_index.keys().copied().collect()
     }
 
+    pub fn m3_exists(&self) -> bool {
+        self.m3_index.is_some()
+    }
+
     pub fn m4_exists(&self) -> bool {
         self.m4_index.is_some()
     }
@@ -529,7 +537,6 @@ impl CoinbaseMessages {
             .collect()
     }
 
-    // TODO: ensure that M3 pushes are valid
     pub fn push(&mut self, msg: CoinbaseMessage, vout: usize) -> Result<(), CoinbaseMessagesError> {
         match &msg {
             CoinbaseMessage::M1ProposeSidechain(sidechain_proposal) => {
@@ -594,10 +601,14 @@ impl CoinbaseMessages {
                     }
                 }
             }
-            CoinbaseMessage::M3ProposeBundle(_) => {
-                self.messages.push((msg, vout));
-                Ok(())
-            }
+            CoinbaseMessage::M3ProposeBundle(_) => match self.m3_index {
+                Some(index) => Err(CoinbaseMessagesError::MultipleM3 { index }),
+                None => {
+                    self.m3_index = Some(vout);
+                    self.messages.push((msg, vout));
+                    Ok(())
+                }
+            },
         }
     }
 
