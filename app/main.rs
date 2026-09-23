@@ -2323,6 +2323,18 @@ mod tests {
         wait_for_error_or_shutdown, with_connect_middleware,
     };
 
+    /// Install a global subscriber that is interested in everything and
+    /// records nothing. `tracing` caches callsite interest process-wide: with
+    /// no global default, a callsite first hit on a thread without a
+    /// subscriber is cached as disabled, even for another test's scoped
+    /// subscriber. Call before anything that logs.
+    fn init_tracing() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            tracing::subscriber::set_global_default(tracing_subscriber::registry()).unwrap();
+        });
+    }
+
     /// Panic with `boom` where a `T` is expected, so a handler can panic
     /// without a dead trailing value to satisfy its return type.
     fn boom<T>() -> T {
@@ -2338,6 +2350,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         use tracing::instrument::WithSubscriber as _;
+
+        init_tracing();
 
         #[derive(Clone, Default)]
         struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -2467,6 +2481,8 @@ mod tests {
             rpc_params,
         };
         use jsonrpsee::server::RpcModule;
+
+        init_tracing();
 
         let mut module = RpcModule::new(());
         module
