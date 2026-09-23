@@ -33,12 +33,10 @@ buffa = { version = "0.9", features = ["json"] }
 buffa-descriptor = { version = "0.9", features = ["reflect"] }
 buffa-types = { version = "0.9", features = ["json"] }
 byteorder = "1.5.0"
-cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
 connectrpc = "0.9"
 connectrpc-health = "0.9"
 connectrpc-reflection = "0.9"
-derive_more = "2.0.1"
 dotenvy = "0.15.7"
 either = "1.16.0"
 error-fatality = "0.1.2"
@@ -67,7 +65,6 @@ rusty-leveldb = "4.0.0"
 serde = "1.0.219"
 serde_json = "1.0.150"
 sneed = "0.0.22"
-strum = "0.28.0"
 temp-dir = "0.2.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", default-features = false }
@@ -94,11 +91,6 @@ rev = "3ca15900bef3c9a2fd83003f71480a738411f35e"
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
 rev = "185e439807023902252ba85ca908b7133a2fb062"
-
-[workspace.dependencies.educe]
-version = "0.8.1"
-default-features = false
-features = ["Clone", "Debug"]
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"

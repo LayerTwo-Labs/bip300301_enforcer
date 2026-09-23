@@ -24,7 +24,6 @@ byteorder = { workspace = true }
 connectrpc = { workspace = true }
 clap = { workspace = true, features = ["derive", "string", "std", "help", "usage", "error-context"] }
 cusf-enforcer-mempool = { workspace = true }
-derive_more = { workspace = true, features = ["debug", "display"] }
 either = { workspace = true }
 error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }

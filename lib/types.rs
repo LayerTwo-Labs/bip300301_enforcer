@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    fmt,
     num::TryFromIntError,
     sync::Arc,
 };
@@ -20,7 +21,6 @@ use bitcoin::{
     },
     script::{Instruction, Instructions},
 };
-use derive_more::derive::{self, Display};
 use hashlink::LinkedHashMap;
 use miette::Diagnostic;
 use nom::Finish;
@@ -180,11 +180,21 @@ impl NetworkParams {
     }
 }
 
-#[derive(derive::Debug, Clone, Copy, Display, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[debug("{}", hex::encode(_0))]
-#[display("{}", hex::encode(_0))]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct BmmCommitment(pub [u8; 32]);
+
+impl fmt::Debug for BmmCommitment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for BmmCommitment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&hex::encode(self.0))
+    }
+}
 
 impl bitcoin::consensus::Decodable for BmmCommitment {
     fn consensus_decode<R: bitcoin::io::Read + ?Sized>(
@@ -235,12 +245,16 @@ impl Serialize for BmmCommitment {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Display, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct SidechainNumber(pub u8);
+
+impl fmt::Display for SidechainNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
 
 impl SidechainNumber {
     pub const MIN: Self = Self(u8::MIN);
@@ -272,10 +286,16 @@ impl From<SidechainNumber> for u8 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Display, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct M6id(pub Txid);
+
+impl fmt::Display for M6id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
 
 impl From<Txid> for M6id {
     fn from(txid: Txid) -> Self {
@@ -295,11 +315,16 @@ pub struct Ctip {
     pub value: Amount,
 }
 
-#[derive(Clone, Debug, Deserialize, Display, Eq, PartialEq, Serialize)]
-#[display("{}", hex::encode(_0))]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct SidechainDescription(pub Vec<u8>);
+
+impl fmt::Display for SidechainDescription {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&hex::encode(&self.0))
+    }
+}
 
 impl SidechainDescription {
     pub fn sha256d_hash(&self) -> bitcoin::hashes::sha256d::Hash {
@@ -334,14 +359,20 @@ pub struct SidechainProposalId {
     pub description_hash: sha256d::Hash,
 }
 
-#[derive(Clone, Debug, Deserialize, Display, Eq, PartialEq, Serialize)]
-#[display(
-    "{{ sidechain_number: {}, description: {description} }}",
-    sidechain_number.0
-)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SidechainProposal {
     pub sidechain_number: SidechainNumber,
     pub description: SidechainDescription,
+}
+
+impl fmt::Display for SidechainProposal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{{ sidechain_number: {}, description: {} }}",
+            self.sidechain_number, self.description
+        )
+    }
 }
 
 impl SidechainProposal {
@@ -634,7 +665,7 @@ impl AckAllProposalsPolicy {
     }
 }
 
-#[derive(derive_more::Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TreasuryUtxo {
     pub sidechain_number: SidechainNumber,
     pub outpoint: OutPoint,

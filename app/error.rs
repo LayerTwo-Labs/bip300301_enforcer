@@ -30,8 +30,7 @@ pub enum ConnectServer {
     Reflection(#[source] connectrpc_reflection::ReflectionError),
 }
 
-#[derive(educe::Educe, Diagnostic, Error)]
-#[educe(Debug(bound(SyncTaskError<Enforcer>: std::fmt::Debug)))]
+#[derive(Diagnostic, Error)]
 pub enum MempoolTask<Enforcer>
 where
     Enforcer: cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer + 'static,
@@ -47,6 +46,28 @@ where
     },
     #[error("ZMQ address for mempool sync is not reachable: {zmq_addr_sequence}")]
     ZmqNotReachable { zmq_addr_sequence: String },
+}
+
+impl<Enforcer> std::fmt::Debug for MempoolTask<Enforcer>
+where
+    Enforcer: CusfEnforcer + 'static,
+    SyncTaskError<Enforcer>: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InitialSync(err) => f.debug_tuple("InitialSync").field(err).finish(),
+            Self::SyncTask(err) => f.debug_tuple("SyncTask").field(err).finish(),
+            Self::ZmqCheck { addr, source } => f
+                .debug_struct("ZmqCheck")
+                .field("addr", addr)
+                .field("source", source)
+                .finish(),
+            Self::ZmqNotReachable { zmq_addr_sequence } => f
+                .debug_struct("ZmqNotReachable")
+                .field("zmq_addr_sequence", zmq_addr_sequence)
+                .finish(),
+        }
+    }
 }
 
 impl<Enforcer> MempoolTask<Enforcer>

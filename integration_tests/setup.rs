@@ -48,10 +48,19 @@ use crate::{
     },
 };
 
-#[derive(strum::Display, Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Network {
     Regtest,
     Signet,
+}
+
+impl std::fmt::Display for Network {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Regtest => "Regtest",
+            Self::Signet => "Signet",
+        })
+    }
 }
 
 impl From<Network> for bitcoin::Network {
@@ -61,6 +70,20 @@ impl From<Network> for bitcoin::Network {
             Network::Signet => Self::Signet,
         }
     }
+}
+
+/// Equivalent to `chmod +x`
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 // Signet-specific setup
@@ -159,15 +182,7 @@ impl SignetSetup {
             enforcer.serve_rpc_port
         );
         std::fs::write(&gbt_script_file, gbt_script)?;
-        cfg_if::cfg_if! {
-            if #[cfg(target_family = "unix")] {
-                use std::os::unix::fs::PermissionsExt as _;
-                let mut perms = std::fs::metadata(&gbt_script_file)?.permissions();
-                // Add execute permission (equivalent to chmod +x)
-                perms.set_mode(perms.mode() | 0o111);
-                std::fs::set_permissions(&gbt_script_file, perms)?;
-            }
-        }
+        make_executable(&gbt_script_file)?;
         signet_miner.coinbasetxn = true;
         signet_miner.getblocktemplate_command = Some(format!("{}", gbt_script_file.display()));
         Ok(())
@@ -180,11 +195,21 @@ pub enum MiningMode {
     GetBlockTemplate,
 }
 
-#[derive(strum::Display, Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Mode {
     GetBlockTemplate,
     Mempool,
     NoMempool,
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::GetBlockTemplate => "GetBlockTemplate",
+            Self::Mempool => "Mempool",
+            Self::NoMempool => "NoMempool",
+        })
+    }
 }
 
 impl Mode {
@@ -881,14 +906,7 @@ exec {bitcoin_cli} getblocktemplate "$REQUEST"
             bitcoin_cli = bitcoin_cli.display(),
         ),
     )?;
-    cfg_if::cfg_if! {
-        if #[cfg(target_family = "unix")] {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mut perms = std::fs::metadata(&gbt_script_file)?.permissions();
-            perms.set_mode(perms.mode() | 0o111);
-            std::fs::set_permissions(&gbt_script_file, perms)?;
-        }
-    }
+    make_executable(&gbt_script_file)?;
 
     let signet_miner = bins::SignetMiner {
         path: bin_paths.signet_miner()?.clone(),
