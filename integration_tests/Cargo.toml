@@ -13,7 +13,6 @@ bitcoin-jsonrpsee = { workspace = true }
 bitcoin = { workspace = true }
 buffa = { workspace = true }
 buffa-types = { workspace = true }
-cfg-if = { workspace = true }
 connectrpc = { workspace = true, features = ["client"] }
 cusf-enforcer-mempool = { workspace = true }
 dotenvy = { workspace = true }
@@ -30,7 +29,6 @@ reserve-port = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-strum = { workspace = true, features = ["derive"] }
 temp-dir = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
 tracing = { workspace = true }
