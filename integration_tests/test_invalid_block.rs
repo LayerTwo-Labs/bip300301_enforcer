@@ -2,7 +2,10 @@ use std::{str::FromStr as _, time::Duration};
 
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
-    messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
+    messages::{
+        M1ProposeSidechain, M2AckSidechain, M3ProposeBundle, M4AckBundles, M7BmmAccept,
+        M8BmmRequest,
+    },
     types::{BmmCommitment, SidechainDescription, SidechainNumber},
 };
 use bitcoin::{
@@ -63,6 +66,11 @@ const CASES: &[BadBlockCase] = &[
         expected_log_contains: "rejecting block: M2 that acks proposal for slot",
     },
     BadBlockCase {
+        name: "multiple_m3",
+        extra_coinbase_outputs: multiple_m3_outputs,
+        expected_log_contains: "rejecting block: M3 already included at index",
+    },
+    BadBlockCase {
         name: "duplicate_m4",
         extra_coinbase_outputs: duplicate_m4_outputs,
         expected_log_contains: "rejecting block: M4 already included at index",
@@ -114,6 +122,21 @@ fn duplicate_m2_outputs() -> anyhow::Result<Vec<TxOut>> {
     }
     .try_into()?;
     Ok(vec![zero_value(m2_a), zero_value(m2_b)])
+}
+
+fn multiple_m3_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let slot = DummySidechain::SIDECHAIN_NUMBER;
+    let m3_a: ScriptBuf = M3ProposeBundle {
+        sidechain_number: slot,
+        bundle_txid: [0xAA; 32],
+    }
+    .try_into()?;
+    let m3_b: ScriptBuf = M3ProposeBundle {
+        sidechain_number: slot,
+        bundle_txid: [0xBB; 32],
+    }
+    .try_into()?;
+    Ok(vec![zero_value(m3_a), zero_value(m3_b)])
 }
 
 fn duplicate_m4_outputs() -> anyhow::Result<Vec<TxOut>> {
@@ -204,7 +227,7 @@ async fn run_case(post_setup: &mut PostSetup, case: &BadBlockCase) -> anyhow::Re
 
     // The enforcer must reject the block with the expected reason. Each case's
     // expected substring uniquely identifies a single message type
-    // (M1/M2/M4/M7)
+    // (M1/M2/M3/M4/M7)
     assert_enforcer_verdict(
         post_setup,
         bad_block_hash,
