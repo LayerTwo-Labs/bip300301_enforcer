@@ -61,6 +61,23 @@ impl BlockProducer {
             .collect()
     }
 
+    /// Select one locally stored bundle that has not yet been proposed on-chain.
+    /// The total order makes template construction independent of `HashMap`
+    /// iteration order; remaining bundles become eligible in later blocks.
+    fn select_bundle_proposal(
+        bundle_proposals: &HashMap<SidechainNumber, BundleProposals>,
+    ) -> Option<(SidechainNumber, M6id)> {
+        bundle_proposals
+            .iter()
+            .flat_map(|(sidechain_number, m6ids)| {
+                m6ids
+                    .iter()
+                    .filter(|(_, _, info)| info.is_none())
+                    .map(move |(m6id, _, _)| (*sidechain_number, *m6id))
+            })
+            .min_by_key(|(sidechain_number, m6id)| (*sidechain_number, m6id.0))
+    }
+
     /// Sidechain proposals from the *validator*: already included in a block, and
     /// therefore votable.
     fn get_active_sidechain_proposals(
@@ -320,12 +337,10 @@ impl BlockProducer {
         }
 
         let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
-        for (sidechain_id, m6ids) in &bundle_proposals {
-            for (m6id, _blinded_m6, m6id_info) in m6ids {
-                if m6id_info.is_none() {
-                    coinbase_builder.propose_bundle(*sidechain_id, *m6id)?;
-                }
-            }
+        if !coinbase_builder.messages().m3_exists()
+            && let Some((sidechain_number, m6id)) = Self::select_bundle_proposal(&bundle_proposals)
+        {
+            coinbase_builder.propose_bundle(sidechain_number, m6id)?;
         }
 
         // Ack bundles (BIP300 M4), one vote per active sidechain in the same

@@ -1346,6 +1346,21 @@ pub fn tests(
         },
         crate::test_withdrawal_bundle_policy::test_withdrawal_bundle_policy,
     ));
+    // Both block production modes build the coinbase through the same M3
+    // selection.
+    async_trials.extend([Mode::GetBlockTemplate, Mode::Mempool].map(|mode| {
+        new_trial_with_setup(
+            format!("bundle_proposal_order (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_bundle_proposal_order::test_bundle_proposal_order,
+        )
+    }));
     async_trials.push(new_trial_with_setup(
         "invalid_block".to_string(),
         TestSetupComponents {
