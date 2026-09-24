@@ -571,4 +571,224 @@ mod tests {
         assert_eq!(192, bmm_accept_txout.weight().to_wu() as i64);
         Ok(())
     }
+
+    /// Both modes, on accepted, rejected and orphan blocks: what each leaves
+    /// in the DB, and which events it sends.
+    mod connect_block_modes {
+        use bitcoin::{Amount, Block, BlockHash, OutPoint, Txid, hashes::Hash as _};
+        use cusf_enforcer_mempool::cusf_enforcer::ConnectBlockAction;
+        use miette::{IntoDiagnostic as _, Result};
+        use sneed::RoTxn;
+        use tokio::sync::broadcast;
+
+        use super::super::{ConnectBlockCommit, ConnectBlockDryRun, ConnectBlockMode as _};
+        use crate::{
+            types::{Ctip, Event, SidechainNumber},
+            validator::{
+                Validator,
+                test_utils::{
+                    TestBlockParts, build_m5_deposit_tx, build_test_block, dummy_validator,
+                    test_sidechain,
+                },
+            },
+        };
+
+        const SIDECHAIN: SidechainNumber = SidechainNumber(1);
+
+        /// Validator tracking a CTIP for [`SIDECHAIN`], so that
+        /// [`rejected_block`] is invalid
+        fn validator(dir: &temp_dir::TempDir) -> Result<Validator> {
+            let validator = dummy_validator(dir.path());
+            let mut rwtxn = validator.dbs.write_txn().into_diagnostic()?;
+            validator
+                .dbs
+                .active_sidechains
+                .put_sidechain(&mut rwtxn, &SIDECHAIN, &test_sidechain(SIDECHAIN.0, 0))
+                .into_diagnostic()?;
+            validator
+                .dbs
+                .active_sidechains
+                .put_ctip(
+                    &mut rwtxn,
+                    SIDECHAIN,
+                    &Ctip {
+                        outpoint: OutPoint {
+                            txid: Txid::from_byte_array([0x11; 32]),
+                            vout: 0,
+                        },
+                        value: Amount::from_sat(5_000),
+                    },
+                )
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+            Ok(validator)
+        }
+
+        fn accepted_block() -> Block {
+            build_test_block(BlockHash::all_zeros(), TestBlockParts::default())
+        }
+
+        /// Deposits without spending the tracked CTIP
+        fn rejected_block() -> Block {
+            build_test_block(
+                BlockHash::all_zeros(),
+                TestBlockParts {
+                    extra_txs: vec![build_m5_deposit_tx(
+                        SIDECHAIN,
+                        OutPoint::default(),
+                        Amount::from_sat(5_000),
+                        Amount::from_sat(1_000),
+                    )],
+                    ..Default::default()
+                },
+            )
+        }
+
+        fn orphan_block() -> Block {
+            build_test_block(
+                BlockHash::from_byte_array([0x22; 32]),
+                TestBlockParts::default(),
+            )
+        }
+
+        fn tip(validator: &Validator) -> Result<Option<BlockHash>> {
+            let rotxn = validator.dbs.read_txn().into_diagnostic()?;
+            validator
+                .dbs
+                .current_chain_tip
+                .try_get(&rotxn, &())
+                .into_diagnostic()
+        }
+
+        fn has_header(validator: &Validator, block: &Block) -> Result<bool> {
+            let rotxn = validator.dbs.read_txn().into_diagnostic()?;
+            validator
+                .dbs
+                .block_hashes
+                .contains_header(&rotxn, &block.block_hash())
+                .into_diagnostic()
+        }
+
+        fn no_event(events: &mut broadcast::Receiver<Event>) -> bool {
+            matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            )
+        }
+
+        #[test]
+        fn commit_accept_persists_block_then_sends_event() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = accepted_block();
+
+            let action = ConnectBlockCommit.connect_block(&validator, &block)?;
+
+            assert!(matches!(action, ConnectBlockAction::Accept { .. }));
+            assert_eq!(tip(&validator)?, Some(block.block_hash()));
+            assert!(has_header(&validator, &block)?);
+            let event = events.try_recv().into_diagnostic()?;
+            assert!(matches!(
+                event,
+                Event::ConnectBlock { header_info, .. }
+                    if header_info.block_hash == block.block_hash()
+            ));
+            Ok(())
+        }
+
+        #[test]
+        fn dry_run_accept_sees_block_then_leaves_no_trace() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = accepted_block();
+
+            let seen_tip = ConnectBlockDryRun(|rotxn: &RoTxn<'_>| {
+                validator.dbs.current_chain_tip.try_get(rotxn, &())
+            })
+            .connect_block(&validator, &block)?
+            .expect("block must be accepted")
+            .into_diagnostic()?;
+
+            assert_eq!(
+                seen_tip,
+                Some(block.block_hash()),
+                "the closure must run against the connected block"
+            );
+            assert_eq!(tip(&validator)?, None, "a dry run must not move the tip");
+            assert!(
+                !has_header(&validator, &block)?,
+                "a dry run must not keep the header"
+            );
+            assert!(no_event(&mut events), "a dry run must not send events");
+            Ok(())
+        }
+
+        #[test]
+        fn commit_reject_keeps_only_header() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = rejected_block();
+
+            let action = ConnectBlockCommit.connect_block(&validator, &block)?;
+
+            assert!(matches!(action, ConnectBlockAction::Reject));
+            assert_eq!(tip(&validator)?, None);
+            assert!(
+                has_header(&validator, &block)?,
+                "a rejected block must keep its header"
+            );
+            assert!(no_event(&mut events));
+            Ok(())
+        }
+
+        #[test]
+        fn dry_run_reject_reports_reason_and_leaves_no_trace() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = rejected_block();
+
+            let reason = ConnectBlockDryRun(|_: &RoTxn<'_>| ())
+                .connect_block(&validator, &block)?
+                .expect_err("block must be rejected");
+
+            let reason = format!("{:#}", crate::errors::ErrorChain::new(&reason));
+            assert!(
+                reason.contains("Old Ctip for sidechain 1 is unspent"),
+                "unexpected rejection reason `{reason}`"
+            );
+            assert_eq!(tip(&validator)?, None);
+            assert!(
+                !has_header(&validator, &block)?,
+                "a dry run must not keep the header"
+            );
+            assert!(no_event(&mut events));
+            Ok(())
+        }
+
+        #[test]
+        fn orphan_is_rejected_in_both_modes_without_writes() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = orphan_block();
+
+            let action = ConnectBlockCommit.connect_block(&validator, &block)?;
+            assert!(matches!(action, ConnectBlockAction::Reject));
+            let dry_run =
+                ConnectBlockDryRun(|_: &RoTxn<'_>| ()).connect_block(&validator, &block)?;
+            assert!(matches!(
+                dry_run,
+                Err(super::super::RejectReason::MissingParentHeight { .. })
+            ));
+
+            assert_eq!(tip(&validator)?, None);
+            assert!(!has_header(&validator, &block)?);
+            assert!(no_event(&mut events));
+            Ok(())
+        }
+    }
 }
