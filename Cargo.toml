@@ -90,10 +90,6 @@ rev = "3ca15900bef3c9a2fd83003f71480a738411f35e"
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
 rev = "185e439807023902252ba85ca908b7133a2fb062"
 
-[workspace.dependencies.ouroboros]
-git = "https://github.com/erikjohnston/ouroboros.git"
-rev = "ea82b33947f60c511dac6eb3815b6af3f6c3f555"
-
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 allow_attributes = "deny"

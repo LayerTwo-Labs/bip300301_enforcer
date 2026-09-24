@@ -36,7 +36,6 @@ miette = { workspace = true, features = ["derive"] }
 nom = { workspace = true }
 nonempty = { workspace = true }
 ordermap = { workspace = true, features = ["serde"] }
-ouroboros = { workspace = true }
 parking_lot = { workspace = true, features = ["send_guard"] }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
