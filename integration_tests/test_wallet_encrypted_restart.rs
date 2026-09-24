@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
-    proto::mainchain::{GetBalanceRequest, UnlockWalletRequest},
+    proto::mainchain::{CreateNewAddressRequest, GetBalanceRequest, UnlockWalletRequest},
     wallet::mnemonic::{EncryptedMnemonic, KdfParams},
 };
 use futures::channel::mpsc;
@@ -98,6 +98,22 @@ async fn mine_blocks(post_setup: &PostSetup, blocks: u32) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// A wallet RPC made while the wallet is locked must be turned away as
+/// such, not panic on a wallet that is not there.
+fn ensure_rejected_as_locked<T>(
+    rpc: &str,
+    result: Result<T, connectrpc::ConnectError>,
+) -> anyhow::Result<()> {
+    let Err(status) = result else {
+        anyhow::bail!("{rpc} succeeded on a locked wallet");
+    };
+    anyhow::ensure!(
+        status.to_string().contains("enforcer wallet not unlocked"),
+        "expected {rpc} on a locked wallet to be rejected as not unlocked, got: {status}"
+    );
+    Ok(())
+}
+
 pub async fn test_wallet_encrypted_restart(bin_paths: BinPaths) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let pre_setup = PreSetup::new(bin_paths.clone(), Network::Regtest)?;
@@ -143,6 +159,22 @@ pub async fn test_wallet_encrypted_restart(bin_paths: BinPaths) -> anyhow::Resul
     wait_for_validator_tip(&post_setup)
         .await
         .context("the enforcer must keep connecting blocks while its wallet is locked")?;
+
+    // GetBalance takes the wallet read lock, CreateNewAddress the write lock.
+    let () = ensure_rejected_as_locked(
+        "GetBalance",
+        post_setup
+            .wallet_service_client
+            .get_balance(GetBalanceRequest::default())
+            .await,
+    )?;
+    let () = ensure_rejected_as_locked(
+        "CreateNewAddress",
+        post_setup
+            .wallet_service_client
+            .create_new_address(CreateNewAddressRequest::default())
+            .await,
+    )?;
 
     tracing::info!("unlocking the wallet");
     let _unlocked = post_setup
