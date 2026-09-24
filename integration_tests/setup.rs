@@ -1438,26 +1438,18 @@ impl PostSetup {
         if let Some(signet_miner) = signet_miner.as_mut() {
             let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }
-        // A fresh `HttpClient` per service, so each gets its own hyper
-        // connection pool instead of all four sharing one.
-        //
-        // The harness keeps `SubscribeEvents` streams open for long stretches:
-        // one for the whole test in `DummySidechain`, plus one per `mine_*`
-        // call. A streaming response holds its pooled HTTP/1.1 connection for
-        // its entire lifetime, and with a single shared pool the first unary
-        // call issued right after such a stream is opened has been observed to
-        // hang indefinitely -- no new socket, no request reaching the server,
-        // no error, until the harness's per-test timeout fires 20 minutes
-        // later. Separate pools keep a long-lived subscription on the
-        // validator client from stranding calls on the others.
+        // Use HTTP/2 to multiplex event subscriptions and other RPCs. With
+        // pooled HTTP/1.1, opening another call while a stream is live can
+        // hang before its response headers arrive. Separate pools per service
+        // do not help when `mine_check_block_events` and `mine_gbt_check` open
+        // nested subscriptions on the same validator client.
+        let http = HttpClient::plaintext_http2_only();
         let config = client_config(enforcer.serve_grpc_port)?;
-        let validator_service_client =
-            ValidatorServiceClient::new(HttpClient::plaintext(), config.clone());
+        let validator_service_client = ValidatorServiceClient::new(http.clone(), config.clone());
         let block_producer_service_client =
-            BlockProducerServiceClient::new(HttpClient::plaintext(), config.clone());
-        let mining_service_client =
-            MiningServiceClient::new(HttpClient::plaintext(), config.clone());
-        let wallet_service_client = WalletServiceClient::new(HttpClient::plaintext(), config);
+            BlockProducerServiceClient::new(http.clone(), config.clone());
+        let mining_service_client = MiningServiceClient::new(http.clone(), config.clone());
+        let wallet_service_client = WalletServiceClient::new(http, config);
         // The gRPC port opens before the validator has synced the blocks that
         // this setup generated. Wait for it, so that tests don't race the
         // initial sync.
