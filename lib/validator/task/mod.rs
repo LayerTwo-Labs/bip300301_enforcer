@@ -6,7 +6,6 @@ use std::{
     time::Instant,
 };
 
-use async_broadcast::{Sender, TrySendError};
 use bitcoin::{
     Amount, Block, BlockHash, Network, OutPoint, Transaction, Txid, Work,
     hashes::{Hash as _, sha256d},
@@ -19,6 +18,7 @@ use jsonrpsee::core::{
     params::{ArrayParams, BatchRequestBuilder},
 };
 use sneed::{RoTxn, RwTxn, db};
+use tokio::sync::broadcast::{self, error::SendError};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -1385,9 +1385,13 @@ fn empty_block_info_and_diff(coinbase_txid: Txid) -> (BlockInfo, diff::Block) {
 }
 
 /// Broadcast events for state that has already been committed.
-pub(in crate::validator) fn broadcast_events(event_tx: &Sender<Event>, events: Vec<Event>) {
+pub(in crate::validator) fn broadcast_events(
+    event_tx: &broadcast::Sender<Event>,
+    events: Vec<Event>,
+) {
     for event in events {
-        let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
+        // Only fails when nobody is subscribed
+        let _send_err: Result<usize, SendError<_>> = event_tx.send(event);
     }
 }
 
@@ -1833,7 +1837,7 @@ impl BlockHandler<'_> {
         &self,
         mut rwtxn: RwTxn<'_>,
         blocks: &[Block],
-        event_tx: &Sender<Event>,
+        event_tx: &broadcast::Sender<Event>,
     ) -> Result<Option<InvalidBlock>, error::Sync> {
         let mut events = Vec::new();
         let invalid_block = self.handle_block_batch(&mut rwtxn, blocks, &mut events)?;
@@ -2018,7 +2022,7 @@ impl BlockHandler<'_> {
     /// bodies are fetched. Returns the number of blocks connected.
     fn connect_pre_activation_blocks(
         &self,
-        event_tx: &Sender<Event>,
+        event_tx: &broadcast::Sender<Event>,
         missing_blocks: &mut Vec<BlockHash>,
         cancel: &CancellationToken,
     ) -> Result<usize, error::Sync> {
@@ -2072,7 +2076,7 @@ impl BlockHandler<'_> {
     #[tracing::instrument(skip_all)]
     async fn sync_blocks<MainRpcClient>(
         &self,
-        event_tx: &Sender<Event>,
+        event_tx: &broadcast::Sender<Event>,
         main_rpc_client: &MainRpcClient,
         main_blocks_dir: Option<PathBuf>,
         main_tip: BlockHash,
@@ -2284,7 +2288,7 @@ impl BlockHandler<'_> {
 pub struct SyncSignals {
     pub cancel: CancellationToken,
     pub header_sync_progress_tx: tokio::sync::watch::Sender<HeaderSyncProgress>,
-    pub event_tx: Sender<Event>,
+    pub event_tx: broadcast::Sender<Event>,
 }
 
 impl BlockHandler<'_> {
@@ -2847,7 +2851,7 @@ mod tests {
             rwtxn.commit().into_diagnostic()?;
         }
 
-        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
         let rwtxn = dbs.write_txn().into_diagnostic()?;
         let result =
             test_handler(&dbs).handle_block_batch_and_commit(rwtxn, &[block_a, block_b], &event_tx);
@@ -2918,7 +2922,7 @@ mod tests {
             rwtxn.commit().into_diagnostic()?;
         }
 
-        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
         let rwtxn = dbs.write_txn().into_diagnostic()?;
         let invalid_block = test_handler(&dbs)
             .handle_block_batch_and_commit(rwtxn, &[block_a, block_b], &event_tx)
@@ -3000,7 +3004,7 @@ mod tests {
             rwtxn.commit().into_diagnostic()?;
         }
 
-        let (event_tx, mut event_rx) = async_broadcast::broadcast(16);
+        let (event_tx, mut event_rx) = broadcast::channel(16);
         let rwtxn = dbs.write_txn().into_diagnostic()?;
         let invalid_block = test_handler(&dbs)
             .handle_block_batch_and_commit(rwtxn, &[block], &event_tx)

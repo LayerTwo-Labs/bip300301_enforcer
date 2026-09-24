@@ -5,7 +5,6 @@ use std::{
     future::Future,
 };
 
-use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
@@ -16,6 +15,7 @@ use miette::Diagnostic;
 use ouroboros::self_referencing;
 use sneed::{RoTxn, RwTxn, db, env, rwtxn};
 use thiserror::Error;
+use tokio::sync::broadcast::error::SendError;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -296,8 +296,7 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
                 rwtxn.commit()?;
                 // Events should only ever be sent after committing DB txs, see
                 // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-                let _send_err: Result<Option<_>, TrySendError<_>> =
-                    validator.events_tx.try_broadcast(event);
+                let _send_err: Result<usize, SendError<_>> = validator.events_tx.send(event);
                 Ok(ConnectBlockAction::Accept { remove_mempool_txs })
             }
             ConnectBlockRwTxnAction::Reject {
