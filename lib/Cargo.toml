@@ -14,7 +14,6 @@ bdk_esplora = { workspace = true, features = ["tokio", "async-https-rustls"] }
 bdk_wallet = { workspace = true, features = ["keys-bip39", "rusqlite"] }
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
-bitcoin-send-tx-p2p = { workspace = true }
 buffa = { workspace = true }
 buffa-descriptor = { workspace = true }
 buffa-types = { workspace = true }
@@ -47,7 +46,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sneed = { workspace = true, features = ["observe"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "sync"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time"] }
 # Latest version (0.6.0) introduces a non-compatible libsqlite3-sys version
 tokio-rusqlite = { workspace = true }
 tokio-stream = { workspace = true }

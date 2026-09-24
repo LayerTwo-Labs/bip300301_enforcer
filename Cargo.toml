@@ -24,7 +24,6 @@ bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.100"
-bitcoin-send-tx-p2p = "0.3.0"
 buffa = { version = "0.9", features = ["json"] }
 # `reflect` is needed by the `reflect_mode=bridge` generated code, which embeds
 # descriptors and exposes `descriptor_pool()` for gRPC server reflection.
@@ -104,10 +103,6 @@ wildcard_imports = "deny"
 [workspace.lints.rust]
 let_underscore_drop = "deny"
 unfulfilled_lint_expectations = "deny"
-
-[patch.crates-io.bitcoin-send-tx-p2p]
-git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git"
-branch = "2026-02-28-flush-tcpstream"
 
 # temp-dir does not leak correctly after clone
 # https://gitlab.com/leonhard-llc/ops/-/issues/17

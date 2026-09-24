@@ -508,7 +508,6 @@ dependencies = [
  "bdk_wallet",
  "bitcoin",
  "bitcoin-jsonrpsee",
- "bitcoin-send-tx-p2p",
  "buffa",
  "buffa-descriptor",
  "buffa-types",
@@ -628,18 +627,6 @@ dependencies = [
  "serde_with",
  "thiserror 2.0.20",
  "tracing",
-]
-
-[[package]]
-name = "bitcoin-send-tx-p2p"
-version = "0.3.0"
-source = "git+https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git?branch=2026-02-28-flush-tcpstream#6e1613049efa513e394c301b51641a4b498dacf5"
-dependencies = [
- "async-trait",
- "bitcoin",
- "log",
- "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
