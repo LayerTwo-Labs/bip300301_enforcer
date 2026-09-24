@@ -18,6 +18,10 @@
 
 use bip300301_enforcer_lib::{
     messages::CoinbaseBuilder,
+    proto::{
+        common::ReverseHex,
+        mainchain::{BlockHeaderInfo, GetBlockHeaderInfoRequest, GetChainTipRequest},
+    },
     types::{SidechainDescription, SidechainNumber, SidechainProposal},
 };
 use bitcoin::hashes::Hash as _;
@@ -162,6 +166,41 @@ pub async fn test_gbt_proposal(post_setup: PostSetup) -> anyhow::Result<()> {
         "the enforcer rejected a block built from its own template: {verdict:?}"
     );
     tracing::info!("unmodified template block accepted as a proposal");
+
+    // 1b. The enforcer checked the proposal by connecting it in a dry run,
+    // which must leave no trace: its tip is still the template's parent, and
+    // it has not stored the proposed header.
+    {
+        let tip = post_setup
+            .validator_service_client
+            .get_chain_tip(GetChainTipRequest::default())
+            .await?
+            .into_owned()
+            .block_header_info
+            .into_option()
+            .ok_or_else(|| anyhow::anyhow!("get_chain_tip: missing block_header_info"))?
+            .block_hash
+            .into_option()
+            .ok_or_else(|| anyhow::anyhow!("get_chain_tip: missing block_hash"))?
+            .decode::<BlockHeaderInfo, bitcoin::BlockHash>("block_hash")?;
+        anyhow::ensure!(
+            tip == block.header.prev_blockhash,
+            "checking a proposal moved the enforcer's tip to {tip}"
+        );
+        let header_infos = post_setup
+            .validator_service_client
+            .get_block_header_info(GetBlockHeaderInfoRequest {
+                block_hash: buffa::MessageField::some(ReverseHex::encode(&block.block_hash())),
+                ..Default::default()
+            })
+            .await?
+            .into_owned()
+            .header_infos;
+        anyhow::ensure!(
+            header_infos.is_empty(),
+            "checking a proposal stored its header: {header_infos:?}"
+        );
+    }
 
     // 2. Self-consistency: a merkle root that does not match the transactions.
     // Caught locally, without consulting the node.
