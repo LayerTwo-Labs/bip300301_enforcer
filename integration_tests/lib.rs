@@ -30,6 +30,7 @@ mod test_wallet_descriptor_fallback;
 mod test_wallet_encrypted_restart;
 mod test_wallet_large_gap_sync;
 mod test_wallet_less_block_template;
+mod test_wallet_lock_contention;
 mod test_wallet_reorg_multi_block;
 mod test_withdrawal_bundle_policy;
 mod test_zmq_sequence_gap;

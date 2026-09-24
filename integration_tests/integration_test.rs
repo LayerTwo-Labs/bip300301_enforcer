@@ -1522,5 +1522,18 @@ pub fn tests(
         crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block,
     ));
 
+    async_trials.push(new_trial_with_setup_opts(
+        crate::test_wallet_lock_contention::TEST_NAME.to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts::default(),
+        crate::test_wallet_lock_contention::test_wallet_lock_contention,
+    ));
+
     async_trials
 }
