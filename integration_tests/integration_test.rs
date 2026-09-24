@@ -1495,6 +1495,31 @@ pub fn tests(
         crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block,
     ));
 
+    for transport in [
+        crate::test_p2p_send_tx::NodeTransport::V1Only,
+        crate::test_p2p_send_tx::NodeTransport::V2Enabled,
+    ] {
+        async_trials.push(new_trial_with_setup_opts(
+            format!(
+                "{} (node transport: {transport})",
+                crate::test_p2p_send_tx::TEST_NAME
+            ),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode: Mode::NoMempool,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::setup::SetupOpts {
+                bitcoind_args: vec![transport.bitcoind_arg()],
+                enforcer_wallet: crate::setup::EnforcerWallet::Disabled,
+                ..Default::default()
+            },
+            move |post_setup| crate::test_p2p_send_tx::test_p2p_send_tx(post_setup, transport),
+        ));
+    }
+
     // Tests start in list order. Start the signet tests first: every block
     // they mine costs real proof-of-work, which makes them among the slowest,
     // and starting them last leaves them running alone at the end of the run.
