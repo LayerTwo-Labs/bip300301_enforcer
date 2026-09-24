@@ -5,7 +5,6 @@ use std::{
     future::Future,
 };
 
-use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
@@ -13,9 +12,9 @@ use cusf_enforcer_mempool::cusf_enforcer::{
 use error_fatality::{Nested as _, Split};
 use fallible_iterator::FallibleIterator;
 use miette::Diagnostic;
-use ouroboros::self_referencing;
 use sneed::{RoTxn, RwTxn, db, env, rwtxn};
 use thiserror::Error;
+use tokio::sync::broadcast::error::SendError;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -133,32 +132,6 @@ where
     }
 }
 
-/// Parent and child rwtxn
-#[self_referencing]
-struct ParentChildRwTxn<'a> {
-    parent: RwTxn<'a>,
-    // Annotated not_covariant because covariance is not needed.
-    // May be covariant
-    #[borrows(mut parent)]
-    #[not_covariant]
-    child: RwTxn<'this>,
-}
-
-impl<'a> ParentChildRwTxn<'a> {
-    /// Abort child rwtxn and return parent
-    fn abort_child(self) -> RwTxn<'a> {
-        let ((), heads) = self.destruct_into_heads(|tails| tails.child.abort());
-        heads.parent
-    }
-
-    /// Commit child rwtxn and return parent
-    fn commit_child(self) -> Result<RwTxn<'a>, rwtxn::error::Commit> {
-        let (commit_res, heads) = self.destruct_into_heads(|tails| tails.child.commit());
-        let () = commit_res?;
-        Ok(heads.parent)
-    }
-}
-
 #[derive(Debug, Error)]
 enum RejectReason {
     #[error(transparent)]
@@ -170,32 +143,20 @@ enum RejectReason {
     },
 }
 
-/// Connect block action, with rwtxns that can be committed or aborted
-enum ConnectBlockRwTxnAction<'a> {
-    Accept {
-        event: Event,
-        remove_mempool_txs: HashSet<Txid>,
-        rwtxns: ParentChildRwTxn<'a>,
-    },
-    Reject {
-        /// rwtxn to write header
-        header_rwtxn: RwTxn<'a>,
-        reason: RejectReason,
-    },
-}
-
-/// Connect a block without commiting the rwtxn.
-/// The rwtxn is returned and can be committed or aborted.
-/// If connecting the block results in a header write, the header write is
-/// always committed. The block connect is not committed.
-#[expect(clippy::result_large_err)]
-fn connect_block_no_commit<'validator>(
+/// Connect a block, leaving `mode` to commit or abort the result.
+/// The block connect happens in a child rwtxn nested in the rwtxn that
+/// stores its header, so that in commit mode a rejected block still keeps
+/// its header. A dry run aborts both.
+fn connect_block_with_mode<'validator, Mode>(
+    mode: Mode,
     validator: &'validator Validator,
     block: &Block,
-) -> Result<ConnectBlockRwTxnAction<'validator>, ConnectBlockError> {
+) -> Result<Mode::Output, ConnectBlockError>
+where
+    Mode: ConnectBlockMode<'validator>,
+{
     let block_hash = block.block_hash();
     let parent = block.header.prev_blockhash;
-    // Always commit, to store header if necessary
     let mut parent_rwtxn = validator.dbs.write_txn()?;
     if !validator
         .dbs
@@ -213,10 +174,7 @@ fn connect_block_no_commit<'validator>(
             parent_height + 1
         } else {
             let reject_reason = RejectReason::MissingParentHeight { block_hash, parent };
-            return Ok(ConnectBlockRwTxnAction::Reject {
-                header_rwtxn: parent_rwtxn,
-                reason: reject_reason,
-            });
+            return Mode::reject(parent_rwtxn, reject_reason);
         };
         tracing::trace!("Storing header");
         validator
@@ -224,52 +182,62 @@ fn connect_block_no_commit<'validator>(
             .block_hashes
             .put_headers(&mut parent_rwtxn, &[(block.header, height)])?;
     }
-    // Commit on block accept, abort on block reject
-    let mut parent_child_rwtxn = ParentChildRwTxnTryBuilder {
-        parent: parent_rwtxn,
-        child_builder: |parent: &mut RwTxn| validator.dbs.nested_write_txn(parent),
-    }
-    .try_build()?;
+    let mut child_rwtxn = validator.dbs.nested_write_txn(&mut parent_rwtxn)?;
     let handler = BlockHandler::new(&validator.dbs, validator.network, validator.network_params);
-    match parent_child_rwtxn
-        .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
+    match handler
+        .connect_block(&mut child_rwtxn, block)
         .into_nested()?
     {
         Ok(event) => {
-            let remove_mempool_txs = parent_child_rwtxn
-                .with_child(|child_rotxn| {
-                    validator
-                        .dbs
-                        .block_hashes
-                        .get_seen_bmm_requests_for_parent_block(child_rotxn, parent)
-                })?
+            let remove_mempool_txs = validator
+                .dbs
+                .block_hashes
+                .get_seen_bmm_requests_for_parent_block(&child_rwtxn, parent)?
                 .into_values()
                 .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
                 .collect();
-            Ok(ConnectBlockRwTxnAction::Accept {
-                event,
-                remove_mempool_txs,
-                rwtxns: parent_child_rwtxn,
-            })
+            let accepted = mode.finish_child(child_rwtxn, event, remove_mempool_txs)?;
+            Mode::finish_parent(validator, parent_rwtxn, accepted)
         }
         Err(jfyi) => {
-            let header_rwtxn = parent_child_rwtxn.abort_child();
-            Ok(ConnectBlockRwTxnAction::Reject {
-                header_rwtxn,
-                reason: RejectReason::ConnectBlock(jfyi),
-            })
+            child_rwtxn.abort();
+            Mode::reject(parent_rwtxn, RejectReason::ConnectBlock(jfyi))
         }
     }
 }
 
 /// Used to specify commit/dry-run modes
-trait ConnectBlockMode<'validator> {
+trait ConnectBlockMode<'validator>: Sized {
     type Output;
+    /// Carried from finishing the child rwtxn to finishing the parent
+    type Accepted;
 
     fn connect_block(
         self,
         validator: &'validator Validator,
         block: &Block,
+    ) -> Result<Self::Output, ConnectBlockError>;
+
+    /// The block was accepted in `child_rwtxn`. Commit or abort it.
+    fn finish_child(
+        self,
+        child_rwtxn: RwTxn<'_>,
+        event: Event,
+        remove_mempool_txs: HashSet<Txid>,
+    ) -> Result<Self::Accepted, ConnectBlockError>;
+
+    /// Commit or abort the parent rwtxn, once the child is finished.
+    fn finish_parent(
+        validator: &'validator Validator,
+        parent_rwtxn: RwTxn<'_>,
+        accepted: Self::Accepted,
+    ) -> Result<Self::Output, ConnectBlockError>;
+
+    /// The block was rejected. `header_rwtxn` holds its header, if newly
+    /// stored.
+    fn reject(
+        header_rwtxn: RwTxn<'_>,
+        reason: RejectReason,
     ) -> Result<Self::Output, ConnectBlockError>;
 }
 
@@ -279,36 +247,46 @@ struct ConnectBlockCommit;
 
 impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
     type Output = ConnectBlockAction;
+    type Accepted = (Event, HashSet<Txid>);
 
     fn connect_block(
         self,
         validator: &'validator Validator,
         block: &Block,
     ) -> Result<Self::Output, ConnectBlockError> {
-        match connect_block_no_commit(validator, block)? {
-            ConnectBlockRwTxnAction::Accept {
-                event,
-                remove_mempool_txs,
-                rwtxns,
-            } => {
-                tracing::info!("accepted block");
-                let rwtxn = rwtxns.commit_child()?;
-                rwtxn.commit()?;
-                // Events should only ever be sent after committing DB txs, see
-                // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
-                let _send_err: Result<Option<_>, TrySendError<_>> =
-                    validator.events_tx.try_broadcast(event);
-                Ok(ConnectBlockAction::Accept { remove_mempool_txs })
-            }
-            ConnectBlockRwTxnAction::Reject {
-                header_rwtxn,
-                reason,
-            } => {
-                tracing::info!("rejecting block: {:#}", ErrorChain::new(&reason));
-                header_rwtxn.commit()?;
-                Ok(ConnectBlockAction::Reject)
-            }
-        }
+        connect_block_with_mode(self, validator, block)
+    }
+
+    fn finish_child(
+        self,
+        child_rwtxn: RwTxn<'_>,
+        event: Event,
+        remove_mempool_txs: HashSet<Txid>,
+    ) -> Result<Self::Accepted, ConnectBlockError> {
+        tracing::info!("accepted block");
+        child_rwtxn.commit()?;
+        Ok((event, remove_mempool_txs))
+    }
+
+    fn finish_parent(
+        validator: &'validator Validator,
+        parent_rwtxn: RwTxn<'_>,
+        (event, remove_mempool_txs): Self::Accepted,
+    ) -> Result<Self::Output, ConnectBlockError> {
+        parent_rwtxn.commit()?;
+        // Events should only ever be sent after committing DB txs, see
+        // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+        let _send_err: Result<usize, SendError<_>> = validator.events_tx.send(event);
+        Ok(ConnectBlockAction::Accept { remove_mempool_txs })
+    }
+
+    fn reject(
+        header_rwtxn: RwTxn<'_>,
+        reason: RejectReason,
+    ) -> Result<Self::Output, ConnectBlockError> {
+        tracing::info!("rejecting block: {:#}", ErrorChain::new(&reason));
+        header_rwtxn.commit()?;
+        Ok(ConnectBlockAction::Reject)
     }
 }
 
@@ -325,6 +303,7 @@ where
     F: FnOnce(&RoTxn<'_>) -> Output,
 {
     type Output = Result<Output, RejectReason>;
+    type Accepted = Output;
 
     #[tracing::instrument(name = "connect_block(dry run)", skip_all)]
     fn connect_block(
@@ -332,25 +311,36 @@ where
         validator: &'validator Validator,
         block: &Block,
     ) -> Result<Self::Output, ConnectBlockError> {
-        let rwtxns = match connect_block_no_commit(validator, block)? {
-            ConnectBlockRwTxnAction::Accept {
-                event: _,
-                rwtxns,
-                remove_mempool_txs: _,
-            } => rwtxns,
-            ConnectBlockRwTxnAction::Reject {
-                header_rwtxn,
-                reason,
-            } => {
-                tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reason));
-                header_rwtxn.abort();
-                return Ok(Err(reason));
-            }
-        };
-        let res: Output = rwtxns.with_child(|child_rwtxn| self.0(child_rwtxn));
-        let rwtxn = rwtxns.abort_child();
-        rwtxn.abort(); // We don't want the effects of the block to be applied!
+        connect_block_with_mode(self, validator, block)
+    }
+
+    fn finish_child(
+        self,
+        child_rwtxn: RwTxn<'_>,
+        _event: Event,
+        _remove_mempool_txs: HashSet<Txid>,
+    ) -> Result<Self::Accepted, ConnectBlockError> {
+        let res = self.0(&child_rwtxn);
+        child_rwtxn.abort();
+        Ok(res)
+    }
+
+    fn finish_parent(
+        _validator: &'validator Validator,
+        parent_rwtxn: RwTxn<'_>,
+        res: Self::Accepted,
+    ) -> Result<Self::Output, ConnectBlockError> {
+        parent_rwtxn.abort(); // We don't want the effects of the block to be applied!
         Ok(Ok(res))
+    }
+
+    fn reject(
+        header_rwtxn: RwTxn<'_>,
+        reason: RejectReason,
+    ) -> Result<Self::Output, ConnectBlockError> {
+        tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reason));
+        header_rwtxn.abort();
+        Ok(Err(reason))
     }
 }
 
@@ -571,5 +561,225 @@ mod tests {
         };
         assert_eq!(192, bmm_accept_txout.weight().to_wu() as i64);
         Ok(())
+    }
+
+    /// Both modes, on accepted, rejected and orphan blocks: what each leaves
+    /// in the DB, and which events it sends.
+    mod connect_block_modes {
+        use bitcoin::{Amount, Block, BlockHash, OutPoint, Txid, hashes::Hash as _};
+        use cusf_enforcer_mempool::cusf_enforcer::ConnectBlockAction;
+        use miette::{IntoDiagnostic as _, Result};
+        use sneed::RoTxn;
+        use tokio::sync::broadcast;
+
+        use super::super::{ConnectBlockCommit, ConnectBlockDryRun, ConnectBlockMode as _};
+        use crate::{
+            types::{Ctip, Event, SidechainNumber},
+            validator::{
+                Validator,
+                test_utils::{
+                    TestBlockParts, build_m5_deposit_tx, build_test_block, dummy_validator,
+                    test_sidechain,
+                },
+            },
+        };
+
+        const SIDECHAIN: SidechainNumber = SidechainNumber(1);
+
+        /// Validator tracking a CTIP for [`SIDECHAIN`], so that
+        /// [`rejected_block`] is invalid
+        fn validator(dir: &temp_dir::TempDir) -> Result<Validator> {
+            let validator = dummy_validator(dir.path());
+            let mut rwtxn = validator.dbs.write_txn().into_diagnostic()?;
+            validator
+                .dbs
+                .active_sidechains
+                .put_sidechain(&mut rwtxn, &SIDECHAIN, &test_sidechain(SIDECHAIN.0, 0))
+                .into_diagnostic()?;
+            validator
+                .dbs
+                .active_sidechains
+                .put_ctip(
+                    &mut rwtxn,
+                    SIDECHAIN,
+                    &Ctip {
+                        outpoint: OutPoint {
+                            txid: Txid::from_byte_array([0x11; 32]),
+                            vout: 0,
+                        },
+                        value: Amount::from_sat(5_000),
+                    },
+                )
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+            Ok(validator)
+        }
+
+        fn accepted_block() -> Block {
+            build_test_block(BlockHash::all_zeros(), TestBlockParts::default())
+        }
+
+        /// Deposits without spending the tracked CTIP
+        fn rejected_block() -> Block {
+            build_test_block(
+                BlockHash::all_zeros(),
+                TestBlockParts {
+                    extra_txs: vec![build_m5_deposit_tx(
+                        SIDECHAIN,
+                        OutPoint::default(),
+                        Amount::from_sat(5_000),
+                        Amount::from_sat(1_000),
+                    )],
+                    ..Default::default()
+                },
+            )
+        }
+
+        fn orphan_block() -> Block {
+            build_test_block(
+                BlockHash::from_byte_array([0x22; 32]),
+                TestBlockParts::default(),
+            )
+        }
+
+        fn tip(validator: &Validator) -> Result<Option<BlockHash>> {
+            let rotxn = validator.dbs.read_txn().into_diagnostic()?;
+            validator
+                .dbs
+                .current_chain_tip
+                .try_get(&rotxn, &())
+                .into_diagnostic()
+        }
+
+        fn has_header(validator: &Validator, block: &Block) -> Result<bool> {
+            let rotxn = validator.dbs.read_txn().into_diagnostic()?;
+            validator
+                .dbs
+                .block_hashes
+                .contains_header(&rotxn, &block.block_hash())
+                .into_diagnostic()
+        }
+
+        fn no_event(events: &mut broadcast::Receiver<Event>) -> bool {
+            matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            )
+        }
+
+        #[test]
+        fn commit_accept_persists_block_then_sends_event() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = accepted_block();
+
+            let action = ConnectBlockCommit.connect_block(&validator, &block)?;
+
+            assert!(matches!(action, ConnectBlockAction::Accept { .. }));
+            assert_eq!(tip(&validator)?, Some(block.block_hash()));
+            assert!(has_header(&validator, &block)?);
+            let event = events.try_recv().into_diagnostic()?;
+            assert!(matches!(
+                event,
+                Event::ConnectBlock { header_info, .. }
+                    if header_info.block_hash == block.block_hash()
+            ));
+            Ok(())
+        }
+
+        #[test]
+        fn dry_run_accept_sees_block_then_leaves_no_trace() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = accepted_block();
+
+            let seen_tip = ConnectBlockDryRun(|rotxn: &RoTxn<'_>| {
+                validator.dbs.current_chain_tip.try_get(rotxn, &())
+            })
+            .connect_block(&validator, &block)?
+            .expect("block must be accepted")
+            .into_diagnostic()?;
+
+            assert_eq!(
+                seen_tip,
+                Some(block.block_hash()),
+                "the closure must run against the connected block"
+            );
+            assert_eq!(tip(&validator)?, None, "a dry run must not move the tip");
+            assert!(
+                !has_header(&validator, &block)?,
+                "a dry run must not keep the header"
+            );
+            assert!(no_event(&mut events), "a dry run must not send events");
+            Ok(())
+        }
+
+        #[test]
+        fn commit_reject_keeps_only_header() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = rejected_block();
+
+            let action = ConnectBlockCommit.connect_block(&validator, &block)?;
+
+            assert!(matches!(action, ConnectBlockAction::Reject));
+            assert_eq!(tip(&validator)?, None);
+            assert!(
+                has_header(&validator, &block)?,
+                "a rejected block must keep its header"
+            );
+            assert!(no_event(&mut events));
+            Ok(())
+        }
+
+        #[test]
+        fn dry_run_reject_reports_reason_and_leaves_no_trace() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = rejected_block();
+
+            let reason = ConnectBlockDryRun(|_: &RoTxn<'_>| ())
+                .connect_block(&validator, &block)?
+                .expect_err("block must be rejected");
+
+            let reason = format!("{:#}", crate::errors::ErrorChain::new(&reason));
+            assert!(
+                reason.contains("Old Ctip for sidechain 1 is unspent"),
+                "unexpected rejection reason `{reason}`"
+            );
+            assert_eq!(tip(&validator)?, None);
+            assert!(
+                !has_header(&validator, &block)?,
+                "a dry run must not keep the header"
+            );
+            assert!(no_event(&mut events));
+            Ok(())
+        }
+
+        #[test]
+        fn orphan_is_rejected_in_both_modes_without_writes() -> Result<()> {
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let validator = validator(&dir)?;
+            let mut events = validator.events_tx.subscribe();
+            let block = orphan_block();
+
+            let action = ConnectBlockCommit.connect_block(&validator, &block)?;
+            assert!(matches!(action, ConnectBlockAction::Reject));
+            let dry_run =
+                ConnectBlockDryRun(|_: &RoTxn<'_>| ()).connect_block(&validator, &block)?;
+            assert!(matches!(
+                dry_run,
+                Err(super::super::RejectReason::MissingParentHeight { .. })
+            ));
+
+            assert_eq!(tip(&validator)?, None);
+            assert!(!has_header(&validator, &block)?);
+            assert!(no_event(&mut events));
+            Ok(())
+        }
     }
 }

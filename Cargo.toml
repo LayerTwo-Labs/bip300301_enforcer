@@ -18,15 +18,12 @@ version = "0.3.4"
 aes-gcm = "0.10.3"
 anyhow = "1.0.102"
 argon2 = "0.5.3"
-async-broadcast = "0.7.1"
-async-lock = "3.4.0"
 axum = { version = "0.8", default-features = false, features = ["tracing"] }
 bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
 bdk_wallet = "3.0.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.100"
-bitcoin-send-tx-p2p = "0.3.0"
 buffa = { version = "0.9", features = ["json"] }
 # `reflect` is needed by the `reflect_mode=bridge` generated code, which embeds
 # descriptors and exposes `descriptor_pool()` for gRPC server reflection.
@@ -92,10 +89,6 @@ rev = "3ca15900bef3c9a2fd83003f71480a738411f35e"
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
 rev = "185e439807023902252ba85ca908b7133a2fb062"
 
-[workspace.dependencies.ouroboros]
-git = "https://github.com/erikjohnston/ouroboros.git"
-rev = "ea82b33947f60c511dac6eb3815b6af3f6c3f555"
-
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 allow_attributes = "deny"
@@ -110,10 +103,6 @@ wildcard_imports = "deny"
 [workspace.lints.rust]
 let_underscore_drop = "deny"
 unfulfilled_lint_expectations = "deny"
-
-[patch.crates-io.bitcoin-send-tx-p2p]
-git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git"
-branch = "2026-02-28-flush-tcpstream"
 
 # temp-dir does not leak correctly after clone
 # https://gitlab.com/leonhard-llc/ops/-/issues/17
