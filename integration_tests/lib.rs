@@ -20,6 +20,7 @@ mod test_mempool_dat_sync;
 mod test_mine_rejected_block;
 mod test_no_secrets_in_logs;
 mod test_node_requirements;
+mod test_p2p_send_tx;
 mod test_peer_bmm_request;
 mod test_peer_deposit_relay;
 mod test_rest_disabled;
