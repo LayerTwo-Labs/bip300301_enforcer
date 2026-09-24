@@ -18,7 +18,7 @@ futures = { workspace = true }
 http = { workspace = true }
 jiff = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server"] }
-miette = { workspace = true, features = ["fancy"] }
+miette = { workspace = true, features = ["fancy-no-backtrace"] }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
