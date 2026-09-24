@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use async_broadcast::{InactiveReceiver, Sender as BroadcastSender, broadcast};
 use bitcoin::{self, Amount, BlockHash, OutPoint, Txid};
 use bitcoin_jsonrpsee::jsonrpsee;
 use fallible_iterator::{FallibleIterator, IteratorExt};
@@ -13,7 +12,7 @@ use miette::{Diagnostic, IntoDiagnostic};
 use nonempty::NonEmpty;
 use sneed::{db, env};
 use thiserror::Error;
-use tokio::sync::watch::Receiver as WatchReceiver;
+use tokio::sync::{broadcast, watch::Receiver as WatchReceiver};
 
 use crate::{
     proto::{StatusBuilder, ToStatus, mainchain::HeaderSyncProgress},
@@ -412,8 +411,7 @@ impl ToStatus for GetSidechainsError {
 #[derive(Clone)]
 pub struct Validator {
     dbs: Dbs,
-    events_rx: InactiveReceiver<Event>,
-    events_tx: BroadcastSender<Event>,
+    events_tx: broadcast::Sender<Event>,
     header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     mainchain_rest_client: Option<MainRestClient>,
@@ -453,14 +451,11 @@ impl Validator {
         // too small.
         const EVENTS_CHANNEL_CAPACITY: usize = 2_000;
 
-        let (events_tx, mut events_rx) = broadcast(EVENTS_CHANNEL_CAPACITY);
-        events_rx.set_await_active(false);
-        events_rx.set_overflow(true);
+        let (events_tx, _) = broadcast::channel(EVENTS_CHANNEL_CAPACITY);
 
         let dbs = Dbs::new(data_dir, network)?;
         Ok(Self {
             dbs,
-            events_rx: events_rx.deactivate(),
             events_tx,
             header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
             mainchain_client,
@@ -482,11 +477,11 @@ impl Validator {
     pub fn subscribe_events(
         &self,
     ) -> impl FusedStream<Item = Result<Event, EventsStreamError>> + use<> {
-        futures::stream::try_unfold(self.events_rx.activate_cloned(), |mut receiver| async {
-            match receiver.recv_direct().await {
+        futures::stream::try_unfold(self.events_tx.subscribe(), |mut receiver| async {
+            match receiver.recv().await {
                 Ok(event) => Ok(Some((event, receiver))),
-                Err(async_broadcast::RecvError::Closed) => Ok(None),
-                Err(async_broadcast::RecvError::Overflowed(_)) => Err(EventsStreamError::Overflow),
+                Err(broadcast::error::RecvError::Closed) => Ok(None),
+                Err(broadcast::error::RecvError::Lagged(_)) => Err(EventsStreamError::Overflow),
             }
         })
         .fuse()
