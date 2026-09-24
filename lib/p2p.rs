@@ -4,6 +4,8 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use bitcoin::p2p::Magic;
 
+mod send_tx;
+
 pub const SIGNET_MAGIC_BYTES: [u8; 4] = [0xe4, 0x09, 0xe9, 0x68];
 
 pub const SIGNET_MINER_P2P_ADDR: SocketAddrV4 =
@@ -111,7 +113,7 @@ pub enum BroadcastNonstandardTxError {
     #[error("p2p broadcast address `{addr}` resolved to no addresses")]
     ResolvedEmpty { addr: BroadcastAddr },
     #[error(transparent)]
-    Send(#[from] bitcoin_send_tx_p2p::Error),
+    Send(#[from] send_tx::Error),
 }
 
 /// Broadcasts a non-standard transaction directly to a specified node via
@@ -125,7 +127,6 @@ pub async fn broadcast_nonstandard_tx(
     magic: Magic,
     tx: bitcoin::Transaction,
 ) -> Result<bool, BroadcastNonstandardTxError> {
-    use bitcoin_send_tx_p2p::{Config, Error, send_tx_p2p_over_clearnet};
     let socket_addrs =
         p2p_address
             .resolve()
@@ -137,23 +138,27 @@ pub async fn broadcast_nonstandard_tx(
     if socket_addrs.is_empty() {
         return Err(BroadcastNonstandardTxError::ResolvedEmpty { addr: p2p_address });
     }
-    // A hostname may resolve to multiple addresses (e.g. `localhost` to both
-    // `127.0.0.1` and `::1`) of which only some accept connections, so try
-    // each in order until one connects.
+    let config = send_tx::Config::new(block_height, magic);
+    Ok(send_to_first_reachable(&socket_addrs, &tx, &config).await?)
+}
+
+/// A hostname may resolve to multiple addresses (e.g. `localhost` to both
+/// `127.0.0.1` and `::1`) of which only some accept connections, so try each
+/// in order until one connects. `false` on timeout.
+async fn send_to_first_reachable(
+    socket_addrs: &[SocketAddr],
+    tx: &bitcoin::Transaction,
+    config: &send_tx::Config,
+) -> Result<bool, send_tx::Error> {
     let mut last_err = None;
     for socket_addr in socket_addrs {
-        let mut config = Config::default();
-        config.block_height = block_height;
-        config.magic = magic;
-        match send_tx_p2p_over_clearnet(socket_addr, tx.clone(), Some(config)).await {
+        match send_tx::send_tx(*socket_addr, tx, config).await {
             Ok(()) => return Ok(true),
-            Err(Error::Timeout(_)) => return Ok(false),
+            Err(send_tx::Error::Timeout) => return Ok(false),
             Err(err) => last_err = Some(err),
         }
     }
-    Err(last_err
-        .expect("socket_addrs is non-empty, so at least one send was attempted")
-        .into())
+    Err(last_err.expect("socket_addrs is non-empty, so at least one send was attempted"))
 }
 
 // https://github.com/kallewoof/bips/blob/master/bip-0325.mediawiki#message-start
