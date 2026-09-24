@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use crate::wallet::{
     BdkWallet, Persistence, error,
-    util::{RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome},
+    util::{
+        RwLockReadGuardSome, RwLockUpgradableReadGuardSome, RwLockWriteGuardSome, UpgradableRwLock,
+        WriteGuard,
+    },
 };
 
 mod sealed {
@@ -23,8 +26,8 @@ pub(in crate::wallet) trait HeldWallet: sealed::Sealed {}
 impl sealed::Sealed for RwLockWriteGuardSome<'_, BdkWallet> {}
 impl HeldWallet for RwLockWriteGuardSome<'_, BdkWallet> {}
 
-impl sealed::Sealed for async_lock::RwLockWriteGuard<'_, Option<BdkWallet>> {}
-impl HeldWallet for async_lock::RwLockWriteGuard<'_, Option<BdkWallet>> {}
+impl sealed::Sealed for WriteGuard<'_, Option<BdkWallet>> {}
+impl HeldWallet for WriteGuard<'_, Option<BdkWallet>> {}
 
 /// Warn if a lock takes this long to acquire.
 const LOCK_WARN_DURATION: Duration = Duration::from_secs(1);
@@ -69,7 +72,7 @@ pub(in crate::wallet) struct WalletLocks {
     /// extending the stall for every scan it asks for.
     full_scan: tokio::sync::Mutex<()>,
     /// Unlocked, ready-to-go wallet: `Some`. Locked wallet: `None`.
-    bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
+    bitcoin_wallet: UpgradableRwLock<Option<BdkWallet>>,
     bdk_db: tokio::sync::Mutex<Persistence>,
 }
 
@@ -77,7 +80,7 @@ impl WalletLocks {
     pub(in crate::wallet) fn new(wallet: Option<BdkWallet>, database: Persistence) -> Self {
         Self {
             full_scan: tokio::sync::Mutex::new(()),
-            bitcoin_wallet: async_lock::RwLock::new(wallet),
+            bitcoin_wallet: UpgradableRwLock::new(wallet),
             bdk_db: tokio::sync::Mutex::new(database),
         }
     }
@@ -137,13 +140,11 @@ impl WalletLocks {
     /// a wallet is loaded, and for installing one.
     pub(in crate::wallet) async fn read_slot(
         &self,
-    ) -> async_lock::RwLockReadGuard<'_, Option<BdkWallet>> {
+    ) -> tokio::sync::RwLockReadGuard<'_, Option<BdkWallet>> {
         acquire_warn_slow(self.bitcoin_wallet.read(), "read lock (slot)").await
     }
 
-    pub(in crate::wallet) async fn write_slot(
-        &self,
-    ) -> async_lock::RwLockWriteGuard<'_, Option<BdkWallet>> {
+    pub(in crate::wallet) async fn write_slot(&self) -> WriteGuard<'_, Option<BdkWallet>> {
         acquire_warn_slow(self.bitcoin_wallet.write(), "write lock (slot)").await
     }
 }

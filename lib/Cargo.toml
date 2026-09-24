@@ -8,7 +8,6 @@ version.workspace = true
 [dependencies]
 aes-gcm = { workspace = true, features = ["std"] }
 argon2 = { workspace = true, features = ["std", "zeroize"] }
-async-lock = { workspace = true }
 bdk_chain = { workspace = true }
 bdk_electrum = { workspace = true }
 bdk_esplora = { workspace = true, features = ["tokio", "async-https-rustls"] }
