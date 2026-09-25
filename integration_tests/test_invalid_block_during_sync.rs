@@ -28,7 +28,6 @@ use futures::channel::mpsc;
 
 use crate::{
     block_verdict::wait_for_enforcer_tip_hash,
-    bmm_block::wait_past_mtp,
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain,
@@ -65,7 +64,6 @@ pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Resu
     propose_sidechain::<DummySidechain>(&mut post_setup).await?;
     activate_sidechain::<DummySidechain>(&mut post_setup).await?;
     fund_enforcer::<DummySidechain>(&mut post_setup).await?;
-    wait_past_mtp(&post_setup).await?;
 
     let good_tip = best_block_hash(&post_setup).await?;
     wait_for_enforcer_tip_hash(&post_setup, good_tip).await?;

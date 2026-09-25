@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use crate::{
     block_verdict::{Expect, assert_enforcer_verdict, wait_for_enforcer_height},
-    bmm_block::{submit_block_with_bmm_accepts, wait_past_mtp},
+    bmm_block::submit_block_with_bmm_accepts,
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{DummySidechain, PostSetup, Sidechain},
 };
@@ -150,7 +150,6 @@ pub async fn test_invalid_block(mut post_setup: PostSetup) -> anyhow::Result<()>
     propose_sidechain::<DummySidechain>(&mut post_setup).await?;
     activate_sidechain::<DummySidechain>(&mut post_setup).await?;
     fund_enforcer::<DummySidechain>(&mut post_setup).await?;
-    wait_past_mtp(&post_setup).await?;
 
     let mut failures = Vec::new();
     for case in CASES {
