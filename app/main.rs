@@ -1129,6 +1129,8 @@ struct GbtConfig {
     network: bitcoin::Network,
     cache_lifetime: Option<Duration>,
     serve_rpc_addr: SocketAddr,
+    /// Accept slipstream txs (`submitslipstreamtx`)
+    slipstream: bool,
 }
 
 type GbtServer<BP> = cusf_enforcer_mempool::server::Server<
@@ -1160,6 +1162,15 @@ impl<BP> Clone for GbtSlot<BP> {
             mainchain_client: self.mainchain_client.clone(),
         }
     }
+}
+
+/// What every mempool-backed method answers before the mempool is synced
+fn gbt_not_synced(what: &str) -> jsonrpsee::types::ErrorObjectOwned {
+    jsonrpsee::types::ErrorObject::owned(
+        RPC_CLIENT_IN_INITIAL_DOWNLOAD,
+        format!("enforcer is still syncing, and cannot {what} yet"),
+        None::<()>,
+    )
 }
 
 impl<BP> GbtSlot<BP> {
@@ -1197,11 +1208,7 @@ where
     ) -> jsonrpsee::core::RpcResult<cusf_enforcer_mempool::server::BlockTemplateResponse> {
         match self.ready().await {
             Some(server) => server.get_block_template(request).await,
-            None => Err(jsonrpsee::types::ErrorObject::owned(
-                RPC_CLIENT_IN_INITIAL_DOWNLOAD,
-                "enforcer is still syncing, and cannot build block templates yet",
-                None::<()>,
-            )),
+            None => Err(gbt_not_synced("build block templates")),
         }
     }
 
@@ -1227,6 +1234,45 @@ where
                 }),
         }
     }
+
+    async fn submit_slipstream_tx(
+        &self,
+        tx_hex: String,
+    ) -> jsonrpsee::core::RpcResult<cusf_enforcer_mempool::server::SubmitSlipstreamTxResponse> {
+        match self.ready().await {
+            Some(server) => server.submit_slipstream_tx(tx_hex).await,
+            None => Err(gbt_not_synced("accept slipstream txs")),
+        }
+    }
+
+    async fn get_slipstream_tx(
+        &self,
+        txid: bitcoin::Txid,
+    ) -> jsonrpsee::core::RpcResult<cusf_enforcer_mempool::mempool::SlipstreamTxStatus> {
+        match self.ready().await {
+            Some(server) => server.get_slipstream_tx(txid).await,
+            None => Err(gbt_not_synced("report slipstream txs")),
+        }
+    }
+
+    async fn list_slipstream_txs(
+        &self,
+    ) -> jsonrpsee::core::RpcResult<Vec<cusf_enforcer_mempool::mempool::SlipstreamTxInfo>> {
+        match self.ready().await {
+            Some(server) => server.list_slipstream_txs().await,
+            None => Err(gbt_not_synced("report slipstream txs")),
+        }
+    }
+
+    async fn remove_slipstream_tx(
+        &self,
+        txid: bitcoin::Txid,
+    ) -> jsonrpsee::core::RpcResult<Vec<bitcoin::Txid>> {
+        match self.ready().await {
+            Some(server) => server.remove_slipstream_tx(txid).await,
+            None => Err(gbt_not_synced("remove slipstream txs")),
+        }
+    }
 }
 
 /// Build the sample block template and the `getblocktemplate` server. The
@@ -1244,6 +1290,7 @@ where
         network,
         cache_lifetime,
         serve_rpc_addr: _, // already bound, see `GbtSlot`
+        slipstream,
     } = gbt;
 
     let network_info = mainchain_client
@@ -1292,7 +1339,7 @@ where
         }
     };
 
-    cusf_enforcer_mempool::server::Server::new(
+    let server = cusf_enforcer_mempool::server::Server::new(
         mining_reward_address.script_pubkey(),
         mempool,
         network,
@@ -1301,7 +1348,13 @@ where
         cache_lifetime,
         sample_block_template,
     )
-    .into_diagnostic()
+    .into_diagnostic()?;
+    Ok(if slipstream {
+        tracing::info!("accepting slipstream txs");
+        server.with_slipstream(cusf_enforcer_mempool::server::SlipstreamConfig::default())
+    } else {
+        server
+    })
 }
 
 /// Sync the mempool for any block producer, and, when `gbt` is `Some`, serve
@@ -1433,6 +1486,7 @@ async fn run_wallet_mempool_task(
             network,
             cache_lifetime: cli.gbt_cache_lifetime(),
             serve_rpc_addr: cli.serve_rpc_addr,
+            slipstream: cli.enable_slipstream,
         })
     } else {
         None
@@ -2123,6 +2177,7 @@ async fn main() -> Result<()> {
                         network,
                         cache_lifetime: cli.gbt_cache_lifetime(),
                         serve_rpc_addr: cli.serve_rpc_addr,
+                        slipstream: cli.enable_slipstream,
                     })
                 } else {
                     None
