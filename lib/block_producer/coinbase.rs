@@ -193,6 +193,22 @@ impl BlockProducer {
         (acks, stale_acks)
     }
 
+    /// The one queued proposal to emit as this block's M1: the lowest by
+    /// (sidechain number, proposal hash) among those not yet on chain. Once
+    /// it is mined, [`Self::apply_connected_block_policy`] drops it from the
+    /// queue and the next one becomes eligible.
+    fn select_sidechain_proposal(
+        queued: Vec<SidechainProposal>,
+        proposed: &HashSet<SidechainProposalId>,
+    ) -> Option<SidechainProposal> {
+        queued
+            .into_iter()
+            .map(|proposal| (proposal.compute_id(), proposal))
+            .filter(|(id, _)| !proposed.contains(id))
+            .min_by_key(|(id, _)| *id)
+            .map(|(_, proposal)| proposal)
+    }
+
     /// Extend coinbase txouts for a new block with our drivechain messages:
     /// M1 (propose), M2 (ack), M3 (bundle propose) and M4 (bundle votes).
     pub(crate) async fn extend_coinbase_txouts(
@@ -250,20 +266,16 @@ impl BlockProducer {
             );
         }
 
-        // Sidechain proposals that already exist in the chain,
-        // or will already be proposed in coinbase txouts
         let proposed_sidechains = self
             .validator()
             .get_sidechains()?
             .into_iter()
             .map(|(sidechain_proposal_id, _)| sidechain_proposal_id)
-            .chain(coinbase_builder.messages().m1_sidechain_proposal_ids())
             .collect::<HashSet<_>>();
-
-        for sidechain_proposal in sidechain_proposals {
-            if !proposed_sidechains.contains(&sidechain_proposal.compute_id()) {
-                coinbase_builder.propose_sidechain(sidechain_proposal)?;
-            }
+        if let Some(sidechain_proposal) =
+            Self::select_sidechain_proposal(sidechain_proposals, &proposed_sidechains)
+        {
+            coinbase_builder.propose_sidechain(sidechain_proposal)?;
         }
 
         let stored_acks = self.db().get_sidechain_acks().await?;

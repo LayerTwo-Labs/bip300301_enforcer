@@ -35,7 +35,7 @@ pub(crate) struct BadBlockCase {
 pub(crate) const DUPLICATE_M1: BadBlockCase = BadBlockCase {
     name: "duplicate_m1",
     extra_coinbase_outputs: duplicate_m1_outputs,
-    expected_log_contains: "rejecting block: M1 sidechain proposal for slot",
+    expected_log_contains: "rejecting block: M1 sidechain proposal already included",
 };
 
 /// Slot of the M1 in [`M1_THEN_INVALID_M4`]. Nothing else in the tests
@@ -57,6 +57,11 @@ pub(crate) const M1_THEN_INVALID_M4: BadBlockCase = BadBlockCase {
 
 const CASES: &[BadBlockCase] = &[
     DUPLICATE_M1,
+    BadBlockCase {
+        name: "multiple_distinct_m1",
+        extra_coinbase_outputs: multiple_distinct_m1_outputs,
+        expected_log_contains: "rejecting block: M1 sidechain proposal already included",
+    },
     BadBlockCase {
         name: "duplicate_m2",
         extra_coinbase_outputs: duplicate_m2_outputs,
@@ -84,6 +89,22 @@ fn duplicate_m1_outputs() -> anyhow::Result<Vec<TxOut>> {
         description: proposal.description.clone(),
     })?;
     let m1_b: ScriptBuf = proposal.try_into()?;
+    Ok(vec![zero_value(m1_a), zero_value(m1_b)])
+}
+
+/// Two M1s that differ in both slot and description: still more than the
+/// one M1 a block may carry.
+fn multiple_distinct_m1_outputs() -> anyhow::Result<Vec<TxOut>> {
+    let m1_a: ScriptBuf = M1ProposeSidechain {
+        sidechain_number: DummySidechain::SIDECHAIN_NUMBER,
+        description: SidechainDescription(b"multiple-m1 test a".to_vec()),
+    }
+    .try_into()?;
+    let m1_b: ScriptBuf = M1ProposeSidechain {
+        sidechain_number: SidechainNumber(5),
+        description: SidechainDescription(b"multiple-m1 test b".to_vec()),
+    }
+    .try_into()?;
     Ok(vec![zero_value(m1_a), zero_value(m1_b)])
 }
 
