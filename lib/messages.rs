@@ -26,8 +26,7 @@ use crate::{
     proto::{StatusBuilder, ToStatus},
     types::{
         AmountOverflowError, BmmCommitment, M6id, OpDrivechain, SidechainDeclaration,
-        SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalId,
-        WithdrawalBundleVote,
+        SidechainDescription, SidechainNumber, SidechainProposal, WithdrawalBundleVote,
     },
 };
 
@@ -454,17 +453,8 @@ impl TryFrom<CoinbaseMessage> for ScriptBuf {
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum CoinbaseMessagesError {
-    #[error(
-        "M1 sidechain proposal for slot `{}` with sidechain description hash `{}` already included at index `{}`",
-        .slot,
-        .sidechain_description_hash,
-        .index
-    )]
-    DuplicateM1 {
-        index: usize,
-        slot: SidechainNumber,
-        sidechain_description_hash: sha256d::Hash,
-    },
+    #[error("M1 sidechain proposal already included at index `{first_index}`")]
+    MultipleM1 { first_index: usize },
     #[error("M2 that acks proposal for slot `{slot}` already included at index `{index}`")]
     DuplicateM2 { index: usize, slot: SidechainNumber },
     #[error("M4 already included at index `{index}`")]
@@ -476,7 +466,7 @@ pub enum CoinbaseMessagesError {
 impl ToStatus for CoinbaseMessagesError {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::DuplicateM1 { .. }
+            Self::MultipleM1 { .. }
             | Self::DuplicateM2 { .. }
             | Self::DuplicateM4 { .. }
             | Self::DuplicateM7 { .. } => StatusBuilder::new(self),
@@ -489,7 +479,7 @@ impl ToStatus for CoinbaseMessagesError {
 pub struct CoinbaseMessages {
     /// Coinbase messages, with vout index
     messages: Vec<(CoinbaseMessage, usize)>,
-    m1_sidechain_proposal_id_to_index: HashMap<SidechainProposalId, usize>,
+    m1_index: Option<usize>,
     m2_ack_slot_to_index: HashMap<SidechainNumber, usize>,
     m4_index: Option<usize>,
     /// Maps M7 slots to commitment and index
@@ -497,13 +487,6 @@ pub struct CoinbaseMessages {
 }
 
 impl CoinbaseMessages {
-    pub fn m1_sidechain_proposal_ids(&self) -> HashSet<SidechainProposalId> {
-        self.m1_sidechain_proposal_id_to_index
-            .keys()
-            .copied()
-            .collect()
-    }
-
     pub fn m2_ack_slot_vout(&self, slot: &SidechainNumber) -> Option<usize> {
         self.m2_ack_slot_to_index.get(slot).copied()
     }
@@ -532,25 +515,13 @@ impl CoinbaseMessages {
     // TODO: ensure that M3 pushes are valid
     pub fn push(&mut self, msg: CoinbaseMessage, vout: usize) -> Result<(), CoinbaseMessagesError> {
         match &msg {
-            CoinbaseMessage::M1ProposeSidechain(sidechain_proposal) => {
-                let sidechain_proposal_id = SidechainProposalId {
-                    sidechain_number: sidechain_proposal.sidechain_number,
-                    description_hash: sidechain_proposal.description.sha256d_hash(),
-                };
-                match self
-                    .m1_sidechain_proposal_id_to_index
-                    .entry(sidechain_proposal_id)
-                {
-                    hash_map::Entry::Occupied(entry) => Err(CoinbaseMessagesError::DuplicateM1 {
-                        index: *entry.get(),
-                        slot: sidechain_proposal_id.sidechain_number,
-                        sidechain_description_hash: sidechain_proposal_id.description_hash,
-                    }),
-                    hash_map::Entry::Vacant(entry) => {
-                        entry.insert(vout);
-                        self.messages.push((msg, vout));
-                        Ok(())
-                    }
+            CoinbaseMessage::M1ProposeSidechain(_) => {
+                if let Some(first_index) = self.m1_index {
+                    Err(CoinbaseMessagesError::MultipleM1 { first_index })
+                } else {
+                    self.m1_index = Some(vout);
+                    self.messages.push((msg, vout));
+                    Ok(())
                 }
             }
             CoinbaseMessage::M2AckSidechain(m2) => {
