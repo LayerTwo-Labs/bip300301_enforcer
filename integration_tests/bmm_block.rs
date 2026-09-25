@@ -8,8 +8,6 @@
 //! So this module assembles such blocks itself, keeping the consensus-critical
 //! bits (witness commitment, merkle roots, MTP) in one place.
 
-use std::time::Duration;
-
 use bip300301_enforcer_lib::{
     bins::CommandExt as _,
     messages::M7BmmAccept,
@@ -65,34 +63,6 @@ fn deserialize_bits<'de, D: serde::Deserializer<'de>>(de: D) -> Result<CompactTa
         .map_err(serde::de::Error::custom)
 }
 
-/// Block timestamps must exceed the median time past of the previous 11
-/// blocks. On regtest, where blocks are mined back-to-back, MTP can sit ahead
-/// of the wall clock; sleep until it doesn't.
-pub async fn wait_past_mtp(post_setup: &PostSetup) -> anyhow::Result<()> {
-    let tip_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?;
-    let tip_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [tip_hash])
-        .run_utf8()
-        .await?;
-    let mediantime = serde_json::from_str::<serde_json::Value>(&tip_json)?["mediantime"]
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("getblock response missing mediantime"))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-    if mediantime >= now {
-        let wait = Duration::from_secs(mediantime - now + 1);
-        tracing::info!(?wait, mediantime, now, "waiting for wall clock to pass MTP");
-        tokio::time::sleep(wait).await;
-    }
-    Ok(())
-}
-
 /// Hand-craft and submit a block whose coinbase carries an M7 accept for each
 /// `(sidechain, h*)` in `accepts`, and whose txdata is exactly `tx_hexes` (in
 /// order, after the coinbase), so one block can settle several sidechains'
@@ -105,8 +75,6 @@ pub async fn submit_block_with_bmm_accepts(
     accepts: &[(SidechainNumber, [u8; 32])],
     tx_hexes: &[&str],
 ) -> anyhow::Result<BlockHash> {
-    wait_past_mtp(post_setup).await?;
-
     let template_json = post_setup
         .bitcoin_cli
         // We craft the BIP300/BIP301 coinbase commitments below, so we ack the
