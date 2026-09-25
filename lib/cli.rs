@@ -480,6 +480,19 @@ pub struct Config {
     /// Without a wallet, `--coinbase-recipient` is required.
     #[arg(long, default_value_t = false, requires = "enable_mempool")]
     pub enable_block_template_server: bool,
+    /// Accept slipstream txs on the block template server
+    /// (`submitslipstreamtx`): txs added straight to the mempool, never
+    /// relayed or handed to the node's mempool, and not subject to its relay
+    /// policy. Each is checked for consensus validity by the node first.
+    ///
+    /// The block template server has no authentication. With this set, anyone
+    /// who can reach `--serve-rpc-addr` can submit txs.
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "enable_block_template_server"
+    )]
+    pub enable_slipstream: bool,
     /// Address that receives the block reward.
     ///
     /// Applies to served `getblocktemplate` and the signet mining script.

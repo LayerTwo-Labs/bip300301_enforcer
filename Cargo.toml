@@ -89,8 +89,10 @@ git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
 rev = "3ca15900bef3c9a2fd83003f71480a738411f35e"
 
 [workspace.dependencies.cusf-enforcer-mempool]
-git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "185e439807023902252ba85ca908b7133a2fb062"
+# TODO: back to LayerTwo-Labs/cusf-enforcer-mempool once
+# LayerTwo-Labs/cusf-enforcer-mempool#130 (slipstream) is merged
+git = "https://github.com/rsantacroce/cusf-enforcer-mempool.git"
+rev = "d4b30cd7138be33dd0351b57f3cf04cab8b35abc"
 
 [workspace.dependencies.ouroboros]
 git = "https://github.com/erikjohnston/ouroboros.git"

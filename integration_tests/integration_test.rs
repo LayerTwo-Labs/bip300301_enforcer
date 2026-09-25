@@ -1506,6 +1506,22 @@ pub fn tests(
         crate::test_gbt_proposal::test_gbt_proposal,
     ));
 
+    async_trials.push(new_trial_with_setup_opts(
+        crate::test_slipstream_deposit::TEST_NAME.to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts {
+            enforcer_args: vec!["--enable-slipstream".to_owned()],
+            ..Default::default()
+        },
+        crate::test_slipstream_deposit::test_slipstream_deposit,
+    ));
+
     async_trials.push(new_bespoke_trial(
         crate::test_gbt_during_initial_sync::TEST_NAME,
         bin_paths,
