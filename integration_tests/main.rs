@@ -1,6 +1,9 @@
 use bip300301_enforcer_integration_tests::{
     integration_test,
-    util::{BinPaths, TestFailureCollector, TestFileRegistry, display_timing_summary},
+    util::{
+        BinPaths, TestFailureCollector, TestFileRegistry, display_timing_summary, measure_test_cpu,
+        write_timings,
+    },
 };
 use clap::Parser;
 use tracing::level_filters::LevelFilter;
@@ -13,6 +16,10 @@ struct Cli {
     /// pass/fail summary, and per-failure log dumps are always shown.
     #[arg(long, default_value = "off", value_name = "LEVEL")]
     log_level: LevelFilter,
+    /// Write each test's wall time, and CPU time when tests run one at a
+    /// time (`--test-threads 1`), to this file as TSV.
+    #[arg(long, value_name = "PATH")]
+    timings_file: Option<std::path::PathBuf>,
     #[command(flatten)]
     test_args: libtest_mimic::Arguments,
 }
@@ -214,6 +221,12 @@ async fn run() -> anyhow::Result<std::process::ExitCode> {
         );
     }
 
+    // Concurrent tests share the harness and its children, so their CPU
+    // can't be told apart.
+    if args.test_args.test_threads == Some(1) {
+        measure_test_cpu();
+    }
+
     // Run all tests and collect the exit code
     let started = std::time::Instant::now();
     let conclusion = libtest_mimic::run(&args.test_args, tests);
@@ -222,6 +235,10 @@ async fn run() -> anyhow::Result<std::process::ExitCode> {
 
     // Per-test timing, then any failures at the end
     display_timing_summary(wall);
+    if let Some(timings_file) = &args.timings_file {
+        write_timings(timings_file)
+            .map_err(|err| anyhow::anyhow!("writing `{}`: {err:#}", timings_file.display()))?;
+    }
     failure_collector.display_all_failures();
 
     Ok(exit_code)

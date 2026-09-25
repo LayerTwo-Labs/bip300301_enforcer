@@ -75,11 +75,63 @@ impl TestFailureCollector {
     }
 }
 
-/// `(test name, wall-clock duration, passed)`, recorded as each test finishes.
-type TestTiming = (String, Duration, bool);
+/// Recorded as each test finishes.
+#[derive(Clone, Debug)]
+struct TestTiming {
+    name: String,
+    wall: Duration,
+    /// CPU used by the harness and every process it spawned while the test
+    /// ran. Only measured when tests run one at a time: concurrent tests
+    /// share both, so it can't be split between them.
+    cpu: Option<Duration>,
+    passed: bool,
+}
 
 static TEST_TIMINGS: std::sync::LazyLock<parking_lot::Mutex<Vec<TestTiming>>> =
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
+
+static MEASURE_TEST_CPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Measure per-test CPU. Only meaningful with a single test thread.
+pub fn measure_test_cpu() {
+    MEASURE_TEST_CPU.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// User + system CPU of this process and every child it has reaped.
+#[cfg(unix)]
+fn cpu_time_with_children() -> Duration {
+    fn rusage(who: libc::c_int) -> Duration {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        // SAFETY: `getrusage` only writes to the pointed-to struct, which is
+        // zero-initialized and so valid even if the call fails.
+        let usage = unsafe {
+            libc::getrusage(who, usage.as_mut_ptr());
+            usage.assume_init()
+        };
+        let timeval = |tv: libc::timeval| {
+            Duration::from_secs(u64::try_from(tv.tv_sec).unwrap_or(0))
+                + Duration::from_micros(u64::try_from(tv.tv_usec).unwrap_or(0))
+        };
+        timeval(usage.ru_utime) + timeval(usage.ru_stime)
+    }
+    rusage(libc::RUSAGE_SELF) + rusage(libc::RUSAGE_CHILDREN)
+}
+
+#[cfg(not(unix))]
+fn cpu_time_with_children() -> Duration {
+    Duration::ZERO
+}
+
+/// Wait for every harness child to be killed and reaped, so its CPU shows up
+/// in [`cpu_time_with_children`]. Children are torn down by aborted tasks,
+/// which the runtime gets to after the test itself has returned.
+fn wait_for_children_reaped() {
+    const TIMEOUT: Duration = Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !live_children().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 #[expect(clippy::print_stderr)]
 pub fn display_timing_summary(wall: Duration) {
@@ -88,9 +140,11 @@ pub fn display_timing_summary(wall: Duration) {
     if timings.is_empty() {
         return;
     }
+    wait_for_children_reaped();
+    let cpu = cpu_time_with_children();
 
-    timings.sort_by_key(|(_, dur, _)| std::cmp::Reverse(*dur));
-    let total: Duration = timings.iter().map(|(_, dur, _)| *dur).sum();
+    timings.sort_by_key(|timing| std::cmp::Reverse(timing.wall));
+    let total: Duration = timings.iter().map(|timing| timing.wall).sum();
     let wall_secs = wall.as_secs_f64();
     let parallelism = if wall_secs > 0.0 {
         total.as_secs_f64() / wall_secs
@@ -99,16 +153,48 @@ pub fn display_timing_summary(wall: Duration) {
     };
     let n = timings.len();
     eprintln!(
-        "\n{n} test{} in {wall_secs:.1}s wall · {:.1}s total test-time · {parallelism:.1}× parallel",
+        "\n{n} test{} in {wall_secs:.1}s wall · {:.1}s total test-time · {parallelism:.1}× parallel · {:.1}s cpu",
         if n == 1 { "" } else { "s" },
         total.as_secs_f64(),
+        cpu.as_secs_f64(),
     );
     if n > 1 {
         eprintln!("slowest:");
-        for (name, dur, _) in timings.iter().take(SHOW_SLOWEST) {
-            eprintln!("  {:>6.1}s  {name}", dur.as_secs_f64());
+        for timing in timings.iter().take(SHOW_SLOWEST) {
+            eprintln!("  {:>6.1}s  {}", timing.wall.as_secs_f64(), timing.name);
+        }
+        if timings.iter().all(|timing| timing.cpu.is_some()) {
+            timings.sort_by_key(|timing| std::cmp::Reverse(timing.cpu));
+            eprintln!("most cpu:");
+            for timing in timings.iter().take(SHOW_SLOWEST) {
+                let cpu = timing.cpu.unwrap_or_default();
+                eprintln!("  {:>6.1}s  {}", cpu.as_secs_f64(), timing.name);
+            }
         }
     }
+}
+
+/// Write every test's timing as TSV: name, passed, wall seconds, and CPU
+/// seconds (empty unless measured).
+pub fn write_timings(path: &std::path::Path) -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    let mut timings = TEST_TIMINGS.lock().clone();
+    timings.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut tsv = String::from("name\tpassed\twall_s\tcpu_s\n");
+    for timing in timings {
+        let cpu = timing
+            .cpu
+            .map(|cpu| format!("{:.3}", cpu.as_secs_f64()))
+            .unwrap_or_default();
+        let _: std::fmt::Result = writeln!(
+            tsv,
+            "{}\t{}\t{:.3}\t{cpu}",
+            timing.name,
+            timing.passed,
+            timing.wall.as_secs_f64(),
+        );
+    }
+    std::fs::write(path, tsv)
 }
 
 #[derive(Debug, Error)]
@@ -380,6 +466,8 @@ impl<Fut> AsyncTrial<Fut> {
         let failure_collector = self.failure_collector;
 
         libtest_mimic::Trial::test(self.name, move || {
+            let measure_cpu = MEASURE_TEST_CPU.load(std::sync::atomic::Ordering::Relaxed);
+            let cpu_before = measure_cpu.then(cpu_time_with_children);
             let started = std::time::Instant::now();
             // Use a dedicated thread to avoid nested runtime issues
             let result = std::thread::spawn(move || {
@@ -411,9 +499,17 @@ impl<Fut> AsyncTrial<Fut> {
             })
             .join()
             .unwrap();
-            TEST_TIMINGS
-                .lock()
-                .push((report_name, started.elapsed(), result.is_ok()));
+            let wall = started.elapsed();
+            let cpu = cpu_before.map(|cpu_before| {
+                wait_for_children_reaped();
+                cpu_time_with_children().saturating_sub(cpu_before)
+            });
+            TEST_TIMINGS.lock().push(TestTiming {
+                name: report_name,
+                wall,
+                cpu,
+                passed: result.is_ok(),
+            });
             result
         })
     }
@@ -490,7 +586,7 @@ pub fn format_test_output_files(test_name: &str, files: &[FileWithConfig]) -> St
 
 /// PIDs of harness-spawned processes that are still running.
 ///
-/// `kill_on_drop` handles every path where a destructor runs, but Rust runs no
+/// [`ChildPidGuard`] handles every path where a destructor runs, but Rust runs no
 /// destructors on SIGINT or SIGTERM — so a Ctrl-C'd or `timeout`-killed run
 /// leaves bitcoind, electrs and the enforcer reparented and alive. They hold
 /// the harness's fixed port range indefinitely, and the next run's tests then
@@ -509,15 +605,42 @@ fn live_children() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<
     LIVE_CHILDREN.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// Removes its PID from [`LIVE_CHILDREN`] however the spawning future ends —
-/// returned, cancelled, or unwound.
-struct ChildPidGuard(u32);
+/// Kills and reaps its child however the spawning future ends — returned,
+/// cancelled, or unwound — and removes it from [`LIVE_CHILDREN`].
+///
+/// Reaping here rather than leaving it to tokio's orphan queue, which only
+/// gets to it on a later `SIGCHLD`, is what lets a test's CPU time be read as
+/// soon as its children are gone.
+struct ChildPidGuard {
+    pid: u32,
+    reaped: bool,
+}
 
 impl Drop for ChildPidGuard {
     fn drop(&mut self) {
-        live_children().remove(&self.0);
+        if !self.reaped {
+            kill_and_reap(self.pid);
+        }
+        live_children().remove(&self.pid);
     }
 }
+
+#[cfg(unix)]
+fn kill_and_reap(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    let mut status = 0;
+    // SAFETY: plain syscalls on a child we own and have not reaped,
+    // so the PID cannot have been reused.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        libc::waitpid(pid, &mut status, 0);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_and_reap(_pid: u32) {}
 
 /// SIGKILL every child the harness still has running.
 ///
@@ -596,9 +719,6 @@ where
     let mut cmd = tokio::process::Command::new(command.as_ref());
     cmd.envs(envs);
     cmd.args(args);
-    // Covers every path where a destructor runs: normal exit, task abort, and
-    // the per-test timeout. It cannot cover signals — see `LIVE_CHILDREN`.
-    cmd.kill_on_drop(true);
     let command: String = command.as_ref().to_string_lossy().to_string();
     let stderr_fp = dir.join("stderr.txt");
     let stdout_fp = dir.join("stdout.txt");
@@ -636,16 +756,21 @@ where
             }
         };
         // Held for as long as this future owns the child, so a signal handler
-        // can reach it. Dropped with the future, whether it completes or is
-        // cancelled.
-        let _pid_guard = cmd.id().map(|pid| {
+        // can reach it. Dropped with the future on every path where a
+        // destructor runs: normal exit, task abort, and the per-test timeout.
+        let mut pid_guard = cmd.id().map(|pid| {
             live_children().insert(pid);
-            ChildPidGuard(pid)
+            ChildPidGuard { pid, reaped: false }
         });
 
         tracing::debug!("Waiting for `{command}` to finish");
         let exit_status = match cmd.wait().await {
-            Ok(exit_status) => exit_status,
+            Ok(exit_status) => {
+                if let Some(pid_guard) = pid_guard.as_mut() {
+                    pid_guard.reaped = true;
+                }
+                exit_status
+            }
             Err(err) => {
                 let err = anyhow::Error::from(err);
                 return anyhow::anyhow!("Command {command} failed: `{err:#}`",);

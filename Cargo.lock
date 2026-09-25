@@ -505,6 +505,7 @@ dependencies = [
  "hex",
  "http",
  "jsonrpsee",
+ "libc",
  "libtest-mimic",
  "parking_lot",
  "reqwest 0.13.5",
