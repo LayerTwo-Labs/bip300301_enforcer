@@ -48,6 +48,23 @@ const ESPLORA_PARALLEL_REQUESTS: usize = 25;
 /// addresses without requiring them to be used.
 const STOP_GAP: usize = 200;
 
+/// The wallet's local chain is advanced by validator blocks alone, so the
+/// checkpoint a sync brings back must never be applied. Drop it, and keep the
+/// rest of the update: a sync request carries the wallet's own tip, so the
+/// chain source always answers with a checkpoint, and refusing the whole
+/// update on account of one would discard every transaction the sync found.
+fn strip_chain_update(update: impl Into<bdk_wallet::Update>) -> bdk_wallet::Update {
+    let mut update: bdk_wallet::Update = update.into();
+    if let Some(chain_update) = update.chain.take() {
+        tracing::debug!(
+            checkpoint_block_hash = %chain_update.hash(),
+            checkpoint_height = chain_update.height(),
+            "Ignoring chain source checkpoint in wallet sync",
+        );
+    }
+    update
+}
+
 impl WalletInner {
     pub(in crate::wallet) async fn get_tip(&self) -> Result<bdk_core::BlockId, error::NotUnlocked> {
         let wallet = self.read_wallet().await?;
@@ -215,16 +232,8 @@ impl WalletInner {
             }
         };
         tracing::trace!("Fetched update from {chain_source}");
-        if let Some(chain_update) = update.chain_update {
-            // The wallet chain should never be updated here.
-            // Sync should only ever update txs
-            tracing::debug!(
-                checkpoint_block_hash = %chain_update.hash(),
-                checkpoint_height = chain_update.height(),
-                "Aborting wallet sync to new checkpoint",
-            );
-            return Ok(None);
-        }
+        // Sync should only ever update txs, never the wallet chain.
+        let update = strip_chain_update(update);
 
         tracing::trace!("applying update");
         // Upgrade wallet lock
@@ -459,5 +468,90 @@ impl WalletInner {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bdk_wallet::{KeychainKind, test_utils::get_funded_wallet_wpkh};
+    use bitcoin::{
+        Amount, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        absolute::LockTime, hashes::Hash as _, transaction::Version,
+    };
+
+    use super::strip_chain_update;
+
+    /// A sync answers with both a checkpoint and the transactions it found.
+    /// The checkpoint has to go -- the wallet's chain is advanced by validator
+    /// blocks -- but the transactions must survive it, or every incoming
+    /// payment stays invisible to the wallet until a block confirms it.
+    #[test]
+    fn stripped_chain_update_keeps_the_transactions() {
+        let (mut wallet, _) = get_funded_wallet_wpkh();
+        let tip_before = wallet.local_chain().tip().block_id();
+
+        // An unconfirmed payment to the wallet, as a sync would report it.
+        let script_pubkey = wallet
+            .reveal_next_address(KeychainKind::External)
+            .script_pubkey();
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_byte_array([0x77; 32]),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey,
+            }],
+        };
+        let txid = tx.compute_txid();
+        let mut tx_update = bdk_chain::bdk_core::TxUpdate::default();
+        tx_update.txs.push(Arc::new(tx));
+        // A chain source stamps the time it last saw the tx in the mempool,
+        // and an unconfirmed tx is only canonical with one.
+        let seen_at: u64 = 1_700_000_000;
+        tx_update.seen_ats.extend([(txid, seen_at)]);
+
+        // The chain source always attaches a checkpoint, since the request
+        // carries the wallet's local tip.
+        let chain_update = wallet
+            .local_chain()
+            .tip()
+            .extend([bdk_chain::BlockId {
+                height: tip_before.height + 1_000,
+                hash: BlockHash::from_byte_array([0x88; 32]),
+            }])
+            .expect("must extend the wallet tip");
+
+        let update = strip_chain_update(bdk_wallet::Update {
+            chain: Some(chain_update),
+            tx_update,
+            ..Default::default()
+        });
+
+        assert!(
+            update.chain.is_none(),
+            "the chain source's checkpoint must be dropped"
+        );
+        wallet.apply_update(update).unwrap();
+
+        assert!(
+            wallet.transactions().any(|wtx| wtx.tx_node.txid == txid),
+            "the transactions the sync found must survive the dropped checkpoint",
+        );
+        assert_eq!(
+            wallet.local_chain().tip().block_id(),
+            tip_before,
+            "the chain source must not advance the wallet's chain",
+        );
     }
 }
