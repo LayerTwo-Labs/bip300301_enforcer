@@ -31,7 +31,10 @@ use connectrpc::{
     ConnectError,
     client::{ClientConfig, HttpClient},
 };
-use futures::{channel::mpsc, future};
+use futures::{
+    channel::{mpsc, oneshot},
+    future,
+};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
@@ -469,6 +472,57 @@ pub async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::
         .map_err(|_| anyhow!("Timeout waiting for bitcoind to become ready after {TIMEOUT:?}"))
 }
 
+/// Watches a spawned process for exiting, so that waiting for it to become
+/// ready fails with the process's own error as soon as it dies, rather than
+/// running into the wait's timeout.
+pub struct ExitWatch {
+    name: &'static str,
+    exited: Option<oneshot::Receiver<String>>,
+}
+
+impl ExitWatch {
+    /// The watch, and the error handler to spawn the process with. The
+    /// handler still forwards the exit to `res_tx`.
+    pub fn new(
+        name: &'static str,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> (Self, impl FnOnce(anyhow::Error) + Send + 'static) {
+        let (exited_tx, exited_rx) = oneshot::channel();
+        let on_exit = move |err: anyhow::Error| {
+            let _unsent: Result<(), _> = exited_tx.send(format!("{err:#}"));
+            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+        };
+        let watch = Self {
+            name,
+            exited: Some(exited_rx),
+        };
+        (watch, on_exit)
+    }
+
+    /// Await `ready`, unless the process exits first.
+    pub async fn unless_exited<T>(
+        &mut self,
+        ready: impl Future<Output = anyhow::Result<T>>,
+    ) -> anyhow::Result<T> {
+        let Some(mut exited) = self.exited.take() else {
+            return ready.await;
+        };
+        let mut ready = std::pin::pin!(ready);
+        tokio::select! {
+            res = &mut ready => {
+                self.exited = Some(exited);
+                res
+            }
+            exit = &mut exited => match exit {
+                Ok(err) => Err(anyhow!("{} exited before it was ready: {err}", self.name)),
+                // Dropped without being called: the task was aborted, which
+                // says nothing about the process.
+                Err(oneshot::Canceled) => ready.await,
+            },
+        }
+    }
+}
+
 /// Polls the validator via `get_chain_tip` until it reports a tip, and returns
 /// it. The enforcer starts serving gRPC before the validator has finished its
 /// initial sync, and RPCs that need the mainchain tip fail with `Unavailable`
@@ -861,13 +915,13 @@ async fn mine_cached_signet_chain(
     )?;
     // Match what the tests run with, so the snapshot doesn't force a reindex.
     bitcoind.txindex = true;
-    let bitcoind_task = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], {
-        move |err| {
-            let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-        }
-    });
+    let (mut bitcoind_exit, on_exit) = ExitWatch::new("bitcoind", res_tx);
+    let bitcoind_task =
+        bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], on_exit);
     let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
-    wait_for_bitcoind_ready(&bitcoin_cli).await?;
+    bitcoind_exit
+        .unless_exited(wait_for_bitcoind_ready(&bitcoin_cli))
+        .await?;
 
     let _create_wallet_output = bitcoin_cli
         .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
@@ -1219,16 +1273,14 @@ impl PostSetup {
             signet_setup.as_ref(),
         )?;
         bitcoind.txindex = enable_wallet;
+        let (mut bitcoind_exit, on_exit) = ExitWatch::new("bitcoind", res_tx.clone());
         let bitcoind_task =
-            bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, {
-                let res_tx = res_tx.clone();
-                move |err| {
-                    let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-                }
-            });
+            bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, on_exit);
         // wait for startup
         let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
-        wait_for_bitcoind_ready(&bitcoin_cli).await?;
+        bitcoind_exit
+            .unless_exited(wait_for_bitcoind_ready(&bitcoin_cli))
+            .await?;
 
         // Create a wallet and initialize it. A restored chain already ships
         // one, holding the mature coinbases it was mined to.
@@ -1358,20 +1410,22 @@ impl PostSetup {
             network: bitcoind.network,
             signet_magic: signet_setup.as_ref().map(|setup| setup.signet_magic),
         };
-        let electrs_task = electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
-            let res_tx = res_tx.clone();
-            move |err| {
-                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-            }
-        });
+        let (mut electrs_exit, on_exit) = ExitWatch::new("electrs", res_tx.clone());
+        let electrs_task =
+            electrs.spawn_command_with_args::<String, String, _, _, _>([], [], on_exit);
         // Wait for electrs to start serving. The enforcer's wallet talks to
         // both the Electrum RPC and HTTP ports, so wait for each to accept
         // connections rather than guessing at a fixed startup delay.
-        for port in [electrs.electrum_rpc_port, electrs.electrum_http_port] {
-            wait_for_port("127.0.0.1", port, Duration::from_secs(60))
-                .await
-                .map_err(|err| anyhow!("Failed waiting for electrs port {port}: {err}"))?;
-        }
+        electrs_exit
+            .unless_exited(async {
+                for port in [electrs.electrum_rpc_port, electrs.electrum_http_port] {
+                    wait_for_port("127.0.0.1", port, Duration::from_secs(60))
+                        .await
+                        .map_err(|err| anyhow!("Failed waiting for electrs port {port}: {err}"))?;
+                }
+                Ok(())
+            })
+            .await?;
         // Start BIP300301 Enforcer
         tracing::debug!("Starting bip300301_enforcer");
         let enforcer = Enforcer {
@@ -1392,15 +1446,14 @@ impl PostSetup {
             wallet_electrum_rpc_port: electrs.electrum_rpc_port,
             wallet_electrum_http_port: electrs.electrum_http_port,
         };
+        let (mut enforcer_exit, on_enforcer_exit) = ExitWatch::new("enforcer", res_tx);
         let enforcer_task = enforcer.spawn_command_with_args(
             [(
                 "RUST_LOG",
                 "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
             )],
             opts.enforcer_args,
-            move |err| {
-                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-            },
+            on_enforcer_exit,
         );
         let tasks = Tasks {
             _enforcer: Some(enforcer_task),
@@ -1408,13 +1461,17 @@ impl PostSetup {
             _bitcoind: bitcoind_task,
         };
         // Wait for enforcer gRPC port to open
-        wait_for_port(
-            "127.0.0.1",
-            enforcer.serve_grpc_port,
-            Duration::from_secs(60),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+        enforcer_exit
+            .unless_exited(async {
+                wait_for_port(
+                    "127.0.0.1",
+                    enforcer.serve_grpc_port,
+                    Duration::from_secs(60),
+                )
+                .await
+                .map_err(|e| anyhow!("Failed waiting for enforcer gRPC port: {e}"))
+            })
+            .await?;
 
         let gbt_client = jsonrpsee::http_client::HttpClient::builder()
             .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
@@ -1426,14 +1483,18 @@ impl PostSetup {
         // it, so wait for it to serve a template rather than racing the first
         // request against startup.
         if enforcer.enable_block_template_server {
-            wait_for_port(
-                "127.0.0.1",
-                enforcer.serve_rpc_port,
-                Duration::from_secs(60),
-            )
-            .await
-            .map_err(|e| anyhow!("Failed waiting for enforcer JSON-RPC port: {e}"))?;
-            wait_for_block_templates(&gbt_client).await?;
+            enforcer_exit
+                .unless_exited(async {
+                    wait_for_port(
+                        "127.0.0.1",
+                        enforcer.serve_rpc_port,
+                        Duration::from_secs(60),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("Failed waiting for enforcer JSON-RPC port: {e}"))?;
+                    wait_for_block_templates(&gbt_client).await
+                })
+                .await?;
         }
         if let Some(signet_miner) = signet_miner.as_mut() {
             let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
@@ -1453,7 +1514,9 @@ impl PostSetup {
         // The gRPC port opens before the validator has synced the blocks that
         // this setup generated. Wait for it, so that tests don't race the
         // initial sync.
-        let _chain_tip = wait_for_validator_synced(&validator_service_client).await?;
+        let _chain_tip = enforcer_exit
+            .unless_exited(wait_for_validator_synced(&validator_service_client))
+            .await?;
         let bitcoin_util = {
             let path = match bin_paths.bitcoin_util() {
                 Ok(path) => Ok(path.clone()),
@@ -1544,25 +1607,28 @@ impl PostSetup {
             wallet_electrum_rpc_port: self.reserved_ports.electrs_electrum_rpc.port(),
             wallet_electrum_http_port: self.reserved_ports.electrs_electrum_http.port(),
         };
+        let (mut enforcer_exit, on_exit) = ExitWatch::new("enforcer", res_tx);
         let enforcer_task = enforcer.spawn_command_with_args(
             [(
                 "RUST_LOG",
                 "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
             )],
             enforcer_args,
-            move |err| {
-                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-            },
+            on_exit,
         );
         self.tasks._enforcer = Some(enforcer_task);
 
-        wait_for_port(
-            "127.0.0.1",
-            enforcer.serve_grpc_port,
-            Duration::from_secs(10),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed waiting for restarted enforcer gRPC port: {e}"))?;
+        enforcer_exit
+            .unless_exited(async {
+                wait_for_port(
+                    "127.0.0.1",
+                    enforcer.serve_grpc_port,
+                    Duration::from_secs(10),
+                )
+                .await
+                .map_err(|e| anyhow!("Failed waiting for restarted enforcer gRPC port: {e}"))
+            })
+            .await?;
 
         Ok(())
     }
@@ -1620,21 +1686,22 @@ impl PostSetup {
             // Only relevant for signet, which this helper isn't used by yet.
             signet_magic: None,
         };
-        let electrs_task = electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
-            let res_tx = res_tx.clone();
-            move |err| {
-                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-            }
-        });
+        let (mut electrs_exit, on_exit) = ExitWatch::new("electrs", res_tx);
+        let electrs_task =
+            electrs.spawn_command_with_args::<String, String, _, _, _>([], [], on_exit);
         self.tasks._electrs = Some(electrs_task);
 
-        wait_for_port(
-            "127.0.0.1",
-            electrs.electrum_http_port,
-            Duration::from_secs(60),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed waiting for restarted electrs http port: {e}"))?;
+        electrs_exit
+            .unless_exited(async {
+                wait_for_port(
+                    "127.0.0.1",
+                    electrs.electrum_http_port,
+                    Duration::from_secs(60),
+                )
+                .await
+                .map_err(|e| anyhow!("Failed waiting for restarted electrs http port: {e}"))
+            })
+            .await?;
 
         Ok(())
     }
