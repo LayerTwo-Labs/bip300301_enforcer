@@ -901,6 +901,10 @@ impl Bitcoind {
             // test runtime. Only unsafe on OS crash/power loss, which never
             // matters for throwaway test datadirs.
             "-unsafesqlitesync=1".to_owned(),
+            // `createwallet` otherwise pre-derives 1000 keys for each of its 8
+            // descriptors, which is nearly all of its cost. Addresses are
+            // still derived on demand.
+            "-keypool=1".to_owned(),
             // Leave IBD regardless of how old the tip is. A restored signet
             // chain is as old as the cache it was mined into, so past the
             // 24h default bitcoind stays in IBD forever -- nothing mines into
