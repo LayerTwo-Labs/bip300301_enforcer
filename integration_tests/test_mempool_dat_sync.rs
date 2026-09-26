@@ -22,7 +22,7 @@ use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use crate::{
     setup::{
         BitcoindKind, PreSetup, new_bitcoind, read_enforcer_log, wait_for_bitcoind_ready,
-        wait_for_enforcer_log, wait_for_port,
+        wait_for_enforcer_log, wait_for_port, wait_for_port_free,
     },
     util::Enforcer,
 };
@@ -156,7 +156,12 @@ pub async fn test_mempool_dat_sync(setup: PreSetup) -> anyhow::Result<()> {
     // Stop this enforcer before starting the next: they share a data dir and a
     // gRPC port.
     drop(enforcer_task);
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_port_free(
+        "127.0.0.1",
+        enforcer.serve_grpc_port,
+        Duration::from_secs(10),
+    )
+    .await?;
     let log_before_garbage = read_enforcer_log(&setup.directories.enforcer_dir)?.len();
 
     // ---- run 2: a garbage dump ----

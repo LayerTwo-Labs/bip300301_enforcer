@@ -25,7 +25,10 @@ use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use tokio::time::sleep;
 
 use crate::{
-    setup::{BitcoindKind, PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port},
+    setup::{
+        BitcoindKind, PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port,
+        wait_for_port_free,
+    },
     util::{AbortOnDrop, Bitcoind, BitcoindClient, Enforcer},
 };
 
@@ -643,8 +646,10 @@ pub async fn test_assumeutxo_enforcer_above_snapshot_base(setup: PreSetup) -> an
 
     // ---- phase 2: replace the node with one that is background-validating ----
     drop(full_node_task);
+    for port in [full_node.rpc_port, full_node.listen_port] {
+        wait_for_port_free("127.0.0.1", port, Duration::from_secs(10)).await?;
+    }
     drop(full_node);
-    sleep(Duration::from_secs(2)).await;
 
     let assumeutxo_dir = setup
         .directories
