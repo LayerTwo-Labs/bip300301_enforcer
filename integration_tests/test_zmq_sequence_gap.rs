@@ -19,8 +19,9 @@ use bip300301_enforcer_lib::proto::mainchain::GetChainInfoRequest;
 use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
+    block_verdict::wait_for_enforcer_tip_hash,
     integration_test,
-    setup::{DummySidechain, Mode, PostSetup},
+    setup::{DummySidechain, Mode, PostSetup, WAIT_POLL_INTERVAL_SLOW, wait_until_every},
 };
 
 /// Extra bitcoind args that make the publisher drop sequence messages.
@@ -89,8 +90,24 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
         .request("invalidateblock", rpc_params![block_hash])
         .await?;
 
-    // Give the sync task a moment to process (or die on) the stream.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The gRPC check below cannot stand on its own: it is served from the
+    // validator's local database, so it answers whether or not the gap was
+    // recovered — or even reached. Without a logged recovery, a run where the
+    // publisher never dropped a message would go green having never entered
+    // the recovery path at all.
+    wait_until_every(
+        "the enforcer to recover from the ZMQ sequence gap",
+        WAIT_POLL_INTERVAL_SLOW,
+        || async { Ok(read_enforcer_log(&post_setup)?.contains("recoverably")) },
+    )
+    .await?;
+    // Settle before counting recoveries below: once the enforcer has followed
+    // the invalidation, the burst is behind it.
+    let tip_hash: bitcoin::BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?;
+    wait_for_enforcer_tip_hash(&post_setup, tip_hash).await?;
 
     let chain_info = post_setup
         .validator_service_client
@@ -128,22 +145,13 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
         .matches("recoverably")
         .count();
 
-    // The gRPC check above cannot stand on its own: it is served from the
-    // validator's local database, so it answers whether or not the gap was
-    // recovered — or even reached. Without this, a run where the publisher
-    // never dropped a message would go green having never entered the
-    // recovery path at all.
-    anyhow::ensure!(
-        resyncs_before_stop > 0,
-        "enforcer never logged a recovery, so the ZMQ gap this test exists to \
-         force was never hit: nothing about recovery was actually exercised"
-    );
-
     let _stop_output: String = post_setup
         .bitcoind_client
         .request("stop", rpc_params![])
         .await?;
 
+    // A fixed wait, not a poll: nothing marks the retries having stopped, and
+    // the enforcer need not exit (its ZMQ socket reconnects indefinitely).
     tokio::time::sleep(Duration::from_secs(15)).await;
 
     // The extra 1 covers the attempt already in flight when bitcoind stopped.
