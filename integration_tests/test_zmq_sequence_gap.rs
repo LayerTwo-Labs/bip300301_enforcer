@@ -15,7 +15,8 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetChainInfoRequest};
+use bip300301_enforcer_lib::proto::mainchain::GetChainInfoRequest;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test,
@@ -46,30 +47,23 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
     // Churn the MEMPOOL, not just the chain: the mempool sequence counter only
     // advances on tx add/remove, so mining alone leaves it idle and the
     // one-slot queue never overflows.
-    let address = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getnewaddress", Vec::<String>::new())
-        .run_utf8()
+    let address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
 
     // Fund bitcoind's own wallet so it can pay for the burst below.
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["101".to_owned(), address.clone()])
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![101, &address])
         .await?;
 
     // Build a deep mempool
     const TXS: usize = 200;
     for _ in 0..TXS {
         let _res = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
-                "sendtoaddress",
-                [address.clone(), "0.0001".to_owned()],
-            )
-            .run_utf8()
+            .bitcoind_client
+            .request::<bitcoin::Txid, _>("sendtoaddress", rpc_params![&address, 0.0001])
             .await;
     }
 
@@ -80,22 +74,19 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
     //
     // This is what a fast-mining fork hits organically: at ~1 block/2.5s the
     // enforcer is busy applying blocks while messages keep arriving.
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["1".to_owned(), address.clone()])
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![1, &address])
         .await?;
 
-    let block_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getbestblockhash", Vec::<String>::new())
-        .run_utf8()
+    let block_hash: bitcoin::BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
         .await?;
 
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "invalidateblock", [block_hash.trim().to_owned()])
-        .run_utf8()
+    let () = post_setup
+        .bitcoind_client
+        .request("invalidateblock", rpc_params![block_hash])
         .await?;
 
     // Give the sync task a moment to process (or die on) the stream.
@@ -148,10 +139,9 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
          force was never hit: nothing about recovery was actually exercised"
     );
 
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "stop", Vec::<String>::new())
-        .run_utf8()
+    let _stop_output: String = post_setup
+        .bitcoind_client
+        .request("stop", rpc_params![])
         .await?;
 
     tokio::time::sleep(Duration::from_secs(15)).await;

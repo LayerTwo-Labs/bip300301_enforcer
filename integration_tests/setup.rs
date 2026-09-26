@@ -35,6 +35,7 @@ use futures::{
     channel::{mpsc, oneshot},
     future,
 };
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
 use thiserror::Error;
@@ -46,8 +47,8 @@ use tokio::{
 use crate::{
     signet_chain_params::{SIGNET_CACHED_CHAIN_BLOCKS, SIGNET_CHALLENGE_SECRET_KEY},
     util::{
-        AbortOnDrop, BinPaths, Bitcoind, Electrs, Enforcer, FileDumpConfig, TestFileRegistry,
-        VarError,
+        AbortOnDrop, BinPaths, Bitcoind, BitcoindClient, Electrs, Enforcer, FileDumpConfig,
+        TestFileRegistry, VarError,
     },
 };
 
@@ -124,45 +125,37 @@ impl SignetSetup {
     }
 
     /// Import the signet challenge key, so the wallet can sign blocks.
-    async fn init_bitcoind_wallet(&self, bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
+    async fn init_bitcoind_wallet(&self, bitcoind_client: &BitcoindClient) -> anyhow::Result<()> {
         tracing::debug!("Importing secret key");
         let mining_descriptor = {
             use bdk_wallet::miniscript;
             let descriptor = bdk_wallet::descriptor!(wpkh(self.secret_key))?;
             descriptor.0.to_string_with_secret(&descriptor.1)
         };
-        let import_descriptors_output = bitcoin_cli
-            .command::<String, _, String, _, _>(
-                [],
+        let import_descriptors_output: serde_json::Value = bitcoind_client
+            .request(
                 "importdescriptors",
-                [serde_json::json!([
+                rpc_params![serde_json::json!([
                     {
                         "desc": mining_descriptor,
                         "timestamp": "now",
                         "active": false,
                     },
-                ])
-                .to_string()],
+                ])],
             )
-            .run_utf8()
             .await?;
-        let expected_import_descriptors_output = serde_json::json!([{ "success": true }]);
-        if serde_json::from_str::<serde_json::Value>(&import_descriptors_output)?
-            != expected_import_descriptors_output
-        {
+        if import_descriptors_output != serde_json::json!([{ "success": true }]) {
             anyhow::bail!("Importing descriptors failed: `{import_descriptors_output}`")
         }
         tracing::debug!(
             signet_challenge_addr = %self.signet_challenge_addr,
             "Checking that the signet challenge addr is loaded"
         );
-        let getaddressinfo_output = bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let getaddressinfo_output: serde_json::Value = bitcoind_client
+            .request(
                 "getaddressinfo",
-                [self.signet_challenge_addr.to_string()],
+                rpc_params![self.signet_challenge_addr.to_string()],
             )
-            .run_utf8()
             .await?;
         tracing::debug!(%getaddressinfo_output);
         Ok(())
@@ -445,24 +438,21 @@ pub async fn wait_for_port_free(
 /// Polls bitcoind via `getblockchaininfo` until it responds successfully.
 /// The RPC port opens before bitcoind is ready to serve commands, so a TCP
 /// probe alone is not enough.
-pub async fn wait_for_bitcoind_ready(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<()> {
+pub async fn wait_for_bitcoind_ready(bitcoind_client: &BitcoindClient) -> anyhow::Result<()> {
     // When the whole suite runs at once, many bitcoind/electrs/enforcer
     // processes cold-start together. Apply a generous limit here that
     // doesn't crash long running tests, but catches stuck ones.
     const TIMEOUT: Duration = Duration::from_secs(120);
-    const CHECK_INTERVAL: Duration = Duration::from_millis(200);
     let task = async {
         loop {
-            match bitcoin_cli
-                .clone()
-                .command::<String, _, String, _, _>([], "getblockchaininfo", [])
-                .run_utf8()
+            match bitcoind_client
+                .request::<serde_json::Value, _>("getblockchaininfo", rpc_params![])
                 .await
             {
                 Ok(_) => return,
                 Err(e) => {
                     tracing::trace!("bitcoind not ready yet ({e}), waiting...");
-                    sleep(CHECK_INTERVAL).await;
+                    sleep(WAIT_POLL_INTERVAL).await;
                 }
             }
         }
@@ -588,11 +578,10 @@ pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// conditions are normally already true on the first check.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Interval between polls for conditions checked by shelling out to
-/// `bitcoin-cli`. Each check forks a process and opens a fresh RPC connection,
-/// so polling these as fast as the in-process checks would put more load on an
-/// already-saturated machine than it saves in latency.
-pub const WAIT_POLL_INTERVAL_SUBPROCESS: Duration = Duration::from_millis(250);
+/// Interval between polls for conditions that are expensive to check, such as
+/// re-reading a large log. Polling these as fast as the cheap checks would put
+/// more load on an already-saturated machine than it saves in latency.
+pub const WAIT_POLL_INTERVAL_SLOW: Duration = Duration::from_millis(250);
 
 /// Poll `check` until it reports the condition has been reached, erroring out
 /// with `what` in the message if it hasn't happened within `WAIT_TIMEOUT`.
@@ -615,7 +604,7 @@ where
 }
 
 /// [`wait_until`], with an explicit poll interval. Use
-/// [`WAIT_POLL_INTERVAL_SUBPROCESS`] for checks that shell out.
+/// [`WAIT_POLL_INTERVAL_SLOW`] for checks that are expensive to repeat.
 pub async fn wait_until_every<Check, Fut>(
     what: &str,
     poll_interval: Duration,
@@ -657,26 +646,20 @@ where
     })
 }
 
-/// Wait until `txid` is in `bitcoin_cli`'s node's mempool.
+/// Wait until `txid` is in `bitcoind_client`'s node's mempool.
 ///
 /// The wallet broadcasts asynchronously, so a tx is not necessarily in the
 /// node's mempool by the time the RPC that created it returns.
 pub async fn wait_for_tx_in_mempool(
-    bitcoin_cli: &bins::BitcoinCli,
+    bitcoind_client: &BitcoindClient,
     txid: &bitcoin::Txid,
 ) -> anyhow::Result<()> {
-    let txid = txid.to_string();
-    wait_until_every(
-        &format!("tx `{txid}` to enter the mempool"),
-        WAIT_POLL_INTERVAL_SUBPROCESS,
-        || async {
-            Ok(bitcoin_cli
-                .command::<String, _, _, _, _>([], "getmempoolentry", [txid.clone()])
-                .run_utf8()
-                .await
-                .is_ok())
-        },
-    )
+    wait_until(&format!("tx `{txid}` to enter the mempool"), || async {
+        Ok(bitcoind_client
+            .request::<serde_json::Value, _>("getmempoolentry", rpc_params![txid])
+            .await
+            .is_ok())
+    })
     .await
 }
 
@@ -919,24 +902,22 @@ async fn mine_cached_signet_chain(
     let bitcoind_task =
         bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], on_exit);
     let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
+    let bitcoind_client = bitcoind.rpc_client()?;
     bitcoind_exit
-        .unless_exited(wait_for_bitcoind_ready(&bitcoin_cli))
+        .unless_exited(wait_for_bitcoind_ready(&bitcoind_client))
         .await?;
 
-    let _create_wallet_output = bitcoin_cli
-        .command::<String, _, _, _, _>([], "createwallet", ["integration-test"])
-        .run_utf8()
+    let _create_wallet_output: serde_json::Value = bitcoind_client
+        .request("createwallet", rpc_params!["integration-test"])
         .await?;
     bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
-    let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
+    let () = signet_setup.init_bitcoind_wallet(&bitcoind_client).await?;
 
     // A fresh wallet address rather than `signet_challenge_addr`, keeping the
     // funds tests spend apart from the block-signing key.
-    let mining_address = bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
+    let mining_address = bitcoind_client
+        .request::<String, _>("getnewaddress", rpc_params![])
         .await?
-        .trim()
         .parse::<bitcoin::Address<_>>()?
         .require_network(bitcoin::Network::Signet)?;
     tracing::info!(%mining_address, "Mining cached chain's coinbases to the node wallet");
@@ -989,12 +970,9 @@ exec {bitcoin_cli} getblocktemplate "$REQUEST"
             tracing::info!("Mined {height}/{SIGNET_CACHED_CHAIN_BLOCKS} signet blocks");
         }
     }
-    let blocks: u32 = bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+    let blocks: u32 = bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     anyhow::ensure!(
         blocks == SIGNET_CACHED_CHAIN_BLOCKS,
         "expected to mine {SIGNET_CACHED_CHAIN_BLOCKS} blocks, chain is at height {blocks}"
@@ -1005,10 +983,9 @@ exec {bitcoin_cli} getblocktemplate "$REQUEST"
     // bitcoind closes its RPC port early in shutdown and keeps flushing after,
     // so wait for the process itself to exit -- not for the port to free up.
     tracing::info!("Stopping bitcoind before snapshotting");
-    let _stop_output = bitcoin_cli
-        .command::<String, _, String, _, _>([], "stop", [])
-        .run_utf8()
-        .await?;
+    let _stop_output: String = bitcoind_client.request("stop", rpc_params![]).await?;
+    // An open connection keeps bitcoind serving `503`s through shutdown.
+    drop(bitcoind_client);
     timeout(Duration::from_secs(120), bitcoind_task.into_inner())
         .await
         .map_err(|_elapsed| anyhow!("Timed out waiting for bitcoind to shut down"))??;
@@ -1193,7 +1170,10 @@ type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
 pub struct PostSetup {
     pub network: Network,
     pub mode: Mode,
+    /// For what has to shell out to `bitcoin-cli`, such as the signet miner.
+    /// Tests talk to the node over `bitcoind_client`.
     pub bitcoin_cli: bins::BitcoinCli,
+    pub bitcoind_client: BitcoindClient,
     bitcoin_util: LazyLockBoxedSend<Result<bins::BitcoinUtil, Arc<VarError>>>,
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
@@ -1278,8 +1258,9 @@ impl PostSetup {
             bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, on_exit);
         // wait for startup
         let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
+        let bitcoind_client = bitcoind.rpc_client()?;
         bitcoind_exit
-            .unless_exited(wait_for_bitcoind_ready(&bitcoin_cli))
+            .unless_exited(wait_for_bitcoind_ready(&bitcoind_client))
             .await?;
 
         // Create a wallet and initialize it. A restored chain already ships
@@ -1287,38 +1268,32 @@ impl PostSetup {
         const WALLET_NAME: &str = "integration-test";
         if restored_signet_chain {
             tracing::debug!("Loading wallet from the restored chain");
-            let loaded_wallets: Vec<String> = serde_json::from_str(
-                &bitcoin_cli
-                    .command::<String, _, String, _, _>([], "listwallets", [])
-                    .run_utf8()
-                    .await?,
-            )?;
+            let loaded_wallets: Vec<String> = bitcoind_client
+                .request("listwallets", rpc_params![])
+                .await?;
             if !loaded_wallets.iter().any(|wallet| wallet == WALLET_NAME) {
-                let _load_wallet_output = bitcoin_cli
-                    .command::<String, _, _, _, _>([], "loadwallet", [WALLET_NAME])
-                    .run_utf8()
+                let _load_wallet_output: serde_json::Value = bitcoind_client
+                    .request("loadwallet", rpc_params![WALLET_NAME])
                     .await?;
             }
         } else {
             tracing::debug!("Creating wallet");
-            let _create_wallet_output = bitcoin_cli
-                .command::<String, _, _, _, _>([], "createwallet", [WALLET_NAME])
-                .run_utf8()
+            let _create_wallet_output: serde_json::Value = bitcoind_client
+                .request("createwallet", rpc_params![WALLET_NAME])
                 .await?;
         }
         bitcoin_cli.rpc_wallet = Some(WALLET_NAME.to_owned());
         let mining_address = match signet_setup.as_ref() {
             Some(signet_setup) => {
                 if !restored_signet_chain {
-                    let () = signet_setup.init_bitcoind_wallet(&bitcoin_cli).await?;
+                    let () = signet_setup.init_bitcoind_wallet(&bitcoind_client).await?;
                 }
                 signet_setup.signet_challenge_addr.clone()
             }
             None => {
                 tracing::debug!("Generating mining address");
-                let mining_addr_str = bitcoin_cli
-                    .command::<String, _, String, _, _>([], "getnewaddress", [])
-                    .run_utf8()
+                let mining_addr_str: String = bitcoind_client
+                    .request("getnewaddress", rpc_params![])
                     .await?;
                 mining_addr_str
                     .parse::<bitcoin::Address<_>>()?
@@ -1328,9 +1303,8 @@ impl PostSetup {
         tracing::debug!("Mining address: {mining_address}");
         tracing::debug!("Generating receiving address");
         let receive_address = {
-            let receive_address_str = bitcoin_cli
-                .command::<String, _, String, _, _>([], "getnewaddress", [])
-                .run_utf8()
+            let receive_address_str: String = bitcoind_client
+                .request("getnewaddress", rpc_params![])
                 .await?;
             tracing::debug!("Receiving address: {receive_address_str}");
             receive_address_str
@@ -1361,12 +1335,9 @@ impl PostSetup {
         // don't.
         tracing::debug!(%mining_address, "Mining 1 block");
         if restored_signet_chain {
-            let blocks: u32 = bitcoin_cli
-                .command::<String, _, String, _, _>([], "getblockcount", [])
-                .run_utf8()
-                .await?
-                .trim()
-                .parse()?;
+            let blocks: u32 = bitcoind_client
+                .request("getblockcount", rpc_params![])
+                .await?;
             anyhow::ensure!(
                 blocks >= SIGNET_CACHED_CHAIN_BLOCKS,
                 "restored signet chain is only {blocks} blocks, expected at least \
@@ -1379,21 +1350,17 @@ impl PostSetup {
                 .run_utf8()
                 .await?;
             tracing::debug!("Checking that block was mined successfully");
-            let blocks: u32 = bitcoin_cli
-                .command::<String, _, String, _, _>([], "getblockcount", [])
-                .run_utf8()
-                .await?
-                .parse()?;
+            let blocks: u32 = bitcoind_client
+                .request("getblockcount", rpc_params![])
+                .await?;
             anyhow::ensure!(blocks == 1);
             tracing::debug!("Mined 1 block: `{mine_output}`");
         } else {
-            let _output = bitcoin_cli
-                .command::<String, _, _, _, _>(
-                    [],
+            let _block_hashes: Vec<BlockHash> = bitcoind_client
+                .request(
                     "generatetoaddress",
-                    ["1", &mining_address.to_string()],
+                    rpc_params![1, mining_address.to_string()],
                 )
-                .run_utf8()
                 .await?;
         }
         // Start electrs
@@ -1530,6 +1497,7 @@ impl PostSetup {
             network,
             mode,
             bitcoin_cli,
+            bitcoind_client,
             bitcoin_util,
             tasks,
             signet_miner,

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt,
     messages::CoinbaseMessage,
     proto::{
         self,
@@ -14,6 +13,7 @@ use bip300301_enforcer_lib::{
 };
 use buffa::MessageField;
 use futures::{StreamExt as _, channel::mpsc};
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use tracing::Instrument as _;
 
 use crate::{
@@ -21,9 +21,8 @@ use crate::{
     mine,
     mine::MiningPolicy,
     setup::{
-        BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain,
-        WAIT_POLL_INTERVAL_SUBPROCESS, wait_for_port_free, wait_for_tx_in_mempool, wait_until,
-        wait_until_every,
+        BitcoindKind, DummySidechain, Mode, Network, SetupOpts, Sidechain, WAIT_POLL_INTERVAL_SLOW,
+        wait_for_port_free, wait_for_tx_in_mempool, wait_until, wait_until_every,
     },
     util::{self, BinPaths, TestFileRegistry},
 };
@@ -200,17 +199,15 @@ impl PreSetup {
                 .setup(Mode::GetBlockTemplate, setup_opts, res_tx)
                 .await?
         };
-        let _res: String = sender
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let _res: serde_json::Value = sender
+            .bitcoind_client
+            .request(
                 "addnode",
-                [
+                rpc_params![
                     format!("127.0.0.1:{}", miner.reserved_ports.bitcoind_listen.port()),
-                    "add".to_owned(),
+                    "add"
                 ],
             )
-            .run_utf8()
             .await?;
         Ok(PostSetup { miner, sender })
     }
@@ -335,15 +332,14 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     // In addition to the p2p broadcast, the enforcer submits the BMM request
     // to its own node via `sendrawtransaction`, so it should be in the
     // sender node's mempool immediately
-    let sender_mempool_entry = post_setup
+    let sender_mempool_entry: serde_json::Value = post_setup
         .sender
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getmempoolentry", [bmm_request_txid.to_string()])
-        .run_utf8()
+        .bitcoind_client
+        .request("getmempoolentry", rpc_params![bmm_request_txid])
         .await?;
     tracing::debug!(%sender_mempool_entry);
     // Wait for the BMM request to reach the miner node's mempool over p2p.
-    let () = wait_for_tx_in_mempool(&post_setup.miner.bitcoin_cli, &bmm_request_txid).await?;
+    let () = wait_for_tx_in_mempool(&post_setup.miner.bitcoind_client, &bmm_request_txid).await?;
     // Reaching the miner's Core mempool is not sufficient: wait until the
     // enforcer has independently accepted the M8 into its mirror. Both M8s
     // stay in Core's mempool, but the template must carry only the higher bid,
@@ -371,7 +367,7 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
     // is not a cheap check -- poll it at the slower interval.
     let () = wait_until_every(
         "sender enforcer to log the BMM request RPC broadcast to its own node",
-        WAIT_POLL_INTERVAL_SUBPROCESS,
+        WAIT_POLL_INTERVAL_SLOW,
         || async {
             let stdout = std::fs::read_to_string(&sender_enforcer_stdout_path)?;
             Ok(stdout.contains(RPC_BROADCAST_LOG_LINE))

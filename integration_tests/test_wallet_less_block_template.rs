@@ -1,12 +1,10 @@
 //! Block producer without a wallet, against a node without `txindex`: block
 //! templates and withdrawal bundle ingestion.
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::mainchain::{GetBalanceRequest, ProposeWithdrawalBundleRequest},
-};
+use bip300301_enforcer_lib::proto::mainchain::{GetBalanceRequest, ProposeWithdrawalBundleRequest};
 use bitcoin::Amount;
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{activate_sidechain, propose_sidechain},
@@ -42,13 +40,12 @@ pub async fn test_wallet_less_block_template(setup: PreSetup) -> anyhow::Result<
     // has `txindex`; the block producer must not need it. If something later
     // switches the node back to `-txindex`, this test would still pass while
     // silently no longer covering that, so assert the node really lacks it.
-    let index_info = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getindexinfo", [])
-        .run_utf8()
+    let index_info: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getindexinfo", rpc_params![])
         .await?;
     anyhow::ensure!(
-        !index_info.contains("txindex"),
+        index_info.get("txindex").is_none(),
         "this test must run against a node without `txindex`, but the node reports: {index_info}"
     );
 

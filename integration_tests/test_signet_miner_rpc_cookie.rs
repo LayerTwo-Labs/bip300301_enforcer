@@ -4,28 +4,24 @@
 //! checks the logged invocation, the cookie file, and the enforcer's output.
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     cli::RPC_COOKIE_FILENAME,
     proto::{self, mainchain::GenerateToAddressRequest},
 };
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     setup::{Mode, PostSetup, PreSetup, SetupOpts, wait_for_block_templates, wait_until},
-    util::{assert_absent, enforcer_output},
+    util::{BitcoindClient, assert_absent, enforcer_output},
 };
 
 /// Logged with the full miner command right before it is spawned.
 const MINER_INVOCATION_MARKER: &str = "Running signet miner:";
 
-async fn block_count(
-    bitcoin_cli: &bip300301_enforcer_lib::bins::BitcoinCli,
-) -> anyhow::Result<u64> {
-    let count = bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?;
-    Ok(count.trim().parse()?)
+async fn block_count(bitcoind_client: &BitcoindClient) -> anyhow::Result<u64> {
+    Ok(bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?)
 }
 
 /// Polled: the rolling log can lag the RPC response.
@@ -86,7 +82,7 @@ pub async fn test_signet_miner_rpc_cookie(setup: PreSetup) -> anyhow::Result<()>
     // The miner takes its template from the enforcer's own server.
     wait_for_block_templates(&post_setup.gbt_client).await?;
 
-    let start_height = block_count(&post_setup.bitcoin_cli).await?;
+    let start_height = block_count(&post_setup.bitcoind_client).await?;
     let mining_address = post_setup.mining_address.clone();
     let resp = post_setup
         .mining_service_client
@@ -112,19 +108,16 @@ pub async fn test_signet_miner_rpc_cookie(setup: PreSetup) -> anyhow::Result<()>
     );
 
     // The block landed, so `bitcoin-cli` authenticated with the cookie.
-    let end_height = block_count(&post_setup.bitcoin_cli).await?;
+    let end_height = block_count(&post_setup.bitcoind_client).await?;
     anyhow::ensure!(
         end_height == start_height + 1,
         "expected the chain to advance from {start_height} to {}, got {end_height}",
         start_height + 1
     );
-    let best_block_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse::<bitcoin::BlockHash>()?;
+    let best_block_hash: bitcoin::BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?;
     anyhow::ensure!(
         Some(&best_block_hash) == block_hashes.first(),
         "expected the node tip to be the generated block, got {best_block_hash}"

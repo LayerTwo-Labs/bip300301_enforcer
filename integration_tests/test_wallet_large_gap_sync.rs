@@ -63,18 +63,16 @@
 use std::str::FromStr as _;
 
 use bdk_wallet::miniscript::{Descriptor, DescriptorPublicKey};
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{
-        mainchain::{
-            CreateNewAddressRequest, FullScanRequest, FullScanResponse, GetBalanceRequest,
-            GetInfoRequest, ListUnspentOutputsRequest, get_info_response,
-        },
-        unwrap_string,
+use bip300301_enforcer_lib::proto::{
+    mainchain::{
+        CreateNewAddressRequest, FullScanRequest, FullScanResponse, GetBalanceRequest,
+        GetInfoRequest, ListUnspentOutputsRequest, get_info_response,
     },
+    unwrap_string,
 };
 use bitcoin::{BlockHash, secp256k1::Secp256k1};
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{
@@ -285,23 +283,19 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     post_setup.kill_enforcer().await?;
     // Mined at the start of the gap, so these are well past coinbase maturity
     // by the time the wallet comes back and counts them.
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [GAP_INDEX_BLOCKS.to_string(), deep_gap_address.clone()],
+            rpc_params![GAP_INDEX_BLOCKS, deep_gap_address.clone()],
         )
-        .run_utf8()
         .await?;
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [SEQUENTIAL_GAP_BLOCKS.to_string(), gap_address],
+            rpc_params![SEQUENTIAL_GAP_BLOCKS, gap_address],
         )
-        .run_utf8()
         .await?;
     wait_for_electrs_tip(&post_setup).await?;
 
@@ -391,14 +385,12 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     tracing::info!("killing enforcer and electrs, then mining {GAP_BLOCKS} blocks");
     post_setup.kill_enforcer().await?;
     post_setup.kill_electrs().await?;
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [GAP_BLOCKS.to_string(), dark_gap_address.clone()],
+            rpc_params![GAP_BLOCKS, dark_gap_address.clone()],
         )
-        .run_utf8()
         .await?;
 
     // The gRPC port must open inside `restart_enforcer`'s wait even though
@@ -450,14 +442,12 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
 
     // Liveness: the initial sync returned and the block pipeline is running,
     // so fresh blocks keep being enforced and followed by the wallet.
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [LIVENESS_BLOCKS.to_string(), dark_gap_address],
+            rpc_params![LIVENESS_BLOCKS, dark_gap_address],
         )
-        .run_utf8()
         .await?;
     wait_for_validator_tip(&post_setup).await?;
     wait_for_wallet_sync(&mut post_setup).await?;
@@ -509,14 +499,12 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
     tracing::info!("killing enforcer and electrs, then mining {SMALL_GAP_BLOCKS} blocks");
     post_setup.kill_enforcer().await?;
     post_setup.kill_electrs().await?;
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [SMALL_GAP_BLOCKS.to_string(), small_gap_address],
+            rpc_params![SMALL_GAP_BLOCKS, small_gap_address],
         )
-        .run_utf8()
         .await?;
 
     tracing::info!("restarting enforcer with a small gap and its sync backend unreachable");
@@ -601,14 +589,12 @@ pub async fn test_wallet_large_gap_sync(bin_paths: BinPaths) -> anyhow::Result<(
         "mining {RPC_SCAN_BLOCKS} blocks to unrevealed external index {RPC_SCAN_INDEX} \
          ({rpc_scan_address}), with the enforcer running"
     );
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [RPC_SCAN_BLOCKS.to_string(), rpc_scan_address.clone()],
+            rpc_params![RPC_SCAN_BLOCKS, rpc_scan_address.clone()],
         )
-        .run_utf8()
         .await?;
 
     // The enforcer is up and following the tip, so these blocks arrive through

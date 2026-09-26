@@ -17,21 +17,17 @@
 //! transaction that is rolled back with the block, or the rejected block's
 //! sidechain proposal leaks into the validator's state.
 
-use std::str::FromStr as _;
-
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{self, mainchain::GetSidechainProposalsRequest},
-};
+use bip300301_enforcer_lib::proto::{self, mainchain::GetSidechainProposalsRequest};
 use bitcoin::BlockHash;
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     block_verdict::wait_for_enforcer_tip_hash,
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain,
-        WAIT_POLL_INTERVAL_SUBPROCESS, read_enforcer_log, wait_until_every,
+        read_enforcer_log, wait_until,
     },
     test_invalid_block::{M1_THEN_INVALID_M4, PHANTOM_PROPOSAL_SLOT, submit_invalid_block},
     util::BinPaths,
@@ -40,12 +36,10 @@ use crate::{
 pub const TEST_NAME: &str = "invalid_block_during_sync";
 
 async fn best_block_hash(post_setup: &PostSetup) -> anyhow::Result<BlockHash> {
-    let hex = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?;
-    Ok(BlockHash::from_str(hex.trim())?)
+    Ok(post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?)
 }
 
 pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Result<()> {
@@ -75,10 +69,9 @@ pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Resu
     // it mid-chain rather than at the tip, and the reorg must also drop a
     // descendant.
     let mining_address = post_setup.mining_address.to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["1".to_owned(), mining_address])
-        .run_utf8()
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![1, mining_address])
         .await?;
     let buried_tip = best_block_hash(&post_setup).await?;
     anyhow::ensure!(
@@ -99,11 +92,9 @@ pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Resu
     // block, and the cusf-enforcer-mempool crate must invalidate it on
     // bitcoind, reorging the node back to `good_tip`.
     wait_for_enforcer_tip_hash(&post_setup, good_tip).await?;
-    wait_until_every(
-        "bitcoind to reorg away from the invalid block",
-        WAIT_POLL_INTERVAL_SUBPROCESS,
-        || async { Ok(best_block_hash(&post_setup).await? == good_tip) },
-    )
+    wait_until("bitcoind to reorg away from the invalid block", || async {
+        Ok(best_block_hash(&post_setup).await? == good_tip)
+    })
     .await?;
 
     let log = read_enforcer_log(&post_setup.directories.enforcer_dir)?;
@@ -147,10 +138,9 @@ pub async fn test_invalid_block_during_sync(bin_paths: BinPaths) -> anyhow::Resu
     // invalidated block's, so it gets a fresh hash rather than being rejected
     // as `duplicate-invalid`.)
     let mining_address = post_setup.mining_address.to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["1".to_owned(), mining_address])
-        .run_utf8()
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![1, mining_address])
         .await?;
     let new_tip = best_block_hash(&post_setup).await?;
     anyhow::ensure!(

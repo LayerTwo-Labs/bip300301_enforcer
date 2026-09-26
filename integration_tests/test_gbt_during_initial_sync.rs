@@ -13,9 +13,9 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::bins::CommandExt as _;
 use cusf_enforcer_mempool::server::RpcClient as _;
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{wait_for_validator_tip, wait_for_wallet_sync},
@@ -72,20 +72,14 @@ async fn request_block_template(
 
 /// Raw hex of the block bitcoind currently has at its tip.
 async fn tip_block_hex(post_setup: &PostSetup) -> anyhow::Result<String> {
-    let block_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
-    let block_hex = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [block_hash, "0".to_owned()])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
+    let block_hash: bitcoin::BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?;
+    let block_hex: String = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![block_hash, 0])
+        .await?;
     Ok(block_hex)
 }
 
@@ -122,14 +116,9 @@ pub async fn test_gbt_during_initial_sync(bin_paths: BinPaths) -> anyhow::Result
     // The probes must reach the restarted enforcer, not the old one.
     wait_for_port_free("127.0.0.1", serve_rpc_port, Duration::from_secs(10)).await?;
     let mining_address = post_setup.mining_address.to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "generatetoaddress",
-            [GAP_BLOCKS.to_string(), mining_address],
-        )
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![GAP_BLOCKS, mining_address])
         .await?;
 
     tracing::info!("restarting enforcer -- it must serve JSON-RPC while it crosses the gap");

@@ -16,11 +16,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use bdk_wallet::bip39::{Language, Mnemonic};
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     proto::mainchain::{GetBalanceRequest, UnlockWalletRequest},
     wallet::mnemonic::{EncryptedMnemonic, KdfParams},
 };
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{fund_enforcer, wait_for_validator_tip, wait_for_wallet_sync},
@@ -87,17 +87,13 @@ fn encrypt_persisted_seed(enforcer_dir: &Path) -> anyhow::Result<()> {
 /// enforcer's balance can only be moved by coinbases maturing, never by new
 /// ones being paid to it.
 async fn mine_blocks(post_setup: &PostSetup, blocks: u32) -> anyhow::Result<()> {
-    let address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", [blocks.to_string(), address])
-        .run_utf8()
+    let address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![blocks, address])
         .await?;
     Ok(())
 }

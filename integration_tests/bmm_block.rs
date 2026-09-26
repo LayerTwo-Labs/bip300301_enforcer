@@ -22,6 +22,7 @@ use bitcoin::{
     script::PushBytesBuf,
     transaction::Version,
 };
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use serde::Deserialize;
 
 use crate::setup::PostSetup;
@@ -75,18 +76,15 @@ pub async fn submit_block_with_bmm_accepts(
     accepts: &[(SidechainNumber, [u8; 32])],
     tx_hexes: &[&str],
 ) -> anyhow::Result<BlockHash> {
-    let template_json = post_setup
-        .bitcoin_cli
+    let template: BlockTemplate = post_setup
+        .bitcoind_client
         // We craft the BIP300/BIP301 coinbase commitments below, so we ack the
         // rule the way the enforcer does. Stock nodes ignore the extra rule.
-        .command::<String, _, _, _, _>(
-            [],
+        .request(
             "getblocktemplate",
-            [r#"{"rules":["segwit","bip300301"]}"#],
+            rpc_params![serde_json::json!({ "rules": ["segwit", "bip300301"] })],
         )
-        .run_utf8()
         .await?;
-    let template: BlockTemplate = serde_json::from_str(&template_json)?;
 
     const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
     // The accepted commitments go into the coinbase scriptSig as well as the
@@ -192,14 +190,13 @@ pub async fn submit_block_with_bmm_accepts(
         txdata: std::iter::once(coinbase).chain(txs).collect(),
     };
     let block_hash = block.block_hash();
-    let submit_resp = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "submitblock", [serialize_hex(&block)])
-        .run_utf8()
+    // `null` on success, the rejection reason otherwise.
+    let submit_resp: Option<String> = post_setup
+        .bitcoind_client
+        .request("submitblock", rpc_params![serialize_hex(&block)])
         .await?;
-    anyhow::ensure!(
-        submit_resp.is_empty(),
-        "submitblock unexpectedly rejected: `{submit_resp}`"
-    );
+    if let Some(reason) = submit_resp {
+        anyhow::bail!("submitblock unexpectedly rejected: `{reason}`");
+    }
     Ok(block_hash)
 }

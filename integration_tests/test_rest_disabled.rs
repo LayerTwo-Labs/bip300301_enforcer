@@ -1,7 +1,7 @@
 //! The validator must be able to synchronize headers from Bitcoin Core when
 //! its optional REST interface is disabled.
 
-use bip300301_enforcer_lib::bins::CommandExt as _;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::setup::{PostSetup, read_enforcer_log, wait_for_validator_synced, wait_until};
 
@@ -34,12 +34,9 @@ pub async fn test_rest_disabled_header_sync(post_setup: PostSetup) -> anyhow::Re
     );
 
     let node_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     let validator_tip = wait_for_validator_synced(&post_setup.validator_service_client).await?;
     anyhow::ensure!(
         validator_tip.height == node_height,
@@ -49,23 +46,18 @@ pub async fn test_rest_disabled_header_sync(post_setup: PostSetup) -> anyhow::Re
 
     // Prove that the fallback remains live after startup, rather than only
     // accepting the chain that existed when the enforcer first connected.
-    let mining_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
+    let mining_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["1", mining_address.trim()])
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![1, mining_address])
         .await?;
     let new_node_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     anyhow::ensure!(
         new_node_height == node_height + 1,
         "expected one newly mined block, Core advanced from {node_height} to {new_node_height}"

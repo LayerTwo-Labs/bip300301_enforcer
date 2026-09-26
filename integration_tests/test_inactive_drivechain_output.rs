@@ -1,10 +1,11 @@
 use std::{str::FromStr as _, time::Duration};
 
-use bip300301_enforcer_lib::{bins::CommandExt as _, types::SidechainNumber};
+use bip300301_enforcer_lib::types::SidechainNumber;
 use bitcoin::{
     Amount, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid, consensus::encode::serialize_hex,
     transaction::Version,
 };
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use serde::Deserialize;
 
 use crate::{
@@ -39,24 +40,18 @@ struct GenerateBlockResult {
 pub async fn test_inactive_slot_drivechain_output(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let mining_address = post_setup.mining_address.to_string();
 
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [FUNDING_BLOCKS.to_string(), mining_address.clone()],
+            rpc_params![FUNDING_BLOCKS, mining_address.clone()],
         )
-        .run_utf8()
         .await?;
 
-    let utxos: Vec<Utxo> = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "listunspent", [])
-            .run_utf8()
-            .await?;
-        serde_json::from_str(&json)?
-    };
+    let utxos: Vec<Utxo> = post_setup
+        .bitcoind_client
+        .request("listunspent", rpc_params![])
+        .await?;
     let (utxo, input_value) = utxos
         .into_iter()
         .find_map(|u| {
@@ -65,13 +60,12 @@ pub async fn test_inactive_slot_drivechain_output(mut post_setup: PostSetup) -> 
         })
         .ok_or_else(|| anyhow::anyhow!("no spendable UTXO in bitcoind wallet"))?;
 
-    let change_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
+    let change_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
-    let change_address = bitcoin::Address::from_str(change_address.trim())?
-        .require_network(post_setup.network.into())?;
+    let change_address =
+        bitcoin::Address::from_str(&change_address)?.require_network(post_setup.network.into())?;
 
     // Build a tx whose first output is a zero-value OP_DRIVECHAIN output for an
     // inactive slot
@@ -98,16 +92,13 @@ pub async fn test_inactive_slot_drivechain_output(mut post_setup: PostSetup) -> 
     };
 
     let signed_hex = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let signed: SignResult = post_setup
+            .bitcoind_client
+            .request(
                 "signrawtransactionwithwallet",
-                [serialize_hex(&unsigned_tx)],
+                rpc_params![serialize_hex(&unsigned_tx)],
             )
-            .run_utf8()
             .await?;
-        let signed: SignResult = serde_json::from_str(&json)?;
         anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
         signed.hex
     };
@@ -116,13 +107,10 @@ pub async fn test_inactive_slot_drivechain_output(mut post_setup: PostSetup) -> 
     // standardness (which rejects OP_DRIVECHAIN as a non-standard script) while
     // still enforcing consensus rules
     let block_hash = {
-        let txs_arg = serde_json::to_string(&[signed_hex])?;
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>([], "generateblock", [mining_address, txs_arg])
-            .run_utf8()
+        let result: GenerateBlockResult = post_setup
+            .bitcoind_client
+            .request("generateblock", rpc_params![mining_address, [signed_hex]])
             .await?;
-        let result: GenerateBlockResult = serde_json::from_str(&json)?;
         BlockHash::from_str(&result.hash)?
     };
     tracing::info!(%block_hash, "mined block with inactive-slot OP_DRIVECHAIN output");

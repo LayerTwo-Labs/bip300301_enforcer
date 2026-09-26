@@ -9,7 +9,8 @@
 //! enforcer always sends has to be harmless, which is what lets us send it
 //! unconditionally.
 
-use bip300301_enforcer_lib::{bins::CommandExt as _, rpc_client::BIP300301_RULE};
+use bip300301_enforcer_lib::rpc_client::BIP300301_RULE;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::setup::PostSetup;
 
@@ -22,16 +23,13 @@ async fn request_template(
     post_setup: &PostSetup,
     rules: &str,
 ) -> Result<serde_json::Value, String> {
-    let request = format!(r#"{{"rules":[{rules}]}}"#);
-    match post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblocktemplate", [request])
-        .run_utf8()
+    let request: serde_json::Value = serde_json::from_str(&format!(r#"{{"rules":[{rules}]}}"#))
+        .map_err(|err| err.to_string())?;
+    post_setup
+        .bitcoind_client
+        .request("getblocktemplate", rpc_params![request])
         .await
-    {
-        Ok(json) => serde_json::from_str(&json).map_err(|err| err.to_string()),
-        Err(err) => Err(err.to_string()),
-    }
+        .map_err(|err| err.to_string())
 }
 
 fn template_rules(template: &serde_json::Value) -> anyhow::Result<Vec<String>> {

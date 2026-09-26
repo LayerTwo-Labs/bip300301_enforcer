@@ -1,10 +1,9 @@
 use std::time::Duration;
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _, proto::mainchain_service::ValidatorServiceClient,
-};
+use bip300301_enforcer_lib::proto::mainchain_service::ValidatorServiceClient;
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     setup::{
@@ -35,28 +34,22 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         }
     });
 
-    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?.clone());
+    let bitcoind_client = bitcoind.rpc_client()?;
 
-    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
 
     tracing::info!("Generating blocks");
     // just generate to a random regtest address. we don't actually need the coins!
     let address = "bcrt1qrmxr2qc8eedpqw8wsdtg4spzkcmcs2adkrc9rh";
-    let generated_blocks: Vec<String> = {
-        let res = bitcoin_cli
-            .command::<String, _, _, _, _>([], "generatetoaddress", ["100", address])
-            .run_utf8()
-            .await?;
-
-        serde_json::from_str(&res)?
-    };
+    let generated_blocks: Vec<String> = bitcoind_client
+        .request("generatetoaddress", rpc_params![100, address])
+        .await?;
 
     // Flush the blocks to disk
     tracing::info!("Stopping bitcoind");
-    bitcoin_cli
-        .command::<String, _, String, _, _>([], "stop", [])
-        .run_utf8()
-        .await?;
+    let _stop_output: String = bitcoind_client.request("stop", rpc_params![]).await?;
+    // An open connection keeps bitcoind serving `503`s through shutdown.
+    drop(bitcoind_client);
 
     first_bitcoind.into_inner().await?;
 
@@ -69,7 +62,8 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
         }
     });
 
-    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
+    let bitcoind_client = bitcoind.rpc_client()?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
 
     let enforcer = Enforcer {
         path: setup.bin_paths.bip300301_enforcer()?.clone(),

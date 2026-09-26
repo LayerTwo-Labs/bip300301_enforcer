@@ -16,8 +16,8 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::bins::CommandExt as _;
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     setup::{
@@ -54,41 +54,31 @@ pub async fn test_mempool_dat_sync(setup: PreSetup) -> anyhow::Result<()> {
         },
     );
 
-    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?.clone());
-    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
+    let bitcoind_client = bitcoind.rpc_client()?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
 
     // Fund a wallet so there is something to spend, then build a mempool.
     // A fresh regtest datadir has no wallet loaded, so create one first.
-    bitcoin_cli
-        .command::<String, _, _, _, _>([], "createwallet", ["mempool-dat-test".to_owned()])
-        .run_utf8()
+    let _create_wallet_output: serde_json::Value = bitcoind_client
+        .request("createwallet", rpc_params!["mempool-dat-test"])
         .await?;
-    let address = bitcoin_cli
-        .command::<String, _, _, _, _>([], "getnewaddress", Vec::<String>::new())
-        .run_utf8()
+    let address: String = bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
-    let address = address.trim().to_owned();
-    bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["101".to_owned(), address.clone()])
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = bitcoind_client
+        .request("generatetoaddress", rpc_params![101, &address])
         .await?;
     for _ in 0..TXS {
-        let _res = bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
-                "sendtoaddress",
-                [address.clone(), "0.001".to_owned()],
-            )
-            .run_utf8()
+        let _txid: bitcoin::Txid = bitcoind_client
+            .request("sendtoaddress", rpc_params![&address, 0.001])
             .await?;
     }
 
     // The enforcer asks for this itself at startup, but doing it here too means
     // the file exists before the first enforcer is even spawned, so a failure
     // to seed cannot be blamed on a missing dump.
-    bitcoin_cli
-        .command::<String, _, _, _, _>([], "savemempool", Vec::<String>::new())
-        .run_utf8()
+    let _save_mempool_output: serde_json::Value = bitcoind_client
+        .request("savemempool", rpc_params![])
         .await?;
 
     let dat_path = setup

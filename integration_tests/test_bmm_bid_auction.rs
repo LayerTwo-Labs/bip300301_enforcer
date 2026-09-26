@@ -8,7 +8,6 @@
 //! Bitcoin Core's wallet from explicitly chosen mature UTXOs instead.
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt,
     messages::{CoinbaseMessage, M7BmmAccept, M8BmmRequest},
     proto::{
         self,
@@ -23,6 +22,7 @@ use bip300301_enforcer_lib::{
 };
 use bitcoin::{Amount, BlockHash, OutPoint, Txid, hashes::Hash as _};
 use buffa::MessageField;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{
@@ -149,7 +149,7 @@ async fn create_wallet_bid(
         .and_then(|txid| proto::unwrap_string(txid.hex))
         .ok_or_else(|| anyhow::anyhow!("expected `txid` in CreateBmmCriticalDataTransaction"))?
         .parse::<Txid>()?;
-    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &txid).await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &txid).await?;
     Ok(txid)
 }
 
@@ -167,12 +167,10 @@ async fn craft_core_bid(
     prev_hash: BlockHash,
     pad_outputs: usize,
 ) -> anyhow::Result<Txid> {
-    let unspent_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "listunspent", ["100".to_owned()])
-        .run_utf8()
+    let unspent: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("listunspent", rpc_params![100])
         .await?;
-    let unspent: serde_json::Value = serde_json::from_str(&unspent_json)?;
     let utxo = unspent
         .as_array()
         .into_iter()
@@ -201,17 +199,14 @@ async fn craft_core_bid(
     for _ in 0..=pad_outputs {
         addresses.push(
             post_setup
-                .bitcoin_cli
-                .command::<String, _, String, _, _>([], "getnewaddress", [])
-                .run_utf8()
-                .await?
-                .trim()
-                .to_owned(),
+                .bitcoind_client
+                .request::<String, _>("getnewaddress", rpc_params![])
+                .await?,
         );
     }
 
     let payload = M8BmmRequest::data(slot, BmmCommitment(*h_star), prev_hash)?;
-    let inputs = serde_json::json!([{"txid": utxo_txid, "vout": utxo_vout}]).to_string();
+    let inputs = serde_json::json!([{"txid": utxo_txid, "vout": utxo_vout}]);
     let outputs = {
         let change_output = |address: &str, sats: Amount| {
             let mut output = serde_json::Map::new();
@@ -231,19 +226,16 @@ async fn craft_core_bid(
                 .iter()
                 .map(|addr| change_output(addr, Amount::from_sat(PAD_OUTPUT_SATS))),
         );
-        serde_json::Value::Array(outputs).to_string()
+        serde_json::Value::Array(outputs)
     };
-    let raw = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "createrawtransaction", [inputs, outputs])
-        .run_utf8()
+    let raw: String = post_setup
+        .bitcoind_client
+        .request("createrawtransaction", rpc_params![inputs, outputs])
         .await?;
-    let signed_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "signrawtransactionwithwallet", [raw.trim().to_owned()])
-        .run_utf8()
+    let signed: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("signrawtransactionwithwallet", rpc_params![raw])
         .await?;
-    let signed: serde_json::Value = serde_json::from_str(&signed_json)?;
     anyhow::ensure!(
         signed["complete"].as_bool() == Some(true),
         "failed to sign crafted bid: {signed}"
@@ -251,13 +243,10 @@ async fn craft_core_bid(
     let signed_hex = signed["hex"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("signrawtransactionwithwallet returned no hex"))?;
-    let txid = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "sendrawtransaction", [signed_hex.to_owned()])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse::<Txid>()?;
+    let txid: Txid = post_setup
+        .bitcoind_client
+        .request("sendrawtransaction", rpc_params![signed_hex])
+        .await?;
     Ok(txid)
 }
 
@@ -265,12 +254,11 @@ async fn get_raw_transaction(
     post_setup: &PostSetup,
     txid: &Txid,
 ) -> anyhow::Result<bitcoin::Transaction> {
-    let tx_hex = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getrawtransaction", [txid.to_string()])
-        .run_utf8()
+    let tx_hex: String = post_setup
+        .bitcoind_client
+        .request("getrawtransaction", rpc_params![txid])
         .await?;
-    let tx = bitcoin::consensus::deserialize(&hex::decode(tx_hex.trim())?)?;
+    let tx = bitcoin::consensus::deserialize(&hex::decode(tx_hex)?)?;
     Ok(tx)
 }
 
@@ -278,12 +266,11 @@ async fn get_block(
     post_setup: &PostSetup,
     block_hash: &BlockHash,
 ) -> anyhow::Result<bitcoin::Block> {
-    let block_hex = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string(), "0".to_string()])
-        .run_utf8()
+    let block_hex: String = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![block_hash, 0])
         .await?;
-    let block = bitcoin::consensus::deserialize(&hex::decode(block_hex.trim())?)?;
+    let block = bitcoin::consensus::deserialize(&hex::decode(block_hex)?)?;
     Ok(block)
 }
 
@@ -452,17 +439,13 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     // The crafted bids spend from Core's wallet, which the served coinbases
     // do not pay in GetBlockTemplate mode. 105 blocks leaves a few mature
     // coinbases at the first auction tip.
-    let core_addr = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
-    let _mined: String = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["105".to_owned(), core_addr])
-        .run_utf8()
+    let core_addr: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _mined: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![105, core_addr])
         .await?;
     let () = wait_for_wallet_sync(&mut post_setup).await?;
     tracing::info!("Activated both sidechains and funded both wallets");
@@ -823,7 +806,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     .await?;
     tracing::info!(%small_txid, %big_txid, "Placed round 5 bids");
     for txid in [&small_txid, &big_txid] {
-        let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, txid).await?;
+        let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, txid).await?;
     }
     if let Mode::GetBlockTemplate = mode {
         let () = wait_for_template_txs(&post_setup, vec![big_txid], vec![small_txid]).await?;

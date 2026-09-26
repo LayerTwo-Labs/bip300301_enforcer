@@ -827,6 +827,9 @@ where
     .into()
 }
 
+/// JSON-RPC client for a harness bitcoind, from [`Bitcoind::rpc_client`].
+pub type BitcoindClient = jsonrpsee::http_client::HttpClient;
+
 #[derive(Clone, Debug)]
 pub struct Bitcoind {
     pub path: PathBuf,
@@ -846,6 +849,9 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
+    /// A `bitcoin-cli` invocation for this node, for what has to shell out to
+    /// one, such as the signet miner. Tests talk to the node over
+    /// [`Self::rpc_client`].
     pub fn new_bitcoin_cli(&self, path: PathBuf) -> bip300301_enforcer_lib::bins::BitcoinCli {
         bip300301_enforcer_lib::bins::BitcoinCli {
             path,
@@ -859,6 +865,21 @@ impl Bitcoind {
             rpc_host: self.rpc_host.clone(),
             rpc_wallet: None,
         }
+    }
+
+    /// JSON-RPC client for this node. Wallet calls go to the node's endpoint
+    /// rather than a `/wallet/<name>` one: harness nodes load at most one
+    /// wallet, and Bitcoin Core routes to it.
+    pub fn rpc_client(&self) -> anyhow::Result<BitcoindClient> {
+        let conf = bip300301_enforcer_lib::cli::NodeRpcConfig {
+            addr: std::net::SocketAddr::new(self.rpc_host.parse()?, self.rpc_port),
+            cookie_path: None,
+            user: Some(self.rpc_user.clone()),
+            pass: Some(bip300301_enforcer_lib::cli::SecretString::new(
+                self.rpc_pass.clone(),
+            )),
+        };
+        Ok(bip300301_enforcer_lib::rpc_client::create_client(&conf)?)
     }
 
     #[must_use]
