@@ -12,22 +12,20 @@
 
 use std::collections::HashMap;
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{
-        self,
-        mainchain::{
-            BlockHeaderInfo, BlockInfo, CreateDepositTransactionRequest,
-            CreateDepositTransactionResponse, CreateNewAddressRequest, GetBalanceRequest,
-            GetChainTipRequest, GetCtipRequest, GetCtipResponse,
-            ListSidechainDepositTransactionsRequest, OutPoint, SendTransactionRequest,
-            SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
-            WalletTransaction, block_info, subscribe_events_response,
-        },
+use bip300301_enforcer_lib::proto::{
+    self,
+    mainchain::{
+        BlockHeaderInfo, BlockInfo, CreateDepositTransactionRequest,
+        CreateDepositTransactionResponse, CreateNewAddressRequest, GetBalanceRequest,
+        GetChainTipRequest, GetCtipRequest, GetCtipResponse,
+        ListSidechainDepositTransactionsRequest, OutPoint, SendTransactionRequest,
+        SendTransactionResponse, SubscribeEventsRequest, SubscribeEventsResponse,
+        WalletTransaction, block_info, subscribe_events_response,
     },
 };
 use connectrpc::ConnectError;
 use futures::{StreamExt as _, channel::mpsc};
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use tracing::Instrument as _;
 
 use crate::{
@@ -38,8 +36,7 @@ use crate::{
     mine::MiningPolicy,
     setup::{
         BitcoindKind, DummySidechain, Mode, Network, PostSetup as NodeSetup, SetupOpts, Sidechain,
-        WAIT_POLL_INTERVAL_SUBPROCESS, wait_for_port_free, wait_for_tx_in_mempool, wait_until,
-        wait_until_every,
+        wait_for_port_free, wait_for_tx_in_mempool, wait_until,
     },
     util::{self, BinPaths, TestFileRegistry},
 };
@@ -130,17 +127,15 @@ impl PreSetup {
             .miner
             .setup(Mode::GetBlockTemplate, setup_opts(), res_tx)
             .await?;
-        let _res: String = sender
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let _res: serde_json::Value = sender
+            .bitcoind_client
+            .request(
                 "addnode",
-                [
+                rpc_params![
                     format!("127.0.0.1:{}", miner.reserved_ports.bitcoind_listen.port()),
-                    "add".to_owned(),
+                    "add"
                 ],
             )
-            .run_utf8()
             .await?;
         // With no cached chain to restore, each node mined its own first block
         // during setup, leaving competing tips of equal work that Bitcoin Core
@@ -157,19 +152,15 @@ impl PreSetup {
 /// Bitcoin Core's tip, as opposed to the validator's.
 async fn node_tip(node: &NodeSetup) -> anyhow::Result<bitcoin::BlockHash> {
     Ok(node
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?)
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?)
 }
 
 /// Block until both nodes are on the same tip.
 async fn wait_for_nodes_in_sync(post_setup: &PostSetup, when: &str) -> anyhow::Result<()> {
-    wait_until_every(
+    wait_until(
         &format!("both nodes to agree on a tip ({when})"),
-        WAIT_POLL_INTERVAL_SUBPROCESS,
         || async {
             let (miner_tip, sender_tip) =
                 futures::try_join!(node_tip(&post_setup.miner), node_tip(&post_setup.sender))?;
@@ -235,25 +226,20 @@ async fn wait_for_deposit_relay(
     post_setup: &PostSetup,
     deposit_txid: &bitcoin::Txid,
 ) -> anyhow::Result<()> {
-    let Err(wait_err) = wait_for_tx_in_mempool(&post_setup.miner.bitcoin_cli, deposit_txid).await
+    let Err(wait_err) =
+        wait_for_tx_in_mempool(&post_setup.miner.bitcoind_client, deposit_txid).await
     else {
         return Ok(());
     };
-    let raw_tx = post_setup
+    let raw_tx: String = post_setup
         .sender
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getrawtransaction", [deposit_txid.to_string()])
-        .run_utf8()
+        .bitcoind_client
+        .request("getrawtransaction", rpc_params![deposit_txid])
         .await?;
-    let verdict = post_setup
+    let verdict: serde_json::Value = post_setup
         .miner
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "testmempoolaccept",
-            [serde_json::json!([raw_tx.trim()]).to_string()],
-        )
-        .run_utf8()
+        .bitcoind_client
+        .request("testmempoolaccept", rpc_params![[raw_tx]])
         .await?;
     // `allowed: false` names the policy rule that turned the deposit away;
     // `allowed: true` means it simply never arrived.
@@ -261,7 +247,7 @@ async fn wait_for_deposit_relay(
         "Deposit {deposit_txid} was accepted by the node that built it, but never reached \
          the miner node. `testmempoolaccept` on the miner node says: {}. Underlying wait \
          error: {wait_err:#}",
-        verdict.trim(),
+        verdict,
     )
 }
 
@@ -431,7 +417,7 @@ async fn test_peer_deposit_relay_task(mut post_setup: PostSetup) -> anyhow::Resu
 
     // `sendrawtransaction` applies the same policy check relay does, so a
     // deposit missing here was never going to relay either.
-    let () = wait_for_tx_in_mempool(&post_setup.sender.bitcoin_cli, &deposit_txid).await?;
+    let () = wait_for_tx_in_mempool(&post_setup.sender.bitcoind_client, &deposit_txid).await?;
     tracing::info!("Deposit accepted by the sender's own node");
 
     let () = wait_for_deposit_relay(&post_setup, &deposit_txid).await?;

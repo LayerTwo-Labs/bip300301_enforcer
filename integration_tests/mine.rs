@@ -17,6 +17,7 @@ use bip300301_enforcer_lib::{
 use bitcoin::Address;
 use connectrpc::ConnectError;
 use either::Either;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use thiserror::Error;
 
 use crate::{
@@ -86,8 +87,9 @@ pub enum MineGbtError {
     ConsensusDecode(#[from] bitcoin::consensus::encode::Error),
     #[error(transparent)]
     ConsensusDecodeHex(#[from] bitcoin::consensus::encode::FromHexError),
+    /// From the enforcer's block template server or bitcoind.
     #[error(transparent)]
-    GbtClient(#[from] jsonrpsee::core::ClientError),
+    JsonRpc(#[from] jsonrpsee::core::ClientError),
     #[error("Missing coinbasetxn in block template")]
     MissingCoinbaseTxn,
     #[error("`getblocktemplate` answered a BIP23 proposal verdict, not a template")]
@@ -152,19 +154,16 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
         .collect::<Result<_, _>>()?;
     let block = bitcoin::Block { header, txdata };
     let block_hash = block.block_hash();
-    let submitblock_output = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    // `null` on success, the rejection reason otherwise.
+    let submitblock_output: Option<String> = post_setup
+        .bitcoind_client
+        .request(
             "submitblock",
-            [bitcoin::consensus::encode::serialize_hex(&block)],
+            rpc_params![bitcoin::consensus::encode::serialize_hex(&block)],
         )
-        .run_utf8()
         .await?;
-    if !submitblock_output.is_empty() {
-        return Err(MineGbtError::SubmitBlock {
-            err_msg: submitblock_output,
-        });
+    if let Some(err_msg) = submitblock_output {
+        return Err(MineGbtError::SubmitBlock { err_msg });
     }
     Ok(block_hash)
 }

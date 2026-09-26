@@ -1,10 +1,11 @@
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{self, mainchain::GenerateToAddressRequest},
-};
+use bip300301_enforcer_lib::proto::{self, mainchain::GenerateToAddressRequest};
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
-use crate::setup::{EnforcerWallet, Mode, PreSetup, SetupOpts};
+use crate::{
+    setup::{EnforcerWallet, Mode, PreSetup, SetupOpts},
+    util::BitcoindClient,
+};
 
 pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
@@ -28,16 +29,12 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
         .await?;
     }
 
-    async fn block_count(
-        bitcoin_cli: &bip300301_enforcer_lib::bins::BitcoinCli,
-    ) -> anyhow::Result<u64> {
-        let count = bitcoin_cli
-            .command::<String, _, String, _, _>([], "getblockcount", [])
-            .run_utf8()
-            .await?;
-        Ok(count.trim().parse()?)
+    async fn block_count(bitcoind_client: &BitcoindClient) -> anyhow::Result<u64> {
+        Ok(bitcoind_client
+            .request("getblockcount", rpc_params![])
+            .await?)
     }
-    let start_height = block_count(&post_setup.bitcoin_cli).await?;
+    let start_height = block_count(&post_setup.bitcoind_client).await?;
 
     const BLOCKS: u32 = 3;
     let mining_address = post_setup.mining_address.clone();
@@ -66,38 +63,29 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
 
     // The node accepted the blocks: the chain advanced by `BLOCKS`, and its tip
     // is the last returned hash.
-    let end_height = block_count(&post_setup.bitcoin_cli).await?;
+    let end_height = block_count(&post_setup.bitcoind_client).await?;
     anyhow::ensure!(
         end_height == start_height + BLOCKS as u64,
         "expected the chain to advance from {start_height} to {}, got {end_height}",
         start_height + BLOCKS as u64
     );
-    let best_block_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse::<bitcoin::BlockHash>()?;
+    let best_block_hash: bitcoin::BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?;
     anyhow::ensure!(
         Some(&best_block_hash) == block_hashes.last(),
         "expected the node tip to be the last generated block, got {best_block_hash}"
     );
 
     // The coinbase pays out to the requested address.
-    let tip_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "getblock",
-            [best_block_hash.to_string(), "2".to_owned()],
-        )
-        .run_utf8()
+    let tip: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![best_block_hash, 2])
         .await?;
-    let tip: serde_json::Value = serde_json::from_str(&tip_json)?;
     let coinbase_recipient = tip["tx"][0]["vout"][0]["scriptPubKey"]["address"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("no address in coinbase output: {tip_json}"))?;
+        .ok_or_else(|| anyhow::anyhow!("no address in coinbase output: {tip}"))?;
     anyhow::ensure!(
         coinbase_recipient == mining_address.to_string(),
         "expected the coinbase to pay `{mining_address}`, got `{coinbase_recipient}`"

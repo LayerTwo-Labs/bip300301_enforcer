@@ -6,7 +6,6 @@
 //! alone, and the `ack_policy` argument to `mine` is ignored.
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     messages::{CoinbaseMessage, M4AckBundles},
     proto::{
         self,
@@ -23,6 +22,7 @@ use bip300301_enforcer_lib::{
 };
 use bitcoin::{Amount, BlockHash, Txid, hashes::sha256d};
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{deposit, fund_enforcer, propose_sidechain, propose_sidechain_for_slot},
@@ -106,12 +106,11 @@ pub(crate) async fn tip_coinbase_messages(
         .into_option()
         .ok_or_else(|| anyhow::anyhow!("GetChainTip returned no block_hash"))?
         .decode::<BlockHeaderInfo, _>("block_hash")?;
-    let block_hex = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [tip_hash.to_string(), "0".to_string()])
-        .run_utf8()
+    let block_hex: String = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![tip_hash, 0])
         .await?;
-    let block: bitcoin::Block = bitcoin::consensus::deserialize(&hex::decode(block_hex.trim())?)?;
+    let block: bitcoin::Block = bitcoin::consensus::deserialize(&hex::decode(block_hex)?)?;
     let coinbase = block
         .txdata
         .first()

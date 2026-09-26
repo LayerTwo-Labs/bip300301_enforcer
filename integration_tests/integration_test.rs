@@ -1,7 +1,6 @@
 use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     proto::{
         self,
         common::{ConsensusHex, Hex},
@@ -17,6 +16,10 @@ use bip300301_enforcer_lib::{
 };
 use bitcoin::Amount;
 use futures::{FutureExt as _, channel::mpsc};
+use jsonrpsee::{
+    core::{client::ClientT as _, params::ObjectParams},
+    rpc_params,
+};
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
@@ -300,12 +303,9 @@ pub async fn wait_for_wallet_sync(post_setup: &mut PostSetup) -> anyhow::Result<
     const TIMEOUT: Duration = Duration::from_secs(60);
 
     let target_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     tracing::debug!("Waiting for wallet to sync to block {target_height}");
 
     let deadline = std::time::Instant::now() + TIMEOUT;
@@ -357,19 +357,13 @@ pub async fn wait_for_electrs_tip(post_setup: &PostSetup) -> anyhow::Result<()> 
     const TIMEOUT: Duration = Duration::from_secs(180);
 
     let target_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
-    let target_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblockhash", [target_height.to_string()])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
+    let target_hash: String = post_setup
+        .bitcoind_client
+        .request("getblockhash", rpc_params![target_height])
+        .await?;
     let base_url = format!(
         "http://127.0.0.1:{}",
         post_setup.reserved_ports.electrs_electrum_http.port()
@@ -495,12 +489,9 @@ async fn electrs_indexed_through(
 /// Block until the validator's reported chain tip reaches bitcoind's height.
 pub async fn wait_for_validator_tip(post_setup: &PostSetup) -> anyhow::Result<()> {
     let target_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     wait_until(
         &format!("validator tip reaches height {target_height}"),
         || async {
@@ -527,13 +518,22 @@ const SIGNET_FUNDING_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(5_000_0
 /// Bitcoin Core's own spendable (mature, confirmed) wallet balance.
 async fn spendable_core_balance(post_setup: &PostSetup) -> anyhow::Result<bitcoin::Amount> {
     let balance_btc: f64 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbalance", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getbalance", rpc_params![])
+        .await?;
     Ok(bitcoin::Amount::from_btc(balance_btc)?)
+}
+
+/// Total Bitcoin Core has received at `post_setup.receive_address`.
+async fn received_by_address(post_setup: &PostSetup) -> anyhow::Result<bitcoin::Amount> {
+    let received_btc: f64 = post_setup
+        .bitcoind_client
+        .request(
+            "getreceivedbyaddress",
+            rpc_params![post_setup.receive_address.to_string()],
+        )
+        .await?;
+    Ok(bitcoin::Amount::from_btc(received_btc)?)
 }
 
 pub async fn fund_enforcer<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
@@ -552,14 +552,9 @@ where
                 .into_owned()
                 .address;
 
-            post_setup
-                .bitcoin_cli
-                .command::<String, _, _, _, _>(
-                    [],
-                    "generatetoaddress",
-                    [BLOCKS.to_string(), address],
-                )
-                .run_utf8()
+            let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+                .bitcoind_client
+                .request("generatetoaddress", rpc_params![BLOCKS, address])
                 .await?;
         }
         Network::Signet => {
@@ -580,25 +575,18 @@ where
                     .await?
                     .into_owned()
                     .address;
-                // `-named` with an explicit `fee_rate`: this chain has no fee
+                // Named, with an explicit `fee_rate`: this chain has no fee
                 // history, so Core's estimator has nothing to work from and
                 // `sendtoaddress` would fail rather than pick a rate.
+                let mut params = ObjectParams::new();
+                params.insert("address", address)?;
+                params.insert("amount", SIGNET_FUNDING_AMOUNT.to_btc())?;
+                params.insert("fee_rate", 2)?;
                 let funding_txid: bitcoin::Txid = post_setup
-                    .bitcoin_cli
-                    .command::<_, _, _, _, _>(
-                        ["-named"],
-                        "sendtoaddress",
-                        [
-                            format!("address={address}"),
-                            format!("amount={}", SIGNET_FUNDING_AMOUNT.to_btc()),
-                            "fee_rate=2".to_owned(),
-                        ],
-                    )
-                    .run_utf8()
-                    .await?
-                    .trim()
-                    .parse()?;
-                let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &funding_txid).await?;
+                    .bitcoind_client
+                    .request("sendtoaddress", params)
+                    .await?;
+                let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &funding_txid).await?;
                 mine_signet_check::<_, Infallible, S>(post_setup, 1, |_| Ok(())).await?;
             } else {
                 tracing::debug!(
@@ -647,7 +635,7 @@ where
         .ok_or_else(|| proto::Error::missing_field::<CreateDepositTransactionResponse>("txid"))?
         .decode::<CreateDepositTransactionResponse, _>("txid")?;
     tracing::debug!("Deposit TXID: {deposit_txid}");
-    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid).await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &deposit_txid).await?;
     tracing::debug!("Mining 1 sidechain block");
     let () =
         mine_check_block_events::<_, S>(post_setup, 1, MiningPolicy::SILENT, |_, block_info| {
@@ -876,17 +864,7 @@ where
         })
         .await?;
     tracing::debug!("Checking receive address balance is 0");
-    let receive_addr_balance_str = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "getreceivedbyaddress",
-            [post_setup.receive_address.to_string()],
-        )
-        .run_utf8()
-        .await?;
-    let receive_addr_balance =
-        bitcoin::Amount::from_str_in(&receive_addr_balance_str, bitcoin::Denomination::Bitcoin)?;
+    let receive_addr_balance = received_by_address(post_setup).await?;
     anyhow::ensure!(receive_addr_balance == bitcoin::Amount::ZERO);
     tracing::debug!("Mining blocks until withdrawal success");
     let () = mine_check_block_events::<_, S>(
@@ -915,17 +893,7 @@ where
         expected = %expected_withdrawal_value.display_dynamic(),
         "Checking receive address balance"
     );
-    let receive_addr_balance_str = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "getreceivedbyaddress",
-            [post_setup.receive_address.to_string()],
-        )
-        .run_utf8()
-        .await?;
-    let receive_addr_balance =
-        bitcoin::Amount::from_str_in(&receive_addr_balance_str, bitcoin::Denomination::Bitcoin)?;
+    let receive_addr_balance = received_by_address(post_setup).await?;
     anyhow::ensure!(receive_addr_balance == expected_withdrawal_value);
     Ok(())
 }

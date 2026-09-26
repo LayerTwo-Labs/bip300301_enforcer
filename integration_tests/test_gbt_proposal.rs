@@ -71,22 +71,16 @@ async fn propose(
 
 /// Raw hex of the block bitcoind currently has at its tip.
 async fn tip_block_hex(post_setup: &PostSetup) -> anyhow::Result<String> {
-    use bip300301_enforcer_lib::bins::CommandExt as _;
+    use jsonrpsee::core::client::ClientT as _;
 
-    let block_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
+    let block_hash: bitcoin::BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", jsonrpsee::rpc_params![])
+        .await?;
     Ok(post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [block_hash, "0".to_owned()])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned())
+        .bitcoind_client
+        .request("getblock", jsonrpsee::rpc_params![block_hash, 0])
+        .await?)
 }
 
 /// Build an unmined block from the enforcer's current template, exactly as a

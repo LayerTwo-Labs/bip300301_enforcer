@@ -19,18 +19,16 @@
 //! Runs with the hidden `test-activation` preset; all preset parameters are
 //! learned over RPC via `GetChainInfo`, keeping the test black-box.
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{
-        self,
-        common::{ConsensusHex, Hex, ReverseHex},
-        mainchain::{
-            CreateSidechainProposalRequest, GetChainInfoRequest, GetSidechainProposalsRequest,
-            GetSidechainsRequest, SetSidechainAckRequest, SubmitSidechainProposalRequest,
-        },
+use bip300301_enforcer_lib::proto::{
+    self,
+    common::{ConsensusHex, Hex, ReverseHex},
+    mainchain::{
+        CreateSidechainProposalRequest, GetChainInfoRequest, GetSidechainProposalsRequest,
+        GetSidechainsRequest, SetSidechainAckRequest, SubmitSidechainProposalRequest,
     },
 };
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::wait_for_validator_tip,
@@ -52,11 +50,9 @@ fn enforcer_args() -> Vec<String> {
 
 async fn block_count(post_setup: &PostSetup) -> anyhow::Result<u32> {
     let count: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     Ok(count)
 }
 
@@ -121,21 +117,16 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
     );
     tracing::info!("Killing enforcer, then mining {dark_blocks} block(s) behind its back");
     post_setup.kill_enforcer().await?;
-    let mining_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
-    let _output = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let mining_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _output: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [dark_blocks.to_string(), mining_address],
+            rpc_params![dark_blocks, mining_address],
         )
-        .run_utf8()
         .await?;
     tracing::info!("Restarting enforcer -- the gap must sync from headers, without block fetches");
     post_setup

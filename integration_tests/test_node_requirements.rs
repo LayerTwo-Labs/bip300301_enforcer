@@ -13,20 +13,20 @@
 
 use std::time::Duration;
 
-use bip300301_enforcer_lib::{
-    bins::{self, CommandExt as _},
-    proto::{mainchain::GetChainTipRequest, mainchain_service::ValidatorServiceClient},
+use bip300301_enforcer_lib::proto::{
+    mainchain::GetChainTipRequest, mainchain_service::ValidatorServiceClient,
 };
 use connectrpc::{
     client::{ClientConfig, HttpClient},
     error::ErrorCode,
 };
 use futures::{StreamExt as _, channel::mpsc};
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use tokio::time::sleep;
 
 use crate::{
     setup::{BitcoindKind, PreSetup, new_bitcoind, wait_for_bitcoind_ready, wait_for_port},
-    util::{AbortOnDrop, Bitcoind, Enforcer},
+    util::{AbortOnDrop, Bitcoind, BitcoindClient, Enforcer},
 };
 
 /// Any valid regtest address; the coins are never spent.
@@ -66,13 +66,10 @@ fn load_snapshot_fixture(major: u32) -> anyhow::Result<SnapshotFixture> {
 }
 
 /// The Core major version the node reports via `getnetworkinfo`.
-async fn node_major_version(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<u32> {
-    let network_info: serde_json::Value = serde_json::from_str(
-        &bitcoin_cli
-            .command::<String, _, String, _, _>([], "getnetworkinfo", [])
-            .run_utf8()
-            .await?,
-    )?;
+async fn node_major_version(bitcoind_client: &BitcoindClient) -> anyhow::Result<u32> {
+    let network_info: serde_json::Value = bitcoind_client
+        .request("getnetworkinfo", rpc_params![])
+        .await?;
     let version = network_info["version"]
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("missing `version` in getnetworkinfo: {network_info}"))?;
@@ -100,7 +97,7 @@ fn spawn_bitcoind(
     setup: &PreSetup,
     extra_args: &[&str],
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
-) -> anyhow::Result<(Bitcoind, AbortOnDrop<()>, bins::BitcoinCli)> {
+) -> anyhow::Result<(Bitcoind, AbortOnDrop<()>, BitcoindClient)> {
     spawn_bitcoind_at(
         setup,
         setup.directories.bitcoin_dir.clone(),
@@ -116,7 +113,7 @@ fn spawn_bitcoind_at(
     data_dir: std::path::PathBuf,
     extra_args: &[&str],
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
-) -> anyhow::Result<(Bitcoind, AbortOnDrop<()>, bins::BitcoinCli)> {
+) -> anyhow::Result<(Bitcoind, AbortOnDrop<()>, BitcoindClient)> {
     let mut bitcoind = new_bitcoind(
         &setup.bin_paths,
         BitcoindKind::Patched,
@@ -135,8 +132,8 @@ fn spawn_bitcoind_at(
             let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
         },
     );
-    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?.clone());
-    Ok((bitcoind, task, bitcoin_cli))
+    let bitcoind_client = bitcoind.rpc_client()?;
+    Ok((bitcoind, task, bitcoind_client))
 }
 
 struct SpawnedEnforcer {
@@ -274,16 +271,13 @@ async fn assumeutxo_snapshot(
         bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], move |err| {
             let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
         });
-    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?.clone());
-    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
-    let () = submit_blocks(&bitcoin_cli, blocks).await?;
+    let bitcoind_client = bitcoind.rpc_client()?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
+    let () = submit_blocks(&bitcoind_client, blocks).await?;
 
-    let dump: serde_json::Value = serde_json::from_str(
-        &bitcoin_cli
-            .command::<String, _, _, _, _>([], "dumptxoutset", ["utxos.dat", "latest"])
-            .run_utf8()
-            .await?,
-    )?;
+    let dump: serde_json::Value = bitcoind_client
+        .request("dumptxoutset", rpc_params!["utxos.dat", "latest"])
+        .await?;
     anyhow::ensure!(
         dump["txoutset_hash"] == fixture.txoutset_hash,
         "generated snapshot does not match the expected UTXO-set hash {}, \
@@ -309,15 +303,19 @@ async fn assumeutxo_snapshot(
 }
 
 /// Submit raw blocks to the node, expecting each to be accepted.
-async fn submit_blocks(bitcoin_cli: &bins::BitcoinCli, blocks_hex: &[&str]) -> anyhow::Result<()> {
+async fn submit_blocks(
+    bitcoind_client: &BitcoindClient,
+    blocks_hex: &[&str],
+) -> anyhow::Result<()> {
     for block_hex in blocks_hex {
-        // `submitblock` reports failure as a status string on stdout, and
-        // success as no output at all.
-        let output: String = bitcoin_cli
-            .command::<String, _, _, _, _>([], "submitblock", [*block_hex])
-            .run_utf8()
+        // `submitblock` reports failure as a status string, and success as
+        // `null`.
+        let output: Option<String> = bitcoind_client
+            .request("submitblock", rpc_params![block_hex])
             .await?;
-        anyhow::ensure!(output.is_empty(), "submitblock rejected a block: {output}");
+        if let Some(output) = output {
+            anyhow::bail!("submitblock rejected a block: {output}");
+        }
     }
     Ok(())
 }
@@ -326,13 +324,10 @@ async fn submit_blocks(bitcoin_cli: &bins::BitcoinCli, blocks_hex: &[&str]) -> a
 /// `getchainstates` lists a snapshot chainstate that is not yet validated.
 /// (Not `initialblockdownload`: the harness runs bitcoind with a huge
 /// `-maxtipage`, so a node never reports IBD on these old test chains.)
-async fn background_sync_in_progress(bitcoin_cli: &bins::BitcoinCli) -> anyhow::Result<bool> {
-    let chainstates: serde_json::Value = serde_json::from_str(
-        &bitcoin_cli
-            .command::<String, _, String, _, _>([], "getchainstates", [])
-            .run_utf8()
-            .await?,
-    )?;
+async fn background_sync_in_progress(bitcoind_client: &BitcoindClient) -> anyhow::Result<bool> {
+    let chainstates: serde_json::Value = bitcoind_client
+        .request("getchainstates", rpc_params![])
+        .await?;
     let in_progress = chainstates["chainstates"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("unexpected getchainstates response: {chainstates}"))?
@@ -411,13 +406,13 @@ async fn wait_for_enforcer_log(setup: &PreSetup, needle: &str) -> anyhow::Result
 /// `Block not available (not fully downloaded)`.
 pub async fn test_assumeutxo_node(setup: PreSetup) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
-    let (bitcoind, _bitcoind_task, bitcoin_cli) = spawn_bitcoind(&setup, &[], res_tx)?;
-    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
+    let (bitcoind, _bitcoind_task, bitcoind_client) = spawn_bitcoind(&setup, &[], res_tx)?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
 
     // The fixture chain must match the node's regtest assumeutxo chainparams
     // entry, which differs between Core major versions
     // (see scripts/generate_assumeutxo_fixture.py).
-    let fixture = load_snapshot_fixture(node_major_version(&bitcoin_cli).await?)?;
+    let fixture = load_snapshot_fixture(node_major_version(&bitcoind_client).await?)?;
 
     // Give the node the fixture chain's headers only: this is the state of a
     // node that header-synced from the network but has no block data yet.
@@ -429,24 +424,19 @@ pub async fn test_assumeutxo_node(setup: PreSetup) -> anyhow::Result<()> {
         let header_hex = block_hex
             .get(..160)
             .ok_or_else(|| anyhow::anyhow!("malformed line in {}", fixture.blocks))?;
-        let _output: String = bitcoin_cli
-            .command::<String, _, _, _, _>([], "submitheader", [header_hex])
-            .run_utf8()
+        let _output: serde_json::Value = bitcoind_client
+            .request("submitheader", rpc_params![header_hex])
             .await?;
     }
 
     tracing::info!("Loading UTXO snapshot");
     let utxos_dat = assumeutxo_snapshot(&setup, &fixture, &blocks).await?;
-    let loaded: serde_json::Value = serde_json::from_str(
-        &bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
-                "loadtxoutset",
-                [utxos_dat.to_string_lossy().to_string()],
-            )
-            .run_utf8()
-            .await?,
-    )?;
+    let loaded: serde_json::Value = bitcoind_client
+        .request(
+            "loadtxoutset",
+            rpc_params![utxos_dat.to_string_lossy().to_string()],
+        )
+        .await?;
     anyhow::ensure!(
         loaded["base_height"] == fixture.base_height
             && loaded["tip_hash"] == fixture.base_blockhash,
@@ -458,28 +448,23 @@ pub async fn test_assumeutxo_node(setup: PreSetup) -> anyhow::Result<()> {
     // The node is now in the reported state: active tip at the snapshot
     // height, background validation pending, with no block data below the
     // tip.
-    let chain_info: serde_json::Value = serde_json::from_str(
-        &bitcoin_cli
-            .command::<String, _, String, _, _>([], "getblockchaininfo", [])
-            .run_utf8()
-            .await?,
-    )?;
+    let chain_info: serde_json::Value = bitcoind_client
+        .request("getblockchaininfo", rpc_params![])
+        .await?;
     anyhow::ensure!(
         chain_info["blocks"] == fixture.base_height,
         "expected tip {} after snapshot load, got: {chain_info}",
         fixture.base_height,
     );
     anyhow::ensure!(
-        background_sync_in_progress(&bitcoin_cli).await?,
+        background_sync_in_progress(&bitcoind_client).await?,
         "expected the node to be background-validating the snapshot after loading it"
     );
-    let block_1_hash: String = bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblockhash", ["1"])
-        .run_utf8()
+    let block_1_hash: String = bitcoind_client
+        .request("getblockhash", rpc_params![1])
         .await?;
-    let getblock_err = bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [block_1_hash, "0".to_owned()])
-        .run_utf8()
+    let getblock_err = bitcoind_client
+        .request::<String, _>("getblock", rpc_params![block_1_hash, 0])
         .await
         .expect_err("blocks below the snapshot base must not be available yet");
     anyhow::ensure!(
@@ -510,17 +495,17 @@ pub async fn test_assumeutxo_node(setup: PreSetup) -> anyhow::Result<()> {
     // the node is still mid background-validation.
     let half = blocks.len() / 2;
     tracing::info!("Submitting blocks 1-{half}");
-    let () = submit_blocks(&bitcoin_cli, &blocks[..half]).await?;
+    let () = submit_blocks(&bitcoind_client, &blocks[..half]).await?;
     let () = wait_for_enforcer_tip(&validator_client, half as u32).await?;
     anyhow::ensure!(
-        background_sync_in_progress(&bitcoin_cli).await?,
+        background_sync_in_progress(&bitcoind_client).await?,
         "the node must still be background-validating the snapshot at this point"
     );
 
     // The rest of the blocks: the node finishes background validation, and
     // the enforcer reaches the snapshot height.
     tracing::info!("Submitting blocks {}-{}", half + 1, blocks.len());
-    let () = submit_blocks(&bitcoin_cli, &blocks[half..]).await?;
+    let () = submit_blocks(&bitcoind_client, &blocks[half..]).await?;
     let () = wait_for_enforcer_tip(&validator_client, fixture.base_height).await?;
 
     // Through all of this, the enforcer process must have stayed alive.
@@ -544,13 +529,13 @@ pub async fn test_assumeutxo_node(setup: PreSetup) -> anyhow::Result<()> {
 /// blocks the enforcer needs.
 pub async fn test_pruned_node(setup: PreSetup) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
-    let (bitcoind, _bitcoind_task, bitcoin_cli) = spawn_bitcoind(&setup, &["-prune=1"], res_tx)?;
-    let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
+    let (bitcoind, _bitcoind_task, bitcoind_client) =
+        spawn_bitcoind(&setup, &["-prune=1"], res_tx)?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
 
     // A little chain so the refusal is provably not "nothing to sync".
-    let _output: String = bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["10", UNSPENDABLE_ADDRESS])
-        .run_utf8()
+    let _output: serde_json::Value = bitcoind_client
+        .request("generatetoaddress", rpc_params![10, UNSPENDABLE_ADDRESS])
         .await?;
 
     let enforcer_output = run_enforcer_until_exit(&setup, &bitcoind).await?;
@@ -572,20 +557,18 @@ pub async fn test_pruned_node(setup: PreSetup) -> anyhow::Result<()> {
 
 /// Read raw blocks `from_height..=to_height` off a node.
 async fn read_blocks(
-    bitcoin_cli: &bins::BitcoinCli,
+    bitcoind_client: &BitcoindClient,
     from_height: u32,
     to_height: u32,
 ) -> anyhow::Result<Vec<String>> {
     let mut blocks = Vec::new();
     for height in from_height..=to_height {
-        let block_hash: String = bitcoin_cli
-            .command::<String, _, _, _, _>([], "getblockhash", [height.to_string()])
-            .run_utf8()
+        let block_hash: String = bitcoind_client
+            .request("getblockhash", rpc_params![height])
             .await?;
         blocks.push(
-            bitcoin_cli
-                .command::<String, _, _, _, _>([], "getblock", [block_hash, "0".to_owned()])
-                .run_utf8()
+            bitcoind_client
+                .request("getblock", rpc_params![block_hash, 0])
                 .await?,
         );
     }
@@ -610,24 +593,22 @@ pub async fn test_assumeutxo_enforcer_above_snapshot_base(setup: PreSetup) -> an
 
     // ---- phase 1: a plain node, and an enforcer synced to its tip ----
     let (res_tx, _res_rx) = mpsc::unbounded();
-    let (full_node, full_node_task, full_node_cli) = spawn_bitcoind(&setup, &[], res_tx)?;
-    let () = wait_for_bitcoind_ready(&full_node_cli).await?;
+    let (full_node, full_node_task, full_node_client) = spawn_bitcoind(&setup, &[], res_tx)?;
+    let () = wait_for_bitcoind_ready(&full_node_client).await?;
 
-    let fixture = load_snapshot_fixture(node_major_version(&full_node_cli).await?)?;
+    let fixture = load_snapshot_fixture(node_major_version(&full_node_client).await?)?;
     let blocks_hex = std::fs::read_to_string(assumeutxo_fixture_path(&fixture.blocks))?;
     let base_blocks: Vec<&str> = blocks_hex.lines().collect();
-    let () = submit_blocks(&full_node_cli, &base_blocks).await?;
+    let () = submit_blocks(&full_node_client, &base_blocks).await?;
 
     // Extend past the snapshot base, so there is a range of blocks that the
     // assumeutxo node will be able to serve while its background chainstate
     // is still at genesis.
-    let _generated: String = full_node_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _generated: serde_json::Value = full_node_client
+        .request(
             "generatetoaddress",
-            [EXTRA_BLOCKS.to_string(), UNSPENDABLE_ADDRESS.to_owned()],
+            rpc_params![EXTRA_BLOCKS, UNSPENDABLE_ADDRESS],
         )
-        .run_utf8()
         .await?;
     let synced_height = fixture.base_height + EXTRA_BLOCKS;
 
@@ -650,13 +631,13 @@ pub async fn test_assumeutxo_enforcer_above_snapshot_base(setup: PreSetup) -> an
 
     // One more block, handed only to the assumeutxo node below: this is the
     // block the enforcer must fetch after the node is swapped.
-    let _generated: String = full_node_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["1", UNSPENDABLE_ADDRESS])
-        .run_utf8()
+    let _generated: serde_json::Value = full_node_client
+        .request("generatetoaddress", rpc_params![1, UNSPENDABLE_ADDRESS])
         .await?;
     let new_tip_height = synced_height + 1;
 
-    let above_base = read_blocks(&full_node_cli, fixture.base_height + 1, new_tip_height).await?;
+    let above_base =
+        read_blocks(&full_node_client, fixture.base_height + 1, new_tip_height).await?;
     let above_base: Vec<&str> = above_base.iter().map(String::as_str).collect();
     let snapshot = assumeutxo_snapshot(&setup, &fixture, &base_blocks).await?;
 
@@ -672,37 +653,36 @@ pub async fn test_assumeutxo_enforcer_above_snapshot_base(setup: PreSetup) -> an
         .join("bitcoind-assumeutxo");
     std::fs::create_dir_all(&assumeutxo_dir)?;
     let (au_res_tx, _au_res_rx) = mpsc::unbounded();
-    let (au_node, _au_node_task, au_cli) =
+    let (au_node, _au_node_task, au_client) =
         spawn_bitcoind_at(&setup, assumeutxo_dir, &[], au_res_tx)?;
-    let () = wait_for_bitcoind_ready(&au_cli).await?;
+    let () = wait_for_bitcoind_ready(&au_client).await?;
 
     for block_hex in base_blocks.iter().chain(above_base.iter()) {
         let header_hex = block_hex
             .get(..160)
             .ok_or_else(|| anyhow::anyhow!("malformed block hex"))?;
-        let _output: String = au_cli
-            .command::<String, _, _, _, _>([], "submitheader", [header_hex])
-            .run_utf8()
+        let _output: serde_json::Value = au_client
+            .request("submitheader", rpc_params![header_hex])
             .await?;
     }
-    let _loaded: String = au_cli
-        .command::<String, _, _, _, _>([], "loadtxoutset", [snapshot.to_string_lossy().to_string()])
-        .run_utf8()
+    let _loaded: serde_json::Value = au_client
+        .request(
+            "loadtxoutset",
+            rpc_params![snapshot.to_string_lossy().to_string()],
+        )
         .await?;
     // Only the blocks above the snapshot base. The background chainstate
     // stays at genesis, exactly as it would be early in a real background
     // sync.
-    let () = submit_blocks(&au_cli, &above_base).await?;
+    let () = submit_blocks(&au_client, &above_base).await?;
 
     // The node itself confirms the split: nothing below the base, everything
     // from the base upwards.
-    let base_plus_one: String = au_cli
-        .command::<String, _, _, _, _>([], "getblockhash", [(fixture.base_height + 1).to_string()])
-        .run_utf8()
+    let base_plus_one: String = au_client
+        .request("getblockhash", rpc_params![fixture.base_height + 1])
         .await?;
-    let _block: String = au_cli
-        .command::<String, _, _, _, _>([], "getblock", [base_plus_one, "0".to_owned()])
-        .run_utf8()
+    let _block: String = au_client
+        .request("getblock", rpc_params![base_plus_one, 0])
         .await
         .map_err(|err| {
             anyhow::anyhow!("blocks above the snapshot base must be available: {err:#}")

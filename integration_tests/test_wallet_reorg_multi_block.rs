@@ -11,7 +11,6 @@
 use std::{collections::HashSet, str::FromStr as _};
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     messages::M8BmmRequest,
     proto::mainchain::{
         CreateNewAddressRequest, GetBalanceRequest, GetChainTipRequest, ListTransactionsRequest,
@@ -25,6 +24,7 @@ use bitcoin::{
     transaction::Version,
 };
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use serde::Deserialize;
 
 use crate::{
@@ -65,21 +65,13 @@ pub async fn test_wallet_reorg_multi_block(bin_paths: BinPaths) -> anyhow::Resul
     // mature additional coinbases and mask (or mimic) the actual corruption
     // bug under test.
     fund_enforcer::<DummySidechain>(&mut post_setup).await?;
-    let throwaway_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "generatetoaddress",
-            ["110".to_string(), throwaway_address.clone()],
-        )
-        .run_utf8()
+    let throwaway_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![110, &throwaway_address])
         .await?;
     wait_for_wallet_sync(&mut post_setup).await?;
 
@@ -145,30 +137,23 @@ async fn wallet_reorg_scenario(
     // common ancestor -- so the wallet's confirmed balance must be unchanged
     // afterwards.
     let tip_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     let fork_height = tip_height - FORK_DEPTH;
-    let first_invalid_hash = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblockhash", [(fork_height + 1).to_string()])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
+    let first_invalid_hash: BlockHash = post_setup
+        .bitcoind_client
+        .request("getblockhash", rpc_params![fork_height + 1])
+        .await?;
     tracing::info!(
         tip_height,
         fork_height,
         %first_invalid_hash,
         "invalidating down to the fork point (enforcer is down)"
     );
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "invalidateblock", [first_invalid_hash])
-        .run_utf8()
+    let () = post_setup
+        .bitcoind_client
+        .request("invalidateblock", rpc_params![first_invalid_hash])
         .await?;
     // A *different* address from the one used to build the original chain --
     // regtest block generation is otherwise deterministic enough (same
@@ -177,30 +162,22 @@ async fn wallet_reorg_scenario(
     // byte-identical to the one just invalidated, which bitcoind then
     // rejects outright as `duplicate-invalid` rather than accepting a
     // harmless re-mine.
-    let replacement_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let replacement_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [(FORK_DEPTH + 2).to_string(), replacement_address],
+            rpc_params![FORK_DEPTH + 2, replacement_address],
         )
-        .run_utf8()
         .await?;
 
     let new_tip_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     anyhow::ensure!(
         new_tip_height == tip_height + 2,
         "expected the replacement chain to win by 2 blocks, got height {new_tip_height} \
@@ -248,13 +225,10 @@ async fn wallet_reorg_scenario(
     // yet still fail real coin selection/signing.
     tracing::info!("confirming the wallet can still build and sign a real transaction");
     use bip300301_enforcer_lib::proto::mainchain::SendTransactionRequest;
-    let destination = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
+    let destination: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
     let _send_resp = post_setup
         .wallet_service_client
         .send_transaction(SendTransactionRequest {
@@ -270,7 +244,7 @@ async fn wallet_reorg_scenario(
 
 #[derive(Deserialize)]
 struct Utxo {
-    txid: String,
+    txid: Txid,
     vout: u32,
     amount: f64,
 }
@@ -283,7 +257,7 @@ struct SignResult {
 
 #[derive(Deserialize)]
 struct GenerateBlockResult {
-    hash: String,
+    hash: BlockHash,
 }
 
 const RAW_BID_FEE: Amount = Amount::from_sat(5_000);
@@ -295,14 +269,10 @@ async fn broadcast_raw_bid(
     prev_mainchain_block_hash: BlockHash,
     h_star: [u8; 32],
 ) -> anyhow::Result<(Txid, String)> {
-    let utxos: Vec<Utxo> = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "listunspent", [])
-            .run_utf8()
-            .await?;
-        serde_json::from_str(&json)?
-    };
+    let utxos: Vec<Utxo> = post_setup
+        .bitcoind_client
+        .request("listunspent", rpc_params![])
+        .await?;
     let (utxo, input_value) = utxos
         .into_iter()
         .find_map(|u| {
@@ -311,13 +281,12 @@ async fn broadcast_raw_bid(
         })
         .ok_or_else(|| anyhow::anyhow!("no spendable UTXO in bitcoind wallet"))?;
 
-    let change_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
+    let change_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
-    let change_address = bitcoin::Address::from_str(change_address.trim())?
-        .require_network(post_setup.network.into())?;
+    let change_address =
+        bitcoin::Address::from_str(&change_address)?.require_network(post_setup.network.into())?;
 
     let script_pubkey = M8BmmRequest::script_pubkey(
         DummySidechain::SIDECHAIN_NUMBER,
@@ -330,7 +299,7 @@ async fn broadcast_raw_bid(
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
         input: vec![TxIn {
             previous_output: OutPoint {
-                txid: Txid::from_str(&utxo.txid)?,
+                txid: utxo.txid,
                 vout: utxo.vout,
             },
             ..TxIn::default()
@@ -348,49 +317,28 @@ async fn broadcast_raw_bid(
     };
 
     let signed_hex = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let signed: SignResult = post_setup
+            .bitcoind_client
+            .request(
                 "signrawtransactionwithwallet",
-                [serialize_hex(&unsigned_tx)],
+                rpc_params![serialize_hex(&unsigned_tx)],
             )
-            .run_utf8()
             .await?;
-        let signed: SignResult = serde_json::from_str(&json)?;
         anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
         signed.hex
     };
 
-    let txid_str = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "sendrawtransaction",
-            [signed_hex.clone(), "0".to_owned()],
-        )
-        .run_utf8()
+    let txid: Txid = post_setup
+        .bitcoind_client
+        .request("sendrawtransaction", rpc_params![&signed_hex, 0])
         .await?;
-    Ok((Txid::from_str(txid_str.trim())?, signed_hex))
+    Ok((txid, signed_hex))
 }
 
 /// Payments the reorg below orphans. Enough that the standard library's sort,
 /// which only checks its comparator opportunistically, panicked on the old
 /// one in nearly every run rather than in one of six.
 const ORPHANED_PAYMENTS: usize = 24;
-
-async fn bitcoin_cli<Arg: AsRef<std::ffi::OsStr>>(
-    post_setup: &PostSetup,
-    method: &str,
-    args: impl IntoIterator<Item = Arg>,
-) -> anyhow::Result<String> {
-    let output = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], method, args)
-        .run_utf8()
-        .await?;
-    Ok(output.trim().to_owned())
-}
 
 #[derive(Deserialize)]
 struct FundResult {
@@ -458,13 +406,17 @@ async fn orphaned_transactions_scenario(
     res_tx: &mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     // Mature enough of bitcoind's coinbases to fund one payment each.
-    let miner_address = bitcoin_cli(post_setup, "getnewaddress", [""; 0]).await?;
-    bitcoin_cli(
-        post_setup,
-        "generatetoaddress",
-        [(ORPHANED_PAYMENTS + 5).to_string(), miner_address.clone()],
-    )
-    .await?;
+    let miner_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
+            "generatetoaddress",
+            rpc_params![ORPHANED_PAYMENTS + 5, &miner_address],
+        )
+        .await?;
     wait_for_wallet_sync(post_setup).await?;
 
     let enforcer_address = post_setup
@@ -473,38 +425,40 @@ async fn orphaned_transactions_scenario(
         .await?
         .into_owned()
         .address;
-    let payment_height: u32 = bitcoin_cli(post_setup, "getblockcount", [""; 0])
+    let payment_height: u32 = post_setup
+        .bitcoind_client
+        .request::<u32, _>("getblockcount", rpc_params![])
         .await?
-        .parse::<u32>()?
         + 1;
     let mut payments = Vec::with_capacity(ORPHANED_PAYMENTS);
     for _ in 0..ORPHANED_PAYMENTS {
         // A height lock is final only in blocks above it; bitcoind's wallet
         // sets the input sequence that makes it count.
-        let unfunded = bitcoin_cli(
-            post_setup,
-            "createrawtransaction",
-            [
-                "[]".to_owned(),
-                format!("{{\"{enforcer_address}\":0.1}}"),
-                (payment_height - 1).to_string(),
-            ],
-        )
-        .await?;
-        let funded: FundResult = serde_json::from_str(
-            &bitcoin_cli(
-                post_setup,
-                "fundrawtransaction",
-                [
-                    unfunded,
-                    r#"{"lockUnspents":true,"fee_rate":10}"#.to_owned(),
+        let unfunded: String = post_setup
+            .bitcoind_client
+            .request(
+                "createrawtransaction",
+                rpc_params![
+                    serde_json::json!([]),
+                    serde_json::json!({ enforcer_address.as_str(): 0.1 }),
+                    payment_height - 1
                 ],
             )
-            .await?,
-        )?;
-        let signed: SignResult = serde_json::from_str(
-            &bitcoin_cli(post_setup, "signrawtransactionwithwallet", [funded.hex]).await?,
-        )?;
+            .await?;
+        let funded: FundResult = post_setup
+            .bitcoind_client
+            .request(
+                "fundrawtransaction",
+                rpc_params![
+                    unfunded,
+                    serde_json::json!({ "lockUnspents": true, "fee_rate": 10 })
+                ],
+            )
+            .await?;
+        let signed: SignResult = post_setup
+            .bitcoind_client
+            .request("signrawtransactionwithwallet", rpc_params![funded.hex])
+            .await?;
         anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
         payments.push(signed.hex);
     }
@@ -514,12 +468,10 @@ async fn orphaned_transactions_scenario(
         .collect::<anyhow::Result<_>>()?;
 
     // Straight into a block, bypassing the mempool.
-    bitcoin_cli(
-        post_setup,
-        "generateblock",
-        [miner_address, serde_json::to_string(&payments)?],
-    )
-    .await?;
+    let _generated: GenerateBlockResult = post_setup
+        .bitcoind_client
+        .request("generateblock", rpc_params![miner_address, payments])
+        .await?;
     wait_for_wallet_sync(post_setup).await?;
     let listed = list_transactions(post_setup).await?;
     anyhow::ensure!(
@@ -530,24 +482,29 @@ async fn orphaned_transactions_scenario(
     tracing::info!("orphaning the payments with electrs and the enforcer down");
     post_setup.kill_enforcer().await?;
     post_setup.kill_electrs().await?;
-    let fork_block_hash = bitcoin_cli(
-        post_setup,
-        "getblockhash",
-        [(payment_height - 1).to_string()],
-    )
-    .await?;
-    bitcoin_cli(post_setup, "invalidateblock", [fork_block_hash]).await?;
+    let fork_block_hash: BlockHash = post_setup
+        .bitcoind_client
+        .request("getblockhash", rpc_params![payment_height - 1])
+        .await?;
+    let () = post_setup
+        .bitcoind_client
+        .request("invalidateblock", rpc_params![fork_block_hash])
+        .await?;
     // Empty replacement blocks, to a fresh address: the first would otherwise
     // come out byte-identical to the (also empty) block it replaces, which
     // bitcoind rejects as already invalidated.
-    let replacement_address = bitcoin_cli(post_setup, "getnewaddress", [""; 0]).await?;
-    for _ in 0..3 {
-        bitcoin_cli(
-            post_setup,
-            "generateblock",
-            [replacement_address.clone(), "[]".to_owned()],
-        )
+    let replacement_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
+    for _ in 0..3 {
+        let _generated: GenerateBlockResult = post_setup
+            .bitcoind_client
+            .request(
+                "generateblock",
+                rpc_params![&replacement_address, serde_json::json!([])],
+            )
+            .await?;
     }
     post_setup
         .restart_enforcer(bin_paths, Vec::<String>::new(), res_tx.clone())
@@ -629,12 +586,9 @@ async fn rejected_block_scenario(
     post_setup.kill_enforcer().await?;
 
     let tip_before: BlockHash = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getbestblockhash", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?;
     let h_star = {
         use bitcoin::hashes::Hash as _;
         bitcoin::hashes::sha256::Hash::hash(b"catchup-across-rejected-block").to_byte_array()
@@ -653,33 +607,25 @@ async fn rejected_block_scenario(
     // in this block instead -- leaving nothing stale to force-include
     // below, and a second inclusion attempt would collide with itself
     // (BIP30).
-    let miner_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let miner_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _generated: GenerateBlockResult = post_setup
+        .bitcoind_client
+        .request(
             "generateblock",
-            [miner_address.clone(), "[]".to_owned()],
+            rpc_params![&miner_address, serde_json::json!([])],
         )
-        .run_utf8()
         .await?;
 
     // The last block the enforcer can accept: everything from the poisoned
     // block onwards builds on a chain it rejects, so this is where its own
     // validated tip must come to rest once it has caught up.
     let last_valid_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
 
     // Force-mine a block containing the now-stale bid directly, bypassing
     // ordinary mempool/fee-based template selection entirely (which would
@@ -687,38 +633,29 @@ async fn rejected_block_scenario(
     // running a miner without this enforcer's mempool-sync policy could do
     // by accident, or what any block from a peer not running it at all
     // could look like.
-    let poisoned_block_hash: BlockHash = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
-                "generateblock",
-                [miner_address.clone(), format!("[\"{stale_tx_hex}\"]")],
-            )
-            .run_utf8()
-            .await?;
-        let result: GenerateBlockResult = serde_json::from_str(&json)?;
-        result.hash.parse()?
-    };
+    let poisoned_block_hash: BlockHash = post_setup
+        .bitcoind_client
+        .request::<GenerateBlockResult, _>(
+            "generateblock",
+            rpc_params![&miner_address, [&stale_tx_hex]],
+        )
+        .await?
+        .hash;
     tracing::info!(%poisoned_block_hash, "force-mined a block containing the stale bid");
 
     // A couple more ordinary blocks on top of the same (BIP300-invalid, but
     // bitcoind itself has no opinion on that) chain, so the batch the
     // enforcer must walk on restart spans blocks both before *and* after
     // the rejected one.
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", ["2".to_string(), miner_address])
-        .run_utf8()
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![2, miner_address])
         .await?;
 
     let tip_after_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     tracing::info!(
         tip_after_height,
         "chain extended entirely while the enforcer was down"
@@ -789,31 +726,23 @@ async fn stale_branch_full_scan_scenario(
     // The enforcer already invalidated the poisoned block on its last restart,
     // so bitcoind's tip is the last accepted block. Empty blocks: the stale bid
     // is back in the mempool and `generatetoaddress` would mine it again.
-    let replacement_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_string();
+    let replacement_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
     for _ in 0..STALE_BRANCH_REPLACEMENT_BLOCKS {
-        post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let _generated: GenerateBlockResult = post_setup
+            .bitcoind_client
+            .request(
                 "generateblock",
-                [replacement_address.clone(), "[]".to_owned()],
+                rpc_params![&replacement_address, serde_json::json!([])],
             )
-            .run_utf8()
             .await?;
     }
     let new_tip_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     anyhow::ensure!(
         new_tip_height == last_valid_height + STALE_BRANCH_REPLACEMENT_BLOCKS,
         "expected the replacement chain to build on the last accepted block \

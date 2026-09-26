@@ -1,10 +1,8 @@
 use std::time::Duration;
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::mainchain::{BlockHeaderInfo, GetChainTipRequest},
-};
+use bip300301_enforcer_lib::proto::mainchain::{BlockHeaderInfo, GetChainTipRequest};
 use bitcoin::BlockHash;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use tokio::time::sleep;
 
 use crate::setup::{PostSetup, wait_until};
@@ -81,12 +79,10 @@ async fn active_chain_height(
     post_setup: &PostSetup,
     block_hash: BlockHash,
 ) -> anyhow::Result<Option<u32>> {
-    let json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string()])
-        .run_utf8()
+    let block: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![block_hash])
         .await?;
-    let block: serde_json::Value = serde_json::from_str(&json)?;
     let confirmations = block
         .get("confirmations")
         .and_then(serde_json::Value::as_i64)
@@ -107,13 +103,10 @@ async fn chaintip_status(
     post_setup: &PostSetup,
     block_hash: BlockHash,
 ) -> anyhow::Result<Option<String>> {
-    let chaintips_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getchaintips", [])
-        .run_utf8()
+    let chaintips: Vec<serde_json::Value> = post_setup
+        .bitcoind_client
+        .request("getchaintips", rpc_params![])
         .await?;
-
-    let chaintips: Vec<serde_json::Value> = serde_json::from_str(&chaintips_json)?;
     let target = block_hash.to_string();
     Ok(chaintips
         .iter()

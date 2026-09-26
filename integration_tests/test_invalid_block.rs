@@ -15,6 +15,7 @@ use bitcoin::{
     transaction::Version,
 };
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use serde::Deserialize;
 
 use crate::{
@@ -271,24 +272,18 @@ async fn run_duplicate_m8_case(post_setup: &mut PostSetup) -> anyhow::Result<()>
 /// commitment.
 async fn submit_duplicate_m8_block(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
     let mining_address = post_setup.mining_address.to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [M8_FUNDING_BLOCKS.to_string(), mining_address],
+            rpc_params![M8_FUNDING_BLOCKS, mining_address],
         )
-        .run_utf8()
         .await?;
 
-    let tip: BlockHash = {
-        let hex = post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "getbestblockhash", [])
-            .run_utf8()
-            .await?;
-        BlockHash::from_str(hex.trim())?
-    };
+    let tip: BlockHash = post_setup
+        .bitcoind_client
+        .request("getbestblockhash", rpc_params![])
+        .await?;
     let h_star = [0xD8; 32];
     let script_pubkey =
         M8BmmRequest::script_pubkey(DummySidechain::SIDECHAIN_NUMBER, BmmCommitment(h_star), tip)?;
@@ -321,14 +316,10 @@ async fn build_and_broadcast_m8(
     post_setup: &PostSetup,
     script_pubkey: ScriptBuf,
 ) -> anyhow::Result<String> {
-    let utxos: Vec<Utxo> = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "listunspent", [])
-            .run_utf8()
-            .await?;
-        serde_json::from_str(&json)?
-    };
+    let utxos: Vec<Utxo> = post_setup
+        .bitcoind_client
+        .request("listunspent", rpc_params![])
+        .await?;
     let (utxo, input_value) = utxos
         .into_iter()
         .find_map(|u| {
@@ -336,13 +327,12 @@ async fn build_and_broadcast_m8(
             (amount > M8_TX_FEE).then_some((u, amount))
         })
         .ok_or_else(|| anyhow::anyhow!("no spendable UTXO in bitcoind wallet"))?;
-    let change_address = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
+    let change_address: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
         .await?;
-    let change_address = bitcoin::Address::from_str(change_address.trim())?
-        .require_network(post_setup.network.into())?;
+    let change_address =
+        bitcoin::Address::from_str(&change_address)?.require_network(post_setup.network.into())?;
 
     let unsigned_tx = Transaction {
         version: Version::TWO,
@@ -366,27 +356,19 @@ async fn build_and_broadcast_m8(
         ],
     };
     let signed_hex = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let signed: SignResult = post_setup
+            .bitcoind_client
+            .request(
                 "signrawtransactionwithwallet",
-                [serialize_hex(&unsigned_tx)],
+                rpc_params![serialize_hex(&unsigned_tx)],
             )
-            .run_utf8()
             .await?;
-        let signed: SignResult = serde_json::from_str(&json)?;
         anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
         signed.hex
     };
-    let _txid: String = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
-            "sendrawtransaction",
-            [signed_hex.clone(), "0".to_owned()],
-        )
-        .run_utf8()
+    let _txid: Txid = post_setup
+        .bitcoind_client
+        .request("sendrawtransaction", rpc_params![signed_hex.clone(), 0])
         .await?;
     Ok(signed_hex)
 }
@@ -416,14 +398,12 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
     let mining_address = post_setup.mining_address.to_string();
 
     // Ensure bitcoind's wallet has a mature UTXO to spend into the deposit.
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let _block_hashes: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request(
             "generatetoaddress",
-            [M5_FUNDING_BLOCKS.to_string(), mining_address.clone()],
+            rpc_params![M5_FUNDING_BLOCKS, mining_address.clone()],
         )
-        .run_utf8()
         .await?;
 
     // Let the enforcer catch up on those blocks before the bad one goes in.
@@ -431,22 +411,15 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
     // timeout below would otherwise expire while it is still connecting the
     // funding blocks, never having seen the block under test.
     let funded_height: u32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     let () = wait_for_enforcer_height(post_setup, funded_height).await?;
 
-    let utxos: Vec<Utxo> = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "listunspent", [])
-            .run_utf8()
-            .await?;
-        serde_json::from_str(&json)?
-    };
+    let utxos: Vec<Utxo> = post_setup
+        .bitcoind_client
+        .request("listunspent", rpc_params![])
+        .await?;
     let (utxo, input_value) = utxos
         .into_iter()
         .find_map(|u| {
@@ -475,16 +448,13 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
     };
 
     let signed_hex = {
-        let json = post_setup
-            .bitcoin_cli
-            .command::<String, _, _, _, _>(
-                [],
+        let signed: SignResult = post_setup
+            .bitcoind_client
+            .request(
                 "signrawtransactionwithwallet",
-                [serialize_hex(&unsigned_tx)],
+                rpc_params![serialize_hex(&unsigned_tx)],
             )
-            .run_utf8()
             .await?;
-        let signed: SignResult = serde_json::from_str(&json)?;
         anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
         signed.hex
     };
@@ -492,13 +462,10 @@ async fn submit_m5_missing_address_block(post_setup: &PostSetup) -> anyhow::Resu
     // `generateblock` mines a block containing the raw tx, bypassing mempool
     // standardness (which rejects OP_DRIVECHAIN as non-standard) while still
     // enforcing consensus rules.
-    let txs_arg = serde_json::to_string(&[signed_hex])?;
-    let json = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generateblock", [mining_address, txs_arg])
-        .run_utf8()
+    let result: GenerateBlockResult = post_setup
+        .bitcoind_client
+        .request("generateblock", rpc_params![mining_address, [signed_hex]])
         .await?;
-    let result: GenerateBlockResult = serde_json::from_str(&json)?;
     Ok(BlockHash::from_str(&result.hash)?)
 }
 
@@ -506,18 +473,15 @@ pub(crate) async fn submit_invalid_block(
     post_setup: &PostSetup,
     case: &BadBlockCase,
 ) -> anyhow::Result<BlockHash> {
-    let template_json = post_setup
-        .bitcoin_cli
+    let template: BlockTemplate = post_setup
+        .bitcoind_client
         // We craft the BIP300/BIP301 coinbase commitments below, so we ack the
         // rule the way the enforcer does. Stock nodes ignore the extra rule.
-        .command::<String, _, _, _, _>(
-            [],
+        .request(
             "getblocktemplate",
-            [r#"{"rules":["segwit","bip300301"]}"#],
+            rpc_params![serde_json::json!({ "rules": ["segwit", "bip300301"] })],
         )
-        .run_utf8()
         .await?;
-    let template: BlockTemplate = serde_json::from_str(&template_json)?;
     anyhow::ensure!(
         template.transactions.is_empty(),
         "test assumes empty mempool for witness-commitment shortcut; \
@@ -586,15 +550,14 @@ pub(crate) async fn submit_invalid_block(
         txdata: vec![coinbase],
     };
     let block_hash = block.block_hash();
-    let submit_resp = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "submitblock", [serialize_hex(&block)])
-        .run_utf8()
+    // `null` on success, the rejection reason otherwise.
+    let submit_resp: Option<String> = post_setup
+        .bitcoind_client
+        .request("submitblock", rpc_params![serialize_hex(&block)])
         .await?;
-    anyhow::ensure!(
-        submit_resp.is_empty(),
-        "submitblock unexpectedly rejected: `{submit_resp}`"
-    );
+    if let Some(reason) = submit_resp {
+        anyhow::bail!("submitblock unexpectedly rejected: `{reason}`");
+    }
 
     Ok(block_hash)
 }

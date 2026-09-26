@@ -1,15 +1,12 @@
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    proto::{
-        self,
-        mainchain::{
-            CreateDepositTransactionRequest, CreateDepositTransactionResponse,
-            CreateNewAddressRequest, ListUnspentOutputsRequest, SendTransactionRequest,
-            SendTransactionResponse,
-        },
+use bip300301_enforcer_lib::proto::{
+    self,
+    mainchain::{
+        CreateDepositTransactionRequest, CreateDepositTransactionResponse, CreateNewAddressRequest,
+        ListUnspentOutputsRequest, SendTransactionRequest, SendTransactionResponse,
     },
 };
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use tokio::time::sleep;
 
 use crate::{
@@ -44,12 +41,10 @@ async fn create_deposit(
 }
 
 async fn raw_mempool(post_setup: &mut PostSetup) -> anyhow::Result<Vec<String>> {
-    let mempool_json = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getrawmempool", [])
-        .run_utf8()
-        .await?;
-    Ok(serde_json::from_str(&mempool_json)?)
+    Ok(post_setup
+        .bitcoind_client
+        .request("getrawmempool", rpc_params![])
+        .await?)
 }
 
 async fn unspent_output_count(post_setup: &mut PostSetup) -> anyhow::Result<usize> {
@@ -65,10 +60,9 @@ async fn unspent_output_count(post_setup: &mut PostSetup) -> anyhow::Result<usiz
 /// the coinbases do not add new UTXOs to the enforcer wallet.
 async fn mine_to_core(post_setup: &mut PostSetup, blocks: u32) -> anyhow::Result<()> {
     let core_address = post_setup.receive_address.to_string();
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "generatetoaddress", [blocks.to_string(), core_address])
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![blocks, core_address])
         .await?;
     Ok(())
 }
@@ -104,7 +98,7 @@ async fn consolidate_to_single_utxo(post_setup: &mut PostSetup) -> anyhow::Resul
             .ok_or_else(|| proto::Error::missing_field::<SendTransactionResponse>("txid"))?
             .decode::<SendTransactionResponse, _>("txid")?;
         // The drain must be in the mempool before we mine, or it won't confirm.
-        let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &drain_txid).await?;
+        let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &drain_txid).await?;
         let () = mine_to_core(post_setup, 1).await?;
         // Poll for the enforcer wallet to ingest the confirmed drain. A timeout
         // here is not fatal: a single drain can't always sweep the whole
@@ -147,7 +141,7 @@ pub async fn test_consecutive_deposits(mut post_setup: PostSetup) -> anyhow::Res
     // First deposit: always succeeds, spending the sole UTXO.
     let deposit_txid_1 = create_deposit(&mut post_setup, "sidechain address 1").await?;
     tracing::info!(%deposit_txid_1, "Created first deposit");
-    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid_1).await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &deposit_txid_1).await?;
 
     // Second deposit, without a block in between. This must succeed: it should
     // be funded from the first deposit's change output, not by reselecting the
@@ -162,7 +156,7 @@ pub async fn test_consecutive_deposits(mut post_setup: PostSetup) -> anyhow::Res
             )
         })?;
     tracing::info!(%deposit_txid_2, "Created second deposit");
-    let () = wait_for_tx_in_mempool(&post_setup.bitcoin_cli, &deposit_txid_2).await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &deposit_txid_2).await?;
 
     anyhow::ensure!(
         deposit_txid_1 != deposit_txid_2,

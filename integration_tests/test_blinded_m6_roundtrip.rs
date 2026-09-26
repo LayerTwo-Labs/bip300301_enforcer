@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     messages::CoinbaseMessage,
     proto::{
         common::ConsensusHex,
@@ -16,6 +15,7 @@ use bitcoin::{
 };
 use either::Either;
 use futures::channel::mpsc;
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     block_verdict::wait_for_enforcer_tip_hash,
@@ -76,22 +76,16 @@ pub(crate) fn serialize_zero_input_legacy(tx: &Transaction) -> Vec<u8> {
 
 async fn chain_height(post_setup: &PostSetup) -> anyhow::Result<u32> {
     Ok(post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?)
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?)
 }
 
 async fn block_hash_at(post_setup: &PostSetup, height: u32) -> anyhow::Result<BlockHash> {
     Ok(post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblockhash", [height.to_string()])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?)
+        .bitcoind_client
+        .request("getblockhash", rpc_params![height])
+        .await?)
 }
 
 /// The sidechain's current treasury UTXO, if it has one.
@@ -124,12 +118,11 @@ async fn mine_block_and_collect_proposed_m6ids(
     let block_hash = block_hashes
         .first()
         .ok_or_else(|| anyhow::anyhow!("generate_blocks produced no block"))?;
-    let block_hex = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "getblock", [block_hash.to_string(), "0".to_string()])
-        .run_utf8()
+    let block_hex: String = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![block_hash, 0])
         .await?;
-    let block: Block = bitcoin::consensus::deserialize(&hex::decode(block_hex.trim())?)?;
+    let block: Block = bitcoin::consensus::deserialize(&hex::decode(block_hex)?)?;
     let coinbase = block
         .txdata
         .first()
@@ -217,16 +210,13 @@ pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> 
     // NB: parseability is all Core can attest here — a
     // zero-input tx always fails mempool checks (`bad-txns-vin-empty`), since a
     // blinded M6 is an ID-computation template, not a relayable transaction.
-    let decoded = post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>(
-            [],
+    let decoded: serde_json::Value = post_setup
+        .bitcoind_client
+        .request(
             "decoderawtransaction",
-            [hex::encode(&transaction_bytes), "false".to_string()],
+            rpc_params![hex::encode(&transaction_bytes), false],
         )
-        .run_utf8()
         .await?;
-    let decoded: serde_json::Value = serde_json::from_str(&decoded)?;
     anyhow::ensure!(decoded["txid"] == blinded_tx.compute_txid().to_string().as_str(),);
 
     post_setup
@@ -300,10 +290,9 @@ pub async fn test_blinded_m6_zero_input_roundtrip(mut post_setup: PostSetup) -> 
         %rollback_to,
         "invalidating the funding and deposit under the stored bundle"
     );
-    post_setup
-        .bitcoin_cli
-        .command::<String, _, _, _, _>([], "invalidateblock", [first_invalid.to_string()])
-        .run_utf8()
+    let () = post_setup
+        .bitcoind_client
+        .request("invalidateblock", rpc_params![first_invalid])
         .await?;
     wait_for_enforcer_tip_hash(&post_setup, rollback_to).await?;
     anyhow::ensure!(
