@@ -911,6 +911,13 @@ impl Bitcoind {
             // it before startup -- and electrs refuses to serve until it's
             // out. Sync progress is never a question for a test chain anyway.
             "-maxtipage=2000000000".to_owned(),
+            // Relay transactions between harness nodes immediately: `noban`
+            // peers skip the random delay Core puts on tx announcements, which
+            // otherwise costs seconds per hop. `in,out` because `-whitelist`
+            // alone only covers inbound connections. `noban` also exempts
+            // peers from misbehaviour disconnects, so a test of banning
+            // between two harness nodes would need to opt out.
+            "-whitelist=in,out,noban@127.0.0.1".to_owned(),
             format!("-chain={}", self.network.to_core_arg()),
             format!("-datadir={}", self.data_dir.display()),
             format!("-bind=127.0.0.1:{}", self.listen_port),
