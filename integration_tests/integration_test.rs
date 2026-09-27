@@ -98,6 +98,7 @@ where
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let file_registry = comps.file_registry.clone();
+    let network = comps.network;
     AsyncTrial::new(
         name.clone(),
         Box::pin(async move {
@@ -109,10 +110,11 @@ where
                 test_fn(pre_setup).instrument(tracing::info_span!("test", name = %name));
 
             catch_unwind(test_future).await
-        }),
+        }) as TestFuture,
         comps.file_registry,
         comps.failure_collector,
     )
+    .with_network(network)
 }
 
 fn new_trial_with_setup<F, Fut>(name: String, comps: TestSetupComponents, test_fn: F) -> TestTrial
@@ -136,6 +138,7 @@ where
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let file_registry = comps.file_registry.clone();
+    let network = comps.network;
     AsyncTrial::new(
         name.clone(),
         Box::pin(async move {
@@ -152,6 +155,7 @@ where
         comps.file_registry,
         comps.failure_collector,
     )
+    .with_network(network)
 }
 
 /// For tests that need direct [`BinPaths`] (to respawn the enforcer or
@@ -1149,6 +1153,7 @@ pub fn tests(
                 }
             },
         )
+        .with_network(network)
     }));
     // Competing BMM bids, in both block production modes: the enforcer's own
     // template server (GetBlockTemplate) and `GenerateToAddress` self-mining
@@ -1490,5 +1495,9 @@ pub fn tests(
         crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block,
     ));
 
+    // Tests start in list order. Start the signet tests first: every block
+    // they mine costs real proof-of-work, which makes them among the slowest,
+    // and starting them last leaves them running alone at the end of the run.
+    async_trials.sort_by_key(|trial| !matches!(trial.network(), Some(Network::Signet)));
     async_trials
 }
