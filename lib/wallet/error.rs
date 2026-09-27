@@ -1063,6 +1063,8 @@ pub enum BuildBmmTx {
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
+    #[error("failed to persist wallet after evicting stale BMM requests")]
+    Persist(#[from] Persistence),
     #[error(transparent)]
     Script(#[from] bitcoin::script::PushBytesError),
 }
@@ -1072,6 +1074,7 @@ impl ToStatus for BuildBmmTx {
         match self {
             Self::CreateTx(err) => StatusBuilder::new(err),
             Self::NotUnlocked(err) => err.builder(),
+            Self::Persist(err) => StatusBuilder::new(err),
             Self::Script(err) => StatusBuilder::new(err),
         }
     }
