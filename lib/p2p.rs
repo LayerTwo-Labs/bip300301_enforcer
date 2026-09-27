@@ -114,6 +114,42 @@ pub enum BroadcastNonstandardTxError {
     Send(#[from] bitcoin_send_tx_p2p::Error),
 }
 
+/// Sends a tx to each address in order, stopping at the first address that
+/// accepts it.
+/// `send` must return `true` if the tx was submitted successfully, and `false`
+/// on timeout.
+/// Returns `true` if any address accepted the tx, and `false` if every address
+/// that was dialled successfully timed out.
+/// Panics if `socket_addrs` is empty.
+async fn broadcast_to_addrs<E, F, Fut>(
+    socket_addrs: impl IntoIterator<Item = SocketAddr>,
+    mut send: F,
+) -> Result<bool, E>
+where
+    F: FnMut(SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, E>>,
+{
+    let mut timed_out = false;
+    let mut last_err = None;
+    for socket_addr in socket_addrs {
+        match send(socket_addr).await {
+            Ok(true) => return Ok(true),
+            Ok(false) => {
+                tracing::debug!(%socket_addr, "p2p broadcast timed out, trying next address");
+                timed_out = true;
+            }
+            Err(err) => last_err = Some(err),
+        }
+    }
+    // A timeout is not an error, so it takes precedence over any address that
+    // failed to connect at all.
+    if timed_out {
+        return Ok(false);
+    }
+    let err = last_err.expect("socket_addrs is non-empty, so at least one send was attempted");
+    Err(err)
+}
+
 /// Broadcasts a non-standard transaction directly to a specified node via
 /// p2p.
 /// Returns `true` if submitted successfully, `false` on timeout.
@@ -140,20 +176,21 @@ pub async fn broadcast_nonstandard_tx(
     // A hostname may resolve to multiple addresses (e.g. `localhost` to both
     // `127.0.0.1` and `::1`) of which only some accept connections, so try
     // each in order until one connects.
-    let mut last_err = None;
-    for socket_addr in socket_addrs {
-        let mut config = Config::default();
-        config.block_height = block_height;
-        config.magic = magic;
-        match send_tx_p2p_over_clearnet(socket_addr, tx.clone(), Some(config)).await {
-            Ok(()) => return Ok(true),
-            Err(Error::Timeout(_)) => return Ok(false),
-            Err(err) => last_err = Some(err),
+    broadcast_to_addrs(socket_addrs, |socket_addr| {
+        let tx = tx.clone();
+        async move {
+            let mut config = Config::default();
+            config.block_height = block_height;
+            config.magic = magic;
+            match send_tx_p2p_over_clearnet(socket_addr, tx, Some(config)).await {
+                Ok(()) => Ok(true),
+                Err(Error::Timeout(_)) => Ok(false),
+                Err(err) => Err(err),
+            }
         }
-    }
-    Err(last_err
-        .expect("socket_addrs is non-empty, so at least one send was attempted")
-        .into())
+    })
+    .await
+    .map_err(BroadcastNonstandardTxError::from)
 }
 
 // https://github.com/kallewoof/bips/blob/master/bip-0325.mediawiki#message-start
@@ -232,6 +269,78 @@ mod tests {
         assert!(":8333".parse::<BroadcastAddr>().is_err());
         // unbracketed IPv6
         assert!("::1:8333".parse::<BroadcastAddr>().is_err());
+    }
+
+    fn broadcast_test_addrs() -> Vec<SocketAddr> {
+        vec![
+            "127.0.0.1:38333".parse().unwrap(),
+            "[::1]:38333".parse().unwrap(),
+        ]
+    }
+
+    // A timeout on one address must not prevent the remaining addresses from
+    // being dialled.
+    #[tokio::test]
+    async fn test_broadcast_to_addrs_continues_after_timeout() {
+        let addrs = broadcast_test_addrs();
+        let mut attempted = Vec::new();
+        let res = broadcast_to_addrs(addrs.clone(), |socket_addr| {
+            attempted.push(socket_addr);
+            // the first address times out, the second accepts the tx
+            let sent = attempted.len() == 2;
+            async move { Ok::<_, &'static str>(sent) }
+        })
+        .await;
+        assert_eq!(res, Ok(true));
+        assert_eq!(attempted, addrs);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_addrs_all_timeout() {
+        let addrs = broadcast_test_addrs();
+        let mut attempted = Vec::new();
+        let res = broadcast_to_addrs(addrs.clone(), |socket_addr| {
+            attempted.push(socket_addr);
+            async move { Ok::<_, &'static str>(false) }
+        })
+        .await;
+        assert_eq!(res, Ok(false));
+        assert_eq!(attempted, addrs);
+    }
+
+    // A timeout is a successful connection, so it takes precedence over an
+    // address that could not be reached at all.
+    #[tokio::test]
+    async fn test_broadcast_to_addrs_err_then_timeout() {
+        let addrs = broadcast_test_addrs();
+        let mut attempted = Vec::new();
+        let res = broadcast_to_addrs(addrs.clone(), |socket_addr| {
+            attempted.push(socket_addr);
+            let timed_out = attempted.len() == 2;
+            async move {
+                if timed_out {
+                    Ok(false)
+                } else {
+                    Err("connection refused")
+                }
+            }
+        })
+        .await;
+        assert_eq!(res, Ok(false));
+        assert_eq!(attempted, addrs);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_addrs_all_err() {
+        let addrs = broadcast_test_addrs();
+        let mut attempted = Vec::new();
+        let res = broadcast_to_addrs(addrs.clone(), |socket_addr| {
+            attempted.push(socket_addr);
+            async move { Err::<bool, _>(socket_addr) }
+        })
+        .await;
+        assert_eq!(res, Err(addrs[1]));
+        assert_eq!(attempted, addrs);
     }
 
     // For challenges >= 253 bytes the length prefix must be a CompactSize, not a
