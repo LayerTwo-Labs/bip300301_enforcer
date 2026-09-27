@@ -427,6 +427,8 @@ impl TestFileRegistry {
 
 pub struct AsyncTrial<Fut> {
     name: String,
+    /// `None` for tests that run on more than one network, or pick their own.
+    network: Option<crate::setup::Network>,
     test: Fut,
     file_registry: TestFileRegistry,
     failure_collector: TestFailureCollector,
@@ -444,10 +446,22 @@ impl<Fut> AsyncTrial<Fut> {
     {
         Self {
             name: name.as_ref().to_owned(),
+            network: None,
             test,
             file_registry,
             failure_collector,
         }
+    }
+
+    pub fn with_network(self, network: crate::setup::Network) -> Self {
+        Self {
+            network: Some(network),
+            ..self
+        }
+    }
+
+    pub fn network(&self) -> Option<crate::setup::Network> {
+        self.network
     }
 
     // Run the trial on the provided runtime
