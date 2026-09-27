@@ -380,6 +380,9 @@ impl CusfEnforcer for Validator {
             *header_sync_progress_rx_write = Some(header_sync_progress_rx);
             header_sync_progress_tx
         };
+        // Every sync replays the chain, and a resync may disconnect blocks
+        // first, so the databases stop describing a tip until this one lands.
+        self.set_synced_to_tip(false);
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
@@ -399,7 +402,12 @@ impl CusfEnforcer for Validator {
             result = sync_future => {
                 *self.header_sync_progress_rx.write() = None;
                 match result {
-                    Ok(None) => Ok(()),
+                    Ok(None) => {
+                        // The databases now describe a tip rather than a replay
+                        // of the chain, so consensus reads are answerable.
+                        self.set_synced_to_tip(true);
+                        Ok(())
+                    }
                     Ok(Some(invalid_block)) => Err(SyncToTipError::InvalidBlock {
                         block_hash: invalid_block.block_hash,
                         reason: InvalidBlockReason(invalid_block.reason),
