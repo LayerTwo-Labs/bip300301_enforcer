@@ -17,6 +17,7 @@ mod test_inactive_drivechain_output;
 mod test_invalid_block;
 mod test_invalid_block_during_sync;
 mod test_mempool_dat_sync;
+mod test_mine_rejected_block;
 mod test_no_secrets_in_logs;
 mod test_node_requirements;
 mod test_peer_bmm_request;

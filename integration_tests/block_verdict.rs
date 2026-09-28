@@ -99,7 +99,7 @@ async fn active_chain_height(
 
 /// `getchaintips` status for `block_hash`, or `None` if the block is not (yet)
 /// present in any chain tip.
-async fn chaintip_status(
+pub async fn chaintip_status(
     post_setup: &PostSetup,
     block_hash: BlockHash,
 ) -> anyhow::Result<Option<String>> {
