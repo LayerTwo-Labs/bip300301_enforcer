@@ -12,6 +12,7 @@
 # Read by scripts/run_integration_tests.sh and by the CI integration-test job,
 # which is the only thing keeping the two in step.
 blinded_m6_roundtrip
+bundle_proposal_order
 consecutive_deposits
 deposit_withdraw_roundtrip
 peer_deposit_relay
