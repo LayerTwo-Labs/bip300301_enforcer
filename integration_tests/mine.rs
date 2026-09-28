@@ -14,14 +14,19 @@ use bip300301_enforcer_lib::{
         },
     },
 };
-use bitcoin::Address;
+use bitcoin::{Address, Transaction, TxOut};
 use connectrpc::ConnectError;
 use either::Either;
 use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use thiserror::Error;
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use crate::{
-    setup::{MiningMode, Network, PostSetup, Sidechain, wait_until},
+    block_verdict::chaintip_status,
+    setup::{
+        MiningMode, Network, PostSetup, Sidechain, WAIT_POLL_INTERVAL_SLOW, WAIT_TIMEOUT,
+        wait_until,
+    },
     util::VarError,
 };
 
@@ -81,6 +86,12 @@ async fn mine_single_signet(
 pub enum MineGbtError {
     #[error("Unexpected block disconnect")]
     BlockDisconnect,
+    #[error(
+        "Timed out after {WAIT_TIMEOUT:?} waiting for the validator to connect block `{block_hash}`"
+    )]
+    BlockEventTimeout { block_hash: bitcoin::BlockHash },
+    #[error("The enforcer rejected block `{block_hash}`, see its log for the reason")]
+    BlockRejected { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
     Command(#[from] CommandError),
     #[error(transparent)]
@@ -104,7 +115,10 @@ pub enum MineGbtError {
     Var(#[from] Arc<VarError>),
 }
 
-async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, MineGbtError> {
+async fn mine_gbt(
+    post_setup: &mut PostSetup,
+    extra_coinbase_outputs: &[TxOut],
+) -> Result<bitcoin::BlockHash, MineGbtError> {
     use cusf_enforcer_mempool::server::RpcClient;
     let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
     gbt_request.capabilities.insert("coinbasetxn".to_owned());
@@ -120,10 +134,20 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
     else {
         return Err(MineGbtError::MissingCoinbaseTxn);
     };
+    let mut coinbase_tx: Transaction = bitcoin::consensus::deserialize(&coinbase_tx.data)?;
+    // The coinbase wtxid is all-zero by definition (BIP141), so the witness
+    // commitment stays valid.
+    coinbase_tx.output.extend_from_slice(extra_coinbase_outputs);
+    let txdata: Vec<Transaction> = std::iter::once(Ok(coinbase_tx))
+        .chain(
+            block_template
+                .transactions
+                .iter()
+                .map(|tx| bitcoin::consensus::deserialize(&tx.data)),
+        )
+        .collect::<Result<_, _>>()?;
     let merkle_root = {
-        let hashes = std::iter::once(&coinbase_tx)
-            .chain(&block_template.transactions)
-            .map(|tx| tx.txid.to_raw_hash());
+        let hashes = txdata.iter().map(|tx| tx.compute_txid().to_raw_hash());
         bitcoin::merkle_tree::calculate_root(hashes)
             .map(bitcoin::TxMerkleNode::from)
             .unwrap()
@@ -148,10 +172,6 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
         .await?;
     tracing::debug!("Mined header, submitting block...");
     let header: bitcoin::block::Header = bitcoin::consensus::encode::deserialize_hex(&header_hex)?;
-    let txdata = std::iter::once(coinbase_tx)
-        .chain(block_template.transactions)
-        .map(|tx| bitcoin::consensus::deserialize(&tx.data))
-        .collect::<Result<_, _>>()?;
     let block = bitcoin::Block { header, txdata };
     let block_hash = block.block_hash();
     // `null` on success, the rejection reason otherwise.
@@ -172,6 +192,8 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
 pub enum MineSignetError {
     #[error("Unexpected block disconnect")]
     BlockDisconnect,
+    #[error("Timed out after {WAIT_TIMEOUT:?} waiting for a block event")]
+    BlockEventTimeout,
     #[error(transparent)]
     Command(#[from] CommandError),
     #[error("Expected block event")]
@@ -216,9 +238,9 @@ where
         let () = mine_single_signet(signet_miner, &post_setup.mining_address)
             .await
             .map_err(|err| Either::Left(err.into()))?;
-        let Some(view) = stream
-            .message()
+        let Some(view) = timeout(WAIT_TIMEOUT, stream.message())
             .await
+            .map_err(|_elapsed| Either::Left(MineSignetError::BlockEventTimeout))?
             .map_err(|err| Either::Left(err.into()))?
         else {
             return Err(Either::Left(MineSignetError::NoBlockEvent));
@@ -256,10 +278,39 @@ where
     Ok(())
 }
 
+/// Resolves once bitcoind reports `block_hash` as invalid. That is the only
+/// trace of the enforcer rejecting a block: it `invalidateblock`s it and
+/// re-syncs to the tip it already had, so no validator event follows.
+async fn block_rejected(post_setup: &PostSetup, block_hash: bitcoin::BlockHash) {
+    loop {
+        match chaintip_status(post_setup, block_hash).await {
+            Ok(status) if status.as_deref() == Some("invalid") => return,
+            Ok(_) => (),
+            Err(err) => tracing::debug!("getchaintips failed: {err:#}"),
+        }
+        sleep(WAIT_POLL_INTERVAL_SLOW).await;
+    }
+}
+
 // Mine blocks, running a check after each block
 pub async fn mine_gbt_check<F, Err, S>(
     post_setup: &mut PostSetup,
     blocks: u32,
+    check: F,
+) -> Result<(), Either<MineGbtError, Err>>
+where
+    F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
+    S: Sidechain,
+{
+    mine_gbt_check_with_coinbase_outputs::<_, _, S>(post_setup, blocks, &[], check).await
+}
+
+/// [`mine_gbt_check`], appending `extra_coinbase_outputs` to each block's
+/// coinbase.
+pub async fn mine_gbt_check_with_coinbase_outputs<F, Err, S>(
+    post_setup: &mut PostSetup,
+    blocks: u32,
+    extra_coinbase_outputs: &[TxOut],
     mut check: F,
 ) -> Result<(), Either<MineGbtError, Err>>
 where
@@ -273,41 +324,64 @@ where
         .await
         .map_err(|err| Either::Left(err.into()))?;
     for _ in 0..blocks {
-        let _block_hash = mine_gbt(post_setup).await.map_err(Either::Left)?;
-        let Some(view) = stream
-            .message()
+        let mined_block_hash = mine_gbt(post_setup, extra_coinbase_outputs)
             .await
-            .map_err(|err| Either::Left(err.into()))?
-        else {
-            return Err(Either::Left(MineGbtError::NoBlockEvent));
-        };
-        let resp: SubscribeEventsResponse = view.to_owned_message();
-        let resp_event = resp
-            .event
-            .into_option()
-            .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))
-            .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
-            .event
-            .ok_or_else(|| proto::Error::missing_field::<subscribe_events_response::Event>("event"))
-            .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
-        match resp_event {
-            Event::ConnectBlock(connect_block) => {
-                let header_info = connect_block
-                    .header_info
-                    .into_option()
-                    .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))
-                    .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
-                let block_hash = header_info
-                    .block_hash
-                    .into_option()
-                    .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))
-                    .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
-                    .decode_status::<BlockHeaderInfo, _>("block_hash")
-                    .map_err(|err| Either::Left(err.into()))?;
-                check(block_hash).map_err(Either::Right)?
+            .map_err(Either::Left)?;
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        let mut rejected = std::pin::pin!(block_rejected(post_setup, mined_block_hash));
+        // Events for blocks connected before this one may still be queued.
+        loop {
+            let message = tokio::select! {
+                message = stream.message() => message.map_err(|err| Either::Left(err.into()))?,
+                () = &mut rejected => {
+                    return Err(Either::Left(MineGbtError::BlockRejected {
+                        block_hash: mined_block_hash,
+                    }));
+                }
+                () = sleep_until(deadline) => {
+                    return Err(Either::Left(MineGbtError::BlockEventTimeout {
+                        block_hash: mined_block_hash,
+                    }));
+                }
+            };
+            let Some(view) = message else {
+                return Err(Either::Left(MineGbtError::NoBlockEvent));
+            };
+            let resp: SubscribeEventsResponse = view.to_owned_message();
+            let resp_event = resp
+                .event
+                .into_option()
+                .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))
+                .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
+                .event
+                .ok_or_else(|| {
+                    proto::Error::missing_field::<subscribe_events_response::Event>("event")
+                })
+                .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
+            let connect_block = match resp_event {
+                Event::ConnectBlock(connect_block) => connect_block,
+                Event::DisconnectBlock(_) => {
+                    return Err(Either::Left(MineGbtError::BlockDisconnect));
+                }
+            };
+            let header_info = connect_block
+                .header_info
+                .into_option()
+                .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("header_info"))
+                .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?;
+            let block_hash: bitcoin::BlockHash = header_info
+                .block_hash
+                .into_option()
+                .ok_or_else(|| proto::Error::missing_field::<BlockHeaderInfo>("block_hash"))
+                .map_err(|err| Either::Left(proto_err_to_connect(err).into()))?
+                .decode_status::<BlockHeaderInfo, _>("block_hash")
+                .map_err(|err| Either::Left(err.into()))?;
+            if block_hash == mined_block_hash {
+                break;
             }
-            Event::DisconnectBlock(_) => return Err(Either::Left(MineGbtError::BlockDisconnect)),
-        };
+            tracing::debug!(%block_hash, %mined_block_hash, "Skipping event for an earlier block");
+        }
+        check(mined_block_hash).map_err(Either::Right)?
     }
     Ok(())
 }
@@ -449,7 +523,12 @@ where
         .await?;
     for blocks_mined in 0..blocks {
         let () = mine::<S>(post_setup, 1, policy).await?;
-        let Some(view) = events.message().await? else {
+        let Some(view) = timeout(WAIT_TIMEOUT, events.message())
+            .await
+            .map_err(|_elapsed| {
+                anyhow::anyhow!("Timed out after {WAIT_TIMEOUT:?} waiting for a block event")
+            })??
+        else {
             anyhow::bail!("Expected a block event")
         };
         let resp: SubscribeEventsResponse = view.to_owned_message();
