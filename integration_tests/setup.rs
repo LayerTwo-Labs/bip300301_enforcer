@@ -1535,12 +1535,54 @@ impl PostSetup {
     /// first, if not already killed via [`Self::kill_enforcer`]).
     /// bitcoind/electrs are left running throughout. Existing gRPC clients
     /// reconnect automatically once the new process is listening.
+    ///
+    /// Like [`PreSetup::setup`], waits for block templates in
+    /// [`Mode::GetBlockTemplate`], so that tests can mine right away.
     pub async fn restart_enforcer<EnforcerArg, EnforcerArgs>(
         &mut self,
         bin_paths: &BinPaths,
         enforcer_args: EnforcerArgs,
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> anyhow::Result<()>
+    where
+        EnforcerArg: AsRef<OsStr>,
+        EnforcerArgs: IntoIterator<Item = EnforcerArg>,
+    {
+        let mut enforcer_exit = self
+            .spawn_enforcer(bin_paths, enforcer_args, res_tx)
+            .await?;
+        if matches!(self.mode, Mode::GetBlockTemplate) {
+            enforcer_exit
+                .unless_exited(wait_for_block_templates(&self.gbt_client))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::restart_enforcer`], returning as soon as gRPC is up, while the
+    /// enforcer is still syncing. For tests that probe it during that window.
+    pub async fn respawn_enforcer<EnforcerArg, EnforcerArgs>(
+        &mut self,
+        bin_paths: &BinPaths,
+        enforcer_args: EnforcerArgs,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> anyhow::Result<()>
+    where
+        EnforcerArg: AsRef<OsStr>,
+        EnforcerArgs: IntoIterator<Item = EnforcerArg>,
+    {
+        let _enforcer_exit = self
+            .spawn_enforcer(bin_paths, enforcer_args, res_tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn spawn_enforcer<EnforcerArg, EnforcerArgs>(
+        &mut self,
+        bin_paths: &BinPaths,
+        enforcer_args: EnforcerArgs,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> anyhow::Result<ExitWatch>
     where
         EnforcerArg: AsRef<OsStr>,
         EnforcerArgs: IntoIterator<Item = EnforcerArg>,
@@ -1598,7 +1640,7 @@ impl PostSetup {
             })
             .await?;
 
-        Ok(())
+        Ok(enforcer_exit)
     }
 
     /// Kill electrs without respawning it, and wait until its ports are

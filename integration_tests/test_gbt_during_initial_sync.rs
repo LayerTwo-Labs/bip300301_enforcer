@@ -123,10 +123,10 @@ pub async fn test_gbt_during_initial_sync(bin_paths: BinPaths) -> anyhow::Result
 
     tracing::info!("restarting enforcer -- it must serve JSON-RPC while it crosses the gap");
     post_setup
-        .restart_enforcer(&bin_paths, enforcer_args(), res_tx.clone())
+        .respawn_enforcer(&bin_paths, enforcer_args(), res_tx.clone())
         .await?;
 
-    // `restart_enforcer` only waits for the gRPC port. This wait used to sit
+    // `respawn_enforcer` only waits for the gRPC port. This wait used to sit
     // behind the whole initial sync.
     wait_for_port("127.0.0.1", serve_rpc_port, Duration::from_secs(30))
         .await

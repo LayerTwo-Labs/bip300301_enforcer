@@ -35,7 +35,7 @@ use crate::{
     mine::{MiningPolicy, mine},
     setup::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain as _,
-        wait_for_block_templates, wait_for_enforcer_log, wait_for_pending_proposal,
+        wait_for_enforcer_log, wait_for_pending_proposal,
     },
     util::BinPaths,
 };
@@ -143,9 +143,6 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
     )
     .await?;
     let () = wait_for_validator_tip(&post_setup).await?;
-    // The test mines over `getblocktemplate` below, which stays unavailable
-    // until the restarted enforcer's mempool sync also finishes.
-    let () = wait_for_block_templates(&post_setup.gbt_client).await?;
 
     let declaration = {
         let v0 = proto::mainchain::sidechain_declaration::V0 {
