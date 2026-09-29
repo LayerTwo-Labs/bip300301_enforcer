@@ -864,8 +864,7 @@ pub struct Bitcoind {
 
 impl Bitcoind {
     /// A `bitcoin-cli` invocation for this node, for what has to shell out to
-    /// one, such as the signet miner. Tests talk to the node over
-    /// [`Self::rpc_client`].
+    /// one. Tests talk to the node over [`Self::rpc_client`].
     pub fn new_bitcoin_cli(&self, path: PathBuf) -> bip300301_enforcer_lib::bins::BitcoinCli {
         bip300301_enforcer_lib::bins::BitcoinCli {
             path,

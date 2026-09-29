@@ -106,6 +106,12 @@ wildcard_imports = "deny"
 let_underscore_drop = "deny"
 unfulfilled_lint_expectations = "deny"
 
+# Signet proof-of-work is ground in-process (see `lib/mining.rs`), which is
+# orders of magnitude slower with unoptimized SHA-256. The integration tests
+# run debug builds.
+[profile.dev.package.bitcoin_hashes]
+opt-level = 3
+
 # temp-dir does not leak correctly after clone
 # https://gitlab.com/leonhard-llc/ops/-/issues/17
 [patch.crates-io.temp-dir]
