@@ -2,16 +2,13 @@
 
 use std::sync::Arc;
 
-use bip300301_enforcer_lib::{
-    bins::{CommandError, CommandExt},
-    proto::{
-        self, ToStatus,
-        mainchain::{
-            AckAllProposalsPolicy, BlockHeaderInfo, GenerateToAddressRequest,
-            GenerateToAddressResponse, SetAckAllProposalsRequest, SetWithdrawalBundlePolicyRequest,
-            SubscribeEventsRequest, SubscribeEventsResponse, WithdrawalBundlePolicy,
-            subscribe_events_response, subscribe_events_response::event::ConnectBlock,
-        },
+use bip300301_enforcer_lib::proto::{
+    self, ToStatus,
+    mainchain::{
+        AckAllProposalsPolicy, BlockHeaderInfo, GenerateToAddressRequest,
+        GenerateToAddressResponse, SetAckAllProposalsRequest, SetWithdrawalBundlePolicyRequest,
+        SubscribeEventsRequest, SubscribeEventsResponse, WithdrawalBundlePolicy,
+        subscribe_events_response, subscribe_events_response::event::ConnectBlock,
     },
 };
 use bitcoin::{Transaction, TxOut};
@@ -74,7 +71,7 @@ pub enum MineGbtError {
     #[error("The enforcer rejected block `{block_hash}`, see its log for the reason")]
     BlockRejected { block_hash: bitcoin::BlockHash },
     #[error(transparent)]
-    Command(#[from] CommandError),
+    Grind(#[from] crate::util::GrindError),
     #[error(transparent)]
     ConsensusDecode(#[from] bitcoin::consensus::encode::Error),
     #[error(transparent)]
@@ -142,17 +139,8 @@ async fn mine_gbt(
         nonce: u32::from_le_bytes(block_template.nonce_range[..=3].try_into().unwrap()),
     };
     tracing::debug!("Mining header");
-    let header_hex = post_setup
-        .bitcoin_util()?
-        .command::<String, _, _, _, _>(
-            [],
-            "grind",
-            [bitcoin::consensus::encode::serialize_hex(&header)],
-        )
-        .run_utf8()
-        .await?;
+    let header = crate::util::grind(header).await?;
     tracing::debug!("Mined header, submitting block...");
-    let header: bitcoin::block::Header = bitcoin::consensus::encode::deserialize_hex(&header_hex)?;
     let block = bitcoin::Block { header, txdata };
     let block_hash = block.block_hash();
     // `null` on success, the rejection reason otherwise.

@@ -27,23 +27,7 @@ FROM debian:bookworm-slim
 # Set automatically by docker buildx: amd64 or arm64
 ARG TARGETARCH
 
-# Install dependencies needed for signet mining
-# TODO: git is needed for fetching the Bitcoin Core mining script. Arguably
-# it'd be a lot better to just include that script as part of the build process!
-RUN apt-get update && apt-get install -y \
-    python3 curl git
-
-# Download and extract Bitcoin Core binaries
-RUN cd /tmp \
-    && case "${TARGETARCH}" in \
-         amd64) BITCOIN_ARCH=x86_64-linux-gnu ;; \
-         arm64) BITCOIN_ARCH=aarch64-linux-gnu ;; \
-         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2 && exit 1 ;; \
-       esac \
-    && curl -L "https://bitcoincore.org/bin/bitcoin-core-28.0/bitcoin-28.0-${BITCOIN_ARCH}.tar.gz" | tar xz \
-    && cp bitcoin-28.0/bin/bitcoin-cli /bin/ \
-    && cp bitcoin-28.0/bin/bitcoin-util /bin/ \
-    && rm -rf bitcoin-28.0
+RUN apt-get update && apt-get install -y curl
 
 # Install grpc_health_probe, for usage in health checks
 RUN GRPC_HEALTH_PROBE_VERSION=v0.4.37 && \

@@ -34,10 +34,8 @@ pub enum MineSignetBlockError {
     ConsensusDecode(#[from] bitcoin::consensus::encode::Error),
     #[error(transparent)]
     ConsensusDecodeHex(#[from] bitcoin::consensus::encode::FromHexError),
-    #[error("exhausted the nonce space without meeting the target")]
-    GrindExhausted,
     #[error(transparent)]
-    Join(#[from] tokio::task::JoinError),
+    Grind(#[from] crate::util::GrindError),
     /// From the enforcer's block template server or bitcoind.
     #[error(transparent)]
     JsonRpc(#[from] jsonrpsee::core::ClientError),
@@ -132,9 +130,7 @@ impl SignetMiner {
         mining::add_witness_commitment(&mut block);
         let () = self.sign(&mut block)?;
         let header = block.header;
-        block.header = tokio::task::spawn_blocking(move || mining::grind(header))
-            .await?
-            .ok_or(MineSignetBlockError::GrindExhausted)?;
+        block.header = crate::util::grind(header).await?;
         let block_hash = block.block_hash();
         // `null` on success, the rejection reason otherwise.
         let submitblock_output: Option<String> = bitcoind

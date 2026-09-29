@@ -7,8 +7,6 @@
 //! the harness's `trace` log level turned on, which is where a leak is most
 //! likely to show up.
 
-use bip300301_enforcer_lib::cli::SecretString;
-
 use crate::{
     integration_test::fund_enforcer,
     setup::{DummySidechain, PostSetup},
@@ -54,16 +52,8 @@ pub async fn test_no_secrets_in_logs(mut post_setup: PostSetup) -> anyhow::Resul
 
     // Take the secret from the harness rather than hardcoding it, so this
     // keeps testing the real value if the harness ever changes it.
-    let rpc_user = post_setup
-        .bitcoin_cli
-        .rpc_user
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("harness has no rpc user"))?;
-    let rpc_pass: SecretString = post_setup
-        .bitcoin_cli
-        .rpc_pass
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("harness has no rpc password to check for"))?;
+    let rpc_user = post_setup.rpc_user.clone();
+    let rpc_pass = post_setup.rpc_pass.clone();
 
     let files = enforcer_output(&post_setup.directories.enforcer_dir)?;
     let total_bytes: usize = files.iter().map(|(_, contents)| contents.len()).sum();
@@ -93,9 +83,9 @@ pub async fn test_no_secrets_in_logs(mut post_setup: PostSetup) -> anyhow::Resul
     // Self-check the encoder, so a broken one cannot make the search below
     // silently vacuous.
     assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
-    let basic_auth = base64_encode(format!("{rpc_user}:{}", rpc_pass.expose()).as_bytes());
+    let basic_auth = base64_encode(format!("{rpc_user}:{rpc_pass}").as_bytes());
 
-    assert_absent(&files, rpc_pass.expose(), "the node RPC password")?;
+    assert_absent(&files, &rpc_pass, "the node RPC password")?;
     assert_absent(&files, &basic_auth, "the node RPC basic-auth credentials")?;
 
     tracing::info!("no secrets found in enforcer output");

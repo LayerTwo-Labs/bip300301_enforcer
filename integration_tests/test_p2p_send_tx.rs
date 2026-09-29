@@ -9,11 +9,9 @@
 
 use std::net::SocketAddr;
 
-use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
-    p2p::{BroadcastAddr, broadcast_nonstandard_tx},
-};
+use bip300301_enforcer_lib::p2p::{BroadcastAddr, broadcast_nonstandard_tx};
 use bitcoin::{Transaction, p2p::Magic};
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::setup::{PostSetup, bitcoind_regtest_magic};
 
@@ -48,13 +46,10 @@ impl std::fmt::Display for NodeTransport {
 /// Whether the node advertises v2 transport, so a setting it ignored cannot
 /// make both runs test the same thing
 async fn advertises_v2(post_setup: &PostSetup) -> anyhow::Result<bool> {
-    let network_info: serde_json::Value = serde_json::from_str(
-        &post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "getnetworkinfo", [])
-            .run_utf8()
-            .await?,
-    )?;
+    let network_info: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getnetworkinfo", rpc_params![])
+        .await?;
     let services = network_info["localservicesnames"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("getnetworkinfo returned no localservicesnames"))?;
@@ -63,53 +58,31 @@ async fn advertises_v2(post_setup: &PostSetup) -> anyhow::Result<bool> {
 
 /// A transaction funded and signed by the node's wallet, but not sent
 async fn unsent_tx(post_setup: &PostSetup) -> anyhow::Result<Transaction> {
-    let cli = &post_setup.bitcoin_cli;
-    let address = cli
-        .command::<String, _, String, _, _>([], "getnewaddress", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .to_owned();
+    let client = &post_setup.bitcoind_client;
+    let address: String = client.request("getnewaddress", rpc_params![]).await?;
     // Mature a coinbase to spend
-    cli.command::<String, _, _, _, _>([], "generatetoaddress", ["101".to_owned(), address.clone()])
-        .run_utf8()
+    let _block_hashes: Vec<bitcoin::BlockHash> = client
+        .request("generatetoaddress", rpc_params![101, &address])
         .await?;
-    let raw = cli
-        .command::<String, _, _, _, _>(
-            [],
+    let raw: String = client
+        .request(
             "createrawtransaction",
-            [
-                "[]".to_owned(),
-                serde_json::json!([{ address: 1 }]).to_string(),
-            ],
+            rpc_params![serde_json::json!([]), serde_json::json!([{ &address: 1 }])],
         )
-        .run_utf8()
         .await?;
-    let funded: serde_json::Value = serde_json::from_str(
-        // A fresh chain has no fee history to estimate from
-        &cli.command::<String, _, _, _, _>(
-            [],
+    // A fresh chain has no fee history to estimate from
+    let funded: serde_json::Value = client
+        .request(
             "fundrawtransaction",
-            [
-                raw.trim().to_owned(),
-                serde_json::json!({ "fee_rate": 2 }).to_string(),
-            ],
+            rpc_params![raw, serde_json::json!({ "fee_rate": 2 })],
         )
-        .run_utf8()
-        .await?,
-    )?;
+        .await?;
     let funded_hex = funded["hex"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("fundrawtransaction returned no hex"))?;
-    let signed: serde_json::Value = serde_json::from_str(
-        &cli.command::<String, _, _, _, _>(
-            [],
-            "signrawtransactionwithwallet",
-            [funded_hex.to_owned()],
-        )
-        .run_utf8()
-        .await?,
-    )?;
+    let signed: serde_json::Value = client
+        .request("signrawtransactionwithwallet", rpc_params![funded_hex])
+        .await?;
     anyhow::ensure!(
         signed["complete"].as_bool() == Some(true),
         "failed to sign: {signed}"
@@ -121,13 +94,10 @@ async fn unsent_tx(post_setup: &PostSetup) -> anyhow::Result<Transaction> {
 }
 
 async fn in_mempool(post_setup: &PostSetup, tx: &Transaction) -> anyhow::Result<bool> {
-    let mempool: Vec<bitcoin::Txid> = serde_json::from_str(
-        &post_setup
-            .bitcoin_cli
-            .command::<String, _, String, _, _>([], "getrawmempool", [])
-            .run_utf8()
-            .await?,
-    )?;
+    let mempool: Vec<bitcoin::Txid> = post_setup
+        .bitcoind_client
+        .request("getrawmempool", rpc_params![])
+        .await?;
     Ok(mempool.contains(&tx.compute_txid()))
 }
 
@@ -154,12 +124,9 @@ pub async fn test_p2p_send_tx(
         .into();
     let tx = unsent_tx(&post_setup).await?;
     let height: i32 = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
-        .await?
-        .trim()
-        .parse()?;
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
     anyhow::ensure!(!in_mempool(&post_setup, &tx).await?);
 
     let sent = broadcast_nonstandard_tx(node_addr.into(), height, magic, tx.clone()).await?;

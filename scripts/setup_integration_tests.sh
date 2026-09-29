@@ -94,7 +94,6 @@ fi
 PATCHED_DIR="$DEPS_DIR/bitcoin-patched-$PATCHED_REVISION"
 ecash_dir() { echo "$DEPS_DIR/bitcoin-ecash-$1"; }
 UNPATCHED_DIR="$DEPS_DIR/bitcoin-stock-$BITCOIN_VERSION"
-SIGNET_REPO_DIR="$DEPS_DIR/bitcoin-patched-repo"
 ELECTRS_DIR="$DEPS_DIR/electrs-$ELECTRS_VERSION"
 # Pre-mined signet chain, reused across runs. Not built here (it needs the
 # integration-test binary); `just test-it` mines it on first use.
@@ -187,15 +186,6 @@ for v in $ALL_BITCOIN_VERSIONS; do
     fi
 done
 
-# --- bitcoin-patched repo (signet miner script only) ---
-if [ ! -f "$SIGNET_REPO_DIR/contrib/signet/miner" ]; then
-    echo "Cloning bitcoin-patched for signet miner script..."
-    rm -rf "$SIGNET_REPO_DIR"
-    git clone --depth 1 https://github.com/LayerTwo-Labs/bitcoin-patched.git "$SIGNET_REPO_DIR"
-else
-    echo "Signet miner repo: cached"
-fi
-
 # --- electrs (built from source) ---
 ELECTRS_BIN="$ELECTRS_DIR/target/release/electrs"
 if [ ! -x "$ELECTRS_BIN" ]; then
@@ -228,10 +218,7 @@ BITCOIND='$bins_dir/bitcoind'
 BITCOIND_OP_DRIVECHAIN='$op_drivechain'
 BITCOIND_REGTEST_MAGIC='$regtest_magic'
 BITCOIND_UNPATCHED='$unpatched_dir/bitcoind'
-BITCOIN_CLI='$bins_dir/bitcoin-cli'
-BITCOIN_UTIL='$bins_dir/bitcoin-util'
 ELECTRS='$ELECTRS_BIN'
-SIGNET_MINER='$SIGNET_REPO_DIR/contrib/signet/miner'
 SIGNET_CHAIN_DIR='$signet_chain_dir'
 EOF
     echo "Wrote $env_file"

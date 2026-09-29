@@ -271,8 +271,6 @@ jobs:
           rm "${DIR}.zip"
           mv "${DIR}" bitcoin-bins
           chmod +x bitcoin-bins/bitcoind
-          chmod +x bitcoin-bins/bitcoin-cli
-          chmod +x bitcoin-bins/bitcoin-util
           popd
 
       - name: Download ecash-com/bitcoin (${{ matrix.name }})
@@ -293,8 +291,6 @@ jobs:
           mv "bitcoin-${VERSION}/bin" bitcoin-bins
           rm -r "bitcoin-${VERSION}"
           chmod +x bitcoin-bins/bitcoind
-          chmod +x bitcoin-bins/bitcoin-cli
-          chmod +x bitcoin-bins/bitcoin-util
           popd
 
       - name:
@@ -312,19 +308,6 @@ jobs:
           rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
           mv bitcoin-30.2/bin bitcoin-unpatched-bins
           rm -r bitcoin-30.2
-          popd
-
-      - name: Checkout bitcoin-patched for signet miner script
-        # The enforcer itself auto-downloads the miner script at runtime
-        # (see `lib/wallet/mine.rs::get_signet_miner_path`), but the
-        # integration test harness drives mining externally and still
-        # requires `SIGNET_MINER` to point at the script. Stock Bitcoin
-        # Core tarballs don't ship `contrib/signet/miner`, and the
-        # patched variant's `--getblocktemplate-command` support is what
-        # our signet tests rely on — so we fetch it here for every flavor.
-        run: |
-          pushd ..
-          git clone --depth 1 https://github.com/LayerTwo-Labs/bitcoin-patched.git
           popd
 
       - name: Cache electrs binary
@@ -441,10 +424,7 @@ jobs:
           export BIP300301_ENFORCER="$RUNNER_TEMP/integration-test-binaries/bip300301_enforcer"
           INTEGRATION_TEST_RUNNER="$RUNNER_TEMP/integration-test-binaries/integration_tests"
           export BITCOIND='../bitcoin-bins/bitcoind'
-          export BITCOIN_CLI='../bitcoin-bins/bitcoin-cli'
-          export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
-          export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
           export SIGNET_CHAIN_DIR='${{ runner.temp }}/signet-chain'
           # Each test leaks a TempDir holding per-component stdout/stderr (the
           # enforcer runs at --log-level=trace). Point TMPDIR at a known
