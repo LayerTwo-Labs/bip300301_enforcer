@@ -36,14 +36,13 @@ struct Inner {
     db: Db,
     main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-    config: crate::cli::Config,
     // Always Some(_) on signets
     signet_challenge: Option<bitcoin::ScriptBuf>,
     /// Error from the most recent failed block template build, cleared on
     /// success. The GBT server reports template failures to its JSON-RPC client
-    /// in a field that `bitcoin-cli` (and thus the signet miner's stderr) drops,
-    /// so `GenerateToAddress` attaches this to its own error to surface the
-    /// root cause.
+    /// in a field that JSON-RPC clients such as `bitcoin-cli` drop, so
+    /// `GenerateToAddress` attaches this to its own error to surface the root
+    /// cause.
     last_gbt_error: parking_lot::RwLock<Option<String>>,
     /// Limits `GenerateToAddress` to one concurrent call at a time.
     generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
@@ -60,7 +59,6 @@ impl BlockProducer {
         validator: Validator,
         main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
         gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-        config: crate::cli::Config,
         signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitDbConnection> {
         let db = Db::new(data_dir)?;
@@ -70,7 +68,6 @@ impl BlockProducer {
                 db,
                 main_client,
                 gbt_client,
-                config,
                 signet_challenge,
                 last_gbt_error: parking_lot::RwLock::new(None),
                 generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -89,10 +86,6 @@ impl BlockProducer {
 
     pub(crate) fn gbt_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
         &self.inner.gbt_client
-    }
-
-    pub(crate) fn config(&self) -> &crate::cli::Config {
-        &self.inner.config
     }
 
     pub(crate) fn signet_challenge(&self) -> Option<&bitcoin::Script> {

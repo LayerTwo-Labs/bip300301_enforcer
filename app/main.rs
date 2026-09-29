@@ -817,8 +817,7 @@ where
 
     let http_middleware = tower::ServiceBuilder::new()
         // Limit the gbt_server to 1 concurrent request, preventing runaway
-        // callers (e.g. a stuck signet miner subprocess) from hammering
-        // the endpoint with parallel requests.
+        // callers from hammering the endpoint with parallel requests.
         .layer(tower::limit::ConcurrencyLimitLayer::new(1))
         .layer(jsonrpsee_tracer!("gbt_server"));
 
@@ -1959,7 +1958,6 @@ async fn main() -> Result<()> {
         validator.clone(),
         mainchain_client.clone(),
         gbt_client,
-        cli.clone(),
         signet_challenge.clone(),
     )?;
 
