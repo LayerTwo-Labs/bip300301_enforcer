@@ -1,7 +1,6 @@
 use std::{str::FromStr as _, time::Duration};
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     messages::{M1ProposeSidechain, M2AckSidechain, M4AckBundles, M7BmmAccept, M8BmmRequest},
     types::{BmmCommitment, SidechainDescription, SidechainNumber},
 };
@@ -9,7 +8,7 @@ use bitcoin::{
     Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
     TxMerkleNode, TxOut, Txid, Witness,
     block::Header,
-    consensus::encode::{deserialize_hex, serialize_hex},
+    consensus::encode::serialize_hex,
     hashes::{Hash as _, sha256d},
     script::{Builder as ScriptBuilder, PushBytesBuf},
     transaction::Version,
@@ -538,12 +537,7 @@ pub(crate) async fn submit_invalid_block(
         bits: template.bits,
         nonce: 0,
     };
-    let header_hex = post_setup
-        .bitcoin_util()?
-        .command::<String, _, _, _, _>([], "grind", [serialize_hex(&header)])
-        .run_utf8()
-        .await?;
-    let header: Header = deserialize_hex(header_hex.trim())?;
+    let header = crate::util::grind(header).await?;
 
     let block = Block {
         header,

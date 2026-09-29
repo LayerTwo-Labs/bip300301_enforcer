@@ -24,7 +24,7 @@ pub async fn test_rest_disabled_header_sync(post_setup: PostSetup) -> anyhow::Re
     // this trial appends `-norest` to override it.
     let rest_response = reqwest::get(format!(
         "http://127.0.0.1:{}/rest/chaininfo.json",
-        post_setup.bitcoin_cli.rpc_port
+        post_setup.rpc_port
     ))
     .await?;
     anyhow::ensure!(

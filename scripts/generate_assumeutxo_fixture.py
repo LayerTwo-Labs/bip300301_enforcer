@@ -141,7 +141,11 @@ def main():
     args = parse_args()
     functional_dir = os.path.join(args.bitcoin_repo, "test", "functional")
     if not os.path.isdir(functional_dir):
-        sys.exit(f"functional test framework not found at {functional_dir}")
+        sys.exit(
+            f"functional test framework not found at {functional_dir}: pass --bitcoin-repo, "
+            f"or clone one there with `git clone --depth 1 "
+            f"https://github.com/LayerTwo-Labs/bitcoin-patched.git {args.bitcoin_repo}`"
+        )
     for binary in ("bitcoind", "bitcoin-cli", "bitcoin-util"):
         if not os.path.exists(os.path.join(args.bitcoin_bins, binary)):
             sys.exit(f"missing binary: {os.path.join(args.bitcoin_bins, binary)}")

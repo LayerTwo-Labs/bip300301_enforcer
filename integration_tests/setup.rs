@@ -1,18 +1,12 @@
 //! Setup for an integration test
 
 use std::{
-    borrow::Borrow,
-    collections::HashMap,
-    ffi::OsStr,
-    future::Future,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{Arc, LazyLock},
+    borrow::Borrow, collections::HashMap, ffi::OsStr, future::Future, net::SocketAddr,
+    path::PathBuf, sync::LazyLock,
 };
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
-    bins,
     proto::{
         self,
         mainchain::{
@@ -49,7 +43,7 @@ use crate::{
     signet_miner::{SignetMiner, TemplateSource},
     util::{
         AbortOnDrop, BinPaths, Bitcoind, BitcoindClient, Electrs, Enforcer, FileDumpConfig,
-        TestFileRegistry, VarError,
+        TestFileRegistry,
     },
 };
 
@@ -1101,16 +1095,15 @@ pub struct SetupOpts<
     pub enforcer_wallet: EnforcerWallet,
 }
 
-type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
-
 pub struct PostSetup {
     pub network: Network,
     pub mode: Mode,
-    /// The node's RPC credentials and port. Tests talk to the node over
-    /// `bitcoind_client`.
-    pub bitcoin_cli: bins::BitcoinCli,
+    /// The node's RPC credentials and port, for processes the harness starts
+    /// against it. Tests talk to the node over `bitcoind_client`.
+    pub rpc_user: String,
+    pub rpc_pass: String,
+    pub rpc_port: u16,
     pub bitcoind_client: BitcoindClient,
-    bitcoin_util: LazyLockBoxedSend<Result<bins::BitcoinUtil, Arc<VarError>>>,
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
     pub tasks: Tasks,
@@ -1132,10 +1125,6 @@ pub struct PostSetup {
 }
 
 impl PostSetup {
-    pub fn bitcoin_util(&self) -> Result<&bins::BitcoinUtil, Arc<VarError>> {
-        self.bitcoin_util.as_ref().map_err(|err| err.clone())
-    }
-
     pub async fn setup<BitcoindArg, EnforcerArg, BitcoindArgs, EnforcerArgs>(
         bin_paths: &BinPaths,
         mode: Mode,
@@ -1193,7 +1182,6 @@ impl PostSetup {
         let bitcoind_task =
             bitcoind.spawn_command_with_args::<String, _, _, _, _>([], opts.bitcoind_args, on_exit);
         // wait for startup
-        let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
         let bitcoind_client = bitcoind.rpc_client()?;
         bitcoind_exit
             .unless_exited(wait_for_bitcoind_ready(&bitcoind_client))
@@ -1218,7 +1206,6 @@ impl PostSetup {
                 .request("createwallet", rpc_params![WALLET_NAME])
                 .await?;
         }
-        bitcoin_cli.rpc_wallet = Some(WALLET_NAME.to_owned());
         let mining_address = match signet_setup.as_ref() {
             Some(signet_setup) => {
                 if !restored_signet_chain {
@@ -1321,8 +1308,8 @@ impl PostSetup {
             coinbase_recipient: (!enable_wallet).then(|| mining_address.to_string()),
             node_blocks_dir: None,
             node_mempool_dat: None,
-            node_rpc_user: bitcoind.rpc_user,
-            node_rpc_pass: bitcoind.rpc_pass,
+            node_rpc_user: bitcoind.rpc_user.clone(),
+            node_rpc_pass: bitcoind.rpc_pass.clone(),
             node_rpc_port: bitcoind.rpc_port,
             node_zmq_sequence_port: bitcoind.zmq_sequence_port,
             serve_grpc_port: reserved_ports.enforcer_serve_grpc.port(),
@@ -1398,21 +1385,13 @@ impl PostSetup {
         let _chain_tip = enforcer_exit
             .unless_exited(wait_for_validator_synced(&validator_service_client))
             .await?;
-        let bitcoin_util = {
-            let path = match bin_paths.bitcoin_util() {
-                Ok(path) => Ok(path.clone()),
-                Err(err) => Err(Arc::new(err)),
-            };
-            let network = bitcoind.network;
-            let closure = move || path.map(|path| bins::BitcoinUtil { path, network });
-            LazyLock::new(Box::new(closure) as Box<_>)
-        };
         Ok(PostSetup {
             network,
             mode,
-            bitcoin_cli,
+            rpc_user: bitcoind.rpc_user.clone(),
+            rpc_pass: bitcoind.rpc_pass.clone(),
+            rpc_port: bitcoind.rpc_port,
             bitcoind_client,
-            bitcoin_util,
             tasks,
             signet_miner,
             gbt_client,
@@ -1512,19 +1491,9 @@ impl PostSetup {
             coinbase_recipient: None,
             node_blocks_dir: None,
             node_mempool_dat: None,
-            node_rpc_user: self
-                .bitcoin_cli
-                .rpc_user
-                .clone()
-                .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_user"))?,
-            node_rpc_pass: self
-                .bitcoin_cli
-                .rpc_pass
-                .as_ref()
-                .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?
-                .expose()
-                .to_owned(),
-            node_rpc_port: self.bitcoin_cli.rpc_port,
+            node_rpc_user: self.rpc_user.clone(),
+            node_rpc_pass: self.rpc_pass.clone(),
+            node_rpc_port: self.rpc_port,
             node_zmq_sequence_port: self.reserved_ports.bitcoind_zmq_sequence.port(),
             serve_grpc_port: self.reserved_ports.enforcer_serve_grpc.port(),
             serve_rpc_port: self.reserved_ports.enforcer_serve_rpc.port(),
@@ -1589,20 +1558,9 @@ impl PostSetup {
         let electrs = Electrs {
             path: bin_paths.electrs()?.clone(),
             db_dir: self.directories.electrs_dir.clone(),
-            auth: (
-                self.bitcoin_cli
-                    .rpc_user
-                    .clone()
-                    .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_user"))?,
-                self.bitcoin_cli
-                    .rpc_pass
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?
-                    .expose()
-                    .to_owned(),
-            ),
+            auth: (self.rpc_user.clone(), self.rpc_pass.clone()),
             daemon_dir: self.directories.bitcoin_dir.join("path"),
-            daemon_rpc_port: self.bitcoin_cli.rpc_port,
+            daemon_rpc_port: self.rpc_port,
             electrum_rpc_port: self.reserved_ports.electrs_electrum_rpc.port(),
             electrum_http_port: self.reserved_ports.electrs_electrum_http.port(),
             monitoring_port: self.reserved_ports.electrs_monitoring.port(),

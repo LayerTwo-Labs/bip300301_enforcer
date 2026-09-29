@@ -297,11 +297,8 @@ impl<T> OnceLockExt for OnceLock<T> {
 pub struct BinPaths {
     bitcoind: OnceLock<PathBuf>,
     bitcoind_unpatched: OnceLock<PathBuf>,
-    bitcoin_cli: OnceLock<PathBuf>,
-    bitcoin_util: OnceLock<PathBuf>,
     bip300301_enforcer: OnceLock<PathBuf>,
     electrs: OnceLock<PathBuf>,
-    signet_miner: OnceLock<PathBuf>,
 }
 
 impl BinPaths {
@@ -318,14 +315,6 @@ impl BinPaths {
             .get_or_try_init_from_env("BITCOIND_UNPATCHED")
     }
 
-    pub fn bitcoin_cli(&self) -> Result<&PathBuf, VarError> {
-        self.bitcoin_cli.get_or_try_init_from_env("BITCOIN_CLI")
-    }
-
-    pub fn bitcoin_util(&self) -> Result<&PathBuf, VarError> {
-        self.bitcoin_util.get_or_try_init_from_env("BITCOIN_UTIL")
-    }
-
     pub fn bip300301_enforcer(&self) -> Result<&PathBuf, VarError> {
         self.bip300301_enforcer
             .get_or_try_init_from_env_or("BIP300301_ENFORCER", "./target/debug/bip300301_enforcer")
@@ -333,10 +322,6 @@ impl BinPaths {
 
     pub fn electrs(&self) -> Result<&PathBuf, VarError> {
         self.electrs.get_or_try_init_from_env("ELECTRS")
-    }
-
-    pub fn signet_miner(&self) -> Result<&PathBuf, VarError> {
-        self.signet_miner.get_or_try_init_from_env("SIGNET_MINER")
     }
 }
 
@@ -841,6 +826,21 @@ where
     .into()
 }
 
+#[derive(Debug, Error)]
+pub enum GrindError {
+    #[error("exhausted the nonce space without meeting the target")]
+    Exhausted,
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
+}
+
+/// [`bip300301_enforcer_lib::mining::grind`], off the async runtime.
+pub async fn grind(header: bitcoin::block::Header) -> Result<bitcoin::block::Header, GrindError> {
+    tokio::task::spawn_blocking(move || bip300301_enforcer_lib::mining::grind(header))
+        .await?
+        .ok_or(GrindError::Exhausted)
+}
+
 /// JSON-RPC client for a harness bitcoind, from [`Bitcoind::rpc_client`].
 pub type BitcoindClient = jsonrpsee::http_client::HttpClient;
 
@@ -863,23 +863,6 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
-    /// A `bitcoin-cli` invocation for this node, for what has to shell out to
-    /// one. Tests talk to the node over [`Self::rpc_client`].
-    pub fn new_bitcoin_cli(&self, path: PathBuf) -> bip300301_enforcer_lib::bins::BitcoinCli {
-        bip300301_enforcer_lib::bins::BitcoinCli {
-            path,
-            network: self.network,
-            rpc_user: Some(self.rpc_user.clone()),
-            rpc_pass: Some(bip300301_enforcer_lib::cli::SecretString::new(
-                self.rpc_pass.clone(),
-            )),
-            rpc_cookie_path: None,
-            rpc_port: self.rpc_port,
-            rpc_host: self.rpc_host.clone(),
-            rpc_wallet: None,
-        }
-    }
-
     /// JSON-RPC client for this node. Wallet calls go to the node's endpoint
     /// rather than a `/wallet/<name>` one: harness nodes load at most one
     /// wallet, and Bitcoin Core routes to it.

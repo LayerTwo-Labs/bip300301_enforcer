@@ -9,7 +9,6 @@
 //! bits (witness commitment, merkle roots, MTP) in one place.
 
 use bip300301_enforcer_lib::{
-    bins::CommandExt as _,
     messages::M7BmmAccept,
     types::{BmmCommitment, SidechainNumber},
 };
@@ -178,12 +177,7 @@ pub async fn submit_block_with_bmm_accepts(
         bits: template.bits,
         nonce: 0,
     };
-    let header_hex = post_setup
-        .bitcoin_util()?
-        .command::<String, _, _, _, _>([], "grind", [serialize_hex(&header)])
-        .run_utf8()
-        .await?;
-    let header: Header = deserialize_hex(header_hex.trim())?;
+    let header = crate::util::grind(header).await?;
 
     let block = Block {
         header,
