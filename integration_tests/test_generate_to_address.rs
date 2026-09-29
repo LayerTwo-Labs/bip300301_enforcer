@@ -29,15 +29,62 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
         .await?;
     }
 
+    // `GenerateToAddress` builds on the validator's tip, and a template from
+    // bitcoind that is ahead of it is refused. Signet restores a pre-mined
+    // chain, which the validator is still syncing when setup returns.
+    let () = crate::integration_test::wait_for_validator_tip(&post_setup).await?;
+
     async fn block_count(bitcoind_client: &BitcoindClient) -> anyhow::Result<u64> {
         Ok(bitcoind_client
             .request("getblockcount", rpc_params![])
             .await?)
     }
+    async fn tip_time(bitcoind_client: &BitcoindClient) -> anyhow::Result<u64> {
+        let tip: bitcoin::BlockHash = bitcoind_client
+            .request("getbestblockhash", rpc_params![])
+            .await?;
+        let header: serde_json::Value = bitcoind_client
+            .request("getblockheader", rpc_params![tip])
+            .await?;
+        header["time"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("no time in block header: {header}"))
+    }
+    fn unix_now() -> anyhow::Result<u64> {
+        Ok(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs())
+    }
+
+    let mining_address = post_setup.mining_address.clone();
+
+    // A restored signet chain's tip can be days old, and each block stamped
+    // while catching up only halves the gap. Mine until one is stamped with
+    // the present, so the blocks below are mined back to back from a current
+    // tip.
+    const MAX_CATCH_UP_BLOCKS: usize = 64;
+    for attempt in 1.. {
+        let started = unix_now()?;
+        let _resp = post_setup
+            .mining_service_client
+            .generate_to_address(GenerateToAddressRequest {
+                blocks: proto::wrap_u32(1),
+                address: mining_address.to_string(),
+            })
+            .await?;
+        if tip_time(&post_setup.bitcoind_client).await? >= started {
+            break;
+        }
+        anyhow::ensure!(
+            attempt < MAX_CATCH_UP_BLOCKS,
+            "tip still behind the clock after {MAX_CATCH_UP_BLOCKS} blocks"
+        );
+    }
+
     let start_height = block_count(&post_setup.bitcoind_client).await?;
+    let start_tip_time = tip_time(&post_setup.bitcoind_client).await?;
 
     const BLOCKS: u32 = 3;
-    let mining_address = post_setup.mining_address.clone();
     let resp = post_setup
         .mining_service_client
         .generate_to_address(GenerateToAddressRequest {
@@ -76,6 +123,17 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
     anyhow::ensure!(
         Some(&best_block_hash) == block_hashes.last(),
         "expected the node tip to be the last generated block, got {best_block_hash}"
+    );
+
+    // Blocks mined back to back are not stamped ahead of the clock, beyond
+    // the one second per block that keeps each after the last.
+    let now = unix_now()?;
+    let end_tip_time = tip_time(&post_setup.bitcoind_client).await?;
+    let latest_allowed = now.max(start_tip_time) + BLOCKS as u64;
+    anyhow::ensure!(
+        end_tip_time <= latest_allowed,
+        "expected the tip time to be at most {latest_allowed} (now {now}, start tip time \
+         {start_tip_time}), got {end_tip_time}"
     );
 
     // The coinbase pays out to the requested address.

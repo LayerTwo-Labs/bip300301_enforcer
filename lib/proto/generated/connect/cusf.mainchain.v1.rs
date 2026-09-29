@@ -1912,11 +1912,8 @@ pub trait MiningService: Send + Sync + 'static {
     /// The ACK policy for sidechain proposals is the persisted block producer
     /// policy (see BlockProducerService.SetSidechainAck / SetAckAllProposals).
     ///
-    /// On signet, blocks are produced by the signet miner, which sources its
-    /// template from the enforcer's own block template server. Signet therefore
-    /// requires the enforcer to run with `--enable-block-template-server`, and
-    /// only one block can be generated per call. The Bitcoin Core node's wallet
-    /// must also be able to solve the signet challenge.
+    /// On signet, the Bitcoin Core node's wallet signs each block, so it must be
+    /// able to solve the signet challenge.
     ///
     /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
     ///

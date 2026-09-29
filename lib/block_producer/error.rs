@@ -241,8 +241,6 @@ pub enum FinalizeBlock {
     #[error(transparent)]
     GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
     #[error(transparent)]
-    Script(#[from] bitcoin::script::PushBytesError),
-    #[error(transparent)]
     SystemTime(#[from] std::time::SystemTimeError),
 }
 
@@ -251,7 +249,6 @@ impl ToStatus for FinalizeBlock {
         match self {
             Self::GetHeaderInfo(err) => err.builder(),
             Self::GetMainchainTip(err) => err.builder(),
-            Self::Script(err) => StatusBuilder::new(err),
             Self::SystemTime(err) => StatusBuilder::new(err),
         }
     }
@@ -284,6 +281,31 @@ impl ToStatus for AwaitBlockConnection {
     }
 }
 
+/// Solving a signet block's challenge with the Bitcoin Core node's wallet.
+#[derive(Debug, Diagnostic, Error)]
+pub enum SignSignetBlock {
+    #[error(transparent)]
+    BitcoinCoreRPC(#[from] BitcoinCoreRPC),
+    #[error("failed to decode the signed signet transaction")]
+    DecodeSigned(#[from] bitcoin::consensus::encode::FromHexError),
+    #[error(transparent)]
+    NoWitnessCommitment(#[from] crate::mining::NoWitnessCommitment),
+    #[error("the Bitcoin Core node's wallet cannot solve the signet challenge")]
+    Unsolved,
+}
+
+impl ToStatus for SignSignetBlock {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::BitcoinCoreRPC(err) => err.builder(),
+            Self::Unsolved => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
+            Self::DecodeSigned(_) | Self::NoWitnessCommitment(_) => StatusBuilder::new(self),
+        }
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum Mine {
     #[error(transparent)]
@@ -294,6 +316,12 @@ pub enum Mine {
     EncodeBlock(#[from] EncodeBlock),
     #[error(transparent)]
     FinalizeBlock(#[from] FinalizeBlock),
+    #[error("grinding the block's proof-of-work failed")]
+    Grind(#[from] tokio::task::JoinError),
+    #[error("no nonce meets the block's target")]
+    NonceSpaceExhausted,
+    #[error(transparent)]
+    SignSignetBlock(#[from] SignSignetBlock),
 
     #[error("block rejected: `{reason}`")]
     BlockRejected { reason: String },
@@ -306,6 +334,8 @@ impl ToStatus for Mine {
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::EncodeBlock(err) => err.builder(),
             Self::FinalizeBlock(err) => err.builder(),
+            Self::Grind(_) | Self::NonceSpaceExhausted => StatusBuilder::new(self),
+            Self::SignSignetBlock(err) => err.builder(),
             err @ Self::BlockRejected { .. } => {
                 StatusBuilder::new(err).message(move |f| write!(f, "{err}"))
             }
@@ -313,41 +343,12 @@ impl ToStatus for Mine {
     }
 }
 
-#[derive(Debug, Diagnostic, Error)]
-#[error("{name} is required for mining on signet")]
-pub struct MissingBinary {
-    pub name: String,
-    #[source]
-    pub source: Option<std::io::Error>,
-}
-
-impl ToStatus for MissingBinary {
-    fn builder(&self) -> StatusBuilder<'_> {
-        StatusBuilder::new(self).code(if self.source.is_some() {
-            connectrpc::ErrorCode::Internal
-        } else {
-            connectrpc::ErrorCode::FailedPrecondition
-        })
-    }
-}
-
 #[derive(Diagnostic, Debug, Error)]
 pub enum VerifyCanMine {
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
-    #[error(transparent)]
-    GetBlockTemplate(#[from] GetBlockTemplate),
-    #[error(transparent)]
-    MissingBinary(#[from] MissingBinary),
-    #[error("cannot generate more than one block on signet")]
-    MultipleBlocksOnSignet,
     #[error("cannot generate blocks on network (`{0}`)")]
     Network(bitcoin::Network),
-    #[error(
-        "generating blocks on signet requires the block template server: restart the enforcer \
-         with `--enable-mempool --enable-block-template-server`"
-    )]
-    NoBlockTemplateServerOnSignet,
     #[error("no signet challenge found")]
     NoSignetChallengeFound,
     #[error("unable to parse signet challenge")]
@@ -360,14 +361,7 @@ impl ToStatus for VerifyCanMine {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
-            Self::GetBlockTemplate(err) => err.builder(),
-            Self::MissingBinary(err) => err.builder(),
-            Self::MultipleBlocksOnSignet => {
-                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
-            }
-            Self::Network(_)
-            | Self::NoBlockTemplateServerOnSignet
-            | Self::SignetChallengeAddressMissing(_) => {
+            Self::Network(_) | Self::SignetChallengeAddressMissing(_) => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
             Self::NoSignetChallengeFound | Self::ParseSignetChallenge(_) => {
@@ -377,69 +371,13 @@ impl ToStatus for VerifyCanMine {
     }
 }
 
-#[derive(Diagnostic, Debug, Error)]
-pub enum GetSignetMinerPath {
-    #[error("failed to create signet miner directory")]
-    CreateSignetMinerDir(#[source] crate::bins::CommandError),
-    #[error("failed to download signet miner")]
-    DownloadSignetMiner(#[source] crate::bins::CommandError),
-}
-
-impl ToStatus for GetSignetMinerPath {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::CreateSignetMinerDir(err) | Self::DownloadSignetMiner(err) => {
-                StatusBuilder::with_code(self, err.builder())
-            }
-        }
-    }
-}
-
-#[derive(Diagnostic, Debug, Error)]
-pub enum GenerateSignetBlock {
-    #[error(transparent)]
-    AwaitBlockConnection(#[from] AwaitBlockConnection),
-    #[error("failed to fetch most recent block hash")]
-    FetchMostRecentBlockHash(#[source] BitcoinCoreRPC),
-    #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
-    #[error(transparent)]
-    GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
-    #[error(transparent)]
-    GetSignetMinerPath(#[from] GetSignetMinerPath),
-    #[error(transparent)]
-    Mine(#[from] crate::bins::CommandError),
-    #[error("signet miner subprocess timed out")]
-    Timeout { duration: tokio::time::Duration },
-    #[error(transparent)]
-    WriteRpcCookie(#[from] crate::cli::WriteRpcCookieError),
-}
-
-impl ToStatus for GenerateSignetBlock {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::AwaitBlockConnection(err) => err.builder(),
-            Self::FetchMostRecentBlockHash(err) => StatusBuilder::with_code(self, err.builder()),
-            Self::GetHeaderInfo(err) => err.builder(),
-            Self::GetMainchainTip(err) => err.builder(),
-            Self::GetSignetMinerPath(err) => err.builder(),
-            Self::Mine(err) => err.builder(),
-            Self::Timeout { .. } => StatusBuilder::new(self),
-            Self::WriteRpcCookie(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-/// Building and mining a single block via the producer: built and ground
-/// locally on regtest, or via the signet miner script on signet.
+/// Building and mining a single block via the producer.
 #[derive(Debug, Diagnostic, Error)]
 pub enum GenerateBlock {
     #[error(transparent)]
     CoinbaseBuilder(#[from] CoinbaseMessagesError),
     #[error(transparent)]
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
-    #[error(transparent)]
-    GenerateSignetBlock(#[from] GenerateSignetBlock),
     #[error(transparent)]
     Mine(#[from] Mine),
     #[error(transparent)]
@@ -457,7 +395,6 @@ impl ToStatus for GenerateBlock {
         match self {
             Self::CoinbaseBuilder(err) => err.builder(),
             Self::GenerateCoinbaseTxouts(err) => err.builder(),
-            Self::GenerateSignetBlock(err) => err.builder(),
             Self::Mine(err) => err.builder(),
             Self::SelectBlockTxs(err) => err.builder(),
             Self::TryGetMainchainTip(err) => err.builder(),

@@ -51,7 +51,7 @@ impl MiningService for BlockProducer {
                 ConnectError::resource_exhausted("block generation is already in progress")
             })?;
 
-        self.verify_can_mine(count)
+        self.verify_can_mine()
             .await
             .map_err(|err| err.builder().to_connect_error())?;
 

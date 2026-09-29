@@ -1,41 +1,42 @@
 //! Mining blocks without a wallet, backing
 //! `BlockProducerService.GenerateToAddress`. The coinbase pays out to a
-//! caller-provided address. On regtest, blocks are constructed and their PoW
-//! ground locally; on signet, blocks are produced by the signet miner script,
-//! signed by the Bitcoin Core node's wallet.
+//! caller-provided address. Blocks are constructed and their PoW ground
+//! locally; on signet, the Bitcoin Core node's wallet also signs the block.
 
 use std::{
     collections::{HashMap, HashSet},
-    num::NonZeroU32,
-    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bitcoin::{
-    Amount, Block, BlockHash, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
-    Witness,
+    Amount, Block, BlockHash, CompactTarget, Network, Script, ScriptBuf, Sequence, Transaction,
+    TxIn, TxOut, Txid, Witness,
     absolute::{Height, LockTime},
     block::Version as BlockVersion,
-    consensus::Encodable as _,
-    constants::{SUBSIDY_HALVING_INTERVAL, genesis_block},
+    consensus::{
+        Encodable as _,
+        encode::{deserialize_hex, serialize_hex},
+    },
+    constants::SUBSIDY_HALVING_INTERVAL,
     hash_types::TxMerkleNode,
     hashes::Hash as _,
-    merkle_tree,
     opcodes::{OP_0, all::OP_RETURN},
-    script::PushBytesBuf,
     transaction::Version as TxVersion,
 };
 use bitcoin_jsonrpsee::{
     MainClient as _,
     client::{BlockTemplate, BlockTemplateRequest, CoinbaseTxnOrValue},
+    jsonrpsee::{core::client::ClientT as _, rpc_params},
 };
 
 use crate::{
-    bins::{self, CommandExt as _},
     block_producer::{BlockProducer, error},
     errors::ErrorChain,
     messages::CoinbaseBuilder,
-    types::{AckAllProposalsPolicy, BmmCommitment, SidechainNumber, WithdrawalBundlePolicy},
+    mining::{self, SignetTxs},
+    types::{
+        AckAllProposalsPolicy, BmmCommitment, HeaderInfo, SidechainNumber, WithdrawalBundlePolicy,
+    },
 };
 
 pub(in crate::block_producer) fn bmm_auction_winners(
@@ -82,6 +83,20 @@ fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Durat
     }
 }
 
+/// A signet block's time. Behind schedule, catch up halfway to now, like
+/// Bitcoin Core's `contrib/signet/miner` with `--set-block-time`. Otherwise
+/// now: stamping `interval` after the tip instead would run the chain ahead
+/// of the clock with every block mined faster than that.
+fn signet_block_time(tip_time: u64, now: u64, interval: Duration) -> u64 {
+    let interval = interval.as_secs();
+    let tip_age = now.saturating_sub(tip_time);
+    if tip_age > interval {
+        tip_time + tip_age.midpoint(interval)
+    } else {
+        now.max(tip_time + 1)
+    }
+}
+
 fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
     let subsidy_sats = 50 * Amount::ONE_BTC.to_sat();
     let subsidy_halving_interval = match network {
@@ -96,7 +111,11 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
     }
 }
 
-const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
+/// What a block's header takes from its template.
+struct TemplateHeader {
+    bits: CompactTarget,
+    mintime: u64,
+}
 
 impl BlockProducer {
     async fn fetch_block_template(
@@ -121,13 +140,19 @@ impl BlockProducer {
     async fn select_block_txs(
         &self,
         mainchain_tip: BlockHash,
-    ) -> Result<Vec<(Transaction, Amount)>, error::SelectBlockTxs> {
-        let template = self
-            .fetch_block_template(vec![
-                "segwit".to_string(),
-                crate::rpc_client::BIP300301_RULE.to_string(),
-            ])
-            .await?;
+    ) -> Result<(Vec<(Transaction, Amount)>, TemplateHeader), error::SelectBlockTxs> {
+        let mut rules = vec![
+            "segwit".to_string(),
+            crate::rpc_client::BIP300301_RULE.to_string(),
+        ];
+        if self.validator().network() == Network::Signet {
+            rules.push("signet".to_string());
+        }
+        let template = self.fetch_block_template(rules).await?;
+        let template_header = TemplateHeader {
+            bits: template.compact_target,
+            mintime: template.mintime,
+        };
 
         // The template is built on its server's tip. We build on the
         // validator's. If those disagree one of them is still catching up, and
@@ -173,7 +198,7 @@ impl BlockProducer {
             res.push((transaction, fee));
         }
 
-        Ok(res)
+        Ok((res, template_header))
     }
 
     /// Construct a coinbase tx paying out to `coinbase_spk`.
@@ -188,7 +213,7 @@ impl BlockProducer {
             .push_int((best_block_height + 1) as i64)
             .push_opcode(OP_0)
             .into_script();
-        let value = get_block_value(best_block_height + 1, fees, Network::Regtest);
+        let value = get_block_value(best_block_height + 1, fees, self.validator().network());
         let output = if value > Amount::ZERO {
             vec![TxOut {
                 script_pubkey: coinbase_spk,
@@ -209,11 +234,28 @@ impl BlockProducer {
                     vout: 0xFFFF_FFFF,
                 },
                 sequence: Sequence::MAX,
-                witness: Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
+                witness: Witness::new(),
                 script_sig,
             }],
             output: [&output, coinbase_outputs].concat(),
         }
+    }
+
+    /// Now, or on signet catching up with a stale tip. Either way after the
+    /// tip, so blocks mined faster than once per second are not rejected as
+    /// `time-too-old`.
+    fn block_time(
+        &self,
+        tip_header: &HeaderInfo,
+        template: &TemplateHeader,
+    ) -> Result<u32, std::time::SystemTimeError> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let tip_time = u64::from(tip_header.timestamp);
+        let time = match self.signet_challenge() {
+            Some(challenge) => signet_block_time(tip_time, now, target_block_interval(challenge)),
+            None => now.max(tip_time + 1),
+        };
+        Ok(time.max(template.mintime) as u32)
     }
 
     /// Finalize a new block by constructing the coinbase tx
@@ -223,6 +265,7 @@ impl BlockProducer {
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
         fees: Amount,
+        template: &TemplateHeader,
     ) -> Result<Block, error::FinalizeBlock> {
         let best_block_hash = self.validator().get_mainchain_tip()?;
         let tip_header = self.validator().get_header_info(&best_block_hash)?;
@@ -232,44 +275,59 @@ impl BlockProducer {
         let coinbase_tx =
             self.finalize_coinbase(best_block_height, coinbase_spk, coinbase_outputs, fees);
         let txdata = std::iter::once(coinbase_tx).chain(transactions).collect();
-        // Keep block times strictly increasing so blocks mined faster than once
-        // per second are not rejected as `time-too-old` (timestamp must exceed
-        // the median-time-past). This mirrors `getblocktemplate`'s `mintime`.
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
-        let timestamp = now.max(tip_header.timestamp.saturating_add(1));
-        let genesis_block = genesis_block(bitcoin::Network::Regtest);
-        let bits = genesis_block.header.bits;
         let header = bitcoin::block::Header {
             version: BlockVersion::NO_SOFT_FORK_SIGNALLING,
             prev_blockhash: best_block_hash,
-            // merkle root is computed after the witness commitment is added to coinbase
+            // computed after the witness commitment is added to the coinbase
             merkle_root: TxMerkleNode::all_zeros(),
-            time: timestamp,
-            bits,
+            time: self.block_time(&tip_header, template)?,
+            bits: template.bits,
             nonce: 0,
         };
         let mut block = Block { header, txdata };
-        let witness_root = block.witness_root().unwrap();
-        let witness_commitment =
-            Block::compute_witness_commitment(&witness_root, &WITNESS_RESERVED_VALUE);
-
-        // https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#commitment-structure
-        const WITNESS_COMMITMENT_HEADER: [u8; 4] = [0xaa, 0x21, 0xa9, 0xed];
-        let witness_commitment_spk = {
-            let mut push_bytes = PushBytesBuf::from(WITNESS_COMMITMENT_HEADER);
-            let () = push_bytes.extend_from_slice(witness_commitment.as_byte_array())?;
-            ScriptBuf::new_op_return(push_bytes)
-        };
-        block.txdata[0].output.push(TxOut {
-            script_pubkey: witness_commitment_spk,
-            value: bitcoin::Amount::ZERO,
-        });
-        let mut tx_hashes: Vec<_> = block.txdata.iter().map(Transaction::compute_txid).collect();
-        block.header.merkle_root = merkle_tree::calculate_root_inline(&mut tx_hashes)
-            .unwrap()
-            .to_raw_hash()
-            .into();
+        mining::add_witness_commitment(&mut block);
         Ok(block)
+    }
+
+    /// Solve the signet challenge with the Bitcoin Core node's wallet.
+    async fn sign_signet_block(
+        &self,
+        block: &mut Block,
+        challenge: &Script,
+    ) -> Result<(), error::SignSignetBlock> {
+        #[derive(serde::Deserialize)]
+        struct Signed {
+            hex: String,
+            complete: bool,
+        }
+        let SignetTxs { to_spend, to_sign } = SignetTxs::new(block, challenge)?;
+        let prevtxs = serde_json::json!([{
+            "txid": to_spend.compute_txid(),
+            "vout": 0,
+            "scriptPubKey": challenge.to_hex_string(),
+            "amount": 0,
+        }]);
+        let signed: Signed = self
+            .main_client()
+            .request(
+                "signrawtransactionwithwallet",
+                rpc_params![serialize_hex(&to_sign), prevtxs],
+            )
+            .await
+            .map_err(|err| error::BitcoinCoreRPC {
+                method: "signrawtransactionwithwallet".to_string(),
+                error: err,
+            })?;
+        if !signed.complete {
+            return Err(error::SignSignetBlock::Unsolved);
+        }
+        let signed: Transaction = deserialize_hex(&signed.hex)?;
+        let () = mining::add_signet_solution(
+            block,
+            &signed.input[0].script_sig,
+            &signed.input[0].witness,
+        )?;
+        Ok(())
     }
 
     /// Mine a block
@@ -279,16 +337,19 @@ impl BlockProducer {
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
         fees: Amount,
+        template: &TemplateHeader,
     ) -> Result<BlockHash, error::Mine> {
         let transaction_count = transactions.len();
 
-        let mut block = self.finalize_block(coinbase_spk, coinbase_outputs, transactions, fees)?;
-        loop {
-            block.header.nonce += 1;
-            if block.header.validate_pow(block.header.target()).is_ok() {
-                break;
-            }
+        let mut block =
+            self.finalize_block(coinbase_spk, coinbase_outputs, transactions, fees, template)?;
+        if let Some(challenge) = self.signet_challenge() {
+            let () = self.sign_signet_block(&mut block, challenge).await?;
         }
+        let header = block.header;
+        block.header = tokio::task::spawn_blocking(move || mining::grind(header))
+            .await?
+            .ok_or(error::Mine::NonceSpaceExhausted)?;
         let mut block_bytes = vec![];
         block
             .consensus_encode(&mut block_bytes)
@@ -345,74 +406,23 @@ impl BlockProducer {
             })?
     }
 
-    fn check_has_binary(&self, binary: &Path) -> Result<(), error::MissingBinary> {
-        let binary = binary.to_string_lossy().to_string();
-
-        // Python is needed for executing the signet miner script.
-        let check = std::process::Command::new("which")
-            .arg(&binary)
-            .output()
-            .map_err(|err| error::MissingBinary {
-                name: binary.clone(),
-                source: Some(err),
-            })?;
-
-        if !check.status.success() {
-            Err(error::MissingBinary {
-                name: binary,
-                source: None,
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    pub async fn verify_can_mine(&self, blocks: NonZeroU32) -> Result<(), error::VerifyCanMine> {
-        match self.validator().network() {
+    pub async fn verify_can_mine(&self) -> Result<(), error::VerifyCanMine> {
+        let challenge = match self.validator().network() {
             // Mining on regtest always works.
             bitcoin::Network::Regtest => return Ok(()),
-
-            // Verify that's we're able to mine on signet. This involves solving the
-            // signet challenge. This challenge can be complex - but the typical signet
-            // challenge is just a script pubkey that belongs to the signet creators
-            // wallet.
-            //
-            // We make a qualified guess here that the signet challenge is just a script pubkey,
-            // and verify that the corresponding address is in the mainchain wallet.
-            bitcoin::Network::Signet => (),
+            // On signet, the node's wallet has to solve the signet challenge.
+            // Challenges can be complex, but the typical one is just a script
+            // pubkey belonging to the signet creator's wallet: check that the
+            // node's wallet owns the corresponding address.
+            bitcoin::Network::Signet => self
+                .signet_challenge()
+                .ok_or(error::VerifyCanMine::NoSignetChallengeFound)?,
             network => {
                 return Err(error::VerifyCanMine::Network(network));
             }
-        }
-
-        // Signet blocks come out of the signet miner, which pulls its template
-        // from our own `getblocktemplate` server (see
-        // `generate_signet_block`). That is also the only place the drivechain
-        // coinbase messages get added on signet, so there is no serving this
-        // request without the template server running. Checked before the block
-        // count, as it is the more fundamental misconfiguration of the two.
-        if !self.config().enable_block_template_server {
-            return Err(error::VerifyCanMine::NoBlockTemplateServerOnSignet);
-        }
-
-        if blocks.get() > 1 {
-            return Err(error::VerifyCanMine::MultipleBlocksOnSignet);
-        }
-
-        let template = self
-            .fetch_block_template(vec![
-                "signet".to_string(),
-                "segwit".to_string(),
-                crate::rpc_client::BIP300301_RULE.to_string(),
-            ])
-            .await?;
-
-        let Some(signet_challenge) = template.signet_challenge else {
-            return Err(error::VerifyCanMine::NoSignetChallengeFound);
         };
 
-        let address =
-            bitcoin::Address::from_script(&signet_challenge, bitcoin::params::Params::SIGNET)?;
+        let address = bitcoin::Address::from_script(challenge, bitcoin::params::Params::SIGNET)?;
 
         let address_info = self
             .main_client()
@@ -428,225 +438,7 @@ impl BlockProducer {
         }
 
         tracing::debug!("verified ability to solve signet challenge");
-
-        let () = self.check_has_binary(&PathBuf::from("python3"))?;
-        tracing::debug!("verified existence of `python3`");
-
-        let () = self.check_has_binary(&self.config().mining_opts.bitcoin_cli_path)?;
-        tracing::debug!("verified existence of `bitcoin-cli`");
-
-        let () = self.check_has_binary(&self.config().mining_opts.bitcoin_util_path)?;
-        tracing::debug!("verified existence of `bitcoin-util`");
-
         Ok(())
-    }
-
-    async fn get_signet_miner_path(&self) -> Result<PathBuf, error::GetSignetMinerPath> {
-        if let Some(signet_mining_script_path) =
-            self.config().mining_opts.signet_mining_script_path.clone()
-        {
-            tracing::debug!(
-                "Using custom signet miner script path: {}",
-                signet_mining_script_path.display()
-            );
-            Ok(signet_mining_script_path)
-        } else {
-            tracing::debug!("Using default signet miner script path");
-
-            // Store the signet miner in a temporary directory that's consistent across
-            // invocations. This means we'll only need to download it once for every time
-            // we start the process.
-            let dir = std::env::temp_dir().join(format!("signet-miner-{}", std::process::id()));
-
-            // Check if signet miner directory exists
-            if !std::path::Path::new(&dir).exists() {
-                use tokio::process::Command;
-                tracing::info!("Signet miner not found, downloading into {}", dir.display());
-
-                let mut command = Command::new("mkdir");
-                command.args(["-p", &dir.to_string_lossy()]);
-                command.kill_on_drop(true); // important: avoid lingering mining processes that may loop forever with new requests
-                command
-                    .run_utf8()
-                    .await
-                    .map_err(error::GetSignetMinerPath::CreateSignetMinerDir)?;
-
-                // Execute the download script
-                let mut command = Command::new("bash");
-
-                // https://github.com/LayerTwo-Labs/bitcoin-patched/blob/db46e768a88a5c5cf5ec1b1a6bc56023cc201884/contrib/signet/miner
-                const BITCOIN_PATCHED_COMMIT: &str = "db46e768a88a5c5cf5ec1b1a6bc56023cc201884";
-                command.current_dir(&dir)
-                .arg("-c")
-                .arg(format!(r#"
-                    git clone -n --depth=1 --filter=tree:0 \
-                    https://github.com/LayerTwo-Labs/bitcoin-patched.git signet-miner && \
-                    cd signet-miner && \
-                    git sparse-checkout set --no-cone contrib/signet/miner test/functional/test_framework && \
-                    git checkout {BITCOIN_PATCHED_COMMIT}
-                "#));
-
-                let _output = command
-                    .run_utf8()
-                    .await
-                    .map_err(error::GetSignetMinerPath::DownloadSignetMiner)?;
-                tracing::info!("Successfully downloaded signet miner");
-            } else {
-                tracing::info!("Signet miner already exists");
-            }
-
-            Ok(dir.join("signet-miner/contrib/signet/miner"))
-        }
-    }
-
-    // Generate a single signet block, through shelling out to the signet miner script
-    // from Bitcoin Core. We assume that validation of this request has
-    // happened elsewhere (i.e. that we're on signet, and have signing
-    // capabilities).
-    async fn generate_signet_block(
-        &self,
-        coinbase_recipient: Option<bitcoin::Address>,
-    ) -> Result<BlockHash, error::GenerateSignetBlock> {
-        let tip_header = self
-            .validator()
-            .get_header_info(&self.validator().get_mainchain_tip()?)?;
-
-        let getblocktemplate_command = Some(format!(
-            "{} -rpcconnect={} -rpcport={} getblocktemplate",
-            self.config().mining_opts.bitcoin_cli_path.display(),
-            self.config().serve_rpc_addr.ip(),
-            self.config().serve_rpc_addr.port()
-        ));
-        let target_block_interval = self.signet_challenge().map(target_block_interval);
-
-        let mining_script_path = self.get_signet_miner_path().await?;
-        let bitcoin_cli = self.config().bitcoin_cli(bitcoin::Network::Signet)?;
-        let miner = bins::SignetMiner {
-            path: mining_script_path,
-            bitcoin_cli,
-            bitcoin_util: self.config().mining_opts.bitcoin_util_path.clone(),
-            block_interval: target_block_interval,
-            nbits: None,
-            coinbase_recipient,
-            getblocktemplate_command,
-            coinbasetxn: true,
-            debug: self.config().mining_opts.signet_mining_script_debug,
-        };
-
-        let mut command_args = Vec::new();
-        if let Some(target_block_interval) = target_block_interval
-            && let tip_header_time =
-                std::time::UNIX_EPOCH + std::time::Duration::from_secs(tip_header.timestamp.into())
-            && let now = std::time::SystemTime::now()
-            && let Ok(tip_age) = now.duration_since(tip_header_time)
-            && tip_age > target_block_interval
-        {
-            let next_block_time = tip_header.timestamp
-                + tip_age.as_secs().midpoint(target_block_interval.as_secs()) as u32;
-            command_args.push(format!("--set-block-time={next_block_time}"));
-        };
-
-        let mut command = miner.command("generate", command_args);
-        // Important: avoid lingering mining processes that may loop forever with new requests
-        command.kill_on_drop(true);
-
-        // We want to stream stdout/stderr as they come in, for investigating hanging processes.
-        command.stdout(std::process::Stdio::piped());
-        command.stderr(std::process::Stdio::piped());
-        tracing::debug!("Running signet miner: {:?}", command);
-
-        let start = std::time::Instant::now();
-        let mut child = command.spawn().map_err(bins::CommandError::from)?;
-
-        let stdout_pipe = child.stdout.take().expect("stdout was piped");
-        let stderr_pipe = child.stderr.take().expect("stderr was piped");
-
-        use tokio::io::{AsyncBufReadExt as _, BufReader};
-
-        let stdout_task = tokio::spawn(async move {
-            let reader = BufReader::new(stdout_pipe);
-            let mut lines = reader.lines();
-            let mut collected = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(target: "signet_miner::stdout", "{line}");
-                if !collected.is_empty() {
-                    collected.push('\n');
-                }
-                collected.push_str(&line);
-            }
-            collected
-        });
-
-        let stderr_task = tokio::spawn(async move {
-            let reader = BufReader::new(stderr_pipe);
-            let mut lines = reader.lines();
-            let mut collected = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::warn!(target: "signet_miner::stderr", "{line}");
-                if !collected.is_empty() {
-                    collected.push('\n');
-                }
-                collected.push_str(&line);
-            }
-            collected
-        });
-
-        // The miner grinds real proof-of-work. On CI this can blow through
-        // the old 10s budget.
-        const SIGNET_MINER_TIMEOUT: Duration = Duration::from_secs(60);
-        let status = tokio::time::timeout(SIGNET_MINER_TIMEOUT, child.wait())
-            .await
-            .map_err(|_elapsed| {
-                tracing::error!(
-                    "signet miner subprocess timed out after {}s",
-                    SIGNET_MINER_TIMEOUT.as_secs()
-                );
-                error::GenerateSignetBlock::Timeout {
-                    duration: SIGNET_MINER_TIMEOUT,
-                }
-            })?
-            .map_err(bins::CommandError::from)?;
-
-        // Stdout+stderr is already streamed above, so don't need to log it again
-        let _stdout = stdout_task.await.unwrap_or_default();
-        let stderr = stderr_task.await.unwrap_or_default();
-
-        let duration = start.elapsed();
-
-        tracing::debug!("Signet miner finished in {duration:?}: '{status}'");
-
-        if stderr.contains("WARNING submitblock returned bad-diffbits") {
-            let err_msg = "block rejected: bad-diffbits";
-            return Err(bins::CommandError::Stderr(err_msg.to_string().into_bytes()).into());
-        }
-
-        if !status.success() {
-            // The miner's stderr only carries the JSON-RPC code and message
-            // from `bitcoin-cli getblocktemplate`. The underlying template
-            // error is recorded by the block producer hooks.
-            let mut stderr = stderr;
-            if let Some(template_err) = self.last_gbt_error().as_deref() {
-                stderr.push_str("\nblock template error: ");
-                stderr.push_str(template_err);
-            }
-            return Err(bins::CommandError::Stderr(stderr.into_bytes()).into());
-        }
-
-        // The output of the signet miner is unfortunately not very useful,
-        // so we have to fetch the most recent block in order to get the hash.
-        let block_hash = self.main_client().getbestblockhash().await.map_err(|err| {
-            let err = error::BitcoinCoreRPC {
-                method: "getbestblockhash".to_owned(),
-                error: err,
-            };
-            error::GenerateSignetBlock::FetchMostRecentBlockHash(err)
-        })?;
-
-        tracing::info!("Generated signet block: {}", block_hash);
-
-        let () = self.await_block_connection(block_hash).await?;
-
-        Ok(block_hash)
     }
 
     /// Build and mine a single block, paying the block reward to
@@ -658,12 +450,6 @@ impl BlockProducer {
         ack_policy: AckAllProposalsPolicy,
         bundle_policy: WithdrawalBundlePolicy,
     ) -> Result<BlockHash, error::GenerateBlock> {
-        if self.validator().network() == Network::Signet {
-            return self
-                .generate_signet_block(Some(coinbase_addr))
-                .await
-                .map_err(error::GenerateBlock::GenerateSignetBlock);
-        }
         let coinbase_spk = coinbase_addr.script_pubkey();
         let Some(mainchain_tip) = self.validator().try_get_mainchain_tip()? else {
             return Err(error::GenerateBlock::ValidatorNotSynced);
@@ -677,7 +463,7 @@ impl BlockProducer {
                 &mut coinbase_outputs,
             )
             .await?;
-        let selected = self.select_block_txs(mainchain_tip).await?;
+        let (selected, template) = self.select_block_txs(mainchain_tip).await?;
         let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {
             let request = crate::messages::parse_m8_tx(tx)?;
             (request.prev_mainchain_block_hash == mainchain_tip).then(|| {
@@ -717,7 +503,13 @@ impl BlockProducer {
         );
 
         let block_hash = self
-            .mine(coinbase_spk, &coinbase_outputs, transactions, fees)
+            .mine(
+                coinbase_spk,
+                &coinbase_outputs,
+                transactions,
+                fees,
+                &template,
+            )
             .await?;
         let cleanup_result = self
             .db()
