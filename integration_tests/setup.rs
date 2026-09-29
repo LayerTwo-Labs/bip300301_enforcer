@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
-    bins::{self, CommandExt as _},
+    bins,
     proto::{
         self,
         mainchain::{
@@ -46,6 +46,7 @@ use tokio::{
 
 use crate::{
     signet_chain_params::{SIGNET_CACHED_CHAIN_BLOCKS, SIGNET_CHALLENGE_SECRET_KEY},
+    signet_miner::{SignetMiner, TemplateSource},
     util::{
         AbortOnDrop, BinPaths, Bitcoind, BitcoindClient, Electrs, Enforcer, FileDumpConfig,
         TestFileRegistry, VarError,
@@ -74,20 +75,6 @@ impl From<Network> for bitcoin::Network {
             Network::Signet => Self::Signet,
         }
     }
-}
-
-/// Equivalent to `chmod +x`
-#[cfg(unix)]
-fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn make_executable(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 // Signet-specific setup
@@ -124,7 +111,8 @@ impl SignetSetup {
         })
     }
 
-    /// Import the signet challenge key, so the wallet can sign blocks.
+    /// Import the signet challenge key. The enforcer only mines on signet if
+    /// the node wallet owns the challenge address.
     async fn init_bitcoind_wallet(&self, bitcoind_client: &BitcoindClient) -> anyhow::Result<()> {
         tracing::debug!("Importing secret key");
         let mining_descriptor = {
@@ -161,27 +149,8 @@ impl SignetSetup {
         Ok(())
     }
 
-    /// Configure signet miner to use enforcer's GBT server
-    fn configure_miner(
-        signet_miner: &mut bins::SignetMiner,
-        out_dir: &TempDir,
-        enforcer: &Enforcer,
-    ) -> anyhow::Result<()> {
-        let gbt_script_file = out_dir.path().join("gbt-script.sh");
-        tracing::info!("GBT script: {}", gbt_script_file.display());
-        let gbt_script = format!(
-            r#"#!/bin/sh
-            REQUEST='{{"jsonrpc":"2.0","id":0,"method":"getblocktemplate","params":['$1']}}'
-            RESPONSE=$(curl 127.0.0.1:{} --no-progress-meter -H "Content-Type: application/json" --data-binary "${{REQUEST}}")
-            RESULT=$(echo "${{RESPONSE}}" | jq '.result')
-            echo "${{RESULT}}""#,
-            enforcer.serve_rpc_port
-        );
-        std::fs::write(&gbt_script_file, gbt_script)?;
-        make_executable(&gbt_script_file)?;
-        signet_miner.coinbasetxn = true;
-        signet_miner.getblocktemplate_command = Some(format!("{}", gbt_script_file.display()));
-        Ok(())
+    fn miner(&self) -> SignetMiner {
+        SignetMiner::new(self.secret_key.inner, self.signet_challenge.clone())
     }
 }
 
@@ -871,7 +840,7 @@ async fn cached_signet_chain(
 /// Mine the cached signet chain into `out_dir`, replacing anything already
 /// there.
 ///
-/// Runs bitcoind and the signet miner on a throwaway datadir, mines
+/// Runs bitcoind on a throwaway datadir, mines
 /// [`SIGNET_CACHED_CHAIN_BLOCKS`] blocks to an address the node wallet owns,
 /// shuts bitcoind down cleanly, then snapshots the datadir.
 async fn mine_cached_signet_chain(
@@ -901,7 +870,6 @@ async fn mine_cached_signet_chain(
     let (mut bitcoind_exit, on_exit) = ExitWatch::new("bitcoind", res_tx);
     let bitcoind_task =
         bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], on_exit);
-    let mut bitcoin_cli = bitcoind.new_bitcoin_cli(bin_paths.bitcoin_cli()?.clone());
     let bitcoind_client = bitcoind.rpc_client()?;
     bitcoind_exit
         .unless_exited(wait_for_bitcoind_ready(&bitcoind_client))
@@ -910,7 +878,6 @@ async fn mine_cached_signet_chain(
     let _create_wallet_output: serde_json::Value = bitcoind_client
         .request("createwallet", rpc_params!["integration-test"])
         .await?;
-    bitcoin_cli.rpc_wallet = Some("integration-test".to_owned());
     let () = signet_setup.init_bitcoind_wallet(&bitcoind_client).await?;
 
     // A fresh wallet address rather than `signet_challenge_addr`, keeping the
@@ -922,49 +889,18 @@ async fn mine_cached_signet_chain(
         .require_network(bitcoin::Network::Signet)?;
     tracing::info!(%mining_address, "Mining cached chain's coinbases to the node wallet");
 
-    // These are plain layer 1 templates, and a node that enforces the
-    // drivechain rules will not serve one unless the client acknowledges the
-    // `bip300301` rule. The signet miner's own request does not, and it is not
-    // ours to change -- but it takes a command to fetch templates with, so the
-    // rule goes on in passing. Nodes that do not require it ignore a rule name
-    // they do not know, which keeps one path for every flavor.
-    let gbt_script_file = dirs.base_dir.path().join("gbt-node-script.sh");
-    tracing::debug!("Node GBT script: {}", gbt_script_file.display());
-    std::fs::write(
-        &gbt_script_file,
-        format!(
-            r#"#!/bin/sh
-REQUEST=$(printf '%s' "$1" | jq -c '.rules = ((.rules // []) + ["{rule}"] | unique)')
-exec {bitcoin_cli} getblocktemplate "$REQUEST"
-"#,
-            rule = bip300301_enforcer_lib::rpc_client::BIP300301_RULE,
-            bitcoin_cli = bitcoin_cli.display(),
-        ),
-    )?;
-    make_executable(&gbt_script_file)?;
-
-    let signet_miner = bins::SignetMiner {
-        path: bin_paths.signet_miner()?.clone(),
-        bitcoin_cli: bitcoin_cli.clone(),
-        bitcoin_util: bin_paths.bitcoin_util()?.clone(),
-        block_interval: None,
-        coinbase_recipient: Some(mining_address.clone()),
-        debug: false,
-        // Signet's floor difficulty. Still real work -- roughly 0.6s of
-        // grinding per block -- which is exactly why this is cached.
-        nbits: None,
-        // Mine against Bitcoin Core's own templates: these are plain funding
-        // blocks, with no BIP300 messages that would need the enforcer. The
-        // command only forwards the request to the node, with the rule ack
-        // added; it is not the enforcer's template server.
-        getblocktemplate_command: Some(format!("{}", gbt_script_file.display())),
-        // The miner builds its own coinbase, paying `coinbase_recipient`.
-        coinbasetxn: false,
-    };
+    // Mine against Bitcoin Core's own templates: these are plain funding
+    // blocks, with no BIP300 messages that would need the enforcer.
+    let signet_miner = signet_setup.miner();
+    let payout = mining_address.script_pubkey();
     for height in 1..=SIGNET_CACHED_CHAIN_BLOCKS {
-        let _mine_output = signet_miner
-            .command("generate", vec!["--address", &mining_address.to_string()])
-            .run_utf8()
+        let _block_hash = signet_miner
+            .mine_block(
+                &bitcoind_client,
+                TemplateSource::Node {
+                    payout: payout.clone(),
+                },
+            )
             .await?;
         if height % 25 == 0 || height == SIGNET_CACHED_CHAIN_BLOCKS {
             tracing::info!("Mined {height}/{SIGNET_CACHED_CHAIN_BLOCKS} signet blocks");
@@ -1170,8 +1106,8 @@ type LazyLockBoxedSend<T> = LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
 pub struct PostSetup {
     pub network: Network,
     pub mode: Mode,
-    /// For what has to shell out to `bitcoin-cli`, such as the signet miner.
-    /// Tests talk to the node over `bitcoind_client`.
+    /// The node's RPC credentials and port. Tests talk to the node over
+    /// `bitcoind_client`.
     pub bitcoin_cli: bins::BitcoinCli,
     pub bitcoind_client: BitcoindClient,
     bitcoin_util: LazyLockBoxedSend<Result<bins::BitcoinUtil, Arc<VarError>>>,
@@ -1179,7 +1115,7 @@ pub struct PostSetup {
     // before reserved ports are freed and temp dirs are cleared
     pub tasks: Tasks,
     /// Always `Some(_)` if `network == Network::Signet`, `None` otherwise
-    pub signet_miner: Option<bins::SignetMiner>,
+    pub signet_miner: Option<SignetMiner>,
     pub gbt_client: jsonrpsee::http_client::HttpClient,
     pub validator_service_client: ValidatorServiceClient<Transport>,
     pub wallet_service_client: WalletServiceClient<Transport>,
@@ -1311,25 +1247,7 @@ impl PostSetup {
                 .parse::<Address<_>>()?
                 .require_network(bitcoind.network)?
         };
-        let mut signet_miner = if signet_setup.is_some() {
-            Some(bins::SignetMiner {
-                path: bin_paths.signet_miner()?.clone(),
-                bitcoin_cli: bitcoin_cli.clone(),
-                bitcoin_util: bin_paths.bitcoin_util()?.clone(),
-                block_interval: None,
-                coinbase_recipient: Some(mining_address.clone()),
-                debug: false,
-                // `None` makes the miner pass `--min-nbits`, grinding at
-                // signet's floor difficulty. Calibrating for ~1s/block here
-                // instead adds ~1s of pure grinding per mined block, which
-                // dominates signet test runtime.
-                nbits: None,
-                getblocktemplate_command: None,
-                coinbasetxn: false,
-            })
-        } else {
-            None
-        };
+        let signet_miner = signet_setup.as_ref().map(SignetSetup::miner);
         // Mine 1 block, so the chain is non-empty. A restored chain already
         // has blocks -- and mining a signet one costs real proof-of-work, so
         // don't.
@@ -1345,16 +1263,15 @@ impl PostSetup {
             );
             tracing::debug!("Restored signet chain at height {blocks}");
         } else if let Some(signet_miner) = signet_miner.as_ref() {
-            let mine_output = signet_miner
-                .command("generate", vec!["--address", &mining_address.to_string()])
-                .run_utf8()
+            let block_hash = signet_miner
+                .mine_block(
+                    &bitcoind_client,
+                    TemplateSource::Node {
+                        payout: mining_address.script_pubkey(),
+                    },
+                )
                 .await?;
-            tracing::debug!("Checking that block was mined successfully");
-            let blocks: u32 = bitcoind_client
-                .request("getblockcount", rpc_params![])
-                .await?;
-            anyhow::ensure!(blocks == 1);
-            tracing::debug!("Mined 1 block: `{mine_output}`");
+            tracing::debug!(%block_hash, "Mined 1 block");
         } else {
             let _block_hashes: Vec<BlockHash> = bitcoind_client
                 .request(
@@ -1446,9 +1363,9 @@ impl PostSetup {
 
         // The JSON-RPC (`getblocktemplate`) server only runs in the mode that
         // serves block templates, and it binds before the enforcer has synced.
-        // Both the `gbt_client` above and the signet miner's GBT script talk to
-        // it, so wait for it to serve a template rather than racing the first
-        // request against startup.
+        // Both the `gbt_client` above and the signet miner talk to it, so wait
+        // for it to serve a template rather than racing the first request
+        // against startup.
         if enforcer.enable_block_template_server {
             enforcer_exit
                 .unless_exited(async {
@@ -1462,9 +1379,6 @@ impl PostSetup {
                     wait_for_block_templates(&gbt_client).await
                 })
                 .await?;
-        }
-        if let Some(signet_miner) = signet_miner.as_mut() {
-            let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }
         // Use HTTP/2 to multiplex event subscriptions and other RPCs. With
         // pooled HTTP/1.1, opening another call while a stream is live can

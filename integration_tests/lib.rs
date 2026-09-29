@@ -4,6 +4,7 @@ pub mod integration_test;
 pub mod mine;
 pub mod setup;
 pub mod signet_chain_params;
+pub mod signet_miner;
 mod test_activation_height;
 mod test_blinded_m6_roundtrip;
 mod test_bmm_bid_auction;

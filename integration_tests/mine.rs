@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bip300301_enforcer_lib::{
-    bins::{CommandError, CommandExt, SignetMiner},
+    bins::{CommandError, CommandExt},
     proto::{
         self, ToStatus,
         mainchain::{
@@ -14,7 +14,7 @@ use bip300301_enforcer_lib::{
         },
     },
 };
-use bitcoin::{Address, Transaction, TxOut};
+use bitcoin::{Transaction, TxOut};
 use connectrpc::ConnectError;
 use either::Either;
 use jsonrpsee::{core::client::ClientT as _, rpc_params};
@@ -27,6 +27,7 @@ use crate::{
         MiningMode, Network, PostSetup, Sidechain, WAIT_POLL_INTERVAL_SLOW, WAIT_TIMEOUT,
         wait_until,
     },
+    signet_miner::TemplateSource,
     util::VarError,
 };
 
@@ -60,26 +61,6 @@ pub async fn wait_for_tx_in_block_template(
         },
     )
     .await
-}
-
-/// Mine a single signet block
-async fn mine_single_signet(
-    signet_miner: &SignetMiner,
-    mining_address: &Address,
-) -> Result<(), CommandError> {
-    let _mine_output = signet_miner
-        .command(
-            "generate",
-            vec![
-                "--address",
-                &mining_address.to_string(),
-                "--block-interval",
-                "1",
-            ],
-        )
-        .run_utf8()
-        .await?;
-    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -195,7 +176,7 @@ pub enum MineSignetError {
     #[error("Timed out after {WAIT_TIMEOUT:?} waiting for a block event")]
     BlockEventTimeout,
     #[error(transparent)]
-    Command(#[from] CommandError),
+    Mine(#[from] crate::signet_miner::MineSignetBlockError),
     #[error("Expected block event")]
     NoBlockEvent,
     #[error("Signet miner not configured")]
@@ -235,7 +216,11 @@ where
         .await
         .map_err(|err| Either::Left(err.into()))?;
     for _ in 0..blocks {
-        let () = mine_single_signet(signet_miner, &post_setup.mining_address)
+        let _block_hash = signet_miner
+            .mine_block(
+                &post_setup.bitcoind_client,
+                TemplateSource::Enforcer(&post_setup.gbt_client),
+            )
             .await
             .map_err(|err| Either::Left(err.into()))?;
         let Some(view) = timeout(WAIT_TIMEOUT, stream.message())
