@@ -734,6 +734,48 @@ pub async fn wait_for_pending_proposal(
     .await
 }
 
+pub async fn best_block_hash(bitcoind: &BitcoindClient) -> anyhow::Result<BlockHash> {
+    Ok(bitcoind.request("getbestblockhash", rpc_params![]).await?)
+}
+
+pub async fn invalidate_block(bitcoind: &BitcoindClient, block: BlockHash) -> anyhow::Result<()> {
+    Ok(bitcoind
+        .request("invalidateblock", rpc_params![block])
+        .await?)
+}
+
+/// Mine one block with no transactions, whose coinbase pays to `output`: an
+/// address or a descriptor.
+pub async fn generate_empty_block(
+    bitcoind: &BitcoindClient,
+    output: &str,
+) -> anyhow::Result<BlockHash> {
+    #[derive(serde::Deserialize)]
+    struct Generated {
+        hash: BlockHash,
+    }
+    let generated: Generated = bitcoind
+        .request("generateblock", rpc_params![output, Vec::<String>::new()])
+        .await?;
+    Ok(generated.hash)
+}
+
+/// How many withdrawal bundles the validator has pending for `sidechain_id`.
+pub async fn pending_bundle_count(
+    client: &ValidatorServiceClient<Transport>,
+    sidechain_id: SidechainNumber,
+) -> anyhow::Result<usize> {
+    use proto::mainchain::GetWithdrawalBundleProposalsRequest;
+    Ok(client
+        .get_withdrawal_bundle_proposals(GetWithdrawalBundleProposalsRequest {
+            sidechain_id: proto::wrap_u32(sidechain_id.0.into()),
+        })
+        .await?
+        .into_owned()
+        .proposals
+        .len())
+}
+
 /// Per-run state that bitcoind rewrites on startup, or that would leak one
 /// run's runtime details into the next. Excluded when snapshotting a datadir
 /// for reuse.

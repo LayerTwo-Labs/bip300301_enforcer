@@ -357,6 +357,8 @@ pub enum GetPendingWithdrawalsError {
     #[error(transparent)]
     DbGet(#[from] db::error::Get),
     #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
+    #[error(transparent)]
     ReadTxn(#[from] env::error::ReadTxn),
 }
 
@@ -364,6 +366,7 @@ impl ToStatus for GetPendingWithdrawalsError {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
+            Self::DbTryGet(err) => StatusBuilder::new(err),
             Self::ReadTxn(err) => StatusBuilder::new(err),
         }
     }
@@ -464,6 +467,22 @@ impl Validator {
             network,
             network_params,
         })
+    }
+
+    /// Withdrawal bundle `m6id` for `sidechain_number`, if it is pending at
+    /// the current tip.
+    pub fn try_get_pending_withdrawal(
+        &self,
+        sidechain_number: &SidechainNumber,
+        m6id: &crate::types::M6id,
+    ) -> Result<Option<crate::types::PendingM6idInfo>, GetPendingWithdrawalsError> {
+        let rotxn = self.dbs.read_txn()?;
+        Ok(self
+            .dbs
+            .active_sidechains
+            .pending_m6ids()
+            .try_get(&rotxn, sidechain_number)?
+            .and_then(|pending| pending.get(m6id).copied()))
     }
 
     pub fn network(&self) -> bitcoin::Network {

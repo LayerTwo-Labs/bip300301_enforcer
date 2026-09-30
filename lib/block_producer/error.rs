@@ -426,6 +426,8 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     #[error(transparent)]
     GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
     #[error(transparent)]
+    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
+    #[error(transparent)]
     GetSeenBmmRequestsForParentBlock(
         #[from] crate::validator::GetSeenBmmRequestsForParentBlockError,
     ),
