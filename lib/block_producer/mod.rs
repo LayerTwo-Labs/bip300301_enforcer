@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bitcoin::{BlockHash, Transaction, Txid, hashes::Hash as _};
+use bitcoin::{Amount, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
         CoinbaseTxn, CoinbaseTxouts, CusfBlockProducer, FilledBlockTemplate, InitialBlockTemplate,
@@ -16,7 +16,9 @@ use tracing::instrument;
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    types::{BlindedM6, M6id, PendingM6idInfo, WithdrawalBundleEventKind},
+    types::{
+        BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber, WithdrawalBundleEventKind,
+    },
     validator::Validator,
 };
 
@@ -362,7 +364,7 @@ impl BlockProducer {
                     }
                 }
             }
-            let winners = mine::bmm_auction_winners(bids);
+            let winners = bmm_auction_winners(bids);
             template
                 .exclude_mempool_txs
                 .extend(
@@ -507,4 +509,19 @@ impl BlockProducer {
             BoolWit::False(_wit) => Ok(()),
         }
     }
+}
+
+fn bmm_auction_winners(
+    bids: impl IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
+) -> HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> {
+    let mut winners = HashMap::new();
+    for (sidechain_number, commitment, txid, fee) in bids {
+        let winner = winners
+            .entry(sidechain_number)
+            .or_insert((commitment, txid, fee));
+        if fee > winner.2 {
+            *winner = (commitment, txid, fee);
+        }
+    }
+    winners
 }

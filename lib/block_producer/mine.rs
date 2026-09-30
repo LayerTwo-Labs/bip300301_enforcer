@@ -4,7 +4,7 @@
 //! locally; on signet, the Bitcoin Core node's wallet also signs the block.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,23 +33,8 @@ use crate::{
     block_producer::{BlockProducer, error},
     messages::CoinbaseMessage,
     mining::{self, SignetTxs},
-    types::{BmmCommitment, HeaderInfo, SidechainNumber},
+    types::HeaderInfo,
 };
-
-pub(in crate::block_producer) fn bmm_auction_winners(
-    bids: impl IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
-) -> HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> {
-    let mut winners = HashMap::new();
-    for (sidechain_number, commitment, txid, fee) in bids {
-        let winner = winners
-            .entry(sidechain_number)
-            .or_insert((commitment, txid, fee));
-        if fee > winner.2 {
-            *winner = (commitment, txid, fee);
-        }
-    }
-    winners
-}
 
 fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
     const L2L_SIGNET_CHALLENGE: &[u8] = b"00141551188e5153533b4fdd555449e640d9cc129456";
@@ -459,44 +444,5 @@ impl BlockProducer {
             )
             .await?;
         Ok(block_hash)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use bitcoin::{Amount, Txid, hashes::Hash as _};
-
-    use super::bmm_auction_winners;
-    use crate::types::{BmmCommitment, SidechainNumber};
-
-    #[test]
-    fn highest_bmm_fee_wins_each_sidechain_slot() {
-        let slot = SidechainNumber(7);
-        let low_txid = Txid::from_byte_array([1; 32]);
-        let high_txid = Txid::from_byte_array([2; 32]);
-        let other_txid = Txid::from_byte_array([3; 32]);
-        let winners = bmm_auction_winners([
-            (
-                slot,
-                BmmCommitment([1; 32]),
-                low_txid,
-                Amount::from_sat(1_000),
-            ),
-            (
-                slot,
-                BmmCommitment([2; 32]),
-                high_txid,
-                Amount::from_sat(2_000),
-            ),
-            (
-                SidechainNumber(8),
-                BmmCommitment([3; 32]),
-                other_txid,
-                Amount::from_sat(500),
-            ),
-        ]);
-
-        assert_eq!(winners[&slot].1, high_txid);
-        assert_eq!(winners[&SidechainNumber(8)].1, other_txid);
     }
 }
