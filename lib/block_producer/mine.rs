@@ -31,11 +31,9 @@ use bitcoin_jsonrpsee::{
 
 use crate::{
     block_producer::{BlockProducer, error},
-    messages::CoinbaseBuilder,
+    messages::CoinbaseMessage,
     mining::{self, SignetTxs},
-    types::{
-        AckAllProposalsPolicy, BmmCommitment, HeaderInfo, SidechainNumber, WithdrawalBundlePolicy,
-    },
+    types::{BmmCommitment, HeaderInfo, SidechainNumber},
 };
 
 pub(in crate::block_producer) fn bmm_auction_winners(
@@ -119,10 +117,13 @@ impl BlockProducer {
             })
     }
 
+    /// The drivechain messages from the served template's coinbase, its txs
+    /// with their fees, and its header fields.
     async fn select_block_txs(
         &self,
         mainchain_tip: BlockHash,
-    ) -> Result<(Vec<(Transaction, Amount)>, TemplateHeader), error::SelectBlockTxs> {
+    ) -> Result<(Vec<TxOut>, Vec<(Transaction, Amount)>, TemplateHeader), error::SelectBlockTxs>
+    {
         let mut rules = vec![
             "segwit".to_string(),
             crate::rpc_client::BIP300301_RULE.to_string(),
@@ -151,13 +152,22 @@ impl BlockProducer {
         }
 
         // The enforcer's own template server builds the template through the
-        // block producer hooks: the tx set respects the enforcer's mempool
-        // rules and already ends with the withdrawal-payout suffix txs. It
-        // only builds `coinbasetxn` templates, so a `coinbasevalue` one was
-        // not built that way, and mining it would leave the payouts out.
-        if let CoinbaseTxnOrValue::ValueSats(_) = template.coinbase_txn_or_value {
+        // block producer hooks. It only builds `coinbasetxn` templates, so a
+        // `coinbasevalue` one was not built that way.
+        let CoinbaseTxnOrValue::Txn(coinbase) = template.coinbase_txn_or_value else {
             return Err(error::SelectBlockTxs::NoCoinbaseTxn);
-        }
+        };
+        let coinbase: Transaction = bitcoin::consensus::deserialize(&coinbase.data)
+            .map_err(error::SelectBlockTxs::DecodeTemplateCoinbase)?;
+
+        // The served coinbase pays the server's reward address and commits to
+        // its own witness root. Both are rebuilt for this block, so keep only
+        // the messages.
+        let coinbase_messages = coinbase
+            .output
+            .into_iter()
+            .filter(|txout| CoinbaseMessage::parse(&txout.script_pubkey).is_ok())
+            .collect();
         let mut res = Vec::with_capacity(template.transactions.len());
         for template_tx in template.transactions {
             let txid = template_tx.txid;
@@ -174,7 +184,7 @@ impl BlockProducer {
             res.push((transaction, fee));
         }
 
-        Ok((res, template_header))
+        Ok((coinbase_messages, res, template_header))
     }
 
     /// Construct a coinbase tx paying out to `coinbase_spk`.
@@ -417,59 +427,20 @@ impl BlockProducer {
         Ok(())
     }
 
-    /// Build and mine a single block, paying the block reward to
-    /// `coinbase_addr`. The caller is responsible for verifying that mining is
-    /// possible (see [`Self::verify_can_mine`]).
+    /// Build and mine a single block from the served template, paying the
+    /// block reward to `coinbase_addr`. The caller is responsible for verifying
+    /// that mining is possible (see [`Self::verify_can_mine`]).
     pub async fn generate_block(
         &self,
         coinbase_addr: bitcoin::Address,
-        ack_policy: AckAllProposalsPolicy,
-        bundle_policy: WithdrawalBundlePolicy,
     ) -> Result<BlockHash, error::GenerateBlock> {
         let coinbase_spk = coinbase_addr.script_pubkey();
         let Some(mainchain_tip) = self.validator().try_get_mainchain_tip()? else {
             return Err(error::GenerateBlock::ValidatorNotSynced);
         };
-        let mut coinbase_outputs = Vec::new();
-        let () = self
-            .extend_coinbase_txouts(
-                ack_policy,
-                bundle_policy,
-                mainchain_tip,
-                &mut coinbase_outputs,
-            )
-            .await?;
-        let (selected, template) = self.select_block_txs(mainchain_tip).await?;
-        let winners = bmm_auction_winners(selected.iter().filter_map(|(tx, fee)| {
-            let request = crate::messages::parse_m8_tx(tx)?;
-            (request.prev_mainchain_block_hash == mainchain_tip).then(|| {
-                (
-                    request.sidechain_number,
-                    request.sidechain_block_hash,
-                    tx.compute_txid(),
-                    *fee,
-                )
-            })
-        }));
-        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
-        let mut fees = Amount::ZERO;
-        let mut transactions = Vec::with_capacity(selected.len());
-        for (tx, fee) in selected {
-            if let Some(request) = crate::messages::parse_m8_tx(&tx) {
-                let txid = tx.compute_txid();
-                if winners
-                    .get(&request.sidechain_number)
-                    .is_none_or(|(_, winner_txid, _)| *winner_txid != txid)
-                {
-                    continue;
-                }
-                coinbase_builder
-                    .bmm_accept(request.sidechain_number, request.sidechain_block_hash)?;
-            }
-            fees += fee;
-            transactions.push(tx);
-        }
-        let () = coinbase_builder.build()?;
+        let (coinbase_outputs, selected, template) = self.select_block_txs(mainchain_tip).await?;
+        let fees = selected.iter().map(|(_tx, fee)| *fee).sum();
+        let transactions: Vec<_> = selected.into_iter().map(|(tx, _fee)| tx).collect();
 
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),

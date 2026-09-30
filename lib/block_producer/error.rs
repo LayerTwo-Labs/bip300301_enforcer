@@ -199,6 +199,8 @@ pub enum SelectBlockTxs {
          the enforcer and would leave out the withdrawal payouts"
     )]
     NoCoinbaseTxn,
+    #[error("failed to decode the block template's coinbase transaction")]
+    DecodeTemplateCoinbase(#[source] bitcoin::consensus::encode::Error),
     #[error("failed to decode transaction `{txid}` from the block template")]
     DecodeTemplateTransaction {
         txid: bitcoin::Txid,
@@ -231,7 +233,10 @@ impl ToStatus for SelectBlockTxs {
             }
             Self::DecodeTemplateTransaction { .. }
             | Self::NegativeTemplateTransactionFee { .. }
-            | Self::NoCoinbaseTxn => StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal),
+            | Self::NoCoinbaseTxn
+            | Self::DecodeTemplateCoinbase(_) => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
+            }
             // Retryable: whichever side is behind just needs to catch up.
             Self::TemplateTipMismatch { .. } => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
@@ -381,13 +386,7 @@ impl ToStatus for VerifyCanMine {
 #[derive(Debug, Diagnostic, Error)]
 pub enum GenerateBlock {
     #[error(transparent)]
-    CoinbaseBuilder(#[from] CoinbaseMessagesError),
-    #[error(transparent)]
-    GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
-    #[error(transparent)]
     Mine(#[from] Mine),
-    #[error(transparent)]
-    PushBytesBuf(#[from] bitcoin::script::PushBytesError),
     #[error(transparent)]
     SelectBlockTxs(#[from] SelectBlockTxs),
     #[error(transparent)]
@@ -399,12 +398,10 @@ pub enum GenerateBlock {
 impl ToStatus for GenerateBlock {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::CoinbaseBuilder(err) => err.builder(),
-            Self::GenerateCoinbaseTxouts(err) => err.builder(),
             Self::Mine(err) => err.builder(),
             Self::SelectBlockTxs(err) => err.builder(),
             Self::TryGetMainchainTip(err) => err.builder(),
-            Self::PushBytesBuf(_) | Self::ValidatorNotSynced => StatusBuilder::new(self),
+            Self::ValidatorNotSynced => StatusBuilder::new(self),
         }
     }
 }
