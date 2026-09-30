@@ -26,7 +26,7 @@ use bitcoin::{
 use bitcoin_jsonrpsee::{
     MainClient as _,
     client::{BlockTemplate, BlockTemplateRequest, CoinbaseTxnOrValue},
-    jsonrpsee::{core::client::ClientT as _, rpc_params},
+    jsonrpsee::{core::client::ClientT as _, http_client::HttpClient, rpc_params},
 };
 
 use crate::{
@@ -101,9 +101,10 @@ struct TemplateHeader {
 impl BlockProducer {
     async fn fetch_block_template(
         &self,
+        gbt_client: &HttpClient,
         rules: Vec<String>,
     ) -> Result<BlockTemplate, error::GetBlockTemplate> {
-        self.gbt_client()
+        gbt_client
             .get_block_template(BlockTemplateRequest {
                 mode: None,
                 data: None,
@@ -129,7 +130,10 @@ impl BlockProducer {
         if self.validator().network() == Network::Signet {
             rules.push("signet".to_string());
         }
-        let template = self.fetch_block_template(rules).await?;
+        let gbt_client = self
+            .gbt_client()
+            .ok_or(error::SelectBlockTxs::NoBlockTemplateServer)?;
+        let template = self.fetch_block_template(gbt_client, rules).await?;
         let template_header = TemplateHeader {
             bits: template.compact_target,
             mintime: template.mintime,
@@ -146,24 +150,15 @@ impl BlockProducer {
             });
         }
 
-        // A `coinbasetxn` template comes from the enforcer's own template
-        // server, which builds it through the block producer hooks: the tx set
-        // respects the enforcer's mempool rules and already ends with the
-        // withdrawal-payout suffix txs. A `coinbasevalue` template comes from
-        // Bitcoin Core, which knows nothing of drivechain rules, so the suffix
-        // txs must be generated locally.
-        let mut res = match template.coinbase_txn_or_value {
-            CoinbaseTxnOrValue::Txn(_) => Vec::new(),
-            CoinbaseTxnOrValue::ValueSats(_) => {
-                let ctips = self.validator().get_ctips()?;
-                self.generate_suffix_txs(&ctips)
-                    .await?
-                    .into_iter()
-                    .map(|tx| (tx, Amount::ZERO))
-                    .collect()
-            }
-        };
-
+        // The enforcer's own template server builds the template through the
+        // block producer hooks: the tx set respects the enforcer's mempool
+        // rules and already ends with the withdrawal-payout suffix txs. It
+        // only builds `coinbasetxn` templates, so a `coinbasevalue` one was
+        // not built that way, and mining it would leave the payouts out.
+        if let CoinbaseTxnOrValue::ValueSats(_) = template.coinbase_txn_or_value {
+            return Err(error::SelectBlockTxs::NoCoinbaseTxn);
+        }
+        let mut res = Vec::with_capacity(template.transactions.len());
         for template_tx in template.transactions {
             let txid = template_tx.txid;
             let transaction: Transaction =

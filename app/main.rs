@@ -1940,18 +1940,19 @@ async fn main() -> Result<()> {
         .transpose()?;
 
     // The producer's `getblocktemplate` queries go to the enforcer's own
-    // block template server when it is enabled. Without the server, fall
-    // back to Bitcoin Core's templates, which know nothing of drivechain rules.
-    let gbt_client = if cli.enable_block_template_server {
-        bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
-            .build(format!("http://{}", cli.serve_rpc_addr))
-            .map_err(|err| {
-                miette::Report::from_err(err)
-                    .wrap_err("failed to create client for the block template server")
-            })?
-    } else {
-        mainchain_client.clone()
-    };
+    // block template server. Bitcoin Core's templates know nothing of
+    // drivechain rules, so without the server the producer cannot mine.
+    let gbt_client = cli
+        .enable_block_template_server
+        .then(|| {
+            bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
+                .build(format!("http://{}", cli.serve_rpc_addr))
+                .map_err(|err| {
+                    miette::Report::from_err(err)
+                        .wrap_err("failed to create client for the block template server")
+                })
+        })
+        .transpose()?;
 
     let producer = BlockProducer::new(
         &wallet_data_dir,
@@ -2038,7 +2039,7 @@ async fn main() -> Result<()> {
         }
 
         Either::Right(Either::Right(wallet))
-    } else if cli.enable_block_template_server || mining_enabled {
+    } else if cli.enable_block_template_server {
         Either::Right(Either::Left(producer))
     } else {
         Either::Left(validator)
@@ -2108,28 +2109,24 @@ async fn main() -> Result<()> {
                 });
             }
             (true, Either::Right(Either::Left(producer))) => {
-                let gbt = if cli.enable_block_template_server {
-                    // The block producer has no wallet to derive a payout address
-                    // from, so `--coinbase-recipient` is mandatory here.
-                    let mining_reward_address = coinbase_recipient.clone().ok_or_else(|| {
-                        miette!(
-                            "serving block templates without a wallet requires `--coinbase-recipient`"
-                        )
-                    })?;
-                    Some(GbtConfig {
-                        mining_reward_address,
-                        network,
-                        cache_lifetime: cli.gbt_cache_lifetime(),
-                        serve_rpc_addr: cli.serve_rpc_addr,
-                    })
-                } else {
-                    None
+                // The block producer has no wallet to derive a payout address
+                // from, so `--coinbase-recipient` is mandatory here.
+                let mining_reward_address = coinbase_recipient.clone().ok_or_else(|| {
+                    miette!(
+                        "serving block templates without a wallet requires `--coinbase-recipient`"
+                    )
+                })?;
+                let gbt = GbtConfig {
+                    mining_reward_address,
+                    network,
+                    cache_lifetime: cli.gbt_cache_lifetime(),
+                    serve_rpc_addr: cli.serve_rpc_addr,
                 };
                 let mempool_dat = cli.node_blocks_dir_opts.mempool_dat.clone();
                 tasks.spawn(async move {
                     let res = run_block_producer_mempool_task(
                         producer,
-                        gbt,
+                        Some(gbt),
                         mainchain_client,
                         zmq,
                         mempool_dat,

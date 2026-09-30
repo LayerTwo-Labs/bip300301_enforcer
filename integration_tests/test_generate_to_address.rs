@@ -7,27 +7,18 @@ use crate::{
     util::BitcoindClient,
 };
 
-pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Result<()> {
+pub async fn test_generate_to_address(setup: PreSetup) -> anyhow::Result<()> {
     let (res_tx, _res_rx) = mpsc::unbounded();
     let setup_opts: SetupOpts = SetupOpts {
         enforcer_wallet: EnforcerWallet::Disabled,
         ..Default::default()
     };
 
-    let post_setup = setup.setup(mode, setup_opts, res_tx).await?;
-
-    // In GetBlockTemplate mode, `GenerateToAddress` fetches its block template
-    // from the enforcer's own `getblocktemplate` server, which only comes up
-    // once the initial mempool sync is done. Wait for it, so the requests
-    // below don't race server startup.
-    if matches!(mode, Mode::GetBlockTemplate) {
-        crate::setup::wait_for_port(
-            "127.0.0.1",
-            post_setup.reserved_ports.enforcer_serve_rpc.port(),
-            std::time::Duration::from_secs(30),
-        )
+    // Setup waits for the enforcer's template server, which `GenerateToAddress`
+    // builds its blocks from.
+    let post_setup = setup
+        .setup(Mode::GetBlockTemplate, setup_opts, res_tx)
         .await?;
-    }
 
     // `GenerateToAddress` builds on the validator's tip, and a template from
     // bitcoind that is ahead of it is refused. Signet restores a pre-mined
@@ -218,6 +209,50 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
             .as_deref()
             .is_some_and(|message| message.contains(&oversized_address)),
         "expected the error to echo the oversized address, got: {status}"
+    );
+
+    drop(post_setup);
+    Ok(())
+}
+
+/// Without the enforcer's block template server there is nothing to build a
+/// block from that follows drivechain rules, so `GenerateToAddress` is refused
+/// before anything is mined.
+pub async fn test_generate_to_address_requires_template_server(
+    setup: PreSetup,
+) -> anyhow::Result<()> {
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let setup_opts: SetupOpts = SetupOpts {
+        enforcer_wallet: EnforcerWallet::Disabled,
+        ..Default::default()
+    };
+    let post_setup = setup.setup(Mode::NoMempool, setup_opts, res_tx).await?;
+    let () = crate::integration_test::wait_for_validator_tip(&post_setup).await?;
+    let height_before: u64 = post_setup
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
+
+    let status = post_setup
+        .mining_service_client
+        .generate_to_address(GenerateToAddressRequest {
+            blocks: proto::wrap_u32(1),
+            address: post_setup.mining_address.to_string(),
+        })
+        .await
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("GenerateToAddress succeeded without a template server"))?;
+    anyhow::ensure!(
+        status.code == connectrpc::ErrorCode::FailedPrecondition,
+        "expected failed precondition without a template server, got: {status}"
+    );
+    let height_after: u64 = post_setup
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
+        .await?;
+    anyhow::ensure!(
+        height_after == height_before,
+        "expected no block to be mined, the chain went from {height_before} to {height_after}"
     );
 
     drop(post_setup);

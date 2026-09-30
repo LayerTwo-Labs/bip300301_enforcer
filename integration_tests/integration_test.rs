@@ -1060,7 +1060,6 @@ pub fn tests(
     let deposit_withdraw_roundtrip_tests = [
         (Network::Regtest, Mode::GetBlockTemplate),
         (Network::Regtest, Mode::Mempool),
-        (Network::Regtest, Mode::NoMempool),
         (Network::Signet, Mode::GetBlockTemplate),
     ]
     .iter()
@@ -1236,31 +1235,33 @@ pub fn tests(
     )]);
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
-    // GetBlockTemplate mode mines from templates served by the enforcer's own
-    // `getblocktemplate` server; NoMempool mode exercises the fallback to
-    // Bitcoin Core's templates. On signet, the node's wallet also signs.
-    async_trials.extend(
-        [Network::Regtest, Network::Signet]
-            .into_iter()
-            .flat_map(|network| {
-                [Mode::GetBlockTemplate, Mode::NoMempool].map(|mode| (network, mode))
-            })
-            .map(|(network, mode)| {
-                new_trial(
-                    format!("generate_to_address (mode: {mode}, network: {network})"),
-                    TestSetupComponents {
-                        bin_paths: bin_paths.clone(),
-                        network,
-                        mode,
-                        file_registry: file_registry.clone(),
-                        failure_collector: failure_collector.clone(),
-                    },
-                    move |setup| {
-                        crate::test_generate_to_address::test_generate_to_address(setup, mode)
-                    },
-                )
-            }),
-    );
+    // Mines from templates served by the enforcer's own `getblocktemplate`
+    // server. On signet, the node's wallet also signs.
+    async_trials.extend([Network::Regtest, Network::Signet].map(|network| {
+        let mode = Mode::GetBlockTemplate;
+        new_trial(
+            format!("generate_to_address (mode: {mode}, network: {network})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_generate_to_address::test_generate_to_address,
+        )
+    }));
+    async_trials.push(new_trial(
+        "generate_to_address_requires_template_server".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_generate_to_address::test_generate_to_address_requires_template_server,
+    ));
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
     async_trials.push(new_trial(
@@ -1320,7 +1321,7 @@ pub fn tests(
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
             network: Network::Regtest,
-            mode: Mode::NoMempool,
+            mode: Mode::Mempool,
             file_registry: file_registry.clone(),
             failure_collector: failure_collector.clone(),
         },
@@ -1375,7 +1376,7 @@ pub fn tests(
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
             network: Network::Regtest,
-            mode: Mode::NoMempool,
+            mode: Mode::Mempool,
             file_registry: file_registry.clone(),
             failure_collector: failure_collector.clone(),
         },

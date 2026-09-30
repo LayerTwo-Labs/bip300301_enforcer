@@ -35,7 +35,7 @@ struct Inner {
     validator: Validator,
     db: Db,
     main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-    gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    gbt_client: Option<bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient>,
     // Always Some(_) on signets
     signet_challenge: Option<bitcoin::ScriptBuf>,
     /// Error from the most recent failed block template build, cleared on
@@ -58,7 +58,7 @@ impl BlockProducer {
         data_dir: &std::path::Path,
         validator: Validator,
         main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
-        gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+        gbt_client: Option<bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient>,
         signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitDbConnection> {
         let db = Db::new(data_dir)?;
@@ -84,8 +84,10 @@ impl BlockProducer {
         &self.inner.main_client
     }
 
-    pub(crate) fn gbt_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
-        &self.inner.gbt_client
+    pub(crate) fn gbt_client(
+        &self,
+    ) -> Option<&bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient> {
+        self.inner.gbt_client.as_ref()
     }
 
     pub(crate) fn signet_challenge(&self) -> Option<&bitcoin::Script> {
