@@ -21,10 +21,12 @@ use crate::{
     errors::ErrorChain,
     messages::parse_m8_tx,
     proto::mainchain::HeaderSyncProgress,
-    types::{Ctip, Event, SidechainNumber},
+    types::{Ctip, Event, M6id, SidechainNumber},
     validator::{
         Validator,
-        task::{self, BlockHandler, error::ValidateTransaction as ValidateTransactionError},
+        task::{
+            self, BlockHandler, ValidatedTx, error::ValidateTransaction as ValidateTransactionError,
+        },
     },
 };
 
@@ -432,12 +434,41 @@ impl CusfEnforcer for Validator {
     type AcceptTxError = AcceptTxError;
 
     fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
+        let (action, _payout) = self.accept_tx_with_payout(tx)?;
+        Ok(action)
+    }
+
+    type ValidateBlockError = ConnectBlockError;
+
+    fn validate_block(&self, block: &Block) -> Result<Option<String>, Self::ValidateBlockError> {
+        match ConnectBlockDryRun(|_: &RoTxn<'_>| ()).connect_block(self, block)? {
+            Ok(()) => Ok(None),
+            Err(reason) => Ok(Some(format!("{:#}", ErrorChain::new(&reason)))),
+        }
+    }
+}
+
+impl Validator {
+    /// [`CusfEnforcer::accept_tx`], also returning the withdrawal bundle an
+    /// accepted tx pays out, if any.
+    pub(crate) fn accept_tx_with_payout(
+        &mut self,
+        tx: &Transaction,
+    ) -> Result<(TxAcceptAction, Option<(SidechainNumber, M6id)>), AcceptTxError> {
         let mut rwtxn = self.dbs.write_txn()?;
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
-        let res = if handler.validate_tx(&mut rwtxn, tx)? {
+        let payout = match handler.validate_tx(&mut rwtxn, tx)? {
+            ValidatedTx::Invalid => return Ok((TxAcceptAction::Reject, None)),
+            ValidatedTx::Valid => None,
+            ValidatedTx::Payout {
+                sidechain_number,
+                m6id,
+            } => Some((sidechain_number, m6id)),
+        };
+        let res = {
             let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
                 let txid = tx.compute_txid();
                 let conflicts_with = {
@@ -486,19 +517,8 @@ impl CusfEnforcer for Validator {
                 conflicts_with,
                 weight_tweak,
             }
-        } else {
-            TxAcceptAction::Reject
         };
-        Ok(res)
-    }
-
-    type ValidateBlockError = ConnectBlockError;
-
-    fn validate_block(&self, block: &Block) -> Result<Option<String>, Self::ValidateBlockError> {
-        match ConnectBlockDryRun(|_: &RoTxn<'_>| ()).connect_block(self, block)? {
-            Ok(()) => Ok(None),
-            Err(reason) => Ok(Some(format!("{:#}", ErrorChain::new(&reason)))),
-        }
+        Ok((res, payout))
     }
 }
 

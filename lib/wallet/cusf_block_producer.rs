@@ -477,7 +477,7 @@ impl CusfEnforcer for Wallet {
         &mut self,
         tx: &Transaction,
     ) -> std::result::Result<TxAcceptAction, Self::AcceptTxError> {
-        let res = self.inner.validator().clone().accept_tx(tx)?;
+        let res = self.inner.producer.clone().accept_tx(tx)?;
         match res {
             TxAcceptAction::Accept { .. } => {
                 // TODO: Ideally we could push these updates to a channel, and

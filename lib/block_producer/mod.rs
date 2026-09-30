@@ -48,6 +48,12 @@ struct Inner {
     last_gbt_error: parking_lot::RwLock<Option<String>>,
     /// Limits `GenerateToAddress` to one concurrent call at a time.
     generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
+    /// M6s accepted into the mempool, by txid, with the bundle each pays out.
+    /// The mempool admits an M6 while its bundle is pending, but it may only
+    /// go into a block once the bundle is voted past the inclusion
+    /// threshold, which can change with every block. Only held in memory: the
+    /// mempool replays `accept_tx` on restart.
+    mempool_payouts: parking_lot::Mutex<HashMap<Txid, (SidechainNumber, M6id)>>,
 }
 
 #[derive(Clone)]
@@ -73,6 +79,7 @@ impl BlockProducer {
                 signet_challenge,
                 last_gbt_error: parking_lot::RwLock::new(None),
                 generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+                mempool_payouts: parking_lot::Mutex::default(),
             }),
         })
     }
@@ -129,7 +136,11 @@ impl BlockProducer {
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, <Validator as CusfEnforcer>::ConnectBlockError> {
-        self.inner.validator.clone().connect_block(block).await
+        let res = self.inner.validator.clone().connect_block(block).await?;
+        if let ConnectBlockAction::Accept { .. } = &res {
+            self.forget_mempool_payouts(block);
+        }
+        Ok(res)
     }
 
     /// Policy-table maintenance for a block the validator just accepted: drop the
@@ -162,6 +173,38 @@ impl BlockProducer {
             .db
             .delete_pending_sidechain_proposals(sidechain_proposal_ids)
             .await
+    }
+}
+
+impl BlockProducer {
+    /// The mempool M6s whose bundle is not payable on top of the current tip:
+    /// no longer pending, or not voted past the inclusion threshold.
+    fn unpayable_mempool_payouts(
+        &self,
+    ) -> Result<Vec<Txid>, crate::validator::GetPendingWithdrawalsError> {
+        let threshold = self
+            .validator()
+            .network_params()
+            .thresholds
+            .withdrawal_bundle_inclusion_threshold;
+        let mut res = Vec::new();
+        for (txid, (sidechain_number, m6id)) in self.inner.mempool_payouts.lock().iter() {
+            let payable = self
+                .validator()
+                .try_get_pending_withdrawal(sidechain_number, m6id)?
+                .is_some_and(|info| info.vote_count > threshold);
+            if !payable {
+                res.push(*txid);
+            }
+        }
+        Ok(res)
+    }
+
+    fn forget_mempool_payouts(&self, block: &bitcoin::Block) {
+        let mut mempool_payouts = self.inner.mempool_payouts.lock();
+        for tx in &block.txdata {
+            mempool_payouts.remove(&tx.compute_txid());
+        }
     }
 }
 
@@ -227,7 +270,14 @@ impl CusfEnforcer for BlockProducer {
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
 
     fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
-        self.inner.validator.clone().accept_tx(tx)
+        let (action, payout) = self.inner.validator.clone().accept_tx_with_payout(tx)?;
+        if let Some(payout) = payout {
+            self.inner
+                .mempool_payouts
+                .lock()
+                .insert(tx.compute_txid(), payout);
+        }
+        Ok(action)
     }
 
     type ValidateBlockError = <Validator as CusfEnforcer>::ValidateBlockError;
@@ -331,6 +381,12 @@ impl BlockProducer {
         let () = self
             .extend_coinbase_txouts(ack_policy, bundle_policy, mainchain_tip, coinbase_txouts)
             .await?;
+        // An M6 accepted into the mempool can stop being payable, e.g. when a
+        // reorg returns it and the new chain votes its bundle down. Keep it out
+        // of this block, but in the mempool: it can become payable again.
+        template
+            .exclude_mempool_txs
+            .extend(self.unpayable_mempool_payouts()?);
         tracing::debug!(
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts

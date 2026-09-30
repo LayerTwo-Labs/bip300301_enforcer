@@ -69,6 +69,10 @@ pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) network: Network,
     pub(super) params: NetworkParams,
     pub(super) thresholds: Thresholds,
+    /// Whether an M6 must pay out a bundle voted past the inclusion
+    /// threshold. Mempool admission turns this off: whether a pending bundle
+    /// is payable changes with every block, so block templates decide that.
+    pub(super) require_payable_bundles: bool,
 }
 
 impl<'a> BlockHandler<'a> {
@@ -78,6 +82,7 @@ impl<'a> BlockHandler<'a> {
             network,
             params,
             thresholds: params.thresholds,
+            require_payable_bundles: true,
         }
     }
 }
@@ -153,6 +158,18 @@ fn handle_m8(
     } else {
         Ok(true)
     }
+}
+
+/// Whether a tx is valid on top of the current tip. See
+/// [`BlockHandler::validate_tx`].
+pub(in crate::validator) enum ValidatedTx {
+    Invalid,
+    Valid,
+    /// A valid M6, paying out this withdrawal bundle
+    Payout {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    },
 }
 
 impl BlockHandler<'_> {
@@ -677,7 +694,9 @@ impl BlockHandler<'_> {
                     m6id,
                     sidechain_number,
                 })?;
-        if info.vote_count > self.thresholds.withdrawal_bundle_inclusion_threshold {
+        if !self.require_payable_bundles
+            || info.vote_count > self.thresholds.withdrawal_bundle_inclusion_threshold
+        {
             Ok((m6id, sidechain_number, index, *info))
         } else {
             let err = error::InvalidM6::InsufficientVoteCount {
@@ -1023,14 +1042,15 @@ impl BlockHandler<'_> {
         Ok(res)
     }
 
-    /// Check if a tx is valid against the current tip.
+    /// Check if a tx may enter the mempool on top of the current tip. An M6
+    /// may, while its bundle is pending, whatever the bundle's vote count.
     /// Although a rwtxn is required, it is only used to create a child rwtxn,
     /// which will always be aborted.
     pub(in crate::validator) fn validate_tx(
         &self,
         parent_rwtxn: &mut RwTxn,
         transaction: &Transaction,
-    ) -> Result<bool, error::ValidateTransaction> {
+    ) -> Result<ValidatedTx, error::ValidateTransaction> {
         let dbs = self.dbs;
         let mut child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
         let tip_hash = dbs
@@ -1038,14 +1058,24 @@ impl BlockHandler<'_> {
             .try_get(&child_rwtxn, &())?
             .ok_or(error::ValidateTransactionInner::NoChainTip)?;
         let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
-        match self.handle_transaction(&child_rwtxn, None, &tip_hash, transaction) {
-            Ok(None) => Ok(true),
-            Ok(Some((_, diff))) => {
+        let handler = Self {
+            require_payable_bundles: false,
+            ..*self
+        };
+        match handler.handle_transaction(&child_rwtxn, None, &tip_hash, transaction) {
+            Ok(None) => Ok(ValidatedTx::Valid),
+            Ok(Some((event, diff))) => {
                 let () = diff.apply(&mut child_rwtxn, &dbs.active_sidechains, tip_height)?;
-                Ok(true)
+                Ok(match event {
+                    TransactionEvent::WithdrawalBundle(event) => ValidatedTx::Payout {
+                        sidechain_number: event.sidechain_id,
+                        m6id: event.m6id,
+                    },
+                    TransactionEvent::Deposits(_) => ValidatedTx::Valid,
+                })
             }
             Err(err) => match err.split() {
-                Ok(_jfyi) => Ok(false),
+                Ok(_jfyi) => Ok(ValidatedTx::Invalid),
                 Err(err) => Err(err.into()),
             },
         }
