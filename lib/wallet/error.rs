@@ -175,6 +175,9 @@ pub struct BdkWalletPersist {
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum WalletSync {
+    #[error("Esplora wallet synchronization exceeded its 120-second network deadline")]
+    #[diagnostic(code(esplora_sync_deadline))]
+    EsploraSyncDeadline,
     #[error(transparent)]
     #[diagnostic(code(bdk_wallet_connect))]
     BdkWalletConnect(#[from] bdk_wallet::chain::local_chain::CannotConnectError),
@@ -1060,6 +1063,10 @@ impl ToStatus for SendWalletTransaction {
 #[derive(Debug, Diagnostic, Error)]
 pub enum BuildBmmTx {
     #[error(transparent)]
+    GetMainchainTip(#[from] validator::GetMainchainTipError),
+    #[error("BMM parent changed while waiting for the wallet lock")]
+    StaleParent,
+    #[error(transparent)]
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
@@ -1070,6 +1077,10 @@ pub enum BuildBmmTx {
 impl ToStatus for BuildBmmTx {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            Self::GetMainchainTip(err) => StatusBuilder::new(err),
+            Self::StaleParent => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
+            }
             Self::CreateTx(err) => StatusBuilder::new(err),
             Self::NotUnlocked(err) => err.builder(),
             Self::Script(err) => StatusBuilder::new(err),
