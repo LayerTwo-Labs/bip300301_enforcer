@@ -638,7 +638,8 @@ pub trait BlockProducerService: Send + Sync + 'static {
     /// Toggle ACK or NACK for a specific pending withdrawal bundle. An ACKed
     /// bundle is upvoted whatever `SetWithdrawalBundlePolicy` says, and is the
     /// only way to back a bundle under `WITHDRAWAL_BUNDLE_POLICY_NONE`. The ACK
-    /// is dropped once the bundle stops being pending for that sidechain.
+    /// is kept until NACKed, and votes only while the bundle is pending: a reorg
+    /// can make a settled bundle pending again.
     ///
     /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
     ///

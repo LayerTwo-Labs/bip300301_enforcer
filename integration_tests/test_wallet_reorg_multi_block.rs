@@ -11,10 +11,15 @@
 use std::{collections::HashSet, str::FromStr as _};
 
 use bip300301_enforcer_lib::{
-    messages::M8BmmRequest,
-    proto::mainchain::{
-        CreateNewAddressRequest, GetBalanceRequest, GetChainTipRequest, ListTransactionsRequest,
-        WalletTransaction,
+    messages::{CoinbaseMessage, M8BmmRequest},
+    proto::{
+        self,
+        common::{ConsensusHex, Hex},
+        mainchain::{
+            CreateNewAddressRequest, GetBalanceRequest, GetChainTipRequest,
+            ListTransactionsRequest, SidechainDeclaration, SubmitSidechainProposalRequest,
+            WalletTransaction, sidechain_declaration,
+        },
     },
     types::BmmCommitment,
 };
@@ -29,10 +34,12 @@ use serde::Deserialize;
 
 use crate::{
     integration_test::{fund_enforcer, wait_for_electrs_tip, wait_for_wallet_sync},
+    mine::{MiningPolicy, mine},
     setup::{
         DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, Sidechain,
-        read_enforcer_log, wait_until,
+        read_enforcer_log, wait_for_no_pending_proposal, wait_for_pending_proposal, wait_until,
     },
+    test_sidechain_ack_policy::tip_coinbase_messages,
     util::BinPaths,
 };
 
@@ -126,6 +133,23 @@ async fn wallet_reorg_scenario(
     );
     tracing::info!(?balance_before, "wallet funded");
 
+    // Also reorged out below: a block carrying one of our M1s. Catching up
+    // across the reorg must queue the proposal again.
+    let () = submit_proposal(post_setup).await?;
+    let () = mine::<DummySidechain>(post_setup, 1, MiningPolicy::SILENT).await?;
+    anyhow::ensure!(
+        tip_coinbase_messages(post_setup)
+            .await?
+            .iter()
+            .any(|message| matches!(message, CoinbaseMessage::M1ProposeSidechain(_))),
+        "expected our proposal's M1 in the tip block"
+    );
+    let () = wait_for_no_pending_proposal(
+        &post_setup.block_producer_service_client,
+        DummySidechain::SIDECHAIN_NUMBER,
+    )
+    .await?;
+
     // Kill the enforcer *before* touching the chain, so the reorg below
     // happens entirely while it's down -- it can only learn about the new
     // tip by catching up across the gap on restart, not by observing it live.
@@ -199,6 +223,11 @@ async fn wallet_reorg_scenario(
         .await?;
 
     wait_for_wallet_sync(post_setup).await?;
+    let () = wait_for_pending_proposal(
+        &post_setup.block_producer_service_client,
+        DummySidechain::SIDECHAIN_NUMBER,
+    )
+    .await?;
 
     let balance_after = post_setup
         .wallet_service_client
@@ -240,6 +269,32 @@ async fn wallet_reorg_scenario(
         .await?;
 
     Ok(())
+}
+
+async fn submit_proposal(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let declaration = SidechainDeclaration {
+        sidechain_declaration: Some(
+            sidechain_declaration::V0 {
+                title: proto::wrap_string("reorged out"),
+                description: proto::wrap_string("wallet-reorg-multi-block test"),
+                hash_id_1: buffa::MessageField::some(ConsensusHex::encode(&[0; 32])),
+                hash_id_2: buffa::MessageField::some(Hex::encode(&[0u8; 20])),
+            }
+            .into(),
+        ),
+    };
+    let _resp = post_setup
+        .block_producer_service_client
+        .submit_sidechain_proposal(SubmitSidechainProposalRequest {
+            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            declaration: buffa::MessageField::some(declaration),
+        })
+        .await?;
+    wait_for_pending_proposal(
+        &post_setup.block_producer_service_client,
+        DummySidechain::SIDECHAIN_NUMBER,
+    )
+    .await
 }
 
 #[derive(Deserialize)]

@@ -72,9 +72,9 @@ pub(crate) async fn store_withdrawal_bundle<Message: buffa::MessageName>(
     })?;
     producer
         .db()
-        .put_withdrawal_bundle(sidechain_id, &transaction)
+        .put_withdrawal_bundle(producer.validator(), sidechain_id, &transaction)
         .await
-        .map_err(internal_err)
+        .map_err(|err| crate::proto::ToStatus::builder(&err).to_connect_error())
 }
 
 /// Decode a `MessageField<UInt32Value>` sidechain id from a request, mapping any

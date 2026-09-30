@@ -60,16 +60,11 @@ impl WalletInner {
         &self,
         block: &bitcoin::Block,
         block_height: u32,
-        block_info: &crate::types::BlockInfo,
     ) -> Result<Result<(), bdk_chain::local_chain::CannotConnectError>, error::HandleConnectBlock>
     {
         // Acquire a wallet lock immediately, so that it does not update
         // while other dbs are being written to
         let mut wallet_write = self.write_wallet().await?;
-        let () = self
-            .producer
-            .apply_connected_block_policy(block_info)
-            .await?;
         let mut database = self.locks.db(&wallet_write).await;
         tracing::trace!("applying block to BDK wallet");
 

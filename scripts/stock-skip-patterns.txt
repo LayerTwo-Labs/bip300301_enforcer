@@ -16,6 +16,8 @@ consecutive_deposits
 deposit_withdraw_roundtrip
 peer_deposit_relay
 replay_protection
+returned_payout_paid_once
 sidechain_ack_policy
 stale_payout_after_reorg
 withdrawal_bundle_policy
+withdrawal_bundle_reorg
