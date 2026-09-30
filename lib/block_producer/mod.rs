@@ -213,22 +213,10 @@ impl CusfEnforcer for BlockProducer {
             .disconnect_block(block_hash)
             .await?;
 
-        // Restore the `bmm_requests` rows that were consumed (deleted) when this
-        // block was generated, so the operator can re-emit the BMM accepts
-        // against the new mainchain tip. Policy SQLite state is best-effort on
-        // disconnect, so a restore failure is logged rather than aborting.
-        if let Err(err) = self.inner.db.restore_bmm_requests(&block_hash).await {
-            tracing::error!(
-                %block_hash,
-                "failed to restore BMM requests on block disconnect: {:#}",
-                ErrorChain::new(&err),
-            );
-        }
-
-        // Aside from `bmm_requests` (restored above), no disconnect logic is
-        // applied to the rest of the policy DB. Those tables are wiped upon
-        // generating a new block, so sidechain proposals etc. must be re-created
-        // if a block that brought one into existence is disconnected.
+        // No disconnect logic is applied to the policy DB. Its tables are
+        // wiped upon generating a new block, so sidechain proposals etc. must
+        // be re-created if a block that brought one into existence is
+        // disconnected.
         Ok(res)
     }
 

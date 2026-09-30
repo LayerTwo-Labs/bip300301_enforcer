@@ -9,8 +9,8 @@ use rusqlite::Connection;
 use crate::{
     block_producer::error,
     types::{
-        AckAllProposalsPolicy, BlindedM6, BmmCommitment, M6id, SidechainAck, SidechainNumber,
-        SidechainProposal, SidechainProposalId, WithdrawalBundlePolicy,
+        AckAllProposalsPolicy, BlindedM6, M6id, SidechainAck, SidechainNumber, SidechainProposal,
+        SidechainProposalId, WithdrawalBundlePolicy,
     },
 };
 
@@ -66,11 +66,6 @@ impl rusqlite::types::FromSql for WithdrawalBundlePolicy {
         }
     }
 }
-
-/// Undo rows are kept for this many recently-produced blocks, so that blocks
-/// which stay on the main chain (and are therefore never disconnected) don't
-/// accumulate undo rows forever.
-const BMM_REQUESTS_UNDO_RETAINED_BLOCKS: i64 = 100;
 
 /// The drivechain policy database.
 pub struct Db {
@@ -180,6 +175,11 @@ impl Db {
                    CHECK (bundle_policy IN ('none', 'known', 'all', 'alarm'));
                  UPDATE block_producer_settings
                  SET bundle_policy = CASE WHEN ack_policy = 'none' THEN 'none' ELSE 'known' END;",
+            ),
+            // Dead since BMM bids became plain high-fee M8 transactions
+            M::up(
+                "DROP TABLE bmm_requests;
+                 DROP TABLE bmm_requests_undo;",
             ),
         ]);
 
@@ -429,65 +429,6 @@ impl Db {
         Ok(())
     }
 
-    /// BMM requests with the given previous blockhash: (sidechain number, side
-    /// blockhash) pairs, which become the M7 accepts in the coinbase.
-    pub async fn get_bmm_requests(
-        &self,
-        prev_blockhash: &bitcoin::BlockHash,
-    ) -> Result<Vec<(SidechainNumber, BmmCommitment)>, rusqlite::Error> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_, _> {
-            let mut statement = connection
-                .prepare(
-                    "SELECT sidechain_number, side_block_hash FROM bmm_requests WHERE prev_block_hash = ?"
-                )?;
-
-            let queried = statement
-                .query_map([prev_blockhash.as_byte_array()], |row| {
-                    let sidechain_number = SidechainNumber(row.get(0)?);
-                    let side_blockhash = BmmCommitment(row.get(1)?);
-                    Ok((sidechain_number, side_blockhash))
-                })?
-                .collect::<Result<_, _>>()?;
-
-            Ok(queried)
-        };
-        let connection = self.conn.lock().await;
-        with_connection(&connection)
-    }
-
-    /// Returns `true` if a BMM request was inserted, `false` if one already
-    /// exists for that sidechain and previous blockhash.
-    pub async fn insert_new_bmm_request(
-        &self,
-        sidechain_number: SidechainNumber,
-        prev_blockhash: bitcoin::BlockHash,
-        side_block_hash: BmmCommitment,
-    ) -> Result<bool, rusqlite::Error> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<bool, rusqlite::Error> {
-            connection
-                .prepare(
-                    "INSERT OR ABORT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) VALUES (?1, ?2, ?3)",
-                )?
-                .execute((
-                    u8::from(sidechain_number),
-                    prev_blockhash.to_byte_array(),
-                    side_block_hash.0,
-                ))
-                .map_or_else(
-                    |err| if err.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
-                        Ok(false)
-                    } else {
-                        Err(err)
-                    },
-                    |_| Ok(true)
-                )
-        };
-        let connection = self.conn.lock().await;
-        with_connection(&connection)
-    }
-
     pub async fn put_withdrawal_bundle(
         &self,
         sidechain_number: SidechainNumber,
@@ -570,42 +511,6 @@ impl Db {
         }
         Ok(())
     }
-
-    /// Consume the BMM requests for `prev_blockhash` when a block is generated on
-    /// top of it. The deleted rows are first snapshotted into `bmm_requests_undo`,
-    /// keyed by the mined `block_hash`, so they can be restored (see
-    /// [`Self::restore_bmm_requests`]) if that block is later disconnected by a
-    /// reorg — otherwise the operator would have to re-issue `create_bmm_request`
-    /// for the new mainchain tip.
-    pub(crate) async fn delete_bmm_requests(
-        &self,
-        prev_blockhash: &bitcoin::BlockHash,
-        block_hash: &bitcoin::BlockHash,
-    ) -> Result<(), rusqlite::Error> {
-        let mut connection = self.conn.lock().await;
-        snapshot_and_delete_bmm_requests(&mut connection, prev_blockhash, block_hash)
-    }
-
-    /// Restore the BMM requests that were consumed when `block_hash` was
-    /// generated, moving them back out of `bmm_requests_undo`. Called when
-    /// `block_hash` is disconnected by a reorg, so the operator's queued BMM
-    /// requests can be re-emitted against the new mainchain tip.
-    pub(crate) async fn restore_bmm_requests(
-        &self,
-        block_hash: &bitcoin::BlockHash,
-    ) -> Result<(), rusqlite::Error> {
-        let restored = {
-            let mut connection = self.conn.lock().await;
-            restore_bmm_requests_from_undo(&mut connection, block_hash)?
-        };
-        if restored > 0 {
-            tracing::info!(
-                %block_hash,
-                "restored {restored} BMM request(s) from disconnected block",
-            );
-        }
-        Ok(())
-    }
 }
 
 /// Drop the legacy `wallet_seeds` table once it no longer holds a seed. This
@@ -636,217 +541,6 @@ fn drop_legacy_wallet_seeds_if_empty(conn: &mut Connection) -> Result<(), rusqli
         }
     }
     tx.commit()
-}
-
-/// Snapshot the BMM requests keyed to `prev_blockhash` into `bmm_requests_undo`
-/// (keyed by the mined `block_hash`) and delete them from `bmm_requests`, within
-/// a single transaction. Called when a block is generated on top of
-/// `prev_blockhash`; the snapshot lets `restore_bmm_requests_from_undo` put the
-/// requests back if that block is later disconnected by a reorg. Undo rows for
-/// blocks beyond the most recent `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing
-/// blocks are pruned so the table stays bounded.
-fn snapshot_and_delete_bmm_requests(
-    connection: &mut Connection,
-    prev_blockhash: &bitcoin::BlockHash,
-    block_hash: &bitcoin::BlockHash,
-) -> Result<(), rusqlite::Error> {
-    let tx = connection.transaction()?;
-    tx.execute(
-        "INSERT INTO bmm_requests_undo \
-         (block_hash, sidechain_number, prev_block_hash, side_block_hash) \
-         SELECT ?1, sidechain_number, prev_block_hash, side_block_hash \
-         FROM bmm_requests WHERE prev_block_hash = ?2;",
-        (block_hash.as_byte_array(), prev_blockhash.as_byte_array()),
-    )?;
-    tx.execute(
-        "DELETE FROM bmm_requests where prev_block_hash = ?;",
-        [prev_blockhash.as_byte_array()],
-    )?;
-    // Keep only the undo rows for the most recently produced blocks, so blocks
-    // that stay on the main chain (and are therefore never disconnected) don't
-    // accumulate undo rows forever.
-    tx.execute(
-        "DELETE FROM bmm_requests_undo \
-         WHERE block_hash NOT IN ( \
-             SELECT block_hash FROM bmm_requests_undo \
-             GROUP BY block_hash \
-             ORDER BY MAX(rowid) DESC \
-             LIMIT ?1 \
-         );",
-        [BMM_REQUESTS_UNDO_RETAINED_BLOCKS],
-    )?;
-    tx.commit()
-}
-
-/// Restore the BMM requests snapshotted for `block_hash` back into
-/// `bmm_requests`, removing them from `bmm_requests_undo`, within a single
-/// transaction. Returns the number of rows restored. Called when `block_hash` is
-/// disconnected by a reorg.
-fn restore_bmm_requests_from_undo(
-    connection: &mut Connection,
-    block_hash: &bitcoin::BlockHash,
-) -> Result<usize, rusqlite::Error> {
-    let tx = connection.transaction()?;
-    let restored = tx.execute(
-        "INSERT OR IGNORE INTO bmm_requests \
-         (sidechain_number, prev_block_hash, side_block_hash) \
-         SELECT sidechain_number, prev_block_hash, side_block_hash \
-         FROM bmm_requests_undo WHERE block_hash = ?;",
-        [block_hash.as_byte_array()],
-    )?;
-    tx.execute(
-        "DELETE FROM bmm_requests_undo WHERE block_hash = ?;",
-        [block_hash.as_byte_array()],
-    )?;
-    tx.commit()?;
-    Ok(restored)
-}
-
-#[cfg(test)]
-mod bmm_requests_undo_tests {
-    use bitcoin::hashes::Hash as _;
-    use rusqlite::Connection;
-
-    use super::{restore_bmm_requests_from_undo, snapshot_and_delete_bmm_requests};
-
-    fn block_hash(byte: u8) -> bitcoin::BlockHash {
-        bitcoin::BlockHash::from_byte_array([byte; 32])
-    }
-
-    fn open_db() -> Connection {
-        let connection = Connection::open_in_memory().unwrap();
-        // Verbatim `bmm_requests` schema plus the new `bmm_requests_undo` table,
-        // matching the migrations in `Db::new`.
-        connection
-            .execute_batch(
-                "CREATE TABLE bmm_requests
-                    (sidechain_number INTEGER NOT NULL,
-                     prev_block_hash BLOB NOT NULL,
-                     side_block_hash BLOB NOT NULL,
-                     UNIQUE(sidechain_number, prev_block_hash));
-                 CREATE TABLE bmm_requests_undo
-                    (block_hash BLOB NOT NULL,
-                     sidechain_number INTEGER NOT NULL,
-                     prev_block_hash BLOB NOT NULL,
-                     side_block_hash BLOB NOT NULL);",
-            )
-            .unwrap();
-        connection
-    }
-
-    fn insert_request(connection: &Connection, sidechain_number: u8, prev: &bitcoin::BlockHash) {
-        connection
-            .execute(
-                "INSERT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) \
-                 VALUES (?1, ?2, ?3);",
-                (
-                    sidechain_number,
-                    prev.as_byte_array(),
-                    block_hash(0).as_byte_array(),
-                ),
-            )
-            .unwrap();
-    }
-
-    fn row_count(connection: &Connection, table: &str) -> i64 {
-        connection
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })
-            .unwrap()
-    }
-
-    fn distinct_undo_blocks(connection: &Connection) -> i64 {
-        connection
-            .query_row(
-                "SELECT COUNT(DISTINCT block_hash) FROM bmm_requests_undo",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap()
-    }
-
-    /// A BMM request consumed by block production is snapshotted, then restored
-    /// verbatim when the producing block is disconnected by a reorg.
-    #[test]
-    fn bmm_request_restored_when_producing_block_disconnected() {
-        let mut connection = open_db();
-
-        let prev = block_hash(1);
-        let mined = block_hash(2);
-        let side = block_hash(3);
-
-        // Operator queues a BMM request against the current tip `prev`.
-        connection
-            .execute(
-                "INSERT INTO bmm_requests (sidechain_number, prev_block_hash, side_block_hash) \
-                 VALUES (?1, ?2, ?3);",
-                (5, prev.as_byte_array(), side.as_byte_array()),
-            )
-            .unwrap();
-        assert_eq!(row_count(&connection, "bmm_requests"), 1);
-
-        // Producing `mined` on top of `prev` consumes the request into the undo log.
-        snapshot_and_delete_bmm_requests(&mut connection, &prev, &mined).unwrap();
-        assert_eq!(row_count(&connection, "bmm_requests"), 0);
-        assert_eq!(row_count(&connection, "bmm_requests_undo"), 1);
-
-        // Disconnecting `mined` restores the request for the reverted tip `prev`.
-        let restored = restore_bmm_requests_from_undo(&mut connection, &mined).unwrap();
-        assert_eq!(restored, 1);
-        assert_eq!(row_count(&connection, "bmm_requests"), 1);
-        assert_eq!(row_count(&connection, "bmm_requests_undo"), 0);
-
-        let (sidechain_number, restored_side): (u64, Vec<u8>) = connection
-            .query_row(
-                "SELECT sidechain_number, side_block_hash FROM bmm_requests \
-                 WHERE prev_block_hash = ?;",
-                [prev.as_byte_array()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(sidechain_number, 5);
-        assert_eq!(restored_side, side.as_byte_array().to_vec());
-    }
-
-    /// Blocks that stay on the main chain (never disconnected) must not
-    /// accumulate undo rows without bound: only the most recent
-    /// `BMM_REQUESTS_UNDO_RETAINED_BLOCKS` producing blocks are retained, and the
-    /// oldest snapshot is dropped once that many newer blocks have been produced.
-    #[test]
-    fn old_undo_rows_are_pruned() {
-        let mut connection = open_db();
-
-        // Produce `RETAINED + 1` blocks, each consuming a distinct BMM request.
-        let total = super::BMM_REQUESTS_UNDO_RETAINED_BLOCKS + 1;
-        for i in 0..total {
-            let prev = block_hash(i as u8);
-            let mined = block_hash((total - i) as u8);
-            insert_request(&connection, 0, &prev);
-            snapshot_and_delete_bmm_requests(&mut connection, &prev, &mined).unwrap();
-        }
-
-        // The table is bounded to the retention window, not the block count.
-        assert_eq!(
-            distinct_undo_blocks(&connection),
-            super::BMM_REQUESTS_UNDO_RETAINED_BLOCKS
-        );
-
-        // The very first block's snapshot has been pruned, so disconnecting it
-        // restores nothing (degrades to pre-fix behaviour for ancient reorgs).
-        let oldest = block_hash(total as u8);
-        assert_eq!(
-            restore_bmm_requests_from_undo(&mut connection, &oldest).unwrap(),
-            0
-        );
-
-        // The most recent block's snapshot is retained and still restorable.
-        let newest = block_hash(1);
-        assert_eq!(
-            restore_bmm_requests_from_undo(&mut connection, &newest).unwrap(),
-            1
-        );
-    }
 }
 
 #[cfg(test)]
@@ -886,7 +580,7 @@ mod schema_tests {
         std::fs::remove_dir_all(&dir).ok();
 
         // Not vacuous: the policy tables really were created.
-        for expected in ["sidechain_proposals", "sidechain_acks", "bmm_requests"] {
+        for expected in ["sidechain_proposals", "sidechain_acks", "bundle_proposals"] {
             assert!(
                 tables.iter().any(|table| table == expected),
                 "expected policy table `{expected}` in the producer DB, got: {tables:?}"
@@ -901,7 +595,6 @@ mod schema_tests {
 
 #[cfg(test)]
 pub(crate) mod migration_tests {
-    use bitcoin::hashes::Hash as _;
     use rusqlite::Connection;
 
     use super::{AckAllProposalsPolicy, Db, WithdrawalBundlePolicy};
@@ -982,8 +675,7 @@ pub(crate) mod migration_tests {
     /// reordered or trimmed migration list silently runs nothing (the exact
     /// bug this test was written for), which no fresh-dir test can catch. The
     /// producer must end up with `block_producer_settings` (read on every
-    /// block template) and a working `bmm_requests_undo` snapshot path, while
-    /// leaving an un-migrated wallet seed strictly alone — keyless producers
+    /// block template), while leaving an un-migrated wallet seed strictly alone — keyless producers
     /// in particular have no wallet that could ever migrate it. Only once the
     /// seed is gone may the legacy table be dropped.
     #[tokio::test]
@@ -1013,11 +705,6 @@ pub(crate) mod migration_tests {
             "a node that was voting on bundles must keep voting, but only for \
              the bundles it holds itself"
         );
-
-        // The snapshot-and-delete path `mine` hits after producing a block.
-        let prev = bitcoin::BlockHash::from_byte_array([1; 32]);
-        let mined = bitcoin::BlockHash::from_byte_array([2; 32]);
-        db.delete_bmm_requests(&prev, &mined).await.unwrap();
         drop(db);
 
         assert!(has_wallet_seeds_table(&dir));

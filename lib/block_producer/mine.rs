@@ -31,7 +31,6 @@ use bitcoin_jsonrpsee::{
 
 use crate::{
     block_producer::{BlockProducer, error},
-    errors::ErrorChain,
     messages::CoinbaseBuilder,
     mining::{self, SignetTxs},
     types::{
@@ -52,24 +51,6 @@ pub(in crate::block_producer) fn bmm_auction_winners(
         }
     }
     winners
-}
-
-/// BMM request cleanup happens after the block has been submitted and observed
-/// by the validator. Keep the mined block as the operation's result even if the
-/// best-effort cleanup fails, so callers are not invited to retry an operation
-/// that has already happened.
-fn finish_bmm_request_cleanup(
-    block_hash: BlockHash,
-    result: Result<(), rusqlite::Error>,
-) -> BlockHash {
-    if let Err(err) = result {
-        tracing::error!(
-            %block_hash,
-            "failed to delete BMM requests for mined block: {:#}",
-            ErrorChain::new(&err),
-        );
-    }
-    block_hash
 }
 
 fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
@@ -511,19 +492,15 @@ impl BlockProducer {
                 &template,
             )
             .await?;
-        let cleanup_result = self
-            .db()
-            .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await;
-        Ok(finish_bmm_request_cleanup(block_hash, cleanup_result))
+        Ok(block_hash)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::{Amount, BlockHash, Txid, hashes::Hash as _};
+    use bitcoin::{Amount, Txid, hashes::Hash as _};
 
-    use super::{bmm_auction_winners, finish_bmm_request_cleanup};
+    use super::bmm_auction_winners;
     use crate::types::{BmmCommitment, SidechainNumber};
 
     #[test]
@@ -555,14 +532,5 @@ mod tests {
 
         assert_eq!(winners[&slot].1, high_txid);
         assert_eq!(winners[&SidechainNumber(8)].1, other_txid);
-    }
-
-    #[test]
-    fn cleanup_failure_preserves_mined_block_result() {
-        let block_hash = BlockHash::from_byte_array([0x42; 32]);
-        assert_eq!(
-            finish_bmm_request_cleanup(block_hash, Err(rusqlite::Error::InvalidQuery)),
-            block_hash
-        );
     }
 }
