@@ -72,11 +72,6 @@ jobs:
           toolchain: nightly
           components: rustfmt, clippy
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: x86_64-unknown-linux-gnu
-
       - name: Check Rust formatting
         # import formatting is nightly only
         run: cargo +nightly fmt --all -- --check
@@ -114,10 +109,13 @@ jobs:
           rustup install 
           rustup component add clippy
 
+      # Keyed per job: this one only holds `cargo check` metadata, which is
+      # useless to jobs that do codegen. PR caches are unreadable by other PRs
+      # and only evict master's, so only master saves.
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: x86_64-unknown-linux-gnu
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Cargo check
         run: cargo check --all-targets
@@ -212,10 +210,11 @@ jobs:
       - name: Install Rust toolchain
         run: rustup install
 
+      # Keyed per job, see check-clippy.
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: x86_64-unknown-linux-gnu
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Build the two flavor-independent executables once. The matrix jobs
       # only vary the Bitcoin Core binary and can all run these same builds.
@@ -257,6 +256,8 @@ jobs:
       GRPCURL_VERSION: "1.9.3"
       # Which Bitcoin Core build this entry runs against; for cache keys.
       BITCOIND_BUILD: ${{ matrix.zip || matrix.ecash || matrix.version }}
+      # Stock Bitcoin Core for BITCOIND_UNPATCHED.
+      STOCK_BITCOIN_VERSION: ${{ matrix.version || '30.2' }}
     steps:
       # First, so the download steps can use repo scripts.
       - uses: actions/checkout@v7
@@ -279,36 +280,26 @@ jobs:
         run: |
           ./scripts/fetch_ecash_bitcoin.sh '${{ matrix.ecash }}' x86_64-unknown-linux-gnu ../bitcoin-bins
 
-      - name: Download Bitcoin Core (stock ${{ matrix.version }})
-        if: matrix.version
-        run: |
-          pushd ..
-          VERSION='${{ matrix.version }}'
-          TARBALL="bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
-          wget "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/${TARBALL}"
-          tar -xf "${TARBALL}"
-          rm "${TARBALL}"
-          mv "bitcoin-${VERSION}/bin" bitcoin-bins
-          rm -r "bitcoin-${VERSION}"
-          chmod +x bitcoin-bins/bitcoind
-          popd
+      - name: Cache stock Bitcoin Core ${{ env.STOCK_BITCOIN_VERSION }}
+        id: cache-stock-bitcoind
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/bitcoin-stock
+          key: bitcoind-${{ env.STOCK_BITCOIN_VERSION }}-x86_64-linux-gnu
 
-      - name:
-          Download stock Bitcoin Core 30.2 (BITCOIND_UNPATCHED for mixed-version
-          tests)
-        # `test_peer_bmm_request` exercises a cross-binary p2p path via
-        # `BITCOIND_UNPATCHED`. For the stock matrix we reuse the same
-        # stock binary; for the drivechain-patched jobs we still want a
-        # stock 30.2 alongside the patched binaries.
-        if: matrix.zip || matrix.ecash
+      - name: Download stock Bitcoin Core ${{ env.STOCK_BITCOIN_VERSION }}
+        if: steps.cache-stock-bitcoind.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
         run: |
-          pushd ..
-          wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          tar -xf bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          mv bitcoin-30.2/bin bitcoin-unpatched-bins
-          rm -r bitcoin-30.2
-          popd
+          V="$STOCK_BITCOIN_VERSION"
+          TARBALL="bitcoin-$V-x86_64-linux-gnu.tar.gz"
+          wget -q "https://bitcoincore.org/bin/bitcoin-core-$V/$TARBALL" \
+            "https://bitcoincore.org/bin/bitcoin-core-$V/SHA256SUMS"
+          sha256sum --ignore-missing --check SHA256SUMS
+          mkdir -p bitcoin-stock
+          tar -xzf "$TARBALL" -C bitcoin-stock --strip-components=2 \
+            "bitcoin-$V/bin/bitcoind"
+          rm "$TARBALL" SHA256SUMS
 
       - name: Cache electrs binary
         id: cache-electrs
@@ -423,7 +414,7 @@ jobs:
         run: |
           export BIP300301_ENFORCER="$RUNNER_TEMP/integration-test-binaries/bip300301_enforcer"
           INTEGRATION_TEST_RUNNER="$RUNNER_TEMP/integration-test-binaries/integration_tests"
-          export BITCOIND='../bitcoin-bins/bitcoind'
+          export BITCOIND_UNPATCHED="$RUNNER_TEMP/bitcoin-stock/bitcoind"
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export SIGNET_CHAIN_DIR='${{ runner.temp }}/signet-chain'
           # Each test leaks a TempDir holding per-component stdout/stderr (the
@@ -441,14 +432,14 @@ jobs:
           # treasury outputs.
           export BITCOIND_OP_DRIVECHAIN='${{ matrix.op_drivechain }}'
           if [ -n '${{ matrix.version }}' ]; then
-            export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
+            export BITCOIND="$BITCOIND_UNPATCHED"
             skips=()
             while IFS= read -r pattern; do
               skips+=(--skip "$pattern")
             done < <(grep -vE '^[[:space:]]*(#|$)' scripts/stock-skip-patterns.txt)
             "$INTEGRATION_TEST_RUNNER" "${skips[@]}"
           else
-            export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
+            export BITCOIND='../bitcoin-bins/bitcoind'
             "$INTEGRATION_TEST_RUNNER"
           fi
 
@@ -519,7 +510,6 @@ jobs:
 
     name: Test, Build, Release (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    needs: [check-clippy, check-clippy-nightly]
     permissions:
       contents: write
     timeout-minutes: 20
@@ -533,6 +523,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Install Rust toolchain
         run: rustup install
@@ -541,7 +532,10 @@ jobs:
         run: sudo apt install mingw-w64 nasm
         if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
 
+      # The windows-gnu entry cross-compiles on an Ubuntu runner, so its tests
+      # would only repeat the x86_64-unknown-linux-gnu entry's.
       - name: Test
+        if: matrix.name != 'x86_64-pc-windows-gnu'
         run: cargo test --tests
 
       - name: Build
