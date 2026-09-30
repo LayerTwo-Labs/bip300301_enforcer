@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::anyhow;
 use bip300301_enforcer_lib::{
+    messages::CoinbaseMessage,
     proto::{
         self,
         mainchain::{
@@ -20,7 +21,7 @@ use bip300301_enforcer_lib::{
     },
     types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
-use bitcoin::{Address, BlockHash, Txid};
+use bitcoin::{Address, BlockHash, Txid, hashes::Hash as _};
 use connectrpc::{
     ConnectError,
     client::{ClientConfig, HttpClient},
@@ -39,11 +40,12 @@ use tokio::{
 };
 
 use crate::{
+    block_verdict::wait_for_enforcer_tip_hash,
     signet_chain_params::{SIGNET_CACHED_CHAIN_BLOCKS, SIGNET_CHALLENGE_SECRET_KEY},
     signet_miner::{SignetMiner, TemplateSource},
     util::{
         AbortOnDrop, BinPaths, Bitcoind, BitcoindClient, Electrs, Enforcer, FileDumpConfig,
-        TestFileRegistry,
+        TestFileRegistry, expect_block_template,
     },
 };
 
@@ -707,6 +709,21 @@ where
     read_enforcer_log(enforcer_dir)
 }
 
+async fn has_pending_proposal(
+    client: &BlockProducerServiceClient<Transport>,
+    sidechain_number: SidechainNumber,
+) -> anyhow::Result<bool> {
+    use proto::mainchain::GetBlockProducerStateRequest;
+    let state = client
+        .get_block_producer_state(GetBlockProducerStateRequest::default())
+        .await?
+        .into_owned();
+    Ok(state.pending_proposals.into_iter().any(|proposal| {
+        proto::unwrap_u32(proposal.sidechain_number)
+            .is_some_and(|number| number == u32::from(sidechain_number.0))
+    }))
+}
+
 /// Wait until a sidechain proposal for `sidechain_number` has been persisted by
 /// the block producer, so that the next block it builds carries the M1.
 ///
@@ -717,19 +734,22 @@ pub async fn wait_for_pending_proposal(
     client: &BlockProducerServiceClient<Transport>,
     sidechain_number: SidechainNumber,
 ) -> anyhow::Result<()> {
-    use proto::mainchain::GetBlockProducerStateRequest;
-    let slot = u32::from(sidechain_number.0);
     wait_until(
-        &format!("sidechain proposal for slot {slot} to be persisted"),
-        || async {
-            let state = client
-                .get_block_producer_state(GetBlockProducerStateRequest::default())
-                .await?
-                .into_owned();
-            Ok(state.pending_proposals.into_iter().any(|proposal| {
-                proto::unwrap_u32(proposal.sidechain_number).is_some_and(|number| number == slot)
-            }))
-        },
+        &format!("sidechain proposal for slot {sidechain_number} to be persisted"),
+        || has_pending_proposal(client, sidechain_number),
+    )
+    .await
+}
+
+/// Wait until the block producer no longer has a pending proposal for
+/// `sidechain_number`, i.e. it has seen the proposal's M1 on chain.
+pub async fn wait_for_no_pending_proposal(
+    client: &BlockProducerServiceClient<Transport>,
+    sidechain_number: SidechainNumber,
+) -> anyhow::Result<()> {
+    wait_until(
+        &format!("sidechain proposal for slot {sidechain_number} to leave the queue"),
+        || async { Ok(!has_pending_proposal(client, sidechain_number).await?) },
     )
     .await
 }
@@ -741,6 +761,12 @@ pub async fn best_block_hash(bitcoind: &BitcoindClient) -> anyhow::Result<BlockH
 pub async fn invalidate_block(bitcoind: &BitcoindClient, block: BlockHash) -> anyhow::Result<()> {
     Ok(bitcoind
         .request("invalidateblock", rpc_params![block])
+        .await?)
+}
+
+pub async fn reconsider_block(bitcoind: &BitcoindClient, block: BlockHash) -> anyhow::Result<()> {
+    Ok(bitcoind
+        .request("reconsiderblock", rpc_params![block])
         .await?)
 }
 
@@ -758,6 +784,106 @@ pub async fn generate_empty_block(
         .request("generateblock", rpc_params![output, Vec::<String>::new()])
         .await?;
     Ok(generated.hash)
+}
+
+/// Invalidate `block` and everything above it, and replace them with one
+/// empty block the enforcer did not build: re-mining straight away can
+/// reproduce the invalidated block byte for byte, which bitcoind rejects as
+/// `duplicate-invalid`. `until_replaced` runs while the enforcer sits at the
+/// fork point.
+pub async fn reorg_out<F, Fut>(
+    post_setup: &PostSetup,
+    block: BlockHash,
+    until_replaced: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
+    use proto::mainchain::GetBlockProducerStateRequest;
+    // The policy DB catches up with the chain when read, so read it at the tip
+    // first. Otherwise the producer never saw the blocks this disconnects,
+    // and there is nothing for it to undo.
+    let _state = post_setup
+        .block_producer_service_client
+        .get_block_producer_state(GetBlockProducerStateRequest::default())
+        .await?;
+    let header: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getblockheader", rpc_params![block])
+        .await?;
+    let fork_point: BlockHash = header["previousblockhash"]
+        .as_str()
+        .ok_or_else(|| anyhow!("block {block} has no parent"))?
+        .parse()?;
+    let () = invalidate_block(&post_setup.bitcoind_client, block).await?;
+    let () = wait_for_enforcer_tip_hash(post_setup, fork_point).await?;
+    let () = until_replaced().await?;
+    let replacement = generate_empty_block(
+        &post_setup.bitcoind_client,
+        &post_setup.mining_address.to_string(),
+    )
+    .await?;
+    wait_for_enforcer_tip_hash(post_setup, replacement).await
+}
+
+fn open_policy_db(directories: &Directories) -> anyhow::Result<rusqlite::Connection> {
+    let db_path = directories
+        .enforcer_dir
+        .join("wallet")
+        .join("regtest")
+        .join("db.sqlite");
+    Ok(rusqlite::Connection::open(db_path)?)
+}
+
+/// Point the block producer's policy DB at a block the validator does not
+/// know, as after a resync that loses its branch, so that its next read
+/// rebuilds the marks from the whole chain. The enforcer must be down.
+pub fn lose_policy_tip(directories: &Directories) -> anyhow::Result<()> {
+    let _rows = open_policy_db(directories)?.execute(
+        "UPDATE block_producer_settings SET policy_tip = ?1",
+        [BlockHash::from_byte_array([0xff; 32]).to_string()],
+    )?;
+    Ok(())
+}
+
+/// Put the block producer's policy DB into the state a binary from before
+/// the cursor leaves it in: settled rows deleted, the rest unmarked, no
+/// cursor. The enforcer must be down.
+pub fn downgrade_policy_db(directories: &Directories) -> anyhow::Result<()> {
+    open_policy_db(directories)?.execute_batch(
+        "DELETE FROM sidechain_proposals WHERE mined_in IS NOT NULL;
+         UPDATE sidechain_proposals SET queued_at = NULL;
+         DELETE FROM bundle_proposals WHERE settled_in IS NOT NULL;
+         UPDATE bundle_proposals SET queued_at = NULL;
+         UPDATE block_producer_settings SET policy_tip = NULL;",
+    )?;
+    Ok(())
+}
+
+/// The messages in the coinbase of the enforcer's next block template.
+pub async fn template_coinbase_messages(
+    gbt_client: &jsonrpsee::http_client::HttpClient,
+) -> anyhow::Result<Vec<CoinbaseMessage>> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+    let mut request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+    request.capabilities.insert("coinbasetxn".to_owned());
+    let template = expect_block_template(gbt_client.get_block_template(request).await?)?;
+    let bitcoin_jsonrpsee::client::CoinbaseTxnOrValue::Txn(coinbase) =
+        template.coinbase_txn_or_value
+    else {
+        anyhow::bail!("block template carries no coinbase transaction");
+    };
+    let coinbase: bitcoin::Transaction = bitcoin::consensus::deserialize(&coinbase.data)?;
+    Ok(coinbase
+        .output
+        .iter()
+        .filter_map(|txout| {
+            CoinbaseMessage::parse(&txout.script_pubkey)
+                .ok()
+                .map(|(_rest, message)| message)
+        })
+        .collect())
 }
 
 /// How many withdrawal bundles the validator has pending for `sidechain_id`.

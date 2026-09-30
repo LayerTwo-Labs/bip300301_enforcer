@@ -4,14 +4,15 @@ use std::{collections::HashMap, path::Path};
 
 use bitcoin::hashes::{Hash as _, sha256d};
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 
 use crate::{
     block_producer::error,
     types::{
         AckAllProposalsPolicy, BlindedM6, M6id, SidechainAck, SidechainNumber, SidechainProposal,
-        SidechainProposalId, WithdrawalBundlePolicy,
+        WithdrawalBundleEventKind, WithdrawalBundlePolicy,
     },
+    validator::Validator,
 };
 
 /// Bundle proposals for a single sidechain, as stored (no validator filtering).
@@ -181,6 +182,21 @@ impl Db {
                 "DROP TABLE bmm_requests;
                  DROP TABLE bmm_requests_undo;",
             ),
+            M::up(
+                "ALTER TABLE sidechain_proposals ADD COLUMN mined_in TEXT;
+                 ALTER TABLE sidechain_proposals ADD COLUMN queued_at INTEGER;
+                 ALTER TABLE bundle_proposals ADD COLUMN settled_in TEXT;
+                 ALTER TABLE bundle_proposals ADD COLUMN queued_at INTEGER;
+                 ALTER TABLE bundle_proposals ADD COLUMN paid_out INTEGER;
+                 ALTER TABLE block_producer_settings ADD COLUMN policy_tip TEXT;",
+            ),
+            // Settled bundles are kept as tombstones, and `settled_in` sits
+            // after the bundle tx, so finding the pending ones without this
+            // reads every bundle submitted.
+            M::up(
+                "CREATE INDEX pending_bundle_proposals
+                 ON bundle_proposals (sidechain_number) WHERE settled_in IS NULL;",
+            ),
         ]);
 
         let path = data_dir.join("db.sqlite");
@@ -194,16 +210,56 @@ impl Db {
         })
     }
 
+    /// Start a DB that has no cursor yet, fresh or from before there was one,
+    /// at the validator's tip. Must run before the validator syncs further:
+    /// the producer used to delete rows once their proposal or bundle was
+    /// mined or settled, so whatever rows an old DB holds are pending as of
+    /// the last block it saw, which is that tip. Queueing them at its height
+    /// keeps a proposal or bundle that was resubmitted after an earlier M1 or
+    /// settlement pending, as it was.
+    pub(crate) fn start_cursor(
+        &mut self,
+        validator: &Validator,
+    ) -> Result<(), error::InitDbConnection> {
+        let tx = self.conn.get_mut().transaction()?;
+        let policy_tip: Option<String> = tx.query_row(
+            "SELECT policy_tip FROM block_producer_settings",
+            [],
+            |row| row.get(0),
+        )?;
+        if policy_tip.is_some() {
+            return Ok(());
+        }
+        let Some(tip) = validator.try_get_mainchain_tip()? else {
+            return Ok(());
+        };
+        let tip_height = validator.get_header_info(&tip)?.height;
+        tx.execute(
+            "UPDATE block_producer_settings SET policy_tip = ?1",
+            [tip.to_string()],
+        )?;
+        tx.execute(
+            "UPDATE sidechain_proposals SET queued_at = ?1 WHERE queued_at IS NULL",
+            [tip_height],
+        )?;
+        tx.execute(
+            "UPDATE bundle_proposals SET queued_at = ?1 WHERE queued_at IS NULL",
+            [tip_height],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Sidechain proposals *we* authored. Not yet on the chain, so not yet
     /// votable — these become M1s in the coinbase.
-    pub async fn get_our_sidechain_proposals(
+    pub(crate) async fn get_our_sidechain_proposals(
         &self,
-    ) -> Result<Vec<SidechainProposal>, rusqlite::Error> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_, rusqlite::Error> {
-            let mut statement =
-                connection.prepare("SELECT sidechain_number, data FROM sidechain_proposals")?;
-
+        validator: &Validator,
+    ) -> Result<Vec<SidechainProposal>, error::Reconcile> {
+        self.reconciled(validator, |tx, _tip_height| {
+            let mut statement = tx.prepare(
+                "SELECT sidechain_number, data FROM sidechain_proposals WHERE mined_in IS NULL",
+            )?;
             let proposals = statement
                 .query_map([], |row| {
                     let data: Vec<u8> = row.get(1)?;
@@ -214,11 +270,9 @@ impl Db {
                     })
                 })?
                 .collect::<Result<_, _>>()?;
-
             Ok(proposals)
-        };
-        let connection = self.conn.lock().await;
-        with_connection(&connection)
+        })
+        .await
     }
 
     pub async fn get_sidechain_acks(&self) -> Result<Vec<SidechainAck>, rusqlite::Error> {
@@ -245,11 +299,13 @@ impl Db {
     /// the active-sidechain filter want [`super::BlockProducer::get_bundle_proposals`].
     pub(crate) async fn get_bundle_proposals(
         &self,
+        validator: &Validator,
     ) -> Result<HashMap<SidechainNumber, StoredBundleProposals>, error::GetBundleProposals> {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<_, error::GetBundleProposals> {
-            let mut statement = connection
-                .prepare("SELECT sidechain_number, bundle_hash, bundle_tx FROM bundle_proposals")?;
+        self.reconciled(validator, |tx, _tip_height| {
+            let mut statement = tx.prepare(
+                "SELECT sidechain_number, bundle_hash, bundle_tx FROM bundle_proposals \
+                 WHERE settled_in IS NULL",
+            )?;
             let mut bundle_proposals = HashMap::<_, Vec<_>>::new();
             let () = statement
                 .query_map([], |row| {
@@ -270,9 +326,8 @@ impl Db {
                     Ok(())
                 })?;
             Ok(bundle_proposals)
-        };
-        let connection = self.conn.lock().await;
-        with_connection(&connection)
+        })
+        .await
     }
 
     pub async fn ack_sidechain(
@@ -291,28 +346,33 @@ impl Db {
         Ok(())
     }
 
-    pub async fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<(), rusqlite::Error> {
-        let connection = self.conn.lock().await;
-        connection.execute(
-            "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
-            (ack.sidechain_number.0, ack.description_hash.as_byte_array()),
-        )?;
-        drop(connection);
-        Ok(())
-    }
-
     /// Persists a sidechain proposal. On regtest it is picked up by the next
     /// block generation; on a PoW network it goes out in the next template.
-    pub async fn propose_sidechain(
+    pub(crate) async fn propose_sidechain(
         &self,
+        validator: &Validator,
         proposal: &SidechainProposal,
-    ) -> Result<(), rusqlite::Error> {
+    ) -> Result<(), error::Reconcile> {
         let sidechain_number: u8 = proposal.sidechain_number.into();
-        self.conn.lock().await.execute(
-            "INSERT INTO sidechain_proposals (sidechain_number, data_hash, data) VALUES (?1, ?2, ?3)",
-            (sidechain_number, proposal.description.sha256d_hash().to_byte_array(), &proposal.description.0),
-        )?;
-        Ok(())
+        let data_hash = proposal.description.sha256d_hash().to_byte_array();
+        self.reconciled(validator, |tx, tip_height| {
+            // Re-proposing one that was already mined queues it again, past
+            // that M1. A pending duplicate still trips the UNIQUE constraint
+            // below.
+            let requeued = tx.execute(
+                "UPDATE sidechain_proposals SET mined_in = NULL, queued_at = ?3 \
+                 WHERE sidechain_number = ?1 AND data_hash = ?2 AND mined_in IS NOT NULL",
+                (sidechain_number, data_hash, tip_height),
+            )?;
+            if requeued == 0 {
+                tx.execute(
+                    "INSERT INTO sidechain_proposals (sidechain_number, data_hash, data, queued_at) VALUES (?1, ?2, ?3, ?4)",
+                    (sidechain_number, data_hash, &proposal.description.0, tip_height),
+                )?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Which sidechain proposals get ACKed on top of `sidechain_acks`.
@@ -429,88 +489,167 @@ impl Db {
         Ok(())
     }
 
-    pub async fn put_withdrawal_bundle(
+    pub(crate) async fn put_withdrawal_bundle(
         &self,
+        validator: &Validator,
         sidechain_number: SidechainNumber,
         blinded_m6: &BlindedM6<'static>,
-    ) -> Result<M6id, rusqlite::Error> {
+    ) -> Result<M6id, error::PutWithdrawalBundle> {
         let m6id = blinded_m6.compute_m6id();
         // Always encode with rust-bitcoin. A zero-input bundle round-trips
         // because `BlindedM6::deserialize` reads this encoding back, and a
         // finalized M6 has a treasury input anyway.
         let tx_bytes = blinded_m6.serialize();
-        self.conn
-            .lock()
-            .await
-            .execute(
-                "INSERT OR IGNORE INTO bundle_proposals (sidechain_number, bundle_hash, bundle_tx) VALUES (?1, ?2, ?3)",
-                (sidechain_number.0, m6id.0.as_byte_array(), tx_bytes),
+        self.reconciled(validator, |tx, tip_height| {
+            let paid_out: Option<Option<bool>> = tx
+                .query_row(
+                    "SELECT paid_out FROM bundle_proposals \
+                     WHERE sidechain_number = ?1 AND bundle_hash = ?2",
+                    (sidechain_number.0, m6id.0.as_byte_array()),
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if paid_out == Some(Some(true)) {
+                return Err(error::PutWithdrawalBundle::AlreadyPaidOut { m6id });
+            }
+            tx.execute(
+                // Resubmitting a failed bundle queues it again, past that
+                // failure.
+                "INSERT INTO bundle_proposals \
+                 (sidechain_number, bundle_hash, bundle_tx, queued_at) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (sidechain_number, bundle_hash) \
+                 DO UPDATE SET settled_in = NULL, paid_out = NULL, queued_at = excluded.queued_at",
+                (
+                    sidechain_number.0,
+                    m6id.0.as_byte_array(),
+                    tx_bytes,
+                    tip_height,
+                ),
             )?;
-        Ok(m6id)
+            Ok(m6id)
+        })
+        .await
     }
 
-    // Gets wiped upon generating a new block.
-    pub(crate) async fn delete_bundle_proposals<I>(&self, iter: I) -> Result<(), rusqlite::Error>
-    where
-        I: IntoIterator<Item = (SidechainNumber, M6id)>,
-    {
-        // Satisfy clippy with a single function call per lock
-        let with_connection = |connection: &Connection| -> Result<usize, rusqlite::Error> {
-            let mut total_deleted = 0;
-            for (sidechain_number, m6id) in iter {
-                let deleted = connection.execute(
-                    "DELETE FROM bundle_proposals where sidechain_number = ?1 AND bundle_hash = ?2;",
-                    (sidechain_number.0, m6id.0.as_byte_array())
-                )?;
-                total_deleted += deleted;
-            }
-            Ok(total_deleted)
-        };
-        let total_deleted = {
-            let connection = self.conn.lock().await;
-            with_connection(&connection)?
-        };
-
-        if total_deleted > 0 {
-            tracing::debug!(
-                "deleted {} bundle proposal(s) from SQLite DB",
-                total_deleted
-            );
-        }
-        Ok(())
-    }
-
-    // Gets wiped upon generating a new block.
-    pub(crate) async fn delete_pending_sidechain_proposals<I>(
+    /// Run `f` against the proposal tables once they are in line with the
+    /// chain, in the same transaction, passing the height of the tip they are
+    /// in line with (`None` if the validator has no tip yet). Every read and
+    /// write of those tables must go through here.
+    async fn reconciled<T, E>(
         &self,
-        proposals: I,
-    ) -> Result<(), rusqlite::Error>
+        validator: &Validator,
+        f: impl FnOnce(&rusqlite::Transaction<'_>, Option<u32>) -> Result<T, E>,
+    ) -> Result<T, E>
     where
-        I: IntoIterator<Item = SidechainProposalId>,
+        E: From<error::Reconcile> + From<rusqlite::Error>,
     {
-        let with_connection = |connection: &Connection| -> Result<usize, rusqlite::Error> {
-            let mut total_deleted = 0;
-            for proposal_id in proposals {
-                let deleted = connection.execute(
-                    "DELETE FROM sidechain_proposals where sidechain_number = ?1 AND data_hash = ?2;",
-                    (proposal_id.sidechain_number.0, proposal_id.description_hash.as_byte_array())
-                )?;
-                total_deleted += deleted;
-            }
-            Ok(total_deleted)
-        };
-        let connection = self.conn.lock().await;
-        let total_deleted = with_connection(&connection)?;
+        let mut connection = self.conn.lock().await;
+        let tx = connection.transaction()?;
+        let tip_height = reconcile(&tx, validator)?;
+        let res = f(&tx, tip_height)?;
+        tx.commit()?;
         drop(connection);
-
-        if total_deleted > 0 {
-            tracing::debug!(
-                "deleted {} pending sidechain proposal(s) from SQLite DB",
-                total_deleted
-            );
-        }
-        Ok(())
+        Ok(res)
     }
+}
+
+/// Bring the policy tables' `mined_in`/`settled_in` marks in line with the
+/// validator's chain, from the `policy_tip` cursor up to its current tip, and
+/// return the tip's height. Without a usable cursor the marks are rebuilt from
+/// the whole chain.
+///
+/// A row only takes marks from blocks above its `queued_at`, the tip height it
+/// was (re)queued at: queueing it means past whatever is on the chain already,
+/// and a rebuild or a reorg that reconnects that must not undo it.
+fn reconcile(
+    tx: &rusqlite::Transaction<'_>,
+    validator: &Validator,
+) -> Result<Option<u32>, error::Reconcile> {
+    let policy_tip: Option<String> = tx.query_row(
+        "SELECT policy_tip FROM block_producer_settings",
+        [],
+        |row| row.get(0),
+    )?;
+    let policy_tip = policy_tip
+        .map(|policy_tip| policy_tip.parse::<bitcoin::BlockHash>())
+        .transpose()?;
+    let Some(diff) = validator.chain_diff(policy_tip)? else {
+        return Ok(None);
+    };
+    if policy_tip == Some(diff.tip) {
+        return Ok(Some(diff.tip_height));
+    }
+    if diff.rebuilt {
+        tracing::warn!(?policy_tip, "no usable policy tip, rebuilding the marks");
+        tx.execute("UPDATE sidechain_proposals SET mined_in = NULL", [])?;
+        tx.execute(
+            "UPDATE bundle_proposals SET settled_in = NULL, paid_out = NULL",
+            [],
+        )?;
+    }
+    for block_hash in &diff.disconnected {
+        let block_hash = block_hash.to_string();
+        tx.execute(
+            "UPDATE sidechain_proposals SET mined_in = NULL WHERE mined_in = ?1",
+            [&block_hash],
+        )?;
+        tx.execute(
+            "UPDATE bundle_proposals SET settled_in = NULL, paid_out = NULL \
+             WHERE settled_in = ?1",
+            [&block_hash],
+        )?;
+    }
+    let first_connected_height = diff.tip_height + 1 - diff.connected.len() as u32;
+    for ((block_hash, block_info), height) in diff.connected.iter().zip(first_connected_height..) {
+        let block_hash = block_hash.to_string();
+        for (_vout, proposal) in block_info.sidechain_proposals() {
+            let id = proposal.compute_id();
+            tx.execute(
+                "UPDATE sidechain_proposals SET mined_in = ?1
+                 WHERE sidechain_number = ?2 AND data_hash = ?3
+                    AND (queued_at IS NULL OR queued_at < ?4)",
+                (
+                    &block_hash,
+                    id.sidechain_number.0,
+                    id.description_hash.as_byte_array(),
+                    height,
+                ),
+            )?;
+        }
+        for event in block_info.withdrawal_bundle_events() {
+            let paid_out = match event.kind {
+                WithdrawalBundleEventKind::Failed => false,
+                WithdrawalBundleEventKind::Succeeded { .. } => true,
+                WithdrawalBundleEventKind::Submitted => continue,
+            };
+            tx.execute(
+                "UPDATE bundle_proposals SET settled_in = ?1, paid_out = ?5
+                 WHERE sidechain_number = ?2 AND bundle_hash = ?3
+                    AND (queued_at IS NULL OR queued_at < ?4)",
+                (
+                    &block_hash,
+                    event.sidechain_id.0,
+                    event.m6id.0.as_byte_array(),
+                    height,
+                    paid_out,
+                ),
+            )?;
+        }
+    }
+    if !(diff.disconnected.is_empty() && diff.connected.is_empty()) {
+        tracing::debug!(
+            tip = %diff.tip,
+            disconnected = diff.disconnected.len(),
+            connected = diff.connected.len(),
+            "reconciled policy DB with the chain",
+        );
+    }
+    tx.execute(
+        "UPDATE block_producer_settings SET policy_tip = ?1",
+        [diff.tip.to_string()],
+    )?;
+    Ok(Some(diff.tip_height))
 }
 
 /// Drop the legacy `wallet_seeds` table once it no longer holds a seed. This
