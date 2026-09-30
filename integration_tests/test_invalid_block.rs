@@ -564,8 +564,8 @@ fn zero_value(script_pubkey: ScriptBuf) -> TxOut {
 }
 
 /// Block-template fields we read from bitcoind's `getblocktemplate`. The test
-/// talks to bitcoind directly (not via the enforcer's GBT proxy) because the
-/// proxy is disabled in `Mode::NoMempool`.
+/// builds the invalid blocks itself, so it only needs the chain fields, not
+/// the enforcer's template.
 #[derive(Deserialize)]
 struct BlockTemplate {
     previousblockhash: BlockHash,

@@ -451,6 +451,9 @@ pub struct Config {
     pub enable_mempool: bool,
     /// Serve `getblocktemplate` to miners. Requires `--enable-mempool`.
     ///
+    /// Also required for `GenerateToAddress`, which builds its blocks from
+    /// these templates.
+    ///
     /// Works without a wallet.
     ///
     /// Without a wallet, `--coinbase-recipient` is required.

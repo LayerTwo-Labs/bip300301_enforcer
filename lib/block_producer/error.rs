@@ -188,11 +188,17 @@ impl ToStatus for GetBlockTemplate {
 #[derive(Debug, Diagnostic, Error)]
 pub enum SelectBlockTxs {
     #[error(transparent)]
-    GenerateSuffixTxs(#[from] GetBundleProposals),
-    #[error(transparent)]
     GetBlockTemplate(#[from] GetBlockTemplate),
-    #[error(transparent)]
-    GetCtips(#[from] crate::validator::GetCtipsError),
+    #[error(
+        "generating blocks requires the block template server \
+         (`--enable-mempool --enable-block-template-server`)"
+    )]
+    NoBlockTemplateServer,
+    #[error(
+        "the block template carries no coinbase transaction, so it was not built by \
+         the enforcer and would leave out the withdrawal payouts"
+    )]
+    NoCoinbaseTxn,
     #[error("failed to decode transaction `{txid}` from the block template")]
     DecodeTemplateTransaction {
         txid: bitcoin::Txid,
@@ -219,13 +225,13 @@ pub enum SelectBlockTxs {
 impl ToStatus for SelectBlockTxs {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::GenerateSuffixTxs(err) => err.builder(),
             Self::GetBlockTemplate(err) => err.builder(),
-            Self::GetCtips(err) => err.builder(),
-            Self::DecodeTemplateTransaction { .. }
-            | Self::NegativeTemplateTransactionFee { .. } => {
-                StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
+            Self::NoBlockTemplateServer => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
+            Self::DecodeTemplateTransaction { .. }
+            | Self::NegativeTemplateTransactionFee { .. }
+            | Self::NoCoinbaseTxn => StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal),
             // Retryable: whichever side is behind just needs to catch up.
             Self::TemplateTipMismatch { .. } => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)

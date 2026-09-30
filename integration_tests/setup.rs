@@ -179,6 +179,12 @@ impl Mode {
         }
     }
 
+    /// `GenerateToAddress` needs the enforcer's block template server, so it
+    /// runs whenever the mempool does.
+    pub fn enable_block_template_server(&self) -> bool {
+        self.enable_mempool()
+    }
+
     pub fn mining_mode(&self) -> MiningMode {
         match self {
             Self::GetBlockTemplate => MiningMode::GetBlockTemplate,
@@ -1304,7 +1310,7 @@ impl PostSetup {
             data_dir: dirs.enforcer_dir.clone(),
             enable_mempool: mode.enable_mempool(),
             enable_wallet,
-            enable_block_template_server: matches!(mode, Mode::GetBlockTemplate),
+            enable_block_template_server: mode.enable_block_template_server(),
             coinbase_recipient: (!enable_wallet).then(|| mining_address.to_string()),
             node_blocks_dir: None,
             node_mempool_dat: None,
@@ -1348,8 +1354,8 @@ impl PostSetup {
             .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
             .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
 
-        // The JSON-RPC (`getblocktemplate`) server only runs in the mode that
-        // serves block templates, and it binds before the enforcer has synced.
+        // The JSON-RPC (`getblocktemplate`) server only runs with the mempool,
+        // and it binds before the enforcer has synced.
         // Both the `gbt_client` above and the signet miner talk to it, so wait
         // for it to serve a template rather than racing the first request
         // against startup.
@@ -1429,8 +1435,8 @@ impl PostSetup {
     /// bitcoind/electrs are left running throughout. Existing gRPC clients
     /// reconnect automatically once the new process is listening.
     ///
-    /// Like [`PreSetup::setup`], waits for block templates in
-    /// [`Mode::GetBlockTemplate`], so that tests can mine right away.
+    /// Like [`PreSetup::setup`], waits for block templates whenever the
+    /// template server runs, so that tests can mine right away.
     pub async fn restart_enforcer<EnforcerArg, EnforcerArgs>(
         &mut self,
         bin_paths: &BinPaths,
@@ -1444,7 +1450,7 @@ impl PostSetup {
         let mut enforcer_exit = self
             .spawn_enforcer(bin_paths, enforcer_args, res_tx)
             .await?;
-        if matches!(self.mode, Mode::GetBlockTemplate) {
+        if self.mode.enable_block_template_server() {
             enforcer_exit
                 .unless_exited(wait_for_block_templates(&self.gbt_client))
                 .await?;
@@ -1487,7 +1493,7 @@ impl PostSetup {
             data_dir: self.directories.enforcer_dir.clone(),
             enable_mempool: self.mode.enable_mempool(),
             enable_wallet: true,
-            enable_block_template_server: matches!(self.mode, Mode::GetBlockTemplate),
+            enable_block_template_server: self.mode.enable_block_template_server(),
             coinbase_recipient: None,
             node_blocks_dir: None,
             node_mempool_dat: None,

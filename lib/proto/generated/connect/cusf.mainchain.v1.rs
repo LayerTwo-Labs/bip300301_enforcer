@@ -1912,6 +1912,9 @@ pub trait MiningService: Send + Sync + 'static {
     /// The ACK policy for sidechain proposals is the persisted block producer
     /// policy (see BlockProducerService.SetSidechainAck / SetAckAllProposals).
     ///
+    /// Requires the enforcer's own block template server
+    /// (`--enable-mempool --enable-block-template-server`).
+    ///
     /// On signet, the Bitcoin Core node's wallet signs each block, so it must be
     /// able to solve the signet challenge.
     ///

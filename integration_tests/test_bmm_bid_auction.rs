@@ -291,8 +291,9 @@ fn coinbase_m7_accepts(block: &bitcoin::Block) -> anyhow::Result<Vec<M7BmmAccept
 }
 
 /// Wait until the enforcer's block template selects all of `want` and none
-/// of `not_want`. `Mode::GetBlockTemplate` only; the mempool mirror trails
-/// bitcoind's mempool, so this must gate mining on the bids.
+/// of `not_want`. Whatever the mining mode, blocks are built from that
+/// template, and the mempool mirror behind it trails bitcoind's mempool, so
+/// this must gate mining on the bids.
 async fn wait_for_template_txs(
     post_setup: &PostSetup,
     want: Vec<Txid>,
@@ -549,7 +550,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
             slot.0
         );
     }
-    if let Mode::GetBlockTemplate = mode {
+    if mode.enable_block_template_server() {
         let () = wait_for_template_txs(
             &post_setup,
             vec![high_txid, other_txid],
@@ -671,7 +672,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
             ])
     })
     .await?;
-    if let Mode::GetBlockTemplate = mode {
+    if mode.enable_block_template_server() {
         let () = wait_for_template_txs(&post_setup, vec![outside_txid], vec![losing_txid]).await?;
     }
 
@@ -726,7 +727,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     )
     .await?;
     tracing::info!(%rebid_txid, "Placed round 3 re-bid");
-    if let Mode::GetBlockTemplate = mode {
+    if mode.enable_block_template_server() {
         let () = wait_for_template_txs(&post_setup, vec![rebid_txid], vec![]).await?;
     }
     let (rebid_block, _) = mine_and_check_commitment(&mut post_setup, Some(&h_rebid)).await?;
@@ -763,7 +764,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     )
     .await?;
     tracing::info!(%jumbo_txid, "Placed round 4 jumbo bid");
-    if let Mode::GetBlockTemplate = mode {
+    if mode.enable_block_template_server() {
         let () = wait_for_template_txs(&post_setup, vec![jumbo_txid], vec![]).await?;
     }
     let (jumbo_block, jumbo_height) =
@@ -808,7 +809,7 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     for txid in [&small_txid, &big_txid] {
         let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, txid).await?;
     }
-    if let Mode::GetBlockTemplate = mode {
+    if mode.enable_block_template_server() {
         let () = wait_for_template_txs(&post_setup, vec![big_txid], vec![small_txid]).await?;
     }
     let (skew_block, skew_height) =
