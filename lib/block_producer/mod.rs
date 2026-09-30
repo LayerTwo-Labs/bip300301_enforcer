@@ -333,12 +333,12 @@ impl BlockProducer {
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
         );
-        // Settle the per-slot BMM auction before tx selection, with the same
-        // rule as self-mining (`bmm_auction_winners`): the highest absolute
-        // fee wins each slot, and every other bid is excluded from the
-        // template. Without this, generic tx selection would pick between
-        // conflicting bids by ancestor fee rate. Excluded bids drop together
-        // with their descendants when the template is built.
+        // Settle the per-slot BMM auction before tx selection: the highest
+        // absolute fee wins each slot, and every other bid is excluded from
+        // the template, which self-mining builds its blocks from too. Without
+        // this, generic tx selection would pick between conflicting bids by
+        // ancestor fee rate. Excluded bids drop together with their
+        // descendants when the template is built.
         {
             let seen_bmm_requests = self
                 .validator()

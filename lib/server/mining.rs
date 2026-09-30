@@ -12,7 +12,7 @@ use crate::{
         mainchain_service::MiningService,
         unwrap_u32,
     },
-    server::{internal_err, invalid_field_value, missing_field},
+    server::{invalid_field_value, missing_field},
 };
 
 #[expect(refining_impl_trait_reachable)]
@@ -55,15 +55,10 @@ impl MiningService for BlockProducer {
             .await
             .map_err(|err| err.builder().to_connect_error())?;
 
-        // The ACK policy is the persisted one, which also governs served block
-        // templates.
-        let ack_policy = self.db().get_ack_policy().await.map_err(internal_err)?;
-        let bundle_policy = self.db().get_bundle_policy().await.map_err(internal_err)?;
-
         let mut block_hashes = Vec::with_capacity(count.get() as usize);
         for _ in 0..count.get() {
             let block_hash = self
-                .generate_block(coinbase_addr.clone(), ack_policy, bundle_policy)
+                .generate_block(coinbase_addr.clone())
                 .await
                 .map_err(|err| {
                     tracing::error!("{:#}", ErrorChain::new(&err));
