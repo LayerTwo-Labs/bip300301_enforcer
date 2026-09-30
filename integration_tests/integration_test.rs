@@ -1170,6 +1170,19 @@ pub fn tests(
             test_bmm_bid_auction::test_bmm_bid_auction,
         )
     }));
+    async_trials.extend([Mode::Mempool, Mode::GetBlockTemplate].map(|mode| {
+        new_trial_with_setup(
+            format!("sidechain_proposal_reorg (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_sidechain_proposal_reorg::test_sidechain_proposal_reorg,
+        )
+    }));
     // Bespoke: the test kills and restarts the enforcer to drive the
     // pre-activation header-only sync, so it owns its setup.
     async_trials.push(new_bespoke_trial(
@@ -1329,6 +1342,31 @@ pub fn tests(
             crate::test_withdrawal_payout::test_stale_payout_after_reorg,
         )
     }));
+    async_trials.extend([Mode::Mempool, Mode::GetBlockTemplate].map(|mode| {
+        new_trial_with_setup(
+            format!("returned_payout_paid_once (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_withdrawal_payout::test_returned_payout_paid_once,
+        )
+    }));
+    async_trials.push(new_trial_with_setup(
+        "withdrawal_bundle_reorg".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            // Same reason as `withdrawal_bundle_policy`.
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_withdrawal_bundle_reorg::test_withdrawal_bundle_reorg,
+    ));
     async_trials.push(new_trial_with_setup(
         "invalid_block".to_string(),
         TestSetupComponents {

@@ -1,5 +1,4 @@
 use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
-use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -7,7 +6,6 @@ use crate::{
     errors::ErrorChain,
     messages::CoinbaseMessagesError,
     proto::{StatusBuilder, ToStatus},
-    validator::Validator,
 };
 
 #[derive(Debug, Diagnostic, Error)]
@@ -17,9 +15,45 @@ pub struct UnknownStoredAckPolicy(pub String);
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitDbConnection {
     #[error(transparent)]
+    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    #[error(transparent)]
     Migration(#[from] rusqlite_migration::Error),
     #[error(transparent)]
+    MainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+    #[error(transparent)]
     Rusqlite(#[from] rusqlite::Error),
+}
+
+/// Failed to bring the policy DB in line with the validator's chain.
+#[derive(Debug, Diagnostic, Error)]
+pub enum Reconcile {
+    #[error(transparent)]
+    ChainDiff(#[from] crate::validator::ChainDiffError),
+    #[error("invalid stored policy tip")]
+    PolicyTip(#[from] bitcoin::hex::HexToArrayError),
+    #[error("rusqlite error")]
+    Rusqlite(#[from] rusqlite::Error),
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum PutWithdrawalBundle {
+    #[error("withdrawal bundle `{m6id}` has already been paid out")]
+    AlreadyPaidOut { m6id: crate::types::M6id },
+    #[error("failed to reconcile policy DB with validator chain")]
+    Reconcile(#[from] Reconcile),
+    #[error("rusqlite error")]
+    Rusqlite(#[from] rusqlite::Error),
+}
+
+impl ToStatus for PutWithdrawalBundle {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::AlreadyPaidOut { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::AlreadyExists)
+            }
+            Self::Reconcile(_) | Self::Rusqlite(_) => StatusBuilder::new(self),
+        }
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -30,6 +64,8 @@ enum GetBundleProposalsInner {
     GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
     #[error(transparent)]
     GetSidechains(#[from] crate::validator::GetSidechainsError),
+    #[error("failed to reconcile policy DB with validator chain")]
+    Reconcile(#[from] Reconcile),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
 }
@@ -40,7 +76,7 @@ impl ToStatus for GetBundleProposalsInner {
             Self::DecodeBlindedM6(err) => err.builder(),
             Self::GetPendingWithdrawals(err) => err.builder(),
             Self::GetSidechains(err) => err.builder(),
-            Self::Rusqlite(_) => StatusBuilder::new(self),
+            Self::Reconcile(_) | Self::Rusqlite(_) => StatusBuilder::new(self),
         }
     }
 }
@@ -79,6 +115,8 @@ pub enum GenerateCoinbaseTxouts {
     GetSidechains(#[from] crate::validator::GetSidechainsError),
     #[error(transparent)]
     PushBytes(#[from] bitcoin::script::PushBytesError),
+    #[error("failed to reconcile policy DB with validator chain")]
+    Reconcile(#[from] Reconcile),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
 }
@@ -92,7 +130,7 @@ impl ToStatus for GenerateCoinbaseTxouts {
             Self::GetPendingWithdrawals(err) => err.builder(),
             Self::GetSidechains(err) => err.builder(),
             Self::PushBytes(err) => StatusBuilder::new(err),
-            Self::Rusqlite(_) => StatusBuilder::new(self),
+            Self::Reconcile(_) | Self::Rusqlite(_) => StatusBuilder::new(self),
         }
     }
 }
@@ -406,19 +444,6 @@ impl ToStatus for GenerateBlock {
     }
 }
 
-/// `connect_block` for the producer: the validator's error, plus the policy-table
-/// maintenance that follows an accepted block. Wallet's `ConnectBlock` wraps this
-/// and adds the BDK failures on top.
-#[derive(Debug, Diagnostic, Error)]
-pub enum ConnectBlock {
-    #[error(transparent)]
-    Validator(#[from] <Validator as CusfEnforcer>::ConnectBlockError),
-    #[error(transparent)]
-    GetBlockInfos(#[from] crate::validator::GetBlockInfosError),
-    #[error("rusqlite error")]
-    Rusqlite(#[from] rusqlite::Error),
-}
-
 #[derive(Debug, Diagnostic, Error)]
 pub(in crate::block_producer) enum InitialBlockTemplateInner {
     #[error(transparent)]
@@ -470,7 +495,7 @@ pub(in crate::block_producer) enum FinalizeBlockTemplateInner {
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GetBundleProposals),
     #[error(transparent)]
-    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
+    GetWithdrawalStateAfter(#[from] crate::validator::cusf_enforcer::GetWithdrawalStateAfterError),
     #[error(transparent)]
     GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
     #[error(transparent)]

@@ -843,8 +843,11 @@ impl Wallet {
     pub async fn propose_sidechain(
         &self,
         proposal: &SidechainProposal,
-    ) -> Result<(), rusqlite::Error> {
-        self.inner.db().propose_sidechain(proposal).await
+    ) -> Result<(), crate::block_producer::error::Reconcile> {
+        self.inner
+            .db()
+            .propose_sidechain(self.validator(), proposal)
+            .await
     }
 
     pub async fn ack_sidechain(

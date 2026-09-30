@@ -183,10 +183,13 @@ where
     };
     producer
         .db()
-        .propose_sidechain(&sidechain_proposal)
+        .propose_sidechain(producer.validator(), &sidechain_proposal)
         .await
         .map_err(|err| {
-            if let rusqlite::Error::SqliteFailure(sqlite_err, _) = err {
+            if let crate::block_producer::error::Reconcile::Rusqlite(
+                rusqlite::Error::SqliteFailure(sqlite_err, _),
+            ) = err
+            {
                 tracing::error!("SQLite error: {:#}", ErrorChain::new(&sqlite_err));
                 if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation {
                     return ConnectError::already_exists("Sidechain proposal already exists");
@@ -403,7 +406,7 @@ impl BlockProducerService for BlockProducer {
 
         let pending_proposals = self
             .db()
-            .get_our_sidechain_proposals()
+            .get_our_sidechain_proposals(self.validator())
             .await
             .map_err(internal_err)?
             .into_iter()

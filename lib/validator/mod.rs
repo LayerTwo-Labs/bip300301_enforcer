@@ -32,9 +32,12 @@ mod task;
 #[cfg(test)]
 mod test_utils;
 
-use self::dbs::{Dbs, PendingM6ids};
-pub use self::sync_state_summary::{
-    CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
+use self::dbs::Dbs;
+pub use self::{
+    dbs::PendingM6ids,
+    sync_state_summary::{
+        CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -278,6 +281,51 @@ where
     fn from(err: T) -> Self {
         Self(err.into())
     }
+}
+
+#[derive(Debug, Error)]
+enum ChainDiffErrorInner {
+    #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error(transparent)]
+    DbGet(#[from] db::error::Get),
+    #[error(transparent)]
+    DbTryGet(#[from] db::error::TryGet),
+    #[error(transparent)]
+    LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
+    #[error("missing block info for connected block {0}")]
+    MissingBlockInfo(BlockHash),
+    #[error(transparent)]
+    ReadTxn(#[from] env::error::ReadTxn),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct ChainDiffError(ChainDiffErrorInner);
+
+impl<T> From<T> for ChainDiffError
+where
+    ChainDiffErrorInner: From<T>,
+{
+    fn from(err: T) -> Self {
+        Self(err.into())
+    }
+}
+
+/// How the mainchain changed since some earlier block. See
+/// [`Validator::chain_diff`].
+#[derive(Debug)]
+pub struct ChainDiff {
+    pub tip: BlockHash,
+    pub tip_height: u32,
+    /// There was no known block to diff from, so `connected` holds every
+    /// block from the BIP300 activation height instead.
+    pub rebuilt: bool,
+    /// Newest first
+    pub disconnected: Vec<BlockHash>,
+    /// Oldest first, ending at `tip`
+    pub connected: Vec<(BlockHash, BlockInfo)>,
 }
 
 #[derive(Debug, Error)]
@@ -750,6 +798,63 @@ impl Validator {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.try_get(&rotxn, &())?;
         Ok(res)
+    }
+
+    /// The blocks disconnected and connected on the way from `from` to the
+    /// current mainchain tip, read in a single snapshot. If `from` is missing
+    /// or unknown, e.g. after a resync, every block from the BIP300 activation
+    /// height counts as connected. Returns `None` if not synced.
+    pub fn chain_diff(&self, from: Option<BlockHash>) -> Result<Option<ChainDiff>, ChainDiffError> {
+        let rotxn = self.dbs.read_txn()?;
+        let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
+            return Ok(None);
+        };
+        let tip_height = self.dbs.block_hashes.height().get(&rotxn, &tip)?;
+        let from = match from {
+            Some(from) if self.dbs.block_hashes.contains_header(&rotxn, &from)? => Some(from),
+            _ => None,
+        };
+        let ancestors = |head: BlockHash| {
+            self.dbs
+                .block_hashes
+                .ancestor_headers(&rotxn, head)
+                .map(|(block_hash, _)| Ok(block_hash))
+        };
+        let (disconnected, connected) = if let Some(from) = from {
+            let fork_point = self
+                .dbs
+                .block_hashes
+                .last_common_ancestor(&rotxn, from, tip)?;
+            let branch = |head| {
+                ancestors(head)
+                    .take_while(|block_hash| Ok(*block_hash != fork_point))
+                    .collect::<Vec<_>>()
+            };
+            (branch(from)?, branch(tip)?)
+        } else {
+            let count =
+                (tip_height + 1).saturating_sub(self.network_params.bip300_activation_height);
+            (Vec::new(), ancestors(tip).take(count as usize).collect()?)
+        };
+        let connected = connected
+            .into_iter()
+            .rev()
+            .map(|block_hash| {
+                let block_info = self
+                    .dbs
+                    .block_hashes
+                    .try_get_block_info(&rotxn, &block_hash)?
+                    .ok_or(ChainDiffErrorInner::MissingBlockInfo(block_hash))?;
+                Ok::<_, ChainDiffError>((block_hash, block_info))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Some(ChainDiff {
+            tip,
+            tip_height,
+            rebuilt: from.is_none(),
+            disconnected,
+            connected,
+        }))
     }
 
     /// Get the mainchain tip. Returns an error if not synced

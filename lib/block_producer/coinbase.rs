@@ -11,10 +11,8 @@ use crate::{
         OpDrivechain, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
         SidechainProposalId, WithdrawalBundlePolicy, WithdrawalBundleVote,
     },
+    validator::PendingM6ids,
 };
-
-/// The M4 votes to cast, paired with the explicit bundle ACKs to delete.
-type SelectedBundleVotes = (Vec<WithdrawalBundleVote>, Vec<(SidechainNumber, M6id)>);
 
 impl BlockProducer {
     /// Bundle proposals we've stored, joined with the validator's view of each
@@ -27,7 +25,7 @@ impl BlockProducer {
         &self,
         used_slots: &HashSet<SidechainNumber>,
     ) -> Result<HashMap<SidechainNumber, BundleProposals>, error::GetBundleProposals> {
-        let bundle_proposals = self.db().get_bundle_proposals().await?;
+        let bundle_proposals = self.db().get_bundle_proposals(self.validator()).await?;
         let res = bundle_proposals
             .into_iter()
             .map(Ok::<_, error::GetBundleProposals>)
@@ -232,16 +230,16 @@ impl BlockProducer {
         );
 
         // Pending sidechain proposals from /our/ policy DB.
-        let sidechain_proposals =
-            self.db()
-                .get_our_sidechain_proposals()
-                .await
-                .inspect_err(|err| {
-                    tracing::error!(
-                        "Failed to get sidechain proposals: {:#}",
-                        crate::errors::ErrorChain::new(err)
-                    );
-                })?;
+        let sidechain_proposals = self
+            .db()
+            .get_our_sidechain_proposals(self.validator())
+            .await
+            .inspect_err(|err| {
+                tracing::error!(
+                    "Failed to get sidechain proposals: {:#}",
+                    crate::errors::ErrorChain::new(err)
+                );
+            })?;
 
         if !sidechain_proposals.is_empty() {
             tracing::debug!(
@@ -285,19 +283,14 @@ impl BlockProducer {
                 "Handle sidechain ACK: acking proposals per policy, on top of what the DB says"
             );
         }
-        let (sidechain_acks, stale_acks) = Self::select_sidechain_acks(
+        // An ACK for a proposal that is not pending right now is kept: a reorg
+        // can bring the proposal back, and the ACK is ours to withdraw.
+        let (sidechain_acks, _not_pending_acks) = Self::select_sidechain_acks(
             stored_acks,
             &active_sidechain_proposals,
             &used_slots,
             ack_policy,
         );
-        for stale_ack in stale_acks {
-            self.db().delete_sidechain_ack(&stale_ack).await?;
-            tracing::info!(
-                "Unable to handle sidechain ack, deleted: {}",
-                stale_ack.sidechain_number
-            );
-        }
 
         for sidechain_ack in sidechain_acks {
             if coinbase_builder
@@ -331,16 +324,12 @@ impl BlockProducer {
         // Ack bundles (BIP300 M4), one vote per active sidechain in the same
         // order the validator reads them back.
         let stored_bundle_acks = self.db().get_bundle_acks().await?;
-        let (bundle_votes, stale_bundle_acks) = self.select_bundle_votes(
+        let bundle_votes = self.select_bundle_votes(
             stored_bundle_acks,
             &bundle_proposals,
             &active_sidechains,
             bundle_policy,
         )?;
-        for (sidechain_number, m6id) in stale_bundle_acks {
-            self.db().delete_bundle_ack(sidechain_number, m6id).await?;
-            tracing::info!(%sidechain_number, %m6id, "dropped an ACK for a bundle that is no longer pending");
-        }
         // Only emit an M4 that votes. An abstain-only one changes nothing, and
         // the validator already treats it and an absent M4 identically -- a
         // later block's RepeatPrevious reads both as "no prior M4". And an M4
@@ -362,9 +351,9 @@ impl BlockProducer {
         Ok(())
     }
 
-    /// One M4 vote per active sidechain, in active-sidechain order, plus the
-    /// explicit ACKs to delete: rows naming a bundle that is no longer pending
-    /// for its sidechain, which can never be voted on again.
+    /// One M4 vote per active sidechain, in active-sidechain order. An explicit
+    /// ACK for a bundle that is not pending right now is kept, not dropped: a
+    /// reorg can bring the bundle back.
     ///
     /// `bundle_proposals` are the bundles this node stores, which is what
     /// [`WithdrawalBundlePolicy::Known`] means by a bundle being ours.
@@ -374,7 +363,7 @@ impl BlockProducer {
         bundle_proposals: &HashMap<SidechainNumber, BundleProposals>,
         active_sidechains: &[Sidechain],
         policy: WithdrawalBundlePolicy,
-    ) -> Result<SelectedBundleVotes, crate::validator::GetPendingWithdrawalsError> {
+    ) -> Result<Vec<WithdrawalBundleVote>, crate::validator::GetPendingWithdrawalsError> {
         let mut acked_by_slot: HashMap<SidechainNumber, HashSet<M6id>> = HashMap::new();
         for (sidechain_number, m6id) in &stored_bundle_acks {
             acked_by_slot
@@ -385,7 +374,6 @@ impl BlockProducer {
         let empty = HashSet::new();
 
         let mut votes = Vec::with_capacity(active_sidechains.len());
-        let mut pending_by_slot: HashMap<SidechainNumber, Vec<M6id>> = HashMap::new();
         for sidechain in active_sidechains {
             let slot = sidechain.proposal.sidechain_number;
             let pending: Vec<M6id> = self
@@ -406,20 +394,8 @@ impl BlockProducer {
                 acked_by_slot.get(&slot).unwrap_or(&empty),
                 &ours,
             ));
-            pending_by_slot.insert(slot, pending);
         }
-
-        // An ACK for a slot with no active sidechain is stale too: there is no
-        // pending list for it, so `pending_by_slot` has no entry to match.
-        let stale = stored_bundle_acks
-            .into_iter()
-            .filter(|(sidechain_number, m6id)| {
-                !pending_by_slot
-                    .get(sidechain_number)
-                    .is_some_and(|pending| pending.contains(m6id))
-            })
-            .collect();
-        Ok((votes, stale))
+        Ok(votes)
     }
 
     /// Treasury value remaining after a withdrawal bundle spends `fee` and
@@ -467,13 +443,27 @@ impl BlockProducer {
     /// themselves cannot fail: a bundle that cannot be paid is skipped, so that
     /// one unpayable bundle does not stop the node from producing blocks. See
     /// [`Self::suffix_txs_for_proposals`].
+    ///
+    /// `pending_withdrawals` are the bundles still pending once the txs that the
+    /// suffix follows are applied. Any of ours those txs settle is left out.
     pub(crate) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
+        pending_withdrawals: Option<&HashMap<SidechainNumber, PendingM6ids>>,
     ) -> Result<Vec<Transaction>, error::GetBundleProposals> {
         let params = self.validator().network_params();
         let used_slots = Self::used_slots(&self.validator().get_active_sidechains()?);
-        let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
+        let mut bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
+        if let Some(pending_withdrawals) = pending_withdrawals {
+            for (sidechain_id, m6ids) in &mut bundle_proposals {
+                let pending = pending_withdrawals.get(sidechain_id);
+                for (m6id, _blinded_m6, info) in m6ids {
+                    if !pending.is_some_and(|pending| pending.contains_key(m6id)) {
+                        *info = None;
+                    }
+                }
+            }
+        }
         Ok(Self::suffix_txs_for_proposals(
             bundle_proposals,
             ctips,
