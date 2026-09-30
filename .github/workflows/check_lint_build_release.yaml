@@ -539,7 +539,9 @@ jobs:
         run: cargo test --tests
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.name }}
+        run: |
+          cargo build --release --target ${{ matrix.name }} \
+            --package bip300301_enforcer --bin bip300301_enforcer
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
 
