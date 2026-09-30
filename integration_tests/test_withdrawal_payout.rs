@@ -12,7 +12,8 @@ use crate::{
     mine::{MiningPolicy, mine},
     setup::{
         DummySidechain, PostSetup, activate_funded_sidechain, best_block_hash, broadcast_bundle,
-        generate_empty_block, invalidate_block, pending_bundles, restart_enforcer_with_defaults,
+        generate_empty_block, invalidate_block, pending_bundles, reorg_out,
+        restart_enforcer_with_defaults,
     },
     test_blinded_m6_roundtrip::make_blinded_m6,
     test_sidechain_ack_policy::{bundle_vote_count, set_bundle_policy},
@@ -131,4 +132,27 @@ async fn returned_m6(post_setup: &PostSetup, paid_in_txids: Vec<Txid>) -> anyhow
         anyhow::bail!("expected just the payout's M6 back in the mempool, got {returned:?}");
     };
     Ok(*m6_txid)
+}
+
+/// Reorging out a payout returns its M6 to the mempool, and the bundle to
+/// pending. The template carries the M6 again, so the producer must not also
+/// pay the bundle out itself: that block would pay it twice.
+pub async fn test_returned_payout_paid_once(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let (_sidechain, _sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
+    let paid_tx = make_blinded_m6(1_000, Amount::from_sat(60_000));
+    let () = broadcast_bundle(&post_setup, &paid_tx).await?;
+    let paid_in = mine_until_settled(&mut post_setup, MiningPolicy::VOTE).await?;
+    let paid_in_txids = block_txids(&post_setup, paid_in).await?;
+
+    tracing::info!("Reorging out the payout, the template offers its M6 again");
+    let () = reorg_out(&post_setup, paid_in, || async { Ok(()) }).await?;
+    let m6_txid = returned_m6(&post_setup, paid_in_txids).await?;
+    let paid_again_in = mine_until_settled(&mut post_setup, MiningPolicy::VOTE).await?;
+    anyhow::ensure!(
+        block_txids(&post_setup, paid_again_in)
+            .await?
+            .contains(&m6_txid),
+        "the bundle settled without the returned M6 being mined"
+    );
+    Ok(())
 }

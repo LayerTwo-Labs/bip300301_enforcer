@@ -16,9 +16,7 @@ use tracing::instrument;
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    types::{
-        BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber, WithdrawalBundleEventKind,
-    },
+    types::{BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber},
     validator::Validator,
 };
 
@@ -69,7 +67,9 @@ impl BlockProducer {
         gbt_client: Option<bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient>,
         signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitDbConnection> {
-        let db = Db::new(data_dir)?;
+        let mut db = Db::new(data_dir)?;
+        // Before the validator syncs any further, see `Db::start_cursor`.
+        let () = db.start_cursor(&validator)?;
         Ok(Self {
             inner: Arc::new(Inner {
                 validator,
@@ -127,53 +127,6 @@ impl BlockProducer {
             .err()
             .map(|err| format!("{:#}", ErrorChain::new(err)));
     }
-
-    /// Connect a block to the validator only, without touching policy state.
-    ///
-    /// Split out from [`CusfEnforcer::connect_block`] so the wallet can hold the
-    /// BDK write lock across [`Self::apply_connected_block_policy`].
-    pub(crate) async fn connect_block_validator(
-        &mut self,
-        block: &bitcoin::Block,
-    ) -> Result<ConnectBlockAction, <Validator as CusfEnforcer>::ConnectBlockError> {
-        let res = self.inner.validator.clone().connect_block(block).await?;
-        if let ConnectBlockAction::Accept { .. } = &res {
-            self.forget_mempool_payouts(block);
-        }
-        Ok(res)
-    }
-
-    /// Policy-table maintenance for a block the validator just accepted: drop the
-    /// sidechain proposals and withdrawal bundles that this block settled, so we
-    /// stop re-proposing them in later coinbases.
-    pub(crate) async fn apply_connected_block_policy(
-        &self,
-        block_info: &crate::types::BlockInfo,
-    ) -> Result<(), rusqlite::Error> {
-        let finalized_withdrawal_bundles =
-            block_info
-                .withdrawal_bundle_events()
-                .filter_map(|event| match event.kind {
-                    WithdrawalBundleEventKind::Failed
-                    | WithdrawalBundleEventKind::Succeeded {
-                        sequence_number: _,
-                        transaction: _,
-                    } => Some((event.sidechain_id, event.m6id)),
-                    WithdrawalBundleEventKind::Submitted => None,
-                });
-        let () = self
-            .inner
-            .db
-            .delete_bundle_proposals(finalized_withdrawal_bundles)
-            .await?;
-        let sidechain_proposal_ids = block_info
-            .sidechain_proposals()
-            .map(|(_vout, proposal)| proposal.compute_id());
-        self.inner
-            .db
-            .delete_pending_sidechain_proposals(sidechain_proposal_ids)
-            .await
-    }
 }
 
 impl BlockProducer {
@@ -227,22 +180,16 @@ impl CusfEnforcer for BlockProducer {
             .await
     }
 
-    type ConnectBlockError = error::ConnectBlock;
+    type ConnectBlockError = <Validator as CusfEnforcer>::ConnectBlockError;
 
     #[instrument(skip_all, fields(block_hash = %block.block_hash()))]
     async fn connect_block(
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
-        let res = self.connect_block_validator(block).await?;
-        // Skip policy maintenance if the validator rejected the block: it aborts
-        // the child rwtxn on `Reject`, so the block's info was never persisted.
+        let res = self.inner.validator.clone().connect_block(block).await?;
         if let ConnectBlockAction::Accept { .. } = &res {
-            let block_hash = block.block_hash();
-            let block_infos = self.inner.validator.get_block_infos(&block_hash, 0)?;
-            for (_header_info, block_info) in &block_infos {
-                let () = self.apply_connected_block_policy(block_info).await?;
-            }
+            self.forget_mempool_payouts(block);
         }
         Ok(res)
     }
@@ -253,18 +200,11 @@ impl CusfEnforcer for BlockProducer {
         &mut self,
         block_hash: BlockHash,
     ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
-        let res = self
-            .inner
+        self.inner
             .validator
             .clone()
             .disconnect_block(block_hash)
-            .await?;
-
-        // No disconnect logic is applied to the policy DB. Its tables are
-        // wiped upon generating a new block, so sidechain proposals etc. must
-        // be re-created if a block that brought one into existence is
-        // disconnected.
-        Ok(res)
+            .await
     }
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
@@ -448,7 +388,7 @@ impl BlockProducer {
                 };
                 (slot_number.into(), fake_ctip)
             }));
-            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
+            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips, None).await?;
             template
                 .suffix_txs
                 .extend(fake_suffix_txs.into_iter().map(|tx| {
@@ -549,14 +489,21 @@ impl BlockProducer {
                         .chain(template.prefix_txs.iter().map(|(tx, _)| tx.clone()))
                         .collect(),
                 };
-                let ctips = crate::validator::cusf_enforcer::get_ctips_after(
+                let withdrawal_state = crate::validator::cusf_enforcer::get_withdrawal_state_after(
                     &self.inner.validator,
                     &block,
                 )?
                 .map_err(|reason| {
                     error::FinalizeBlockTemplateInner::InitialBlockTemplate { reason }
                 })?;
-                let suffix_txs = self.generate_suffix_txs(&ctips).await?;
+                // The prefix can pay out a bundle itself, e.g. an M6 that a reorg
+                // returned to the mempool. Paying it again would be invalid.
+                let suffix_txs = self
+                    .generate_suffix_txs(
+                        &withdrawal_state.ctips,
+                        Some(&withdrawal_state.pending_withdrawals),
+                    )
+                    .await?;
                 template
                     .suffix_txs
                     .extend(suffix_txs.into_iter().map(|tx| (tx, bitcoin::Amount::ZERO)));

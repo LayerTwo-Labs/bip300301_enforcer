@@ -134,7 +134,7 @@ impl WalletInner {
         // operation if we get a 'try_include_height' error from BDK.
         let mut processed_blocks = 0;
         while processed_blocks < block_infos.len() {
-            let (header_info, block_info) = &block_infos[processed_blocks];
+            let (header_info, _block_info) = &block_infos[processed_blocks];
             let block_hash = header_info.block_hash;
             let block_height = header_info.height;
             tracing::trace!(
@@ -172,10 +172,7 @@ impl WalletInner {
             // We're therefore not checking here if the block is connect to the current active
             // chain.
             'connect_block: loop {
-                match self
-                    .handle_connect_block(&block, block_height, block_info)
-                    .await?
-                {
+                match self.handle_connect_block(&block, block_height).await? {
                     Ok(()) => break 'connect_block,
                     // Try the recommended fixup - and then go back to the start of the loop
                     Err(bdk_chain::local_chain::CannotConnectError { try_include_height }) => {
@@ -263,18 +260,12 @@ impl WalletInner {
                 }
             };
             let block_hash = block.block_hash();
-            let infos = self.validator().get_block_infos(&block_hash, 0)?;
-            assert_eq!(infos.len(), 1);
-            let (_header_info, block_info) = infos.head;
             tracing::debug!(
                 "connecting missing block {} at height {}",
                 block_hash,
                 block_height,
             );
-            match self
-                .handle_connect_block(block, *block_height, &block_info)
-                .await?
-            {
+            match self.handle_connect_block(block, *block_height).await? {
                 Ok(()) => {
                     tracing::debug!(
                         "connected missing block {} at height {}",
@@ -391,15 +382,7 @@ impl CusfEnforcer for Wallet {
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
         tracing::trace!("starting block processing");
-        // Validator step only. The producer's policy-table maintenance runs in
-        // `handle_connect_block` instead, so that it happens under the BDK write
-        // lock.
-        let res = self
-            .inner
-            .producer
-            .clone()
-            .connect_block_validator(block)
-            .await?;
+        let res = self.inner.producer.clone().connect_block(block).await?;
         tracing::trace!("validator finished processing block");
         // Skip wallet sync if the validator rejected the block. The validator
         // aborts the child rwtxn on `Reject`, so block info is not persisted —
