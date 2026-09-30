@@ -776,6 +776,74 @@ pub async fn pending_bundle_count(
         .len())
 }
 
+/// Activate [`DummySidechain`] and fund its treasury. Returns the sidechain,
+/// which must be kept alive, and its deposit address.
+pub async fn activate_funded_sidechain(
+    post_setup: &mut PostSetup,
+) -> anyhow::Result<(DummySidechain, String)> {
+    use crate::integration_test::{activate_sidechain, deposit, fund_enforcer, propose_sidechain};
+    let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
+    let mut sidechain = DummySidechain::setup((), post_setup, sidechain_res_tx).await?;
+    let () = propose_sidechain::<DummySidechain>(post_setup).await?;
+    let () = activate_sidechain::<DummySidechain>(post_setup).await?;
+    fund_enforcer::<DummySidechain>(post_setup).await?;
+    let sidechain_address = sidechain.get_deposit_address().await?;
+    deposit(
+        post_setup,
+        &mut sidechain,
+        &sidechain_address,
+        bitcoin::Amount::from_sat(1_000_000),
+        bitcoin::Amount::from_sat(10_000),
+    )
+    .await?;
+    Ok((sidechain, sidechain_address))
+}
+
+/// Submit a withdrawal bundle for [`DummySidechain`] through the wallet.
+pub async fn try_broadcast_bundle(
+    post_setup: &PostSetup,
+    bundle_tx: &bitcoin::Transaction,
+) -> Result<(), ConnectError> {
+    use proto::mainchain::BroadcastWithdrawalBundleRequest;
+    let _resp = post_setup
+        .wallet_service_client
+        .broadcast_withdrawal_bundle(BroadcastWithdrawalBundleRequest {
+            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
+            transaction: buffa::MessageField::some(buffa_types::google::protobuf::BytesValue {
+                value: crate::test_blinded_m6_roundtrip::serialize_zero_input_legacy(bundle_tx),
+                ..Default::default()
+            }),
+        })
+        .await?;
+    Ok(())
+}
+
+pub async fn broadcast_bundle(
+    post_setup: &PostSetup,
+    bundle_tx: &bitcoin::Transaction,
+) -> anyhow::Result<()> {
+    Ok(try_broadcast_bundle(post_setup, bundle_tx).await?)
+}
+
+/// How many withdrawal bundles the validator has pending for
+/// [`DummySidechain`].
+pub async fn pending_bundles(post_setup: &PostSetup) -> anyhow::Result<usize> {
+    pending_bundle_count(
+        &post_setup.validator_service_client,
+        DummySidechain::SIDECHAIN_NUMBER,
+    )
+    .await
+}
+
+/// [`PostSetup::restart_enforcer`] with the setup's binaries and no extra
+/// arguments.
+pub async fn restart_enforcer_with_defaults(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    post_setup
+        .restart_enforcer(&crate::util::BinPaths::new(), Vec::<String>::new(), res_tx)
+        .await
+}
+
 /// Per-run state that bitcoind rewrites on startup, or that would leak one
 /// run's runtime details into the next. Excluded when snapshotting a datadir
 /// for reuse.

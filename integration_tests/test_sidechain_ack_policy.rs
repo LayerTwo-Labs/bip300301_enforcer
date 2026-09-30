@@ -32,7 +32,7 @@ use crate::{
 };
 
 pub(crate) async fn set_bundle_policy(
-    post_setup: &mut PostSetup,
+    post_setup: &PostSetup,
     policy: WithdrawalBundlePolicy,
 ) -> anyhow::Result<()> {
     post_setup
@@ -199,7 +199,7 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
     let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::None).await?;
     // The M4 has its own policy now; this test drives the M2 side, so hold
     // bundle voting off until it explicitly wants an M4 below.
-    let () = set_bundle_policy(&mut post_setup, WithdrawalBundlePolicy::None).await?;
+    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
 
     let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
 
@@ -327,7 +327,7 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
     );
     let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::NewSlots).await?;
     // The bundle was broadcast through this node, so `Known` backs it.
-    let () = set_bundle_policy(&mut post_setup, WithdrawalBundlePolicy::Known).await?;
+    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::Known).await?;
 
     tracing::info!("Mining with auto-ACK on: expecting an M2 and an M4 in one coinbase");
     let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
