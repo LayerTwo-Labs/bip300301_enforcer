@@ -11,6 +11,7 @@ use crate::{
         OpDrivechain, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
         SidechainProposalId, WithdrawalBundlePolicy, WithdrawalBundleVote,
     },
+    validator::PendingM6ids,
 };
 
 /// The M4 votes to cast, paired with the explicit bundle ACKs to delete.
@@ -467,18 +468,56 @@ impl BlockProducer {
     /// themselves cannot fail: a bundle that cannot be paid is skipped, so that
     /// one unpayable bundle does not stop the node from producing blocks. See
     /// [`Self::suffix_txs_for_proposals`].
+    ///
+    /// `pending_after`: the bundles still pending after the coinbase and prefix
+    /// this suffix follows, from the same dry run as `ctips`. A bundle that is
+    /// payable at the tip but not after the prefix is dropped: a prefix tx paid
+    /// it, it expired, or the coinbase M4 voted it down to the threshold, and
+    /// paying it anyway makes the block invalid. `None` when there is no prefix
+    /// yet (the initial template's weight reservation), which can only reserve
+    /// more than the finalized suffix uses, never less.
     pub(crate) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
+        pending_after: Option<&HashMap<SidechainNumber, PendingM6ids>>,
     ) -> Result<Vec<Transaction>, error::GetBundleProposals> {
         let params = self.validator().network_params();
         let used_slots = Self::used_slots(&self.validator().get_active_sidechains()?);
-        let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
+        let mut bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
+        if let Some(pending_after) = pending_after {
+            Self::keep_payable_after_prefix(
+                &mut bundle_proposals,
+                pending_after,
+                params.thresholds.withdrawal_bundle_inclusion_threshold,
+            );
+        }
         Ok(Self::suffix_txs_for_proposals(
             bundle_proposals,
             ctips,
             &params,
         ))
+    }
+
+    /// Drop every proposed bundle that is not still pending, over the
+    /// inclusion threshold, in `pending_after`. Bundles that are not proposed
+    /// yet (no pending info at the tip) are kept: the suffix never pays them.
+    ///
+    /// Payability is still judged at the tip first, so this only ever removes
+    /// bundles: the suffix stays within the initial template's reservation.
+    fn keep_payable_after_prefix(
+        bundle_proposals: &mut HashMap<SidechainNumber, BundleProposals>,
+        pending_after: &HashMap<SidechainNumber, PendingM6ids>,
+        inclusion_threshold: u16,
+    ) {
+        for (sidechain_id, m6ids) in bundle_proposals.iter_mut() {
+            let pending = pending_after.get(sidechain_id);
+            m6ids.retain(|(m6id, _blinded_m6, m6id_info)| {
+                m6id_info.is_none()
+                    || pending
+                        .and_then(|pending| pending.get(m6id))
+                        .is_some_and(|info| info.vote_count > inclusion_threshold)
+            });
+        }
     }
 
     /// The M6 suffix implied by `bundle_proposals` and the treasury state the
@@ -570,6 +609,7 @@ mod tests {
             OpDrivechain, PendingM6idInfo, SidechainAck, SidechainDescription, SidechainNumber,
             SidechainProposal, Thresholds,
         },
+        validator::PendingM6ids,
     };
 
     fn test_proposal(sidechain_number: SidechainNumber, description: &[u8]) -> SidechainProposal {
@@ -778,6 +818,60 @@ mod tests {
             ],
         };
         BlindedM6::try_from(Cow::Owned(tx)).unwrap()
+    }
+
+    /// A bundle payable at the tip that the prefix paid, that expired, or that
+    /// the coinbase M4 voted back under the threshold must not be paid again
+    /// by the suffix: a second M6 for it makes our own block invalid.
+    #[test]
+    fn keep_payable_after_prefix_drops_bundles_no_longer_payable() {
+        let threshold = THRESHOLDS.withdrawal_bundle_inclusion_threshold;
+        let slot = SidechainNumber(7);
+        let other = SidechainNumber(9);
+        let bundle = |payout| approved_bundle_paying(Amount::from_sat(payout)).remove(0);
+        let (still, paid, downvoted, unproposed, other_paid) = (
+            bundle(10_000),
+            bundle(20_000),
+            bundle(30_000),
+            bundle(40_000),
+            bundle(50_000),
+        );
+        let unproposed = (unproposed.0, unproposed.1, None);
+        let info = |vote_count| PendingM6idInfo {
+            vote_count,
+            proposal_height: 1,
+        };
+        let pending_after = HashMap::from([
+            (
+                slot,
+                PendingM6ids::from_iter([
+                    (still.0, info(threshold + 1)),
+                    (downvoted.0, info(threshold)),
+                ]),
+            ),
+            (other, PendingM6ids::default()),
+        ]);
+        let mut proposals: HashMap<SidechainNumber, BundleProposals> = HashMap::from([
+            (
+                slot,
+                vec![still.clone(), paid, downvoted, unproposed.clone()],
+            ),
+            (other, vec![other_paid.clone()]),
+        ]);
+        BlockProducer::keep_payable_after_prefix(&mut proposals, &pending_after, threshold);
+        let ids = |slot| {
+            proposals[&slot]
+                .iter()
+                .map(|(m6id, _, _)| *m6id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(slot), vec![still.0, unproposed.0]);
+        assert!(ids(other).is_empty());
+
+        // A slot missing from the post-prefix state has nothing pending.
+        let mut proposals = HashMap::from([(other, vec![other_paid])]);
+        BlockProducer::keep_payable_after_prefix(&mut proposals, &HashMap::new(), threshold);
+        assert!(proposals[&other].is_empty());
     }
 
     #[test]
