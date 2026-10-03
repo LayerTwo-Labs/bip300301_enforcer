@@ -17,7 +17,8 @@ use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
     types::{
-        BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber, WithdrawalBundleEventKind,
+        BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber, Thresholds,
+        WithdrawalBundleEventKind,
     },
     validator::Validator,
 };
@@ -177,22 +178,19 @@ impl BlockProducer {
 }
 
 impl BlockProducer {
-    /// The mempool M6s whose bundle is not payable on top of the current tip:
-    /// no longer pending, or not voted past the inclusion threshold.
+    /// The mempool M6s whose bundle is not payable in the block at `height`:
+    /// no longer pending, not voted past the inclusion threshold, or too old.
     fn unpayable_mempool_payouts(
         &self,
+        height: u32,
     ) -> Result<Vec<Txid>, crate::validator::GetPendingWithdrawalsError> {
-        let threshold = self
-            .validator()
-            .network_params()
-            .thresholds
-            .withdrawal_bundle_inclusion_threshold;
+        let thresholds = self.validator().network_params().thresholds;
         let mut res = Vec::new();
         for (txid, (sidechain_number, m6id)) in self.inner.mempool_payouts.lock().iter() {
             let payable = self
                 .validator()
                 .try_get_pending_withdrawal(sidechain_number, m6id)?
-                .is_some_and(|info| info.vote_count > threshold);
+                .is_some_and(|info| mempool_m6_payable(&info, height, &thresholds));
             if !payable {
                 res.push(*txid);
             }
@@ -384,9 +382,13 @@ impl BlockProducer {
         // An M6 accepted into the mempool can stop being payable, e.g. when a
         // reorg returns it and the new chain votes its bundle down. Keep it out
         // of this block, but in the mempool: it can become payable again.
+        // A bundle that is too old in this block is failed by `connect_block`
+        // before it reads the block's txs, so its M6 would make the template
+        // invalid.
+        let height = self.validator().get_header_info(&mainchain_tip)?.height + 1;
         template
             .exclude_mempool_txs
-            .extend(self.unpayable_mempool_payouts()?);
+            .extend(self.unpayable_mempool_payouts(height)?);
         tracing::debug!(
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
@@ -567,6 +569,16 @@ impl BlockProducer {
     }
 }
 
+/// Whether a mempool M6 for a bundle with `info` can go into the block at
+/// `height`: voted past the inclusion threshold, and not failed for age in that
+/// block. `connect_block` fails a bundle whose age is over `max_age` before it
+/// reads the block's txs; an age of exactly `max_age` is still payable.
+fn mempool_m6_payable(info: &PendingM6idInfo, height: u32, thresholds: &Thresholds) -> bool {
+    info.vote_count > thresholds.withdrawal_bundle_inclusion_threshold
+        && height.saturating_sub(info.proposal_height)
+            <= u32::from(thresholds.withdrawal_bundle_max_age)
+}
+
 fn bmm_auction_winners(
     bids: impl IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
 ) -> HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> {
@@ -580,4 +592,36 @@ fn bmm_auction_winners(
         }
     }
     winners
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mempool_m6_payable;
+    use crate::types::{PendingM6idInfo, Thresholds};
+
+    #[test]
+    fn mempool_m6_payable_needs_votes_over_threshold_and_age_up_to_max_age() {
+        const THRESHOLDS: Thresholds = Thresholds::SHORT;
+        let threshold = THRESHOLDS.withdrawal_bundle_inclusion_threshold;
+        let max_age = u32::from(THRESHOLDS.withdrawal_bundle_max_age);
+        let info = |vote_count| PendingM6idInfo {
+            vote_count,
+            proposal_height: 100,
+        };
+        // Votes: strictly over the threshold.
+        assert!(!mempool_m6_payable(&info(threshold), 101, &THRESHOLDS));
+        assert!(mempool_m6_payable(&info(threshold + 1), 101, &THRESHOLDS));
+        // Age in the block being built: max_age still pays, max_age + 1 has
+        // already failed when the block's txs are read.
+        assert!(mempool_m6_payable(
+            &info(threshold + 1),
+            100 + max_age,
+            &THRESHOLDS
+        ));
+        assert!(!mempool_m6_payable(
+            &info(threshold + 1),
+            101 + max_age,
+            &THRESHOLDS
+        ));
+    }
 }
