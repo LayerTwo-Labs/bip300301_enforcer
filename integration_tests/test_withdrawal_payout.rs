@@ -174,6 +174,85 @@ pub async fn test_stale_payout_after_reorg(mut post_setup: PostSetup) -> anyhow:
     Ok(())
 }
 
+/// A bundle this node holds AND an M6 for it in the mempool, in the block where
+/// the bundle is payable. The template takes the mempool M6 into its prefix;
+/// the suffix must not pay the same bundle again, or the block carries two M6s
+/// for one bundle and the enforcer rejects its own block. The reorg is just the
+/// cheapest way to get a valid M6 for a payable bundle into the mempool; anyone
+/// can broadcast one.
+pub async fn test_mempool_m6_for_a_held_bundle(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let (_sidechain, _sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
+    let bundle_tx = make_blinded_m6(1_000, Amount::from_sat(60_000));
+    let bundle = bundle_tx.compute_txid();
+    let () = broadcast_bundle(&post_setup, &bundle_tx).await?;
+    let paid_in = mine_until_settled(&mut post_setup, MiningPolicy::VOTE).await?;
+    let paid_block: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![paid_in, 1])
+        .await?;
+    let paid_in_txids: Vec<Txid> = paid_block["tx"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .skip(1)
+        .filter_map(|txid| txid.as_str()?.parse().ok())
+        .collect();
+
+    tracing::info!("Replacing the payout's block with one that keeps the bundle payable");
+    let upvote = bitcoin::ScriptBuf::try_from(M4AckBundles::OneByte { upvotes: vec![0] })?;
+    let () = invalidate_block(&post_setup.bitcoind_client, paid_in).await?;
+    let replacement = generate_empty_block(
+        &post_setup.bitcoind_client,
+        &format!("raw({})", upvote.to_hex_string()),
+    )
+    .await?;
+    let () = wait_for_enforcer_tip_hash(&post_setup, replacement).await?;
+    let votes = bundle_vote_count(&mut post_setup, bundle).await?;
+    anyhow::ensure!(
+        votes > u32::from(Thresholds::SHORT.withdrawal_bundle_inclusion_threshold),
+        "the replacement left the bundle unpayable ({votes} votes)"
+    );
+    anyhow::ensure!(
+        pending_bundles(&post_setup).await? == 1,
+        "the bundle is not pending again"
+    );
+    let mempool = mempool_txids(&post_setup).await?;
+    let returned: Vec<Txid> = paid_in_txids
+        .into_iter()
+        .filter(|txid| mempool.contains(txid))
+        .collect();
+    let [m6_txid] = returned.as_slice() else {
+        anyhow::bail!("expected just the payout's M6 back in the mempool, got {returned:?}");
+    };
+
+    tracing::info!("This node holds the bundle again");
+    let () = broadcast_bundle(&post_setup, &bundle_tx).await?;
+
+    tracing::info!("Mining the block where both could pay it");
+    let () = set_bundle_policy(&mut post_setup, WithdrawalBundlePolicy::Known).await?;
+    let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
+    anyhow::ensure!(
+        pending_bundles(&post_setup).await? == 0,
+        "the bundle is still pending after the block that should pay it once"
+    );
+    // The mempool's M6 is what paid it (in the prefix). Without this check, a
+    // template that left the mempool M6 out would pass by our suffix paying.
+    let best = best_block_hash(&post_setup.bitcoind_client).await?;
+    let block: serde_json::Value = post_setup
+        .bitcoind_client
+        .request("getblock", rpc_params![best, 1])
+        .await?;
+    anyhow::ensure!(
+        block["tx"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|txid| txid.as_str() == Some(m6_txid.to_string().as_str())),
+        "the mempool's M6 is not in the block: the double-payment case was not exercised"
+    );
+    Ok(())
+}
+
 async fn mempool_txids(post_setup: &PostSetup) -> anyhow::Result<Vec<Txid>> {
     Ok(post_setup
         .bitcoind_client

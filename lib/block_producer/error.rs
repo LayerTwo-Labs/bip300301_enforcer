@@ -470,7 +470,7 @@ pub(in crate::block_producer) enum FinalizeBlockTemplateInner {
     #[error(transparent)]
     GenerateSuffixTxs(#[from] GetBundleProposals),
     #[error(transparent)]
-    GetCtipsAfter(#[from] crate::validator::cusf_enforcer::GetCtipsAfterError),
+    GetSidechainStateAfter(#[from] crate::validator::cusf_enforcer::GetSidechainStateAfterError),
     #[error(transparent)]
     GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
     #[error(transparent)]
