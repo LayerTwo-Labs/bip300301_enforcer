@@ -14,6 +14,7 @@
 blinded_m6_roundtrip
 consecutive_deposits
 deposit_withdraw_roundtrip
+mempool_m6_for_an_expiring_bundle
 peer_deposit_relay
 replay_protection
 returned_payout_paid_once
