@@ -85,6 +85,13 @@ where
     /// A node RPC transport failure is recoverable on the same terms, as in
     /// [`enforcer_task_is_resyncable`], and the enforcer's own initial sync
     /// can also fail on a transient node error.
+    ///
+    /// A sync action that waits more than the crate's apply timeout for its
+    /// dependencies is the same kind of failure: the task's view has fallen
+    /// out of step with the node, or the node answered too slowly, and a fresh
+    /// sync rebuilds it from the node's current mempool. A timeout that
+    /// persists still exits once the re-sync budget in `run_with_resync` is
+    /// spent.
     pub fn is_resyncable(&self) -> bool {
         let (Self::SyncTask(inner) | Self::InitialSync(inner)) = self else {
             return false;
@@ -102,6 +109,9 @@ where
             // The crate does not export this variant's error type, so its
             // `ClientError` is only reachable through the source chain.
             SyncTaskError::Request(_) => chain_has_transport_error(inner),
+            // The crate does not re-export this variant's error type and its
+            // field is private, so there is no unit test for this arm.
+            SyncTaskError::ApplySyncActionTimeout(_) => true,
             _ => false,
         }
     }
