@@ -301,6 +301,9 @@ impl ActiveSidechainDbs {
 #[derive(transitive::Transitive, Debug, Error)]
 #[expect(clippy::duplicated_attributes)]
 #[transitive(
+    from(db::error::Len, db::Error),
+    from(db::error::Put, db::Error),
+    from(db::error::TryGet, db::Error),
     from(env::error::CreateDb, env::Error),
     from(env::error::OpenEnv, env::Error),
     from(env::error::WriteTxn, env::Error)
@@ -314,11 +317,38 @@ pub enum CreateDbsError {
         source: std::io::Error,
     },
     #[error(transparent)]
+    Db(Box<db::Error>),
+    #[error(transparent)]
     Env(#[from] env::Error),
+    #[error(
+        "Incompatible validator DB schema in `{db_dir}` \
+        (expected version `{expected}`, found {}). \
+        Delete this directory to resync from scratch.",
+        .found.map(|found| format!("version `{found}`")).unwrap_or_else(|| "none".to_owned())
+    )]
+    IncompatibleSchema {
+        /// `None` if the DBs predate schema versioning
+        found: Option<u32>,
+        expected: u32,
+        db_dir: PathBuf,
+    },
+}
+
+impl From<db::Error> for CreateDbsError {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 pub type ProposalIdToSidechain =
     DatabaseUnique<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>;
+
+/// Schema version of the validator DBs.
+///
+/// MUST be bumped whenever a change makes values written by an earlier version
+/// unreadable, so that a stale datadir is rejected when opening the env,
+/// instead of failing later with a decode error when reading eg. a block diff.
+const VALIDATOR_DB_VERSION: u32 = 1;
 
 #[derive(Clone)]
 pub(super) struct Dbs {
@@ -327,13 +357,43 @@ pub(super) struct Dbs {
     pub block_hashes: BlockHashDbs,
     /// Tip that the enforcer is synced to
     pub current_chain_tip: DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
+    /// Schema version that the DBs were written with
+    pub _db_version: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
     pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub proposal_id_to_sidechain: ProposalIdToSidechain,
 }
 
 impl Dbs {
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 5;
+
+    /// Check the schema version stored in the env, storing the current version
+    /// if the env is brand new.
+    /// A datadir written by a different schema version is rejected here, rather
+    /// than failing later with a decode error, when reading values that an
+    /// incompatible version wrote.
+    fn check_db_version(
+        rwtxn: &mut RwTxn,
+        db_version: &DatabaseUnique<UnitKey, SerdeBincode<u32>>,
+        block_hashes: &BlockHashDbs,
+        db_dir: &Path,
+    ) -> Result<(), CreateDbsError> {
+        let found = db_version.try_get(rwtxn, &())?;
+        if found == Some(VALIDATOR_DB_VERSION) {
+            return Ok(());
+        }
+        // A missing version means either that the env predates schema
+        // versioning, or that it is brand new and stores nothing yet.
+        if found.is_some() || block_hashes.height().len(rwtxn)? != 0 {
+            return Err(CreateDbsError::IncompatibleSchema {
+                found,
+                expected: VALIDATOR_DB_VERSION,
+                db_dir: db_dir.to_owned(),
+            });
+        }
+        let () = db_version.put(rwtxn, &(), &VALIDATOR_DB_VERSION)?;
+        Ok(())
+    }
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -357,10 +417,12 @@ impl Dbs {
         let active_sidechains = ActiveSidechainDbs::new(&env, &mut rwtxn)?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
         let current_chain_tip = DatabaseUnique::create(&env, &mut rwtxn, "current_chain_tip")?;
+        let db_version = DatabaseUnique::create(&env, &mut rwtxn, "db_version")?;
         let leading_by_50 = DatabaseUnique::create(&env, &mut rwtxn, "leading_by_50")?;
         let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
         let proposal_id_to_sidechain =
             DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
+        let () = Self::check_db_version(&mut rwtxn, &db_version, &block_hashes, &db_dir)?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -369,6 +431,7 @@ impl Dbs {
             active_sidechains,
             block_hashes,
             current_chain_tip,
+            _db_version: db_version,
             _leading_by_50: leading_by_50,
             _previous_votes: previous_votes,
             proposal_id_to_sidechain,
@@ -388,5 +451,77 @@ impl Dbs {
 
     pub fn write_txn(&self) -> Result<RwTxn<'_>, env::error::WriteTxn> {
         self.env.write_txn()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{BlockHash, hashes::Hash as _};
+    use miette::{IntoDiagnostic, Result};
+
+    use super::{CreateDbsError, Dbs, VALIDATOR_DB_VERSION};
+    use crate::validator::test_utils::{create_test_dbs, test_block_header};
+
+    #[test]
+    fn fresh_datadir_stores_current_db_version() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let rotxn = dbs.read_txn().into_diagnostic()?;
+        assert_eq!(
+            dbs._db_version.get(&rotxn, &()).into_diagnostic()?,
+            VALIDATOR_DB_VERSION
+        );
+        Ok(())
+    }
+
+    /// A datadir written by a different schema version stores values that the
+    /// current version cannot decode, so it MUST be rejected up front.
+    #[test]
+    fn older_db_version_is_rejected() -> Result<()> {
+        let (dir, dbs) = create_test_dbs()?;
+        let db_dir = dir.path();
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        dbs._db_version
+            .put(&mut rwtxn, &(), &(VALIDATOR_DB_VERSION - 1))
+            .into_diagnostic()?;
+        let err = Dbs::check_db_version(&mut rwtxn, &dbs._db_version, &dbs.block_hashes, db_dir)
+            .expect_err("older schema version must be rejected");
+        assert!(matches!(
+            err,
+            CreateDbsError::IncompatibleSchema {
+                found: Some(found),
+                expected,
+                ..
+            } if found == VALIDATOR_DB_VERSION - 1 && expected == VALIDATOR_DB_VERSION
+        ));
+        Ok(())
+    }
+
+    /// A datadir that predates schema versioning stores no version at all, and
+    /// MUST be rejected in the same way. An env that stores nothing yet is
+    /// brand new, and is initialized with the current version instead.
+    #[test]
+    fn unversioned_datadir_is_rejected_iff_non_empty() -> Result<()> {
+        let (dir, dbs) = create_test_dbs()?;
+        let db_dir = dir.path();
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let _ = dbs._db_version.delete(&mut rwtxn, &()).into_diagnostic()?;
+        Dbs::check_db_version(&mut rwtxn, &dbs._db_version, &dbs.block_hashes, db_dir)
+            .into_diagnostic()?;
+        assert_eq!(
+            dbs._db_version.get(&rwtxn, &()).into_diagnostic()?,
+            VALIDATOR_DB_VERSION
+        );
+        let _ = dbs._db_version.delete(&mut rwtxn, &()).into_diagnostic()?;
+        let header = test_block_header(BlockHash::all_zeros());
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(header, 0)])
+            .into_diagnostic()?;
+        let err = Dbs::check_db_version(&mut rwtxn, &dbs._db_version, &dbs.block_hashes, db_dir)
+            .expect_err("unversioned non-empty datadir must be rejected");
+        assert!(matches!(
+            err,
+            CreateDbsError::IncompatibleSchema { found: None, .. }
+        ));
+        Ok(())
     }
 }
