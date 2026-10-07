@@ -909,9 +909,9 @@ dependencies = [
 
 [[package]]
 name = "connectrpc"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85de144722d22eb03b7985136d8cd29b89d277a2df4ae0f53ef46488c467cbaf"
+checksum = "457cfa540c62e1b0b05db676cc9a9129162ad94d3a3eec6f2d19706c53acae7d"
 dependencies = [
  "async-trait",
  "axum",
@@ -3743,7 +3743,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.2.8",
+ "errno 0.3.14",
  "libc",
 ]
 
@@ -3974,7 +3974,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.52.0",
