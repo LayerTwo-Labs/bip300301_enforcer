@@ -71,13 +71,10 @@ pub fn test_block_header(prev_blockhash: BlockHash) -> bitcoin::block::Header {
 
 pub fn build_m5_deposit_tx(
     sidechain_number: SidechainNumber,
-    old_ctip_outpoint: OutPoint,
-    old_ctip_value: Amount,
     deposit_amount: Amount,
 ) -> Transaction {
-    let treasury_output = OpDrivechain::NOP5
-        .create_m5_deposit_output(sidechain_number, old_ctip_value, deposit_amount)
-        .unwrap();
+    let treasury_output =
+        OpDrivechain::NOP5.create_m5_deposit_output(sidechain_number, deposit_amount);
     let address_output = TxOut {
         script_pubkey: ScriptBuf::new_op_return(
             bitcoin::script::PushBytesBuf::try_from(b"sidechain_address".to_vec()).unwrap(),
@@ -87,10 +84,7 @@ pub fn build_m5_deposit_tx(
     Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-        input: vec![TxIn {
-            previous_output: old_ctip_outpoint,
-            ..TxIn::default()
-        }],
+        input: Vec::new(),
         output: vec![treasury_output, address_output],
     }
 }

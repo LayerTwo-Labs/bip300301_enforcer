@@ -173,11 +173,6 @@ impl From<db::Error> for HandleFailedM6Ids {
 #[derive(Debug, Error)]
 pub(in crate::validator) enum InvalidM6 {
     #[error(
-        "invalid input count ({}); M6 withdrawals must have exactly 1 input",
-        n_inputs
-    )]
-    InputCount { n_inputs: usize },
-    #[error(
         "vote count ({}) is below threshold ({}) for withdrawal bundle {}",
         .vote_count,
         .threshold,
@@ -207,6 +202,8 @@ pub(in crate::validator) enum InvalidM6 {
         .treasury_vout
     )]
     TreasuryOutputIndex { treasury_vout: u32 },
+    #[error("unexpected input ({unexpected})")]
+    UnexpectedInput { unexpected: bitcoin::OutPoint },
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
@@ -248,13 +245,6 @@ pub(in crate::validator) enum HandleM5M6 {
     #[error("Multiple OP_DRIVECHAIN outputs for sidechain {0}")]
     #[fatal(false)]
     MultipleOpDrivechainOutputs(SidechainNumber),
-    /// BIP 300 M5: If the treasury UTXO for sidechain slot `S` exists and
-    /// a transaction creates a new treasury UTXO for `S` without spending
-    /// the already existing treasury UTXO, then this transaction MUST be
-    /// considered invalid.
-    #[error("Old Ctip for sidechain {} is unspent", .sidechain_number.0)]
-    #[fatal(false)]
-    OldCtipUnspent { sidechain_number: SidechainNumber },
     /// BIP 300: a transaction that spends a treasury UTXO as one of its inputs
     /// and does not create a new treasury UTXO as one of its outputs is
     /// invalid.
@@ -329,78 +319,155 @@ where
     }
 }
 
+pub(in crate::validator) mod partial_connect_block {
+    use error_fatality::{Fatality, Split};
+    use sneed::db::error as db;
+    use thiserror::Error;
+    use transitive::Transitive;
+
+    use crate::{
+        errors::SplitBoxed,
+        types::SidechainNumber,
+        validator::task::error::{
+            self, CoinbaseMessagesError, HandleFailedM6Ids, HandleFailedSidechainProposals,
+            HandleM1ProposeSidechain, HandleM2AckSidechain, HandleM3ProposeBundle,
+            HandleM4AckBundles,
+        },
+    };
+
+    #[derive(Debug, Error, Fatality, Split)]
+    #[error("Error handling transaction `{txid}` in block `{block_hash}`")]
+    #[fatal(forward)]
+    pub struct HandleTransaction {
+        pub txid: bitcoin::Txid,
+        pub block_hash: bitcoin::BlockHash,
+        #[source]
+        pub source: error::HandleTransaction,
+    }
+
+    #[derive(Debug, Error, Fatality, Split, Transitive)]
+    #[expect(clippy::duplicated_attributes)]
+    #[split(attrs(derive(Debug, Error)))]
+    #[transitive(
+        from(db::Delete, db::Error),
+        from(db::First, db::Error),
+        from(db::Get, db::Error),
+        from(db::Len, db::Error),
+        from(db::TryGet, db::Error)
+    )]
+    pub(in crate::validator) enum Error {
+        #[error("Block parent `{parent}` does not match tip `{tip}` at height {tip_height}")]
+        #[fatal(false)]
+        BlockParent {
+            parent: bitcoin::BlockHash,
+            tip: bitcoin::BlockHash,
+            tip_height: u32,
+        },
+        #[error(transparent)]
+        #[fatal(false)]
+        CoinbaseMessages(#[from] CoinbaseMessagesError),
+        #[error(transparent)]
+        #[fatal(true)]
+        Db(Box<db::Error>),
+        #[error("Error handling failed M6IDs")]
+        #[fatal(forward)]
+        FailedM6Ids(#[from] HandleFailedM6Ids),
+        #[error("Error handling failed sidechain proposals")]
+        #[fatal(forward)]
+        FailedSidechainProposals(#[from] HandleFailedSidechainProposals),
+        #[error("Error handling M1 (propose sidechain)")]
+        #[fatal(forward)]
+        M1ProposeSidechain(#[source] Box<SplitBoxed<HandleM1ProposeSidechain>>),
+        #[error("Error handling M2 (ack sidechain)")]
+        #[fatal(forward)]
+        M2AckSidechain(#[from] HandleM2AckSidechain),
+        #[error("Error handling M3 (propose bundle)")]
+        #[fatal(forward)]
+        M3ProposeBundle(#[from] HandleM3ProposeBundle),
+        #[error("Error handling M4 (ack bundles)")]
+        #[fatal(forward)]
+        M4AckBundles(#[from] HandleM4AckBundles),
+        #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
+        #[fatal(false)]
+        MultipleBmmBlocks { sidechain_number: SidechainNumber },
+        #[error(
+            "Multiple BMM requests accepted in sidechain slot {}",
+            .sidechain_number.0
+        )]
+        #[fatal(false)]
+        MultipleBmmRequests { sidechain_number: SidechainNumber },
+        #[error("Block has no transactions (missing coinbase)")]
+        #[fatal(false)]
+        NoCoinbase,
+        #[error(transparent)]
+        #[fatal(forward)]
+        Transaction(Box<SplitBoxed<HandleTransaction>>),
+    }
+
+    impl From<db::Error> for Error {
+        fn from(err: db::Error) -> Self {
+            Self::Db(Box::new(err))
+        }
+    }
+
+    impl From<HandleM1ProposeSidechain> for Error {
+        fn from(err: HandleM1ProposeSidechain) -> Self {
+            Self::M1ProposeSidechain(Box::new(SplitBoxed(err)))
+        }
+    }
+
+    impl From<HandleTransaction> for Error {
+        fn from(err: HandleTransaction) -> Self {
+            Self::Transaction(Box::new(SplitBoxed(err)))
+        }
+    }
+}
+pub(in crate::validator) use self::partial_connect_block::Error as PartialConnectBlock;
+
 #[derive(Debug, Error, Fatality, Split, Transitive)]
 #[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
 #[transitive(
-    from(db::error::Delete, db::Error),
-    from(db::error::First, db::Error),
     from(db::error::Get, db::Error),
-    from(db::error::Len, db::Error),
     from(db::error::Put, db::Error),
     from(db::error::TryGet, db::Error)
 )]
-pub(in crate::validator) enum ConnectBlock {
-    #[error("Block parent `{parent}` does not match tip `{tip}` at height {tip_height}")]
-    #[fatal(false)]
-    BlockParent {
-        parent: bitcoin::BlockHash,
-        tip: bitcoin::BlockHash,
-        tip_height: u32,
-    },
-    #[error(transparent)]
-    #[fatal(false)]
-    CoinbaseMessages(#[from] CoinbaseMessagesError),
+pub(in crate::validator) enum RecordBlock {
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
-    #[error("Error handling failed M6IDs")]
-    #[fatal(forward)]
-    FailedM6Ids(#[from] HandleFailedM6Ids),
-    #[error("Error handling failed sidechain proposals")]
-    #[fatal(forward)]
-    FailedSidechainProposals(#[from] HandleFailedSidechainProposals),
-    #[error("Error handling M1 (propose sidechain)")]
-    #[fatal(forward)]
-    M1ProposeSidechain(#[from] HandleM1ProposeSidechain),
-    #[error("Error handling M2 (ack sidechain)")]
-    #[fatal(forward)]
-    M2AckSidechain(#[from] HandleM2AckSidechain),
-    #[error("Error handling M3 (propose bundle)")]
-    #[fatal(forward)]
-    M3ProposeBundle(#[from] HandleM3ProposeBundle),
-    #[error("Error handling M4 (ack bundles)")]
-    #[fatal(forward)]
-    M4AckBundles(#[from] HandleM4AckBundles),
-    #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
-    #[fatal(false)]
-    MultipleBmmBlocks { sidechain_number: SidechainNumber },
-    #[error(
-        "Multiple BMM requests accepted in sidechain slot {}",
-        .sidechain_number.0
-    )]
-    #[fatal(false)]
-    MultipleBmmRequests { sidechain_number: SidechainNumber },
-    #[error("Block has no transactions (missing coinbase)")]
-    #[fatal(false)]
-    NoCoinbase,
     #[error(transparent)]
     #[fatal(true)]
     PutBlockInfo(#[from] dbs::block_hash_dbs_error::PutBlockInfo),
-    #[error("Error handling transaction `{txid}` in block `{block_hash}`")]
-    #[fatal(forward)]
-    Transaction {
-        txid: bitcoin::Txid,
-        block_hash: bitcoin::BlockHash,
-        #[source]
-        source: HandleTransaction,
-    },
 }
 
-impl From<db::Error> for ConnectBlock {
+impl From<db::Error> for RecordBlock {
     fn from(err: db::Error) -> Self {
         Self::Db(Box::new(err))
     }
+}
+
+#[derive(Debug, Error, Fatality, Split)]
+pub(in crate::validator) enum FinalizeConnectBlock {
+    #[error(transparent)]
+    #[fatal(forward)]
+    Record(#[from] RecordBlock),
+    #[error("unconsolidated ctip ({outpoint}) for sidechain ({sidechain})")]
+    #[fatal(false)]
+    UnconsolidatedCtip {
+        outpoint: bitcoin::OutPoint,
+        sidechain: SidechainNumber,
+    },
+}
+
+#[derive(Debug, Error, Fatality, Split)]
+pub(in crate::validator) enum ConnectBlock {
+    #[error(transparent)]
+    #[fatal(forward)]
+    Finalize(#[from] FinalizeConnectBlock),
+    #[error(transparent)]
+    #[fatal(forward)]
+    Partial(#[from] PartialConnectBlock),
 }
 
 #[derive(Debug, Error, Transitive)]
