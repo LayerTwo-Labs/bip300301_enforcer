@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, hash_map},
     path::PathBuf,
     time::Instant,
 };
@@ -11,8 +11,9 @@ use bitcoin::{
     hashes::{Hash as _, sha256d},
 };
 use error_fatality::Split;
-use fallible_iterator::{FallibleIterator, IteratorExt};
+use fallible_iterator::FallibleIterator;
 use futures::FutureExt as _;
+use hashlink::LinkedHashSet;
 use jsonrpsee::core::{
     client::BatchResponse,
     params::{ArrayParams, BatchRequestBuilder},
@@ -170,6 +171,79 @@ pub(in crate::validator) enum ValidatedTx {
         sidechain_number: SidechainNumber,
         m6id: M6id,
     },
+}
+
+#[derive(Default)]
+pub(crate) struct UnconsolidatedCtips {
+    by_outpoint: HashMap<OutPoint, (SidechainNumber, Amount)>,
+    by_sidechain: HashMap<SidechainNumber, LinkedHashSet<Ctip>>,
+}
+
+impl UnconsolidatedCtips {
+    fn insert(&mut self, sidechain: SidechainNumber, ctip: Ctip) {
+        self.by_outpoint
+            .insert(ctip.outpoint, (sidechain, ctip.value));
+        self.by_sidechain.entry(sidechain).or_default().insert(ctip);
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.by_outpoint.is_empty()
+    }
+
+    fn remove(&mut self, outpoint: &OutPoint) -> bool {
+        let Some((sidechain_number, value)) = self.by_outpoint.remove(outpoint) else {
+            return false;
+        };
+        match self.by_sidechain.entry(sidechain_number) {
+            hash_map::Entry::Occupied(mut ctips) => {
+                ctips.get_mut().remove(&Ctip {
+                    outpoint: *outpoint,
+                    value,
+                });
+                if ctips.get().is_empty() {
+                    ctips.remove();
+                }
+            }
+            hash_map::Entry::Vacant(_) => (),
+        }
+        true
+    }
+
+    #[inline(always)]
+    pub fn get_by_sidechain(&self, sidechain: SidechainNumber) -> Option<&LinkedHashSet<Ctip>> {
+        self.by_sidechain.get(&sidechain)
+    }
+
+    #[inline(always)]
+    pub fn into_iter_by_sidechain(
+        self,
+    ) -> impl IntoIterator<Item = (SidechainNumber, LinkedHashSet<Ctip>)> {
+        self.by_sidechain.into_iter()
+    }
+
+    /// returns the removed unconsolidated ctips
+    pub fn remove_sidechain(&mut self, sidechain: SidechainNumber) -> LinkedHashSet<Ctip> {
+        let res = self.by_sidechain.remove(&sidechain).unwrap_or_default();
+        for ctip in &res {
+            self.by_outpoint.remove(&ctip.outpoint);
+        }
+        res
+    }
+}
+
+pub(in crate::validator) struct PartiallyConnectedBlockInfo {
+    pub header_info: HeaderInfo,
+    pub block_info: BlockInfo,
+    pub diff: diff::Block,
+    pub unconsolidated_ctips: UnconsolidatedCtips,
+}
+
+/// Tx ctips info for a sidechain.
+struct TxCtipsInfo {
+    consolidated_ctip_input: Option<Ctip>,
+    unconsolidated_ctip_inputs: HashSet<Ctip>,
+    ctip_output: Ctip,
 }
 
 impl BlockHandler<'_> {
@@ -708,6 +782,99 @@ impl BlockHandler<'_> {
         }
     }
 
+    /// Fill ctip spends and new ctips for a tx.
+    /// Does not modify unconsolidated ctips.
+    fn fill_ctips(
+        &self,
+        rotxn: &RoTxn,
+        unconsolidated_ctips: &UnconsolidatedCtips,
+        transaction: &Transaction,
+    ) -> Result<HashMap<SidechainNumber, TxCtipsInfo>, error::HandleM5M6> {
+        let txid = transaction.compute_txid();
+        let dbs = &self.dbs.active_sidechains;
+        let mut res = HashMap::new();
+        for (vout, output) in transaction.output.iter().enumerate() {
+            let Ok((_input, sidechain_number)) = self
+                .params
+                .op_drivechain
+                .parse(output.script_pubkey.as_bytes())
+            else {
+                continue;
+            };
+            // An OP_DRIVECHAIN output only designates a treasury UTXO
+            // for an *active* sidechain slot. On the mainchain
+            // OP_DRIVECHAIN is anyone-can-spend, so for an inactive slot
+            // the output is an ordinary output and the block is valid.
+            // Without this guard we'd treat it as a CTIP with a
+            // nonexistent treasury (old value zero), then either reject
+            // a valid block (`ZeroDiff` for a zero-value output) or
+            // fabricate a deposit into a sidechain that doesn't exist.
+            if !dbs.sidechain().contains_key(rotxn, &sidechain_number)? {
+                continue;
+            }
+            let ctip_output = Ctip {
+                outpoint: OutPoint {
+                    txid,
+                    vout: vout as u32,
+                },
+                value: output.value,
+            };
+            match res.entry(sidechain_number) {
+                hash_map::Entry::Occupied(_) => {
+                    let err = error::HandleM5M6::MultipleOpDrivechainOutputs(sidechain_number);
+                    return Err(err);
+                }
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(TxCtipsInfo {
+                        consolidated_ctip_input: None,
+                        unconsolidated_ctip_inputs: HashSet::new(),
+                        ctip_output,
+                    });
+                }
+            }
+        }
+        for txin in &transaction.input {
+            let outpoint = &txin.previous_output;
+            if let Some((sidechain_number, amount, _)) =
+                dbs.ctip_outpoint_to_value_seq().try_get(rotxn, outpoint)?
+            {
+                let ctip = Ctip {
+                    outpoint: *outpoint,
+                    value: amount,
+                };
+                // BIP 300: a tx that spends a treasury UTXO must also create
+                // a new treasury UTXO for that sidechain.
+                // Without this check, a spend of the anyone-can-spend
+                // OP_DRIVECHAIN treasury that creates no replacement output is
+                // silently ignored and drains the slot.
+                let tx_ctips_info = res
+                    .get_mut(&sidechain_number)
+                    .ok_or(error::HandleM5M6::TreasurySpentWithoutNewCtip { sidechain_number })?;
+                assert!(tx_ctips_info.consolidated_ctip_input.is_none());
+                tx_ctips_info.consolidated_ctip_input = Some(ctip);
+            } else if let Some((sidechain_number, amount)) =
+                unconsolidated_ctips.by_outpoint.get(outpoint)
+            {
+                let ctip = Ctip {
+                    outpoint: *outpoint,
+                    value: *amount,
+                };
+                // BIP 300: a tx that spends a treasury UTXO must also create
+                // a new treasury UTXO for that sidechain.
+                // Without this check, a spend of the anyone-can-spend
+                // OP_DRIVECHAIN treasury that creates no replacement output is
+                // silently ignored and drains the slot.
+                res.get_mut(sidechain_number)
+                    .ok_or_else(|| error::HandleM5M6::TreasurySpentWithoutNewCtip {
+                        sidechain_number: *sidechain_number,
+                    })?
+                    .unconsolidated_ctip_inputs
+                    .insert(ctip);
+            }
+        }
+        Ok(res)
+    }
+
     /// BIP 300 M5 (Deposit) / M6 (Withdrawal Bundle) dispatcher. A tx whose
     /// first output is an OP_DRIVECHAIN treasury UTXO is classified by
     /// comparing the new treasury value to the previous one: a larger value
@@ -718,105 +885,55 @@ impl BlockHandler<'_> {
     fn handle_m5_m6(
         &self,
         rotxn: &RoTxn,
+        unconsolidated_ctips: &mut UnconsolidatedCtips,
         transaction: Cow<'_, Transaction>,
     ) -> Result<Option<DepositsOrSuccessfulWithdrawal>, error::HandleM5M6> {
-        let dbs = &self.dbs.active_sidechains;
-        let txid = transaction.compute_txid();
-        let ctip_spends: HashMap<SidechainNumber, bitcoin::Amount> = transaction
-            .input
-            .iter()
-            .map(Result::<_, error::HandleM5M6>::Ok)
-            .transpose_into_fallible()
-            .filter_map(|input| {
-                dbs.ctip_outpoint_to_value_seq()
-                    .try_get(rotxn, &input.previous_output)?
-                    .map(|(sidechain_number, amount, _)| Ok((sidechain_number, amount)))
-                    .transpose()
-            })
-            .collect()?;
-        let new_ctips = {
-            let mut new_ctips = HashMap::<SidechainNumber, Ctip>::new();
-            for (vout, output) in transaction.output.iter().enumerate() {
-                if let Ok((_input, sidechain_number)) = self
-                    .params
-                    .op_drivechain
-                    .parse(output.script_pubkey.as_bytes())
-                {
-                    // An OP_DRIVECHAIN output only designates a treasury UTXO
-                    // for an *active* sidechain slot. On the mainchain
-                    // OP_DRIVECHAIN is anyone-can-spend, so for an inactive slot
-                    // the output is an ordinary output and the block is valid.
-                    // Without this guard we'd treat it as a CTIP with a
-                    // nonexistent treasury (old value zero), then either reject
-                    // a valid block (`ZeroDiff` for a zero-value output) or
-                    // fabricate a deposit into a sidechain that doesn't exist.
-                    if !dbs.sidechain().contains_key(rotxn, &sidechain_number)? {
-                        continue;
-                    }
-                    let new_ctip = Ctip {
-                        outpoint: OutPoint {
-                            txid,
-                            vout: vout as u32,
-                        },
-                        value: output.value,
-                    };
-                    if new_ctips.insert(sidechain_number, new_ctip).is_some() {
-                        return Err(error::HandleM5M6::MultipleOpDrivechainOutputs(
-                            sidechain_number,
-                        ));
-                    }
-                }
-            }
-            new_ctips
-        };
-        let n_new_ctips = new_ctips.len();
-        // BIP 300: a tx that spends a treasury UTXO must also create a new
-        // treasury UTXO for that sidechain. Without this check, a spend of the
-        // anyone-can-spend OP_DRIVECHAIN treasury that creates no replacement
-        // output is silently ignored and drains the slot.
-        for sidechain_number in ctip_spends.keys() {
-            if !new_ctips.contains_key(sidechain_number) {
-                return Err(error::HandleM5M6::TreasurySpentWithoutNewCtip {
-                    sidechain_number: *sidechain_number,
-                });
-            }
-        }
-        // Check that old ctips are spent
+        let tx_ctips_infos = self.fill_ctips(rotxn, unconsolidated_ctips, &transaction)?;
+        let n_ctip_outputs = tx_ctips_infos.len();
         let mut res = Option::<DepositsOrSuccessfulWithdrawal>::None;
-        for (sidechain_number, new_ctip) in new_ctips {
-            let old_treasury_value = if dbs.ctip().contains_key(rotxn, &sidechain_number)? {
-                *ctip_spends
-                    .get(&sidechain_number)
-                    .ok_or_else(|| error::HandleM5M6::OldCtipUnspent { sidechain_number })?
-            } else if ctip_spends.contains_key(&sidechain_number) {
-                return Err(error::HandleM5M6::CtipDbsInconsistent {
-                    sidechain: sidechain_number,
-                    db_exists_in: dbs.ctip_outpoint_to_value_seq().name().to_owned(),
-                    db_missing_in: dbs.ctip().name().to_owned(),
-                });
-            } else {
-                Amount::ZERO
-            };
-            match new_ctip.value.cmp(&old_treasury_value) {
+        for (sidechain_number, tx_ctips_info) in tx_ctips_infos {
+            let TxCtipsInfo {
+                consolidated_ctip_input,
+                unconsolidated_ctip_inputs,
+                ctip_output,
+            } = tx_ctips_info;
+            let consolidated_ctip_input_value =
+                consolidated_ctip_input.map_or(Amount::ZERO, |ctip| ctip.value);
+            let unconsolidated_ctip_inputs_value = unconsolidated_ctip_inputs
+                .iter()
+                .map(|ctip| ctip.value)
+                .sum();
+            let treasury_value_in =
+                consolidated_ctip_input_value + unconsolidated_ctip_inputs_value;
+            match ctip_output.value.cmp(&consolidated_ctip_input_value) {
                 // M6
                 Ordering::Less => {
-                    if transaction.input.len() != 1 {
-                        let err = error::InvalidM6::InputCount {
-                            n_inputs: transaction.input.len(),
-                        };
-                        return Err(err.into());
+                    let consolidated_ctip_input = consolidated_ctip_input
+                        .expect("consolidated ctip input must exist for M6 tx");
+                    // check inputs
+                    {
+                        let ctip_inputs: HashSet<_> = unconsolidated_ctip_inputs
+                            .iter()
+                            .chain(std::iter::once(&consolidated_ctip_input))
+                            .map(|ctip| ctip.outpoint)
+                            .collect();
+                        for input in &transaction.input {
+                            if !ctip_inputs.contains(&input.previous_output) {
+                                let err = error::InvalidM6::UnexpectedInput {
+                                    unexpected: input.previous_output,
+                                };
+                                return Err(err.into());
+                            }
+                        }
                     }
-                    if new_ctip.outpoint.vout != 0 {
+                    if ctip_output.outpoint.vout != 0 {
                         let err = error::InvalidM6::TreasuryOutputIndex {
-                            treasury_vout: new_ctip.outpoint.vout,
+                            treasury_vout: ctip_output.outpoint.vout,
                         };
                         return Err(err.into());
                     }
-                    let (m6id, sidechain_number_, removed_index, info) = self.handle_m6(
-                        rotxn,
-                        transaction.clone().into_owned(),
-                        old_treasury_value,
-                    )?;
+                    let (m6id, sidechain_number_, removed_index, info) =
+                        self.handle_m6(rotxn, transaction.clone().into_owned(), treasury_value_in)?;
                     // `handle_m6` → `compute_m6id` parses the same first-output script
                     // that we already parsed above. Mismatch would mean the parser is
                     // non-deterministic (impossible) or the transaction was mutated
@@ -827,13 +944,15 @@ impl BlockHandler<'_> {
                         "invariant violation: OpDrivechain::parse returned different \
                         sidechain numbers for the same output",
                     );
-                    let sequence_number = dbs
+                    let sequence_number = self
+                        .dbs
+                        .active_sidechains
                         .treasury_utxo_count
                         .try_get(rotxn, &sidechain_number)?
                         .map_or(0, |count| count.get());
                     let diff = diff::M6 {
                         sidechain_number,
-                        new_ctip,
+                        new_ctip: ctip_output,
                         removed_pending_withdrawal: m6id,
                         removed_pending_withdrawal_index: removed_index,
                         removed_pending_withdrawal_info: info,
@@ -852,7 +971,7 @@ impl BlockHandler<'_> {
                         }
                         Some(DepositsOrSuccessfulWithdrawal::M6Withdrawal { .. }) => {
                             let err = error::InvalidM6::TreasuryOutputCount {
-                                n_treasury_outputs: n_new_ctips,
+                                n_treasury_outputs: n_ctip_outputs,
                             };
                             return Err(err.into());
                         }
@@ -860,40 +979,74 @@ impl BlockHandler<'_> {
                 }
                 // M5
                 Ordering::Greater => {
-                    // BIP 300 requires the address OP_RETURN output immediately
-                    // after the treasury UTXO; a deposit without it is invalid.
-                    let Some(address_output) =
-                        transaction.output.get(new_ctip.outpoint.vout as usize + 1)
-                    else {
-                        return Err(error::HandleM5M6::MissingDepositAddress { sidechain_number });
-                    };
-                    let Some(address) =
-                        crate::messages::try_parse_op_return_address(&address_output.script_pubkey)
-                    else {
-                        return Err(error::HandleM5M6::MissingDepositAddress { sidechain_number });
-                    };
-                    let sequence_number = dbs
-                        .treasury_utxo_count
-                        .try_get(rotxn, &sidechain_number)?
-                        .map_or(0, |count| count.get());
-                    let deposit = Deposit {
-                        sequence_number,
-                        outpoint: new_ctip.outpoint,
-                        address,
-                        value: new_ctip.value - old_treasury_value,
+                    let deposit = if ctip_output.value > treasury_value_in {
+                        // BIP 300 requires the address OP_RETURN output immediately
+                        // after the treasury UTXO; a deposit without it is invalid.
+                        let Some(address_output) = transaction
+                            .output
+                            .get(ctip_output.outpoint.vout as usize + 1)
+                        else {
+                            return Err(error::HandleM5M6::MissingDepositAddress {
+                                sidechain_number,
+                            });
+                        };
+                        let Some(address) = crate::messages::try_parse_op_return_address(
+                            &address_output.script_pubkey,
+                        ) else {
+                            return Err(error::HandleM5M6::MissingDepositAddress {
+                                sidechain_number,
+                            });
+                        };
+                        let sequence_number = self
+                            .dbs
+                            .active_sidechains
+                            .treasury_utxo_count
+                            .try_get(rotxn, &sidechain_number)?
+                            .map_or(0, |count| count.get());
+                        Some(Deposit {
+                            sequence_number,
+                            outpoint: ctip_output.outpoint,
+                            address,
+                            value: ctip_output.value - treasury_value_in,
+                        })
+                    } else {
+                        None
                     };
                     match res.as_mut() {
                         None => {
-                            let diff = diff::M5 {
-                                new_ctips: HashMap::from_iter([(sidechain_number, new_ctip)]),
+                            let new_ctips = if consolidated_ctip_input.is_none()
+                                && self
+                                    .dbs
+                                    .active_sidechains
+                                    .ctip()
+                                    .contains_key(rotxn, &sidechain_number)?
+                            {
+                                HashMap::new()
+                            } else {
+                                HashMap::from_iter([(sidechain_number, ctip_output)])
                             };
-                            let deposits = HashMap::from_iter([(sidechain_number, deposit)]);
+                            let diff = diff::M5 { new_ctips };
+                            let deposits = if let Some(deposit) = deposit {
+                                HashMap::from_iter([(sidechain_number, deposit)])
+                            } else {
+                                HashMap::new()
+                            };
                             res =
                                 Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff });
                         }
                         Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) => {
-                            deposits.insert(sidechain_number, deposit);
-                            diff.new_ctips.insert(sidechain_number, new_ctip);
+                            if let Some(deposit) = deposit {
+                                deposits.insert(sidechain_number, deposit);
+                            }
+                            if consolidated_ctip_input.is_some()
+                                || !self
+                                    .dbs
+                                    .active_sidechains
+                                    .ctip()
+                                    .contains_key(rotxn, &sidechain_number)?
+                            {
+                                diff.new_ctips.insert(sidechain_number, ctip_output);
+                            }
                         }
                         Some(DepositsOrSuccessfulWithdrawal::M6Withdrawal { .. }) => {
                             return Err(error::HandleM5M6::Ambiguous);
@@ -901,6 +1054,18 @@ impl BlockHandler<'_> {
                     }
                 }
                 Ordering::Equal => return Err(error::HandleM5M6::ZeroDiff),
+            }
+            for input in unconsolidated_ctip_inputs {
+                unconsolidated_ctips.remove(&input.outpoint);
+            }
+            if consolidated_ctip_input.is_none()
+                && self
+                    .dbs
+                    .active_sidechains
+                    .ctip()
+                    .contains_key(rotxn, &sidechain_number)?
+            {
+                unconsolidated_ctips.insert(sidechain_number, ctip_output)
             }
         }
         Ok(res)
@@ -911,7 +1076,6 @@ impl BlockHandler<'_> {
     ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md>
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m7-bmm-accept>
-    #[expect(clippy::result_large_err)]
     fn handle_coinbase_message(
         &self,
         rotxn: &RoTxn,
@@ -919,7 +1083,7 @@ impl BlockHandler<'_> {
         prev_block_hash: BlockHash,
         accepted_bmm_requests: &mut BmmCommitments,
         message: CoinbaseMessage,
-    ) -> Result<(Option<CoinbaseMessageEvent>, Option<diff::CoinbaseMsg>), error::ConnectBlock>
+    ) -> Result<(Option<CoinbaseMessageEvent>, Option<diff::CoinbaseMsg>), error::PartialConnectBlock>
     {
         match message {
             CoinbaseMessage::M1ProposeSidechain(M1ProposeSidechain {
@@ -986,7 +1150,7 @@ impl BlockHandler<'_> {
                 sidechain_block_hash,
             }) => {
                 if accepted_bmm_requests.contains_key(&sidechain_number) {
-                    return Err(error::ConnectBlock::MultipleBmmBlocks { sidechain_number });
+                    return Err(error::PartialConnectBlock::MultipleBmmBlocks { sidechain_number });
                 }
                 accepted_bmm_requests.insert(sidechain_number, sidechain_block_hash);
                 Ok((None, None))
@@ -998,11 +1162,12 @@ impl BlockHandler<'_> {
         &self,
         rotxn: &RoTxn,
         accepted_bmm_requests: Option<&BmmCommitments>,
+        unconsolidated_ctips: &mut UnconsolidatedCtips,
         prev_mainchain_block_hash: &BlockHash,
         transaction: &Transaction,
     ) -> Result<Option<(TransactionEvent, diff::Tx)>, error::HandleTransaction> {
         let mut res = None;
-        match self.handle_m5_m6(rotxn, Cow::Borrowed(transaction))? {
+        match self.handle_m5_m6(rotxn, unconsolidated_ctips, Cow::Borrowed(transaction))? {
             Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) => {
                 res = Some((TransactionEvent::Deposits(deposits), diff::Tx::M5(diff)));
             }
@@ -1062,7 +1227,13 @@ impl BlockHandler<'_> {
             require_payable_bundles: false,
             ..*self
         };
-        match handler.handle_transaction(&child_rwtxn, None, &tip_hash, transaction) {
+        match handler.handle_transaction(
+            &child_rwtxn,
+            None,
+            &mut UnconsolidatedCtips::default(),
+            &tip_hash,
+            transaction,
+        ) {
             Ok(None) => Ok(ValidatedTx::Valid),
             Ok(Some((event, diff))) => {
                 let () = diff.apply(&mut child_rwtxn, &dbs.active_sidechains, tip_height)?;
@@ -1082,12 +1253,11 @@ impl BlockHandler<'_> {
     }
 
     /// Check that the current chain tip is the parent of the incoming block
-    #[expect(clippy::result_large_err)]
     fn ensure_tip_is_parent(
         &self,
         rotxn: &RoTxn,
         parent: BlockHash,
-    ) -> Result<(), error::ConnectBlock> {
+    ) -> Result<(), error::PartialConnectBlock> {
         let dbs = self.dbs;
         match dbs.current_chain_tip.try_get(rotxn, &())? {
             Some(tip) if parent == tip => Ok(()),
@@ -1104,7 +1274,7 @@ impl BlockHandler<'_> {
                     incoming_block_parent = %parent,
                     "ensure prent: chain tip is not parent of incoming block"
                 );
-                Err(error::ConnectBlock::BlockParent {
+                Err(error::PartialConnectBlock::BlockParent {
                     parent,
                     tip,
                     tip_height,
@@ -1113,14 +1283,14 @@ impl BlockHandler<'_> {
         }
     }
 
+    /// Connect a block without calling [`Self::finalize_connect_block`].
     /// Block header should be stored before calling this.
     #[tracing::instrument(skip_all)]
-    #[expect(clippy::result_large_err)]
-    pub(in crate::validator) fn connect_block(
+    pub(in crate::validator) fn partial_connect_block(
         &self,
         rwtxn: &mut RwTxn,
         block: &Block,
-    ) -> Result<Event, error::ConnectBlock> {
+    ) -> Result<PartiallyConnectedBlockInfo, error::PartialConnectBlock> {
         let dbs = self.dbs;
         let parent = block.header.prev_blockhash;
 
@@ -1131,7 +1301,7 @@ impl BlockHandler<'_> {
         let block_hash = block.block_hash();
         let height = dbs.block_hashes.height().get(rwtxn, &block_hash)?;
         let Some(coinbase) = block.txdata.first() else {
-            return Err(error::ConnectBlock::NoCoinbase);
+            return Err(error::PartialConnectBlock::NoCoinbase);
         };
         let header_info = HeaderInfo {
             block_hash,
@@ -1144,7 +1314,13 @@ impl BlockHandler<'_> {
         // to record the block, but with an empty info + diff and skip all processing.
         if height < self.params.bip300_activation_height {
             let (block_info, block_diff) = empty_block_info_and_diff(coinbase.compute_txid());
-            return self.record_block(rwtxn, header_info, block_info, block_diff);
+            let res = PartiallyConnectedBlockInfo {
+                header_info,
+                block_info,
+                diff: block_diff,
+                unconsolidated_ctips: UnconsolidatedCtips::default(),
+            };
+            return Ok(res);
         }
         let mut coinbase_messages = CoinbaseMessages::default();
         // map of sidechain proposals to first vout
@@ -1221,7 +1397,7 @@ impl BlockHandler<'_> {
                     vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
                 let m4 = M4AckBundles::OneByte { upvotes };
                 let diff = self.handle_m4_ack_bundles(rotxn, parent, &m4)?;
-                Ok::<_, error::ConnectBlock>(diff)
+                Ok::<_, error::PartialConnectBlock>(diff)
             })?;
             if !diff.0.is_empty() {
                 let () = coinbase_msg_diffs.apply(diff::CoinbaseMsg::AckBundles(diff))?;
@@ -1257,6 +1433,7 @@ impl BlockHandler<'_> {
         };
         tracing::trace!("Handled coinbase tx, handling other txs...");
         let mut tx_diffs = diff::DiffBuilder::new(rwtxn, &dbs.active_sidechains, height);
+        let mut unconsolidated_ctips = UnconsolidatedCtips::default();
         // BIP301: "Only one `M8` can be accepted per mainchain block per
         // sidechain slot." Without this, a miner can collect the fees of
         // several BMM requests while connecting only one sidechain block --
@@ -1267,11 +1444,12 @@ impl BlockHandler<'_> {
                     self.handle_transaction(
                         rotxn,
                         Some(&accepted_bmm_requests),
+                        &mut unconsolidated_ctips,
                         &parent,
                         transaction,
                     )
                 })
-                .map_err(|source| error::ConnectBlock::Transaction {
+                .map_err(|source| error::partial_connect_block::HandleTransaction {
                     txid: transaction.compute_txid(),
                     block_hash,
                     source,
@@ -1282,7 +1460,7 @@ impl BlockHandler<'_> {
             if let Some(bmm_request) = parse_m8_tx(transaction)
                 && !bmm_request_slots.insert(bmm_request.sidechain_number)
             {
-                return Err(error::ConnectBlock::MultipleBmmRequests {
+                return Err(error::PartialConnectBlock::MultipleBmmRequests {
                     sidechain_number: bmm_request.sidechain_number,
                 });
             }
@@ -1311,27 +1489,32 @@ impl BlockHandler<'_> {
             coinbase: coinbase_diff,
             txs: tx_diffs,
         };
-        self.record_block(rwtxn, header_info, block_info, block_diff)
+        let res = PartiallyConnectedBlockInfo {
+            header_info,
+            block_info,
+            diff: block_diff,
+            unconsolidated_ctips,
+        };
+        Ok(res)
     }
 
     /// Shared tail of [`Self::connect_block`]: persist the block's info +
     /// diff, advance the chain tip if this block has the most cumulative
     /// work, and build the `ConnectBlock` event.
-    #[expect(clippy::result_large_err)]
     fn record_block(
         &self,
         rwtxn: &mut RwTxn,
         header_info: HeaderInfo,
         block_info: BlockInfo,
         block_diff: diff::Block,
-    ) -> Result<Event, error::ConnectBlock> {
+    ) -> Result<Event, error::RecordBlock> {
         let dbs = self.dbs;
         let block_hash = header_info.block_hash;
         tracing::trace!("Storing block info");
         let () = dbs
             .block_hashes
             .put_block_info(rwtxn, &block_hash, &block_info, &block_diff)
-            .map_err(error::ConnectBlock::PutBlockInfo)?;
+            .map_err(error::RecordBlock::PutBlockInfo)?;
         tracing::trace!("Stored block info");
         let current_tip_cumulative_work: Option<Work> = 'work: {
             let Some(current_tip) = dbs.current_chain_tip.try_get(rwtxn, &())? else {
@@ -1352,6 +1535,44 @@ impl BlockHandler<'_> {
             header_info,
             block_info,
         };
+        Ok(event)
+    }
+
+    /// [`Self::partial_connect_block`] must be called before this.
+    #[tracing::instrument(skip_all)]
+    fn finalize_connect_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        partially_connected_block_info: PartiallyConnectedBlockInfo,
+    ) -> Result<Event, error::FinalizeConnectBlock> {
+        let PartiallyConnectedBlockInfo {
+            header_info,
+            block_info,
+            diff,
+            unconsolidated_ctips,
+        } = partially_connected_block_info;
+        if let Some((outpoint, (sidechain, _value))) =
+            unconsolidated_ctips.by_outpoint.iter().next()
+        {
+            let err = error::FinalizeConnectBlock::UnconsolidatedCtip {
+                outpoint: *outpoint,
+                sidechain: *sidechain,
+            };
+            return Err(err);
+        }
+        let event = self.record_block(rwtxn, header_info, block_info, diff)?;
+        Ok(event)
+    }
+
+    /// Block header should be stored before calling this.
+    #[tracing::instrument(skip_all)]
+    pub(in crate::validator) fn connect_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        block: &Block,
+    ) -> Result<Event, error::ConnectBlock> {
+        let partially_connected_block_info = self.partial_connect_block(rwtxn, block)?;
+        let event = self.finalize_connect_block(rwtxn, partially_connected_block_info)?;
         Ok(event)
     }
 
@@ -2042,9 +2263,14 @@ impl BlockHandler<'_> {
     ) -> Result<Event, error::Sync> {
         let header_info = self.dbs.block_hashes.get_header_info(rwtxn, block_hash)?;
         debug_assert!(header_info.height < self.params.bip300_activation_height);
-        let () = self.ensure_tip_is_parent(rwtxn, header_info.prev_block_hash)?;
+        let () = self
+            .ensure_tip_is_parent(rwtxn, header_info.prev_block_hash)
+            .map_err(error::ConnectBlock::from)?;
         let (block_info, block_diff) = empty_block_info_and_diff(Txid::all_zeros());
-        Ok(self.record_block(rwtxn, header_info, block_info, block_diff)?)
+        let event = self
+            .record_block(rwtxn, header_info, block_info, block_diff)
+            .map_err(|err| error::ConnectBlock::Finalize(err.into()))?;
+        Ok(event)
     }
 
     /// Connect blocks below the BIP300 activation height from their stored
@@ -2438,11 +2664,7 @@ mod tests {
                 previous_output: input_outpoint,
                 ..TxIn::default()
             }],
-            output: vec![
-                OpDrivechain::NOP5
-                    .create_m5_deposit_output(slot, Amount::ZERO, value)
-                    .unwrap(),
-            ],
+            output: vec![OpDrivechain::NOP5.create_m5_deposit_output(slot, value)],
         }
     }
 
@@ -2640,15 +2862,32 @@ mod tests {
 
         let handler = test_handler(&dbs);
         let empty: BmmCommitments = LinkedHashMap::new();
-        let err = handler
-            .handle_transaction(&rotxn, Some(&empty), &prev_hash, &tx)
-            .expect_err("not-accepted M8 must error");
-        assert!(!err.is_fatal());
-
-        let err = handler
-            .handle_transaction(&rotxn, None, &dummy_block_hash(0xBB), &tx)
-            .expect_err("expired M8 must error");
-        assert!(!err.is_fatal());
+        {
+            let mut unconsolidated_ctips = UnconsolidatedCtips::default();
+            let err = handler
+                .handle_transaction(
+                    &rotxn,
+                    Some(&empty),
+                    &mut unconsolidated_ctips,
+                    &prev_hash,
+                    &tx,
+                )
+                .expect_err("not-accepted M8 must error");
+            assert!(!err.is_fatal());
+        }
+        {
+            let mut unconsolidated_ctips = UnconsolidatedCtips::default();
+            let err = handler
+                .handle_transaction(
+                    &rotxn,
+                    None,
+                    &mut unconsolidated_ctips,
+                    &dummy_block_hash(0xBB),
+                    &tx,
+                )
+                .expect_err("expired M8 must error");
+            assert!(!err.is_fatal());
+        }
         Ok(())
     }
 
@@ -2662,9 +2901,16 @@ mod tests {
 
         let mut accepted: BmmCommitments = LinkedHashMap::new();
         accepted.insert(sc, BmmCommitment([0x42; 32]));
+        let mut unconsolidated_ctips = UnconsolidatedCtips::default();
 
         let result = test_handler(&dbs)
-            .handle_transaction(&rotxn, Some(&accepted), &prev_hash, &tx)
+            .handle_transaction(
+                &rotxn,
+                Some(&accepted),
+                &mut unconsolidated_ctips,
+                &prev_hash,
+                &tx,
+            )
             .into_diagnostic()?;
         assert!(result.is_none(), "valid M8 should not produce a tx event");
         Ok(())
@@ -2720,7 +2966,9 @@ mod tests {
         assert!(
             matches!(
                 test_handler(&dbs).connect_block(&mut rwtxn, &block),
-                Err(error::ConnectBlock::NoCoinbase)
+                Err(error::ConnectBlock::Partial(
+                    error::PartialConnectBlock::NoCoinbase
+                ))
             ),
             "connect_block must reject an empty block, not panic"
         );
@@ -2870,12 +3118,10 @@ mod tests {
         let block_b = build_test_block(
             block_a_hash,
             TestBlockParts {
-                // This does not spend the tracked CTIP, so the block is
-                // rejected as non-fatal after block_a has been applied.
+                // This does not consolidate the created CTIP, so the block is
+                // rejected with a non-fatal error after block_a has been applied.
                 extra_txs: vec![build_m5_deposit_tx(
                     sidechain_number,
-                    OutPoint::default(),
-                    Amount::from_sat(5_000),
                     Amount::from_sat(1_000),
                 )],
                 ..Default::default()
@@ -2902,13 +3148,13 @@ mod tests {
             "the reported invalid block must be the offending one, so that the \
              caller invalidates the right block on the node"
         );
-        let reason = format!(
-            "{:#}",
+        std::assert_matches!(
+            *invalid_block.reason,
+            error::JfyiConnectBlock::Finalize(
+                error::FinalizeConnectBlock::UnconsolidatedCtip { .. }
+            ),
+            "unexpected invalid block reason `{:#}`",
             crate::errors::ErrorChain::new(&*invalid_block.reason)
-        );
-        assert!(
-            reason.contains("Old Ctip for sidechain 1 is unspent"),
-            "the reported reason must describe the consensus violation, got `{reason}`"
         );
         let event = event_rx.try_recv().into_diagnostic()?;
         assert!(matches!(
@@ -3056,7 +3302,11 @@ mod tests {
         let rotxn = dbs.read_txn().into_diagnostic()?;
         assert!(
             test_handler(&dbs)
-                .handle_m5_m6(&rotxn, Cow::Borrowed(&build_plain_tx()))
+                .handle_m5_m6(
+                    &rotxn,
+                    &mut UnconsolidatedCtips::default(),
+                    Cow::Borrowed(&build_plain_tx())
+                )
                 .into_diagnostic()?
                 .is_none()
         );
@@ -3073,10 +3323,14 @@ mod tests {
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
             .into_diagnostic()?;
         let deposit_amount = Amount::from_sat(10_000);
-        let tx = build_m5_deposit_tx(sc, OutPoint::default(), Amount::ZERO, deposit_amount);
+        let tx = build_m5_deposit_tx(sc, deposit_amount);
 
         let result = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+            .handle_m5_m6(
+                &rwtxn,
+                &mut UnconsolidatedCtips::default(),
+                Cow::Borrowed(&tx),
+            )
             .into_diagnostic()?;
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) = result else {
             panic!("expected M5 deposit");
@@ -3115,19 +3369,23 @@ mod tests {
             .into_diagnostic()?;
 
         let deposit_amount = Amount::from_sat(3_000);
-        let tx = build_m5_deposit_tx(sc, old_outpoint, old_value, deposit_amount);
+        let tx = build_m5_deposit_tx(sc, deposit_amount);
 
+        let mut unconsolidated_ctips = UnconsolidatedCtips::default();
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) =
             test_handler(&dbs)
-                .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+                .handle_m5_m6(&rwtxn, &mut unconsolidated_ctips, Cow::Borrowed(&tx))
                 .into_diagnostic()?
         else {
             panic!("expected M5 deposit");
         };
+        // Deposit should be tracked as unconsolidated
         assert!(deposits.contains_key(&sc));
         assert_eq!(deposits[&sc].value, deposit_amount);
-        assert!(diff.new_ctips.contains_key(&sc));
-        assert_eq!(diff.new_ctips[&sc].value, old_value + deposit_amount);
+        assert!(!diff.new_ctips.contains_key(&sc));
+        assert!(unconsolidated_ctips.get_by_sidechain(sc).is_some_and(
+            |ctips| ctips.len() == 1 && ctips.front().unwrap().value == deposit_amount
+        ));
         Ok(())
     }
 
@@ -3158,9 +3416,8 @@ mod tests {
         // A deposit that creates the treasury UTXO but omits the required
         // address OP_RETURN output. Per BIP300 it must be rejected, not
         // accepted with an empty address.
-        let treasury_output = OpDrivechain::NOP5
-            .create_m5_deposit_output(sc, old_value, Amount::from_sat(3_000))
-            .unwrap();
+        let treasury_output =
+            OpDrivechain::NOP5.create_m5_deposit_output(sc, old_value + Amount::from_sat(3_000));
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -3173,48 +3430,12 @@ mod tests {
 
         assert!(
             matches!(
-                test_handler(&dbs).handle_m5_m6(&rwtxn, Cow::Borrowed(&tx)),
+                test_handler(&dbs).handle_m5_m6(&rwtxn, &mut UnconsolidatedCtips::default(), Cow::Borrowed(&tx)),
                 Err(error::HandleM5M6::MissingDepositAddress { sidechain_number })
                     if sidechain_number == sc
             ),
             "M5 deposit without an address OP_RETURN output must be rejected"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn handle_m5_m6_old_ctip_unspent_is_not_fatal() -> Result<()> {
-        let (_dir, dbs) = create_test_dbs()?;
-        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
-        let sc = SidechainNumber(1);
-        dbs.active_sidechains
-            .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
-            .into_diagnostic()?;
-        dbs.active_sidechains
-            .put_ctip(
-                &mut rwtxn,
-                sc,
-                &Ctip {
-                    outpoint: OutPoint {
-                        txid: Txid::from_byte_array([0x11; 32]),
-                        vout: 0,
-                    },
-                    value: Amount::from_sat(5_000),
-                },
-            )
-            .into_diagnostic()?;
-
-        let tx = build_m5_deposit_tx(
-            sc,
-            OutPoint::default(),
-            Amount::from_sat(5_000),
-            Amount::from_sat(1_000),
-        );
-        let err = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
-            .expect_err("spending wrong outpoint must error");
-        assert!(matches!(err, error::HandleM5M6::OldCtipUnspent { .. }));
-        assert!(!err.is_fatal());
         Ok(())
     }
 
@@ -3256,7 +3477,11 @@ mod tests {
         };
 
         let err = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&theft_tx))
+            .handle_m5_m6(
+                &rwtxn,
+                &mut UnconsolidatedCtips::default(),
+                Cow::Borrowed(&theft_tx),
+            )
             .expect_err("spending a treasury without creating a new one must be invalid");
         assert!(matches!(
             err,
@@ -3343,7 +3568,11 @@ mod tests {
         );
         assert!(
             test_handler(&dbs)
-                .handle_m5_m6(&rotxn, Cow::Borrowed(&tx))
+                .handle_m5_m6(
+                    &rotxn,
+                    &mut UnconsolidatedCtips::default(),
+                    Cow::Borrowed(&tx)
+                )
                 .into_diagnostic()?
                 .is_none(),
             "inactive-slot OP_DRIVECHAIN output must be ignored, not treated as a CTIP",

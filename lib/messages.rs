@@ -25,9 +25,8 @@ use crate::{
     errors::ErrorChain,
     proto::{StatusBuilder, ToStatus},
     types::{
-        AmountOverflowError, BmmCommitment, M6id, OpDrivechain, SidechainDeclaration,
-        SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalId,
-        WithdrawalBundleVote,
+        BmmCommitment, M6id, OpDrivechain, SidechainDeclaration, SidechainDescription,
+        SidechainNumber, SidechainProposal, SidechainProposalId, WithdrawalBundleVote,
     },
 };
 
@@ -880,20 +879,13 @@ impl OpDrivechain {
     pub fn create_m5_deposit_output(
         self,
         sidechain_number: SidechainNumber,
-        old_ctip_amount: Amount,
         deposit_amount: Amount,
-    ) -> Result<TxOut, AmountOverflowError> {
+    ) -> TxOut {
         let script_pubkey = self.script(sidechain_number);
-        // All deposits increase the amount locked in the OP_DRIVECHAIN output;
-        // a checked add rejects an out-of-range deposit value instead of
-        // panicking.
-        let value = old_ctip_amount
-            .checked_add(deposit_amount)
-            .ok_or(AmountOverflowError)?;
-        Ok(TxOut {
+        TxOut {
             script_pubkey,
-            value,
-        })
+            value: deposit_amount,
+        }
     }
 }
 
@@ -922,10 +914,8 @@ enum M6idErrorInner {
         script_pubkey: ScriptBuf,
         source: nom::Err<nom::error::Error<Vec<u8>>>,
     },
-    #[error("More than 1 input: {n_inputs}")]
-    ManyInputs { n_inputs: usize },
-    #[error("Missing treasury input")]
-    MissingTreasuryInput,
+    #[error("Missing treasury inputs")]
+    MissingTreasuryInputs,
     #[error("Missing treasury output")]
     MissingTreasuryOutput,
     #[error("Total output amount overflow")]
@@ -959,12 +949,10 @@ impl OpDrivechain {
                 })?;
         // Set `T_n` equal to the `nValue` of the treasury UTXO created in this `M6`.
         let t_n = first_output.value;
-        // Remove the single input spending the previous treasury UTXO from the `vin`
+        // Remove the inputs spending the previous treasury UTXOs from the `vin`
         // vector, so that the `vin` vector is empty.
-        match tx.input.len() {
-            0 => return Err(M6idErrorInner::MissingTreasuryInput.into()),
-            1 => (),
-            n_inputs => return Err(M6idErrorInner::ManyInputs { n_inputs }.into()),
+        if tx.input.is_empty() {
+            return Err(M6idErrorInner::MissingTreasuryInputs.into());
         }
         tx.input.clear();
         // Compute `P_total` by summing the `nValue`s of all pay out outputs in this
@@ -1312,33 +1300,14 @@ mod tests {
     #[test]
     fn create_m5_deposit_output_value_and_script() -> miette::Result<()> {
         let sc = SidechainNumber(3);
-        let output = OpDrivechain::NOP5
-            .create_m5_deposit_output(sc, Amount::from_sat(5_000), Amount::from_sat(1_000))
-            .unwrap();
+        let output = OpDrivechain::NOP5.create_m5_deposit_output(sc, Amount::from_sat(6_000));
         assert_eq!(output.value, Amount::from_sat(6_000));
         let bytes = output.script_pubkey.to_bytes();
         let (_, parsed_sc) = OpDrivechain::NOP5
             .parse(&bytes)
             .map_err(|err| miette::miette!("parse failed: {err}"))?;
         assert_eq!(parsed_sc, sc);
-
-        let output = OpDrivechain::NOP5
-            .create_m5_deposit_output(SidechainNumber(0), Amount::ZERO, Amount::from_sat(100))
-            .unwrap();
-        assert_eq!(output.value, Amount::from_sat(100));
         Ok(())
-    }
-
-    #[test]
-    fn create_m5_deposit_output_rejects_overflow() {
-        // A deposit value that overflows the treasury total must error rather
-        // than panic on the addition.
-        let result = OpDrivechain::NOP5.create_m5_deposit_output(
-            SidechainNumber(0),
-            Amount::from_sat(u64::MAX),
-            Amount::from_sat(1),
-        );
-        assert!(matches!(result, Err(AmountOverflowError)));
     }
 
     // ── compute_m6id ──
@@ -1452,16 +1421,6 @@ mod tests {
         assert!(
             OpDrivechain::NOP5
                 .compute_m6id(tx_with(|t| t.input.clear()), Amount::from_sat(2_000))
-                .is_err()
-        );
-
-        // Multiple inputs → ManyInputs
-        assert!(
-            OpDrivechain::NOP5
-                .compute_m6id(
-                    tx_with(|t| t.input.push(bitcoin::TxIn::default())),
-                    Amount::from_sat(7_000),
-                )
                 .is_err()
         );
 

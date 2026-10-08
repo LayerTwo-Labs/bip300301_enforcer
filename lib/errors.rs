@@ -82,6 +82,61 @@ where
     }
 }
 
+/// Transparent wrapper around an error that allows it to be split into boxed
+/// errors.
+/// This is primarily useful when boxed.
+#[derive(Debug, Error)]
+#[error(transparent)]
+#[repr(transparent)]
+pub struct SplitBoxed<Err>(#[from] pub Err);
+
+impl<Err> Fatality for SplitBoxed<Err>
+where
+    Err: Fatality,
+{
+    fn is_fatal(&self) -> bool {
+        self.0.is_fatal()
+    }
+}
+
+impl<Err> Split for SplitBoxed<Err>
+where
+    Err: Split,
+{
+    type Fatal = Box<Err::Fatal>;
+
+    type Jfyi = Box<Err::Jfyi>;
+
+    fn split(self) -> Result<Self::Jfyi, Self::Fatal> {
+        match self.0.split() {
+            Ok(jfyi) => Ok(Box::new(jfyi)),
+            Err(fatal) => Err(Box::new(fatal)),
+        }
+    }
+}
+
+impl<Err> Fatality for Box<SplitBoxed<Err>>
+where
+    Err: Fatality,
+{
+    fn is_fatal(&self) -> bool {
+        <SplitBoxed<Err> as Fatality>::is_fatal(self)
+    }
+}
+
+impl<Err> Split for Box<SplitBoxed<Err>>
+where
+    Err: Split,
+{
+    type Fatal = <SplitBoxed<Err> as Split>::Fatal;
+
+    type Jfyi = <SplitBoxed<Err> as Split>::Jfyi;
+
+    fn split(self) -> Result<Self::Jfyi, Self::Fatal> {
+        <SplitBoxed<Err> as Split>::split(*self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde::de::Expected;
