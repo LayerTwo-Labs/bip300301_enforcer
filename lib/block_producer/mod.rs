@@ -19,7 +19,7 @@ use crate::{
     types::{
         BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber, WithdrawalBundleEventKind,
     },
-    validator::Validator,
+    validator::{Validator, cusf_enforcer::Ctips},
 };
 
 mod coinbase;
@@ -438,7 +438,7 @@ impl BlockProducer {
         }
         // Reserve suffix txs
         {
-            let fake_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
+            let fake_consolidated_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
                 let fake_ctip = crate::types::Ctip {
                     outpoint: bitcoin::OutPoint {
                         txid: bitcoin::Txid::from_byte_array([slot_number; 32]),
@@ -448,7 +448,11 @@ impl BlockProducer {
                 };
                 (slot_number.into(), fake_ctip)
             }));
-            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
+            let fake_ctips = Ctips {
+                consolidated: fake_consolidated_ctips,
+                unconsolidated: Default::default(),
+            };
+            let fake_suffix_txs = self.generate_suffix_txs(fake_ctips).await?;
             template
                 .suffix_txs
                 .extend(fake_suffix_txs.into_iter().map(|tx| {
@@ -556,7 +560,7 @@ impl BlockProducer {
                 .map_err(|reason| {
                     error::FinalizeBlockTemplateInner::InitialBlockTemplate { reason }
                 })?;
-                let suffix_txs = self.generate_suffix_txs(&ctips).await?;
+                let suffix_txs = self.generate_suffix_txs(ctips).await?;
                 template
                     .suffix_txs
                     .extend(suffix_txs.into_iter().map(|tx| (tx, bitcoin::Amount::ZERO)));

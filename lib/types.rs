@@ -309,7 +309,7 @@ impl From<[u8; 32]> for M6id {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct Ctip {
     pub outpoint: OutPoint,
     pub value: Amount,
@@ -1137,8 +1137,8 @@ impl<'a> BlindedM6<'a> {
         self,
         op_drivechain: OpDrivechain,
         sidechain_number: SidechainNumber,
-        treasury_outpoint: OutPoint,
-        treasury_value: Amount,
+        consolidated_ctip_input: Ctip,
+        unconsolidated_ctip_inputs: impl IntoIterator<Item = Ctip>,
     ) -> Result<bitcoin::Transaction, AmountUnderflowError> {
         let Self { fee, payout, tx } = self;
         let mut tx = tx.into_owned();
@@ -1146,26 +1146,35 @@ impl<'a> BlindedM6<'a> {
             .output
             .first_mut()
             .expect("Blinded M6 should have a fee output at index 0");
+        let mut treasury_output_value = consolidated_ctip_input
+            .value
+            .checked_sub(payout)
+            .ok_or(AmountUnderflowError)?
+            .checked_sub(fee)
+            .ok_or(AmountUnderflowError)?;
+        // Push treasury inputs
+        assert!(tx.input.is_empty());
+        let consolidated_ctip_input = bitcoin::TxIn {
+            previous_output: consolidated_ctip_input.outpoint,
+            ..Default::default()
+        };
+        tx.input.push(consolidated_ctip_input);
+        for unconsolidated_ctip_input in unconsolidated_ctip_inputs {
+            treasury_output_value += unconsolidated_ctip_input.value;
+            let unconsolidated_ctip_input = bitcoin::TxIn {
+                previous_output: unconsolidated_ctip_input.outpoint,
+                ..Default::default()
+            };
+            tx.input.push(unconsolidated_ctip_input);
+        }
         // Push treasury output
         let treasury_output = {
-            let value = treasury_value
-                .checked_sub(payout)
-                .ok_or(AmountUnderflowError)?
-                .checked_sub(fee)
-                .ok_or(AmountUnderflowError)?;
             bitcoin::TxOut {
                 script_pubkey: op_drivechain.script(sidechain_number),
-                value,
+                value: treasury_output_value,
             }
         };
         *first_output = treasury_output;
-        // Push treasury input
-        assert!(tx.input.is_empty());
-        let treasury_input = bitcoin::TxIn {
-            previous_output: treasury_outpoint,
-            ..Default::default()
-        };
-        tx.input.push(treasury_input);
         Ok(tx)
     }
 }

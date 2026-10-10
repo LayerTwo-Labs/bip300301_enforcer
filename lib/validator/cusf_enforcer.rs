@@ -25,7 +25,8 @@ use crate::{
     validator::{
         Validator,
         task::{
-            self, BlockHandler, ValidatedTx, error::ValidateTransaction as ValidateTransactionError,
+            self, BlockHandler, PartiallyConnectedBlockInfo, UnconsolidatedCtips, ValidatedTx,
+            error::ValidateTransaction as ValidateTransactionError,
         },
     },
 };
@@ -145,6 +146,41 @@ enum RejectReason {
     },
 }
 
+/// Used to specify commit/dry-run modes
+trait ConnectBlockMode<'validator>: Sized {
+    type Output;
+    /// Carried from finishing the child rwtxn to finishing the parent
+    type Accepted;
+
+    fn connect_block(
+        self,
+        validator: &'validator Validator,
+        block: &Block,
+    ) -> Result<Self::Output, ConnectBlockError>;
+
+    /// The block was accepted in `child_rwtxn`. Commit or abort it.
+    fn finish_child(
+        self,
+        child_rwtxn: RwTxn<'_>,
+        event: Event,
+        remove_mempool_txs: HashSet<Txid>,
+    ) -> Result<Self::Accepted, ConnectBlockError>;
+
+    /// Commit or abort the parent rwtxn, once the child is finished.
+    fn finish_parent(
+        validator: &'validator Validator,
+        parent_rwtxn: RwTxn<'_>,
+        accepted: Self::Accepted,
+    ) -> Result<Self::Output, ConnectBlockError>;
+
+    /// The block was rejected. `header_rwtxn` holds its header, if newly
+    /// stored.
+    fn reject(
+        header_rwtxn: RwTxn<'_>,
+        reason: RejectReason,
+    ) -> Result<Self::Output, ConnectBlockError>;
+}
+
 /// Connect a block, leaving `mode` to commit or abort the result.
 /// The block connect happens in a child rwtxn nested in the rwtxn that
 /// stores its header, so that in commit mode a rejected block still keeps
@@ -206,41 +242,6 @@ where
             Mode::reject(parent_rwtxn, RejectReason::ConnectBlock(jfyi))
         }
     }
-}
-
-/// Used to specify commit/dry-run modes
-trait ConnectBlockMode<'validator>: Sized {
-    type Output;
-    /// Carried from finishing the child rwtxn to finishing the parent
-    type Accepted;
-
-    fn connect_block(
-        self,
-        validator: &'validator Validator,
-        block: &Block,
-    ) -> Result<Self::Output, ConnectBlockError>;
-
-    /// The block was accepted in `child_rwtxn`. Commit or abort it.
-    fn finish_child(
-        self,
-        child_rwtxn: RwTxn<'_>,
-        event: Event,
-        remove_mempool_txs: HashSet<Txid>,
-    ) -> Result<Self::Accepted, ConnectBlockError>;
-
-    /// Commit or abort the parent rwtxn, once the child is finished.
-    fn finish_parent(
-        validator: &'validator Validator,
-        parent_rwtxn: RwTxn<'_>,
-        accepted: Self::Accepted,
-    ) -> Result<Self::Output, ConnectBlockError>;
-
-    /// The block was rejected. `header_rwtxn` holds its header, if newly
-    /// stored.
-    fn reject(
-        header_rwtxn: RwTxn<'_>,
-        reason: RejectReason,
-    ) -> Result<Self::Output, ConnectBlockError>;
 }
 
 /// Used to implement `ConnectBlockMode`.
@@ -510,6 +511,51 @@ impl Validator {
                 };
 
                 (conflicts_with, BMM_ACCEPT_OUTPUT_WEIGHT)
+            } else if tx.output.iter().any(|out| {
+                self.network_params
+                    .op_drivechain
+                    .parse(out.script_pubkey.as_bytes())
+                    .is_ok()
+            }) {
+                // M5 txs may require another tx to consolidate CTIPs.
+                // Unfortunately, this rule also applies to M6 txs, which
+                // never create unconsolidated CTIPs.
+
+                /// Weight, in wu, of the Ctip consolidation (M5) tx that block
+                /// production appends for an unconsolidated Ctip.
+                const M5_CONSOLIDATE_TX_WEIGHT: i64 = {
+                    let version_size = 4;
+                    let txin_size = {
+                        let outpoint_size = 36;
+                        let script_sig_size = 1;
+                        let sequence_size = 4;
+                        let witness_size = 1;
+                        outpoint_size + script_sig_size + sequence_size + witness_size
+                    };
+                    let vin_size = {
+                        let max_prefix_size_increase = 4;
+                        max_prefix_size_increase + (2 * txin_size)
+                    };
+                    let txout_size = {
+                        let value_size = 4;
+                        let spk_size = {
+                            let prefix_size = 1;
+                            let script_size = 4;
+                            prefix_size + script_size
+                        };
+                        value_size + spk_size
+                    };
+                    let vout_size = {
+                        let max_prefix_size_increase = 4;
+                        max_prefix_size_increase + txout_size
+                    };
+                    let tx_size = version_size
+                        + bitcoin::absolute::LockTime::SIZE as i64
+                        + vin_size
+                        + vout_size;
+                    tx_size * bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR as i64
+                };
+                (HashSet::new(), M5_CONSOLIDATE_TX_WEIGHT)
             } else {
                 (HashSet::new(), 0)
             };
@@ -520,6 +566,72 @@ impl Validator {
         };
         Ok((res, payout))
     }
+}
+
+fn partial_connect_block_dry_run<F, Output>(
+    validator: &Validator,
+    block: &Block,
+    f: F,
+) -> Result<Result<Output, RejectReason>, ConnectBlockError>
+where
+    F: FnOnce(&RoTxn<'_>, PartiallyConnectedBlockInfo) -> Output,
+{
+    let block_hash = block.block_hash();
+    let parent = block.header.prev_blockhash;
+    let mut parent_rwtxn = validator.dbs.write_txn()?;
+    if !validator
+        .dbs
+        .block_hashes
+        .contains_header(&parent_rwtxn, &block_hash)?
+    {
+        let height = if parent == BlockHash::all_zeros() {
+            0
+        } else if let Some(parent_height) = validator
+            .dbs
+            .block_hashes
+            .height()
+            .try_get(&parent_rwtxn, &parent)?
+        {
+            parent_height + 1
+        } else {
+            let reject_reason = RejectReason::MissingParentHeight { block_hash, parent };
+            tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reject_reason));
+            parent_rwtxn.abort();
+            return Ok(Err(reject_reason));
+        };
+        tracing::trace!("Storing header");
+        validator
+            .dbs
+            .block_hashes
+            .put_headers(&mut parent_rwtxn, &[(block.header, height)])?;
+    }
+    let mut child_rwtxn = validator.dbs.nested_write_txn(&mut parent_rwtxn)?;
+    let handler = BlockHandler::new(&validator.dbs, validator.network, validator.network_params);
+    match handler
+        .partial_connect_block(&mut child_rwtxn, block)
+        .map_err(task::error::ConnectBlock::from)
+        .into_nested()?
+    {
+        Ok(partially_connected_block_info) => {
+            let res = f(&child_rwtxn, partially_connected_block_info);
+            child_rwtxn.abort();
+            parent_rwtxn.abort();
+            Ok(Ok(res))
+        }
+        Err(jfyi) => {
+            child_rwtxn.abort();
+            let reject_reason = RejectReason::ConnectBlock(jfyi);
+            tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reject_reason));
+            parent_rwtxn.abort();
+            Ok(Err(reject_reason))
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Ctips {
+    pub consolidated: HashMap<SidechainNumber, Ctip>,
+    pub unconsolidated: UnconsolidatedCtips,
 }
 
 #[derive(Debug, Error)]
@@ -535,19 +647,26 @@ pub(crate) enum GetCtipsAfterError {
 pub(crate) fn get_ctips_after(
     validator: &Validator,
     block: &Block,
-) -> Result<Result<HashMap<SidechainNumber, Ctip>, String>, GetCtipsAfterError> {
-    match ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, _> {
-        validator
-            .dbs
-            .active_sidechains
-            .ctip()
-            .iter(rotxn)
-            .map_err(db::error::Iter::Init)?
-            .collect()
-            .map_err(db::error::Iter::Item)
-    })
-    .connect_block(validator, block)?
-    {
+) -> Result<Result<Ctips, String>, GetCtipsAfterError> {
+    match partial_connect_block_dry_run(
+        validator,
+        block,
+        |rotxn, partially_connected_block_info| -> Result<_, GetCtipsAfterError> {
+            let unconsolidated = partially_connected_block_info.unconsolidated_ctips;
+            let consolidated = validator
+                .dbs
+                .active_sidechains
+                .ctip()
+                .iter(rotxn)
+                .map_err(db::error::Iter::Init)?
+                .collect()
+                .map_err(db::error::Iter::Item)?;
+            Ok(Ctips {
+                consolidated,
+                unconsolidated,
+            })
+        },
+    )? {
         Ok(ctips) => Ok(Ok(ctips?)),
         Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
     }
@@ -597,6 +716,8 @@ mod tests {
             types::{Ctip, Event, SidechainNumber},
             validator::{
                 Validator,
+                cusf_enforcer::RejectReason,
+                task::error,
                 test_utils::{
                     TestBlockParts, build_m5_deposit_tx, build_test_block, dummy_validator,
                     test_sidechain,
@@ -639,17 +760,12 @@ mod tests {
             build_test_block(BlockHash::all_zeros(), TestBlockParts::default())
         }
 
-        /// Deposits without spending the tracked CTIP
+        /// Deposits without consolidating the created CTIP
         fn rejected_block() -> Block {
             build_test_block(
                 BlockHash::all_zeros(),
                 TestBlockParts {
-                    extra_txs: vec![build_m5_deposit_tx(
-                        SIDECHAIN,
-                        OutPoint::default(),
-                        Amount::from_sat(5_000),
-                        Amount::from_sat(1_000),
-                    )],
+                    extra_txs: vec![build_m5_deposit_tx(SIDECHAIN, Amount::from_sat(1_000))],
                     ..Default::default()
                 },
             )
@@ -765,11 +881,13 @@ mod tests {
             let reason = ConnectBlockDryRun(|_: &RoTxn<'_>| ())
                 .connect_block(&validator, &block)?
                 .expect_err("block must be rejected");
-
-            let reason = format!("{:#}", crate::errors::ErrorChain::new(&reason));
-            assert!(
-                reason.contains("Old Ctip for sidechain 1 is unspent"),
-                "unexpected rejection reason `{reason}`"
+            std::assert_matches!(
+                reason,
+                RejectReason::ConnectBlock(error::JfyiConnectBlock::Finalize(
+                    error::FinalizeConnectBlock::UnconsolidatedCtip { .. }
+                )),
+                "unexpected rejection reason `{:#}`",
+                crate::errors::ErrorChain::new(&reason)
             );
             assert_eq!(tip(&validator)?, None);
             assert!(

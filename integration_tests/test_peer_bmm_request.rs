@@ -272,7 +272,6 @@ async fn test_peer_bmm_request_task(mut post_setup: PostSetup) -> anyhow::Result
         height: tip_height,
         work: _,
         timestamp: _,
-        ..
     } = post_setup
         .sender
         .validator_service_client
