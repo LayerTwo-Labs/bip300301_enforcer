@@ -667,6 +667,27 @@ pub async fn wait_for_block_templates(
     .await
 }
 
+/// Where the enforcer logs runs that end before the node's chain is known.
+pub fn enforcer_fallback_log_dir(enforcer_dir: &Path) -> PathBuf {
+    enforcer_dir.join("logs")
+}
+
+/// The enforcer's per-chain log directories, `<fork>/<chain>/logs`.
+pub fn enforcer_log_dirs(enforcer_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut log_dirs = Vec::new();
+    for fork_dir in std::fs::read_dir(enforcer_dir)? {
+        let fork_dir = fork_dir?.path();
+        if !fork_dir.is_dir() {
+            continue;
+        }
+        for chain_dir in std::fs::read_dir(&fork_dir)? {
+            log_dirs.push(chain_dir?.path().join("logs"));
+        }
+    }
+    log_dirs.retain(|log_dir| log_dir.is_dir());
+    Ok(log_dirs)
+}
+
 /// Concatenate the enforcer's rolling log files.
 ///
 /// Not `stdout.txt`: that only holds the run the harness spawned most recently,
@@ -676,18 +697,19 @@ pub async fn wait_for_block_templates(
 /// Errors if there is no content yet, so callers polling for a line get a
 /// "not yet" rather than silently matching against an empty string.
 pub fn read_enforcer_log(enforcer_dir: &std::path::Path) -> anyhow::Result<String> {
-    let log_dir = enforcer_dir.join("logs");
     let mut combined = String::new();
-    for entry in std::fs::read_dir(&log_dir)? {
-        let path = entry?.path();
-        if path.is_file() {
-            combined.push_str(&std::fs::read_to_string(&path)?);
+    for log_dir in enforcer_log_dirs(enforcer_dir)? {
+        for entry in std::fs::read_dir(&log_dir)? {
+            let path = entry?.path();
+            if path.is_file() {
+                combined.push_str(&std::fs::read_to_string(&path)?);
+            }
         }
     }
     anyhow::ensure!(
         !combined.is_empty(),
         "no enforcer log content found in {}",
-        log_dir.display()
+        enforcer_dir.display()
     );
     Ok(combined)
 }

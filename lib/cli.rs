@@ -64,12 +64,8 @@ fn get_data_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-// Sub-par location for the log file.
-// https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
 const LOG_FILENAME: &str = "bip300301_enforcer.log";
 
-// Sub-par location for the log dir.
-// https://github.com/LayerTwo-Labs/bip300301_enforcer/issues/133
 const DEFAULT_LOG_DIRNAME: &str = "logs";
 
 /// Possible formats for log output.
@@ -231,7 +227,8 @@ pub struct LoggerConfig {
     #[arg(long = "max-log-file-size-mb", default_value_t = 100)]
     pub max_log_file_size_mb: u64,
 
-    /// Log file directory.
+    /// Log file directory. Defaults to `logs` under the node's `<fork>/<chain>`
+    /// in the data dir.
     #[arg(long = "log-directory")]
     directory: Option<PathBuf>,
     /// Log file rotation frequency.
@@ -724,14 +721,20 @@ impl Config {
         }
     }
 
-    pub fn log_dir(&self) -> PathBuf {
-        self.logger_opts
-            .directory
-            .clone()
-            .unwrap_or(self.data_dir.join(DEFAULT_LOG_DIRNAME))
+    /// Without a `chain_data_dir`, for runs that end before the node's chain
+    /// is known, the default is under the data dir itself.
+    pub fn log_dir(&self, chain_data_dir: Option<&Path>) -> PathBuf {
+        self.logger_opts.directory.clone().unwrap_or_else(|| {
+            chain_data_dir
+                .unwrap_or(&self.data_dir)
+                .join(DEFAULT_LOG_DIRNAME)
+        })
     }
 
-    pub fn rolling_log_appender(&self) -> Result<RollingFileAppender, RollingLoggerError> {
+    pub fn rolling_log_appender(
+        &self,
+        dir: &Path,
+    ) -> Result<RollingFileAppender, RollingLoggerError> {
         let rotation = Rotation::from(self.logger_opts.rotation)
             .with_max_bytes(self.logger_opts.max_log_file_size_mb * 1024 * 1024);
 
@@ -743,9 +746,7 @@ impl Config {
             builder = builder.filename_suffix(log_filename_suffix);
         }
 
-        builder
-            .build(self.log_dir())
-            .map_err(RollingLoggerError::Init)
+        builder.build(dir).map_err(RollingLoggerError::Init)
     }
 }
 

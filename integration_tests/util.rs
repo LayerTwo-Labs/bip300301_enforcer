@@ -1121,12 +1121,18 @@ pub fn enforcer_output(enforcer_dir: &std::path::Path) -> anyhow::Result<Vec<(Pa
         enforcer_dir.join("stdout.txt"),
         enforcer_dir.join("stderr.txt"),
     ];
-    let log_dir = enforcer_dir.join("logs");
-    if log_dir.is_dir() {
-        for entry in std::fs::read_dir(&log_dir)? {
-            let path = entry?.path();
-            if path.is_file() {
-                paths.push(path);
+    if enforcer_dir.is_dir() {
+        let fallback_log_dir = crate::setup::enforcer_fallback_log_dir(enforcer_dir);
+        let log_dirs = crate::setup::enforcer_log_dirs(enforcer_dir)?;
+        for log_dir in log_dirs
+            .into_iter()
+            .chain(fallback_log_dir.is_dir().then_some(fallback_log_dir))
+        {
+            for entry in std::fs::read_dir(&log_dir)? {
+                let path = entry?.path();
+                if path.is_file() {
+                    paths.push(path);
+                }
             }
         }
     }
