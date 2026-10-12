@@ -32,16 +32,6 @@ pub const BITCOIND_ARGS: [&str; 1] = ["-zmqpubsequencehwm=1"];
 /// step.
 const MAX_CONSECUTIVE_RESYNCS: usize = 5;
 
-/// The enforcer writes to `<enforcer_dir>/logs/bip300301_enforcer.log.<date>.N`.
-fn read_enforcer_log(post_setup: &PostSetup) -> anyhow::Result<String> {
-    let logs_dir = post_setup.directories.enforcer_dir.join("logs");
-    let mut out = String::new();
-    for entry in std::fs::read_dir(&logs_dir)? {
-        out.push_str(&std::fs::read_to_string(entry?.path())?);
-    }
-    Ok(out)
-}
-
 pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<()> {
     integration_test::fund_enforcer::<DummySidechain>(&mut post_setup).await?;
 
@@ -98,7 +88,12 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
     wait_until_every(
         "the enforcer to recover from the ZMQ sequence gap",
         WAIT_POLL_INTERVAL_SLOW,
-        || async { Ok(read_enforcer_log(&post_setup)?.contains("recoverably")) },
+        || async {
+            Ok(
+                crate::setup::read_enforcer_log(&post_setup.directories.enforcer_dir)?
+                    .contains("recoverably"),
+            )
+        },
     )
     .await?;
     // Settle before counting recoveries below: once the enforcer has followed
@@ -141,9 +136,10 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
     // `get_chain_info` is served from the validator's local database, so the
     // enforcer keeps answering for a while after bitcoind disappears. Serving
     // therefore says nothing about whether the sync task is retrying.
-    let resyncs_before_stop = read_enforcer_log(&post_setup)?
-        .matches("recoverably")
-        .count();
+    let resyncs_before_stop =
+        crate::setup::read_enforcer_log(&post_setup.directories.enforcer_dir)?
+            .matches("recoverably")
+            .count();
 
     let _stop_output: String = post_setup
         .bitcoind_client
@@ -159,7 +155,7 @@ pub async fn test_zmq_sequence_gap(mut post_setup: PostSetup) -> anyhow::Result<
         Mode::NoMempool => MAX_CONSECUTIVE_RESYNCS + 1,
         Mode::Mempool | Mode::GetBlockTemplate => 1,
     };
-    let log = read_enforcer_log(&post_setup)?;
+    let log = crate::setup::read_enforcer_log(&post_setup.directories.enforcer_dir)?;
     let resyncs = log.matches("recoverably").count();
     anyhow::ensure!(
         resyncs <= resyncs_before_stop + budget,

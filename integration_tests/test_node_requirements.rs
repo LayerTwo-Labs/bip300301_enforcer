@@ -2,7 +2,8 @@
 //! full block data the enforcer needs, or that are not the build it was told
 //! to expect:
 //!
-//! * A node whose fork contradicts `--fork` is refused at startup.
+//! * A node whose fork contradicts `--fork` is refused at startup, logging to
+//!   the data dir's fallback log directory since no chain was resolved.
 //! * A pruned node (`-prune`) is refused at startup with a clear error; the
 //!   enforcer requires full block data from its sync start onwards, which a
 //!   pruned node cannot reliably provide.
@@ -760,6 +761,21 @@ pub async fn test_fork_mismatch(setup: PreSetup) -> anyhow::Result<()> {
     anyhow::ensure!(
         enforcer_output.contains(&format!("`--fork={wrong_fork}` does not match the node")),
         "expected the enforcer to refuse `--fork={wrong_fork}`"
+    );
+    let enforcer_dir = &setup.directories.enforcer_dir;
+    let fallback_log_dir = crate::setup::enforcer_fallback_log_dir(enforcer_dir);
+    let mut fallback_log = String::new();
+    for entry in std::fs::read_dir(&fallback_log_dir)? {
+        fallback_log.push_str(&std::fs::read_to_string(entry?.path())?);
+    }
+    anyhow::ensure!(
+        fallback_log.contains("Starting up bip300301_enforcer"),
+        "expected the startup lines in {}",
+        fallback_log_dir.display()
+    );
+    anyhow::ensure!(
+        crate::setup::enforcer_log_dirs(enforcer_dir)?.is_empty(),
+        "no chain was resolved, so no per-chain log directory should exist"
     );
     Ok(())
 }

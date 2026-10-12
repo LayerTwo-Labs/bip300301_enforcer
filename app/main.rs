@@ -1654,15 +1654,9 @@ async fn main() -> Result<()> {
     }));
 
     let (cli, arg_matches) = cli::Config::parse_with_matches();
-    // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
-    let _tracing_guard = logging::set_tracing_subscriber(
-        cli.log_formatter(),
-        cli.logger_opts.level,
-        cli.rolling_log_appender()?,
-    )?;
+    let mut file_log = logging::set_tracing_subscriber(&cli)?;
     tracing::info!(
         data_dir = %cli.data_dir.display(),
-        log_dir = %cli.log_dir().display(),
         git_hash = cli.git_hash(),
         build = if cfg!(debug_assertions) { "debug" } else { "release" },
         "Starting up bip300301_enforcer",
@@ -1875,6 +1869,11 @@ async fn main() -> Result<()> {
         .join(network_params.data_dir(info.chain, signet_challenge.as_deref()));
     let validator_data_dir = chain_data_dir.join("validator");
     let wallet_data_dir = chain_data_dir.join("wallet");
+    let () = file_log.open(Some(&chain_data_dir))?;
+    tracing::info!(
+        log_dir = %cli.log_dir(Some(&chain_data_dir)).display(),
+        "Writing log files"
+    );
 
     // Ensure that the data directories exists
     for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
