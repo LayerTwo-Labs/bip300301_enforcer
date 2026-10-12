@@ -11,7 +11,6 @@ use bip300301_enforcer_lib::{
     cli::{self, WalletSyncSource},
     errors::ErrorChain,
     node_checks,
-    p2p::compute_signet_magic,
     proto::{
         crypto_service::{CRYPTO_SERVICE_SERVICE_NAME, CryptoServiceExt},
         mainchain_service::{
@@ -21,11 +20,10 @@ use bip300301_enforcer_lib::{
         },
     },
     rpc_client, server,
-    types::NetworkParams,
+    types::{Fork, NetworkParams},
     validator::{SyncStateSummary, Validator, main_rest_client::MainRestClient},
     version, wallet,
 };
-use bitcoin::ScriptBuf;
 use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
 use connectrpc::Router;
 use connectrpc_health::{HealthExt, HealthService, StaticChecker};
@@ -107,23 +105,6 @@ where
             method: "getblocktemplate".to_string(),
             error: err,
         })
-}
-
-/// Resolve the message-start bytes used by Bitcoin Core's block files.
-///
-/// An explicit CLI override remains the escape hatch for rebranded node
-/// builds. Otherwise a signet challenge is authoritative: Bitcoin Core
-/// derives that chain's magic from the challenge, so the stock signet magic
-/// is only correct for the standard challenge. Non-signet presets retain
-/// their configured magic.
-fn resolve_block_file_network_magic(
-    preset_magic: Option<[u8; 4]>,
-    explicit_magic: Option<[u8; 4]>,
-    signet_challenge: Option<&bitcoin::Script>,
-) -> Option<[u8; 4]> {
-    explicit_magic
-        .or_else(|| signet_challenge.map(|challenge| compute_signet_magic(challenge).to_bytes()))
-        .or(preset_magic)
 }
 
 #[derive(Clone, Debug)]
@@ -1810,6 +1791,19 @@ async fn main() -> Result<()> {
         );
     }
 
+    let detected_fork = Fork::detect(&detected_version.subversion);
+    let fork = match cli.fork {
+        None => detected_fork,
+        Some(fork) if (fork == Fork::Ecash) == (detected_fork == Fork::Ecash) => fork,
+        Some(fork) => {
+            return Err(miette!(
+                "`--fork={fork}` does not match the node, which detects as `{detected_fork}` from \
+                 its user agent `{}`",
+                detected_version.subversion
+            ));
+        }
+    };
+
     // The enforcer syncs full block data from its last processed block
     // (genesis, on a first run), so a pruned node can never reliably serve
     // it. Refuse up front with a clear error, instead of dying mid-sync on
@@ -1825,13 +1819,9 @@ async fn main() -> Result<()> {
         // We cannot verify that there's one specific signet challenge being used here,
         // because the user might want to run their own signet. However, if they're on
         // the standard signet, they're doing something wrong.
-        let standard_signet_challenge = {
-            const STANDARD_SIGNET_CHALLENGE_HEX: &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae";
-            ScriptBuf::from_hex(STANDARD_SIGNET_CHALLENGE_HEX)
-                .expect("standard signet challenge is invalid")
-        };
-
-        if signet_challenge == standard_signet_challenge {
+        if fork == Fork::Bitcoin
+            && bip300301_enforcer_lib::p2p::is_default_signet_challenge(&signet_challenge)
+        {
             #[derive(Debug, Diagnostic, Error)]
             #[error(
                 "You're trying to run the enforcer against the standard signet chain! This is not what you want."
@@ -1853,61 +1843,38 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Resolve BIP300 thresholds + enforcement activation height: from the
-    // explicit --network-preset if given, otherwise from the node's network.
-    let mut network_params = match cli.network_preset {
-        Some(preset) => {
-            let params = preset.params();
-            tracing::info!(
-                ?preset,
-                bip300_activation_height = params.bip300_activation_height,
-                thresholds = ?params.thresholds,
-                "Applying network parameter preset"
-            );
-            params
-        }
-        None => NetworkParams::for_network(info.chain),
-    };
-    // An explicit `--network-magic` wins over every other source. On signet,
-    // derive the block-file prefix from the node's challenge; on other
-    // networks, retain the selected preset's optional override.
-    network_params.network_magic = resolve_block_file_network_magic(
-        network_params.network_magic,
-        cli.network_magic,
-        signet_challenge.as_deref(),
-    );
+    let mut network_params = NetworkParams::new(fork, info.chain, signet_challenge.as_deref());
     if let Some(magic) = cli.network_magic {
+        network_params.network_magic = Some(magic);
         tracing::info!(
             network_magic = %bitcoin::p2p::Magic::from_bytes(magic),
             "Overriding network magic"
         );
-    } else if signet_challenge.is_some() {
+    }
+    if let Some(height) = cli.bip300_activation_height {
+        network_params.bip300_activation_height = height;
         tracing::info!(
-            network_magic = %bitcoin::p2p::Magic::from_bytes(
-                network_params
-                    .network_magic
-                    .expect("a signet challenge always derives network magic")
-            ),
-            "Derived network magic from signet challenge"
+            bip300_activation_height = height,
+            "Overriding BIP300/301 activation height"
         );
     }
-    if let Some(op_drivechain) = cli.op_drivechain {
-        network_params.op_drivechain = op_drivechain.into();
-        tracing::info!(
-            op_drivechain = %network_params.op_drivechain.opcode(),
-            "Overriding OP_DRIVECHAIN opcode"
-        );
-    }
+    tracing::info!(
+        %fork,
+        bip300_activation_height = network_params.bip300_activation_height,
+        thresholds = ?network_params.thresholds,
+        network_magic = %network_params
+            .network_magic
+            .map_or_else(|| info.chain.magic(), bitcoin::p2p::Magic::from_bytes),
+        op_drivechain = %network_params.op_drivechain.opcode(),
+        replay_protection_lock_time = ?network_params.replay_protection_lock_time,
+        "Resolved network parameters"
+    );
 
-    // Both wallet data and validator data are stored under the same root
-    // directory. Add a subdirectories to clearly indicate which
-    // is which. Presets get their own namespace (e.g. `main-alphanet`)
-    let chain_dir_name = match network_params.datadir_suffix {
-        Some(suffix) => format!("{}-{}", info.chain, suffix),
-        None => info.chain.to_string(),
-    };
-    let validator_data_dir = cli.data_dir.join("validator").join(&chain_dir_name);
-    let wallet_data_dir = cli.data_dir.join("wallet").join(&chain_dir_name);
+    let chain_data_dir = cli
+        .data_dir
+        .join(network_params.data_dir(info.chain, signet_challenge.as_deref()));
+    let validator_data_dir = chain_data_dir.join("validator");
+    let wallet_data_dir = chain_data_dir.join("wallet");
 
     // Ensure that the data directories exists
     for data_dir in [validator_data_dir.clone(), wallet_data_dir.clone()] {
@@ -1982,7 +1949,7 @@ async fn main() -> Result<()> {
         // TODO: should actually move away from needing txindex, but that's for another day.
         let () = node_checks::check_txindex(&mainchain_client).await?;
 
-        // Make sure to pass custom network magic bytes from the network preset, if present
+        // Make sure to pass custom network magic bytes from the fork, if present
         let magic = match network_params.network_magic {
             Some(magic) => bitcoin::p2p::Magic::from_bytes(magic),
             None => info.chain.magic(),
@@ -2309,13 +2276,11 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::ScriptBuf;
     use futures::channel::oneshot;
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        connect_service, gbt_rpc_middleware, resolve_block_file_network_magic,
-        wait_for_error_or_shutdown, with_connect_middleware,
+        connect_service, gbt_rpc_middleware, wait_for_error_or_shutdown, with_connect_middleware,
     };
 
     /// Install a global subscriber that is interested in everything and
@@ -2570,42 +2535,6 @@ mod tests {
                 "{expected:?} not in: {logged_response}"
             );
         }
-    }
-
-    #[test]
-    fn derives_block_file_magic_from_signet_challenge() {
-        let challenge = ScriptBuf::from_bytes(vec![0x51]);
-        let derived = bip300301_enforcer_lib::p2p::compute_signet_magic(&challenge).to_bytes();
-
-        assert_eq!(
-            resolve_block_file_network_magic(
-                Some([0x01, 0x02, 0x03, 0x04]),
-                None,
-                Some(&challenge),
-            ),
-            Some(derived),
-            "the challenge is authoritative over a preset on signet"
-        );
-    }
-
-    #[test]
-    fn explicit_block_file_magic_overrides_signet_derivation() {
-        let challenge = ScriptBuf::from_bytes(vec![0x51]);
-        let explicit = [0xaa, 0xbb, 0xcc, 0xdd];
-
-        assert_eq!(
-            resolve_block_file_network_magic(None, Some(explicit), Some(&challenge)),
-            Some(explicit)
-        );
-    }
-
-    #[test]
-    fn retains_preset_magic_without_a_signet_challenge() {
-        let preset = [0x01, 0x02, 0x03, 0x04];
-        assert_eq!(
-            resolve_block_file_network_magic(Some(preset), None, None),
-            Some(preset)
-        );
     }
 
     /// The mempool sync task holds the error sender for as long as it lives, so

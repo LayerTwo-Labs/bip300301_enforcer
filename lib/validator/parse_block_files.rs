@@ -1096,26 +1096,6 @@ mod tests {
         );
     }
 
-    /// The override is what the fork presets supply, so preset and build must
-    /// agree on the mainnet-chain magic. A preset carrying the wrong bytes
-    /// would fail to parse a real fork node's block files.
-    #[test]
-    fn fork_presets_carry_their_rebranded_magic() {
-        assert_eq!(
-            crate::types::NetworkParams::alphanet().network_magic,
-            Some([0xec, 0xa5, 0xa1, 0x04]),
-        );
-        assert_eq!(
-            crate::types::NetworkParams::betanet().network_magic,
-            Some([0xec, 0xa5, 0xb1, 0x04]),
-        );
-        // Non-preset runs keep the stock magic for their chain.
-        assert_eq!(
-            crate::types::NetworkParams::for_network(Network::Bitcoin).network_magic,
-            None
-        );
-    }
-
     // This block is not fully downloaded and processed by the machine syncing Core which it originated from,
     // which is why the TX count and file pos information is incorrect.
     #[test]

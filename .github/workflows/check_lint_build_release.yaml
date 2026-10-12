@@ -192,7 +192,9 @@ jobs:
             fi
             MAGIC=$(./scripts/setup_integration_tests.sh --print-regtest-magic "$channel")
             OP_DRIVECHAIN=$(./scripts/setup_integration_tests.sh --print-op-drivechain "$channel")
-            ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $channel\",\"ecash\":\"$channel\",\"regtest_magic\":\"$MAGIC\",\"op_drivechain\":\"$OP_DRIVECHAIN\"}"
+            REPLAY_LOCK_TIME=$(./scripts/setup_integration_tests.sh --print-replay-protection-lock-time "$channel")
+            FORK=$(./scripts/setup_integration_tests.sh --print-fork "$channel")
+            ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $channel\",\"ecash\":\"$channel\",\"regtest_magic\":\"$MAGIC\",\"op_drivechain\":\"$OP_DRIVECHAIN\",\"replay_protection_lock_time\":\"$REPLAY_LOCK_TIME\",\"fork\":\"$FORK\"}"
           done
           for v in $VERSIONS; do
             ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
@@ -430,10 +432,11 @@ jobs:
           # Bitcoin Core. Tests that pair nodes read this and run every node
           # on the rebranded build, passing the magic to the enforcer.
           export BITCOIND_REGTEST_MAGIC='${{ matrix.regtest_magic }}'
-          # A build that moved OP_DRIVECHAIN (betanet) is named to every
-          # enforcer the harness spawns, and to the tests that hand-build
-          # treasury outputs.
+          # A build that moved OP_DRIVECHAIN (betanet) is named to the tests
+          # that hand-build treasury outputs.
           export BITCOIND_OP_DRIVECHAIN='${{ matrix.op_drivechain }}'
+          export BITCOIND_REPLAY_PROTECTION_LOCK_TIME='${{ matrix.replay_protection_lock_time }}'
+          export BITCOIND_FORK='${{ matrix.fork }}'
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND="$BITCOIND_UNPATCHED"
             skips=()

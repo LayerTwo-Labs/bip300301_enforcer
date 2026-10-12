@@ -12,7 +12,7 @@ use thiserror::Error;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format as tracing_format;
 
-use crate::types::{NetworkParams, OpDrivechain};
+use crate::types::Fork;
 
 const DEFAULT_NODE_RPC_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 18443));
@@ -291,49 +291,6 @@ pub struct NodeRpcConfig {
     pub pass: Option<SecretString>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
-pub enum NetworkPreset {
-    /// Alphanet: mainnet fork at block 963648. Hours-scale thresholds
-    Alphanet,
-    /// Betanet: mainnet fork at block 967680. Mainnet-scale
-    /// thresholds, with unused slots activating at 51%
-    Betanet,
-    /// Integration-test-only preset: SHORT thresholds with BIP300/301
-    /// activating at height 10, so tests can exercise the activation-height
-    /// machinery on a fresh chain. Hidden from --help
-    #[value(hide = true)]
-    TestActivation,
-}
-
-impl NetworkPreset {
-    pub const fn params(self) -> NetworkParams {
-        match self {
-            Self::Alphanet => NetworkParams::alphanet(),
-            Self::Betanet => NetworkParams::betanet(),
-            Self::TestActivation => NetworkParams::test_activation(),
-        }
-    }
-}
-
-/// The opcode the node's build reserves for `OP_DRIVECHAIN`, see
-/// [`OpDrivechain`].
-#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
-pub enum OpDrivechainOpcode {
-    /// OP_NOP5 (0xb4): BIP300, and every build up to alphanet
-    Nop5,
-    /// OP_NOP8 (0xb7): betanet
-    Nop8,
-}
-
-impl From<OpDrivechainOpcode> for OpDrivechain {
-    fn from(opcode: OpDrivechainOpcode) -> Self {
-        match opcode {
-            OpDrivechainOpcode::Nop5 => Self::NOP5,
-            OpDrivechainOpcode::Nop8 => Self::NOP8,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, ValueEnum)]
 pub enum WalletSyncSource {
     /// Communicates over the Electrum protocol.
@@ -476,25 +433,24 @@ pub struct Config {
     pub node_rpc_opts: NodeRpcConfig,
     #[command(flatten)]
     pub node_blocks_dir_opts: NodeBlocksDirConfig,
-    /// Apply a network parameter preset By default parameters derive from the
-    /// node's reported network.
+    /// The fork the node is on. Detected from the node's user agent if unset,
+    /// defaulting to bitcoin. Only `ecash` is detectable: alphanet and betanet
+    /// nodes report the same user agent as Bitcoin Core, so they must be named
+    /// explicitly or they run with Bitcoin's parameters, including no replay
+    /// protection.
     #[arg(long, value_enum)]
-    pub network_preset: Option<NetworkPreset>,
+    pub fork: Option<Fork>,
     /// P2P message-start bytes as hex, e.g. `eca5d404`. Overrides the value
-    /// from `--network-preset` and automatic signet-challenge derivation.
+    /// from `--fork` and signet-challenge derivation.
     //
-    // Hidden because a preset is the intended way to get this. This CLI opt is
-    // only needed for tests and dev purposes.
+    // Hidden: only needed for tests and dev purposes.
     #[arg(long, value_parser = parse_network_magic, hide = true)]
     pub network_magic: Option<[u8; 4]>,
-    /// The opcode the node's build reserves for `OP_DRIVECHAIN`. Overrides the
-    /// value from `--network-preset` or the node's reported network.
+    /// Overrides the BIP300/301 activation height.
     //
-    // Hidden for the same reason as `--network-magic`: a preset is the
-    // intended way to get this. Only the integration tests run a build that
-    // moved the opcode on a chain without a preset.
-    #[arg(long, value_enum, hide = true)]
-    pub op_drivechain: Option<OpDrivechainOpcode>,
+    // Hidden: lets integration tests exercise activation on a fresh chain.
+    #[arg(long, hide = true)]
+    pub bip300_activation_height: Option<u32>,
     /// Bitcoin node ZMQ endpoint for `sequence`. If not set, we try to find
     /// it via `bitcoin-cli getzmqnotifications`.
     #[arg(long)]
@@ -795,51 +751,22 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory as _, Parser as _, ValueEnum as _, parser::ValueSource};
+    use clap::{CommandFactory as _, Parser as _, parser::ValueSource};
 
     use super::{
-        Config, NetworkPreset, REDACTED, SecretString, UNSET, is_secret_arg,
-        redact_embedded_credentials,
+        Config, REDACTED, SecretString, UNSET, is_secret_arg, redact_embedded_credentials,
     };
-    use crate::types::OpDrivechain;
 
-    /// Each preset's `--network-preset` spelling reaches the parameters it
-    /// names, activation height included.
+    /// `--network-magic` overrides every automatic source, since a forked
+    /// build may rebrand the magic independently of `--fork`.
     #[test]
-    fn network_presets_parse_to_their_params() {
-        let params = |value: &str| {
-            Config::try_parse_from(["bip300301_enforcer", &format!("--network-preset={value}")])
-                .unwrap_or_else(|err| panic!("--network-preset={value} did not parse: {err}"))
-                .network_preset
-                .expect("--network-preset was given")
-                .params()
-        };
-        assert_eq!(params("alphanet").bip300_activation_height, 963_648);
-        assert_eq!(params("betanet").bip300_activation_height, 967_680);
-    }
-
-    /// `--network-magic` overrides every automatic/configured source, since a
-    /// forked build may rebrand the magic independently of the network preset
-    /// or signet challenge.
-    #[test]
-    fn network_magic_flag_overrides_the_preset() {
+    fn network_magic_flag_parses() {
         let parse = |args: &[&str]| {
             let mut argv = vec!["bip300301_enforcer"];
             argv.extend_from_slice(args);
             Config::try_parse_from(argv)
         };
 
-        // betanet's regtest bytes, which differ from the preset's mainnet ones.
-        let cli =
-            parse(&["--network-preset=betanet", "--network-magic=eca5b134"]).expect("should parse");
-        assert_eq!(cli.network_magic, Some([0xec, 0xa5, 0xb1, 0x34]));
-        assert_eq!(
-            cli.network_preset.unwrap().params().network_magic,
-            Some([0xec, 0xa5, 0xb1, 0x04]),
-            "the preset still carries its own value; main.rs is what prefers the flag"
-        );
-
-        // Usable without a preset at all — that is the regtest case.
         assert_eq!(
             parse(&["--network-magic=fabfb5da"])
                 .expect("should parse")
@@ -851,50 +778,6 @@ mod tests {
         assert!(parse(&["--network-magic=eca5d4"]).is_err());
         assert!(parse(&["--network-magic=eca5d40400"]).is_err());
         assert!(parse(&["--network-magic=nothex!!"]).is_err());
-    }
-
-    /// Betanet moved `OP_DRIVECHAIN`, and the integration tests run its
-    /// build on regtest, where no preset applies, so the harness names the
-    /// opcode directly. This only works while the flag keeps this spelling.
-    #[test]
-    fn op_drivechain_flag_overrides_the_network_default() {
-        let cli = Config::try_parse_from(["bip300301_enforcer", "--op-drivechain=nop8"])
-            .expect("should parse");
-        assert_eq!(
-            cli.op_drivechain.map(OpDrivechain::from),
-            Some(OpDrivechain::NOP8)
-        );
-        assert!(
-            Config::try_parse_from(["bip300301_enforcer", "--op-drivechain=nop6"]).is_err(),
-            "only opcodes some build actually reserves are accepted"
-        );
-        // The preset carries the same value, so a betanet run needs no flag.
-        assert_eq!(
-            NetworkPreset::Betanet.params().op_drivechain,
-            OpDrivechain::NOP8
-        );
-        assert_eq!(
-            NetworkPreset::Alphanet.params().op_drivechain,
-            OpDrivechain::NOP5
-        );
-    }
-
-    /// Presets share thresholds and even fork heights with each other, but
-    /// never a datadir suffix: that suffix is the only thing keeping one
-    /// preset's validator/wallet state out of another's, so a copy-pasted
-    /// one would silently mix two chains' databases.
-    #[test]
-    fn every_preset_has_a_distinct_datadir_suffix() {
-        let mut seen = std::collections::HashMap::new();
-        for preset in NetworkPreset::value_variants() {
-            let suffix = preset
-                .params()
-                .datadir_suffix
-                .unwrap_or_else(|| panic!("{preset:?} must namespace its datadir"));
-            if let Some(previous) = seen.insert(suffix, preset) {
-                panic!("{preset:?} and {previous:?} both use datadir suffix `{suffix}`");
-            }
-        }
     }
 
     /// The wallet's replay limit decides whether a gap is crossed one block

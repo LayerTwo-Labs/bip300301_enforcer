@@ -1095,16 +1095,6 @@ pub fn tests(
                 )
             });
 
-    let peer_bmm_request_trial: TestTrial = new_bespoke_trial(
-        test_peer_bmm_request::TEST_NAME,
-        bin_paths,
-        &file_registry,
-        &failure_collector,
-        {
-            let file_registry = file_registry.clone();
-            move |bin_paths| test_peer_bmm_request::test_peer_bmm_request(bin_paths, file_registry)
-        },
-    );
     let mut async_trials = vec![];
 
     async_trials.extend(deposit_withdraw_roundtrip_tests);
@@ -1132,7 +1122,21 @@ pub fn tests(
             test_zmq_sequence_gap::test_zmq_sequence_gap,
         )
     }));
-    async_trials.push(peer_bmm_request_trial);
+    async_trials.extend([Network::Regtest, Network::Signet].map(|network| {
+        new_bespoke_trial(
+            test_peer_bmm_request::trial_name(network),
+            bin_paths,
+            &file_registry,
+            &failure_collector,
+            {
+                let file_registry = file_registry.clone();
+                move |bin_paths| {
+                    test_peer_bmm_request::test_peer_bmm_request(bin_paths, network, file_registry)
+                }
+            },
+        )
+        .with_network(network)
+    }));
     // A deposit that has to survive Bitcoin Core's relay policy to reach the
     // node that mines it. Standardness is enforced on both networks.
     async_trials.extend([Network::Regtest, Network::Signet].map(|network| {
@@ -1395,6 +1399,19 @@ pub fn tests(
         },
         crate::test_consecutive_deposits::test_consecutive_deposits,
     ));
+    for mode in [Mode::GetBlockTemplate, Mode::Mempool] {
+        async_trials.push(new_trial_with_setup(
+            format!("replay_protection (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_replay_protection::test_replay_protection,
+        ));
+    }
 
     // Use `new_trial`: they arrange special node states (assumeutxo snapshot
     // load, pruning) before starting the enforcer by hand.
@@ -1430,6 +1447,17 @@ pub fn tests(
             failure_collector: failure_collector.clone(),
         },
         crate::test_node_requirements::test_pruned_node,
+    ));
+    async_trials.push(new_trial(
+        "fork_mismatch".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_node_requirements::test_fork_mismatch,
     ));
 
     async_trials.push(new_trial_with_setup(

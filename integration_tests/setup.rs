@@ -1,8 +1,13 @@
 //! Setup for an integration test
 
 use std::{
-    borrow::Borrow, collections::HashMap, ffi::OsStr, future::Future, net::SocketAddr,
-    path::PathBuf, sync::LazyLock,
+    borrow::Borrow,
+    collections::HashMap,
+    ffi::OsStr,
+    future::Future,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use anyhow::anyhow;
@@ -18,7 +23,7 @@ use bip300301_enforcer_lib::{
             WalletServiceClient,
         },
     },
-    types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
+    types::{BlindedM6, BlindedM6Error, Fork, M6id, SidechainNumber},
 };
 use bitcoin::{Address, BlockHash, Txid};
 use connectrpc::{
@@ -91,7 +96,13 @@ impl SignetSetup {
         )?;
         let (signet_challenge, signet_challenge_addr) =
             crate::signet_chain_params::signet_challenge(&cpk);
-        let signet_magic = bip300301_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
+        let fork = match bitcoind_fork() {
+            None => Fork::Bitcoin,
+            Some(name) => <Fork as clap::ValueEnum>::from_str(&name, false)
+                .map_err(|err| anyhow!("invalid BITCOIND_FORK `{name}`: {err}"))?,
+        };
+        let signet_magic =
+            bip300301_enforcer_lib::p2p::compute_signet_magic(fork, &signet_challenge);
         tracing::info!(
             signet_challenge = %hex::encode(signet_challenge.as_bytes()),
             %signet_magic,
@@ -1084,15 +1095,36 @@ pub fn bitcoind_regtest_magic() -> Option<String> {
         .filter(|magic| !magic.is_empty())
 }
 
-/// The opcode the bitcoind under test reserves for `OP_DRIVECHAIN`, as the
-/// enforcer's `--op-drivechain` spells it (`nop5` or `nop8`). Unset for
-/// builds that follow BIP300. Every enforcer the harness spawns gets it as
-/// that flag; [`op_drivechain`] resolves it for tests that build treasury
-/// scripts by hand.
+/// The opcode the bitcoind under test reserves for `OP_DRIVECHAIN` (`nop5`
+/// or `nop8`). Unset for builds that follow BIP300. [`op_drivechain`]
+/// resolves it for tests that build treasury scripts by hand.
 pub fn bitcoind_op_drivechain() -> Option<String> {
     std::env::var("BITCOIND_OP_DRIVECHAIN")
         .ok()
         .filter(|opcode| !opcode.is_empty())
+}
+
+/// The `--fork` of the eCash build under test, if any. Every enforcer the
+/// harness spawns gets it as that flag.
+pub fn bitcoind_fork() -> Option<String> {
+    std::env::var("BITCOIND_FORK")
+        .ok()
+        .filter(|fork| !fork.is_empty())
+}
+
+/// The enforcer's regtest wallet directory, laid out as `app/main.rs` does.
+pub fn enforcer_regtest_wallet_dir(enforcer_dir: &Path) -> PathBuf {
+    enforcer_dir
+        .join(bitcoind_fork().as_deref().unwrap_or("bitcoin"))
+        .join("regtest")
+        .join("wallet")
+}
+
+/// The eCash build's replay-protection `nLockTime`, if any.
+pub fn bitcoind_replay_protection_lock_time() -> Option<String> {
+    std::env::var("BITCOIND_REPLAY_PROTECTION_LOCK_TIME")
+        .ok()
+        .filter(|lock_time| !lock_time.is_empty())
 }
 
 pub fn op_drivechain() -> anyhow::Result<bip300301_enforcer_lib::types::OpDrivechain> {

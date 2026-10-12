@@ -1,6 +1,8 @@
 //! How the enforcer behaves against Bitcoin Core nodes that cannot serve the
-//! full block data the enforcer needs:
+//! full block data the enforcer needs, or that are not the build it was told
+//! to expect:
 //!
+//! * A node whose fork contradicts `--fork` is refused at startup.
 //! * A pruned node (`-prune`) is refused at startup with a clear error; the
 //!   enforcer requires full block data from its sync start onwards, which a
 //!   pruned node cannot reliably provide.
@@ -149,6 +151,14 @@ struct SpawnedEnforcer {
 
 /// Start a fresh (empty data dir) wallet-less enforcer against `bitcoind`.
 fn spawn_enforcer(setup: &PreSetup, bitcoind: &Bitcoind) -> anyhow::Result<SpawnedEnforcer> {
+    spawn_enforcer_with_args(setup, bitcoind, &[])
+}
+
+fn spawn_enforcer_with_args(
+    setup: &PreSetup,
+    bitcoind: &Bitcoind,
+    args: &[String],
+) -> anyhow::Result<SpawnedEnforcer> {
     let enforcer = Enforcer {
         path: setup.bin_paths.bip300301_enforcer()?.clone(),
         data_dir: setup.directories.enforcer_dir.clone(),
@@ -168,12 +178,12 @@ fn spawn_enforcer(setup: &PreSetup, bitcoind: &Bitcoind) -> anyhow::Result<Spawn
         wallet_electrum_http_port: 0,
     };
     let (res_tx, res_rx) = mpsc::unbounded::<anyhow::Result<()>>();
-    let task = enforcer.spawn_command_with_args::<_, String, _, _, _>(
+    let task = enforcer.spawn_command_with_args::<_, _, _, _, _>(
         [(
             "RUST_LOG",
             "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
         )],
-        [],
+        args,
         move |err| {
             let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
         },
@@ -198,12 +208,16 @@ fn read_enforcer_output(setup: &PreSetup) -> anyhow::Result<String> {
 
 /// Start a fresh wallet-less enforcer against `bitcoind`, wait for the
 /// process to exit, and return its combined stdout/stderr.
-async fn run_enforcer_until_exit(setup: &PreSetup, bitcoind: &Bitcoind) -> anyhow::Result<String> {
+async fn run_enforcer_until_exit(
+    setup: &PreSetup,
+    bitcoind: &Bitcoind,
+    args: &[String],
+) -> anyhow::Result<String> {
     let SpawnedEnforcer {
         enforcer: _,
         _task,
         mut res_rx,
-    } = spawn_enforcer(setup, bitcoind)?;
+    } = spawn_enforcer_with_args(setup, bitcoind, args)?;
 
     let exit_err = tokio::time::timeout(ENFORCER_EXIT_TIMEOUT, res_rx.next())
         .await
@@ -541,7 +555,7 @@ pub async fn test_pruned_node(setup: PreSetup) -> anyhow::Result<()> {
         .request("generatetoaddress", rpc_params![10, UNSPENDABLE_ADDRESS])
         .await?;
 
-    let enforcer_output = run_enforcer_until_exit(&setup, &bitcoind).await?;
+    let enforcer_output = run_enforcer_until_exit(&setup, &bitcoind, &[]).await?;
     anyhow::ensure!(
         enforcer_output.contains("Bitcoin Core node has pruning enabled"),
         "expected the startup pruning check to refuse the node with a clear error"
@@ -727,4 +741,25 @@ pub async fn test_assumeutxo_enforcer_above_snapshot_base(setup: PreSetup) -> an
             res.expect_err("enforcer task only reports errors")
         ),
     }
+}
+
+/// `--fork` naming a different build than the node's user agent reveals is
+/// refused at startup. Only eCash renames its user agent, so name `ecash` on
+/// any other build and `bitcoin` on eCash.
+pub async fn test_fork_mismatch(setup: PreSetup) -> anyhow::Result<()> {
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let (bitcoind, _bitcoind_task, bitcoind_client) = spawn_bitcoind(&setup, &[], res_tx)?;
+    let () = wait_for_bitcoind_ready(&bitcoind_client).await?;
+
+    let wrong_fork = match crate::setup::bitcoind_fork().as_deref() {
+        Some("ecash") => "bitcoin",
+        _ => "ecash",
+    };
+    let enforcer_output =
+        run_enforcer_until_exit(&setup, &bitcoind, &[format!("--fork={wrong_fork}")]).await?;
+    anyhow::ensure!(
+        enforcer_output.contains(&format!("`--fork={wrong_fork}` does not match the node")),
+        "expected the enforcer to refuse `--fork={wrong_fork}`"
+    );
+    Ok(())
 }
