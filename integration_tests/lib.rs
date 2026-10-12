@@ -24,6 +24,7 @@ mod test_node_requirements;
 mod test_p2p_send_tx;
 mod test_peer_bmm_request;
 mod test_peer_deposit_relay;
+mod test_replay_protection;
 mod test_rest_disabled;
 mod test_seed_migration;
 mod test_sidechain_ack_policy;

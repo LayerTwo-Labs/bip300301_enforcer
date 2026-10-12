@@ -1049,11 +1049,6 @@ impl Enforcer {
             format!("--serve-grpc-addr=127.0.0.1:{}", self.serve_grpc_port),
             format!("--serve-rpc-addr=127.0.0.1:{}", self.serve_rpc_port),
         ];
-        // A build that moved OP_DRIVECHAIN has to be named on a chain without
-        // a preset, or the enforcer would not recognise its treasury outputs.
-        if let Some(op_drivechain) = crate::setup::bitcoind_op_drivechain() {
-            default_args.push(format!("--op-drivechain={op_drivechain}"));
-        }
 
         if let Some(node_blocks_dir) = &self.node_blocks_dir {
             default_args.push(format!("--node-blocks-dir={}", node_blocks_dir.display()));
@@ -1089,10 +1084,18 @@ impl Enforcer {
             default_args.push(format!("--coinbase-recipient={coinbase_recipient}"));
         }
 
-        let args = default_args
+        let args: Vec<OsString> = args
             .into_iter()
-            .map(OsString::from)
-            .chain(args.into_iter().map(|arg| arg.as_ref().to_owned()));
+            .map(|arg| arg.as_ref().to_owned())
+            .collect();
+        let names_fork = args
+            .iter()
+            .any(|arg| arg.to_string_lossy().starts_with("--fork"));
+        if !names_fork && let Some(fork) = crate::setup::bitcoind_fork() {
+            default_args.push(format!("--fork={fork}"));
+        }
+
+        let args = default_args.into_iter().map(OsString::from).chain(args);
         spawn_command_with_args(&self.data_dir, self.path.clone(), envs, args, err_handler)
     }
 }

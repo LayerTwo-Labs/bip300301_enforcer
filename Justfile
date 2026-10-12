@@ -62,7 +62,7 @@ fmt:
 # Run integration tests. `--bitcoind` selects the Bitcoin Core build
 # (default: bitcoin-patched): bitcoin-patched, unpatched (newest stock),
 # stock-X.Y (a specific stock release), alphanet or betanet (the rolling
-# ecash-com/bitcoin branch builds), or all (every flavor in the CI matrix,
+# ecash-com/bitcoin branch builds), mainnet (the latest eCash release), or all (every flavor in the CI matrix,
 # continuing past failures); remaining args go to the test runner.
 # 
 # Some flavors skip tests that cannot pass on them. Naming a flavor *and* a

@@ -38,28 +38,45 @@ fi
 BITCOIN_VERSION="${ALL_BITCOIN_VERSIONS%%$'\n'*}"
 ELECTRS_VERSION="v3.2.0"
 PATCHED_REVISION="latest"
-# Rolling builds of ecash-com/bitcoin branches, published on releases.ecash.com
-# on every push to them. Tested alongside bitcoin-patched so that L1 changes
-# which break the enforcer surface here. scripts/fetch_ecash_bitcoin.sh
-# downloads and provenance-checks them; CI reads this list via
-# `--print-channels`.
-ECASH_CHANNELS="alphanet betanet"
+# Builds of ecash-com/bitcoin published on releases.ecash.com: alphanet and
+# betanet roll with their branches, mainnet follows eCash's release tags.
+# Tested alongside bitcoin-patched so that L1 changes which break the enforcer
+# surface here. scripts/fetch_ecash_bitcoin.sh downloads and provenance-checks
+# them; CI reads this list via `--print-channels`.
+ECASH_CHANNELS="alphanet betanet mainnet"
 
 # Regtest P2P magic of an ecash build, empty when it uses the stock bytes.
 ecash_regtest_magic() {
     case "$1" in
-        alphanet) echo "eca5a134" ;;
-        betanet)  echo "eca5b134" ;;
-        *)        echo "" ;;
+        alphanet)          echo "eca5a134" ;;
+        betanet | mainnet) echo "eca5b134" ;;
+        *)                 echo "" ;;
     esac
 }
 
-# The opcode an ecash build reserves for OP_DRIVECHAIN, as the enforcer's
-# `--op-drivechain` spells it; empty when it uses BIP300's OP_NOP5.
+# The opcode an ecash build reserves for OP_DRIVECHAIN; empty when it uses
+# BIP300's OP_NOP5.
 ecash_op_drivechain() {
     case "$1" in
-        betanet) echo "nop8" ;;
-        *)       echo "" ;;
+        betanet | mainnet) echo "nop8" ;;
+        *)                 echo "" ;;
+    esac
+}
+
+# An ecash build's `--fork`.
+ecash_fork() {
+    case "$1" in
+        mainnet) echo "ecash" ;;
+        *)       echo "ecash-$1" ;;
+    esac
+}
+
+# An ecash build's replay-protection nLockTime.
+ecash_replay_protection_lock_time() {
+    case "$1" in
+        alphanet | betanet) echo "499999999" ;;
+        mainnet) echo "499999998" ;;
+        *) echo "" ;;
     esac
 }
 
@@ -97,6 +114,18 @@ fi
 # Likewise for an ecash build's OP_DRIVECHAIN opcode.
 if [ "${1:-}" = '--print-op-drivechain' ]; then
     ecash_op_drivechain "${2:?--print-op-drivechain needs a flavor}"
+    exit 0
+fi
+
+# Likewise for its `--fork`.
+if [ "${1:-}" = '--print-fork' ]; then
+    ecash_fork "${2:?--print-fork needs a flavor}"
+    exit 0
+fi
+
+# Likewise for its replay-protection nLockTime.
+if [ "${1:-}" = '--print-replay-protection-lock-time' ]; then
+    ecash_replay_protection_lock_time "${2:?--print-replay-protection-lock-time needs a flavor}"
     exit 0
 fi
 
@@ -221,11 +250,15 @@ write_env_file() {
     local regtest_magic="${4:-}"
     local signet_chain_dir="${5:-$SIGNET_CHAIN_DIR}"
     local op_drivechain="${6:-}"
+    local replay_protection_lock_time="${7:-}"
+    local fork="${8:-}"
     cat > "$env_file" <<EOF
 BIP300301_ENFORCER='target/debug/bip300301_enforcer'
 BITCOIND='$bins_dir/bitcoind'
 BITCOIND_OP_DRIVECHAIN='$op_drivechain'
 BITCOIND_REGTEST_MAGIC='$regtest_magic'
+BITCOIND_FORK='$fork'
+BITCOIND_REPLAY_PROTECTION_LOCK_TIME='$replay_protection_lock_time'
 BITCOIND_UNPATCHED='$unpatched_dir/bitcoind'
 ELECTRS='$ELECTRS_BIN'
 SIGNET_CHAIN_DIR='$signet_chain_dir'
@@ -238,7 +271,8 @@ write_env_file "$REPO_ROOT/integrationtests.env" "$PATCHED_DIR" "$UNPATCHED_DIR"
 write_env_file "$REPO_ROOT/integrationtests.unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR"
 for channel in $ECASH_CHANNELS; do
     write_env_file "$REPO_ROOT/integrationtests.$channel.env" "$(ecash_dir "$channel")" "$UNPATCHED_DIR" \
-        "$(ecash_regtest_magic "$channel")" "$(ecash_signet_chain_dir "$channel")" "$(ecash_op_drivechain "$channel")"
+        "$(ecash_regtest_magic "$channel")" "$(ecash_signet_chain_dir "$channel")" "$(ecash_op_drivechain "$channel")" \
+        "$(ecash_replay_protection_lock_time "$channel")" "$(ecash_fork "$channel")"
 done
 for v in $ALL_BITCOIN_VERSIONS; do
     STOCK_DIR="$DEPS_DIR/bitcoin-stock-$v"
@@ -246,4 +280,4 @@ for v in $ALL_BITCOIN_VERSIONS; do
 done
 
 echo "Deps cache: $DEPS_DIR"
-echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|alphanet|betanet|all]"
+echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|alphanet|betanet|mainnet|all]"

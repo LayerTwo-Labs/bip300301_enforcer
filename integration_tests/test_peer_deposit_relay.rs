@@ -104,17 +104,10 @@ impl PreSetup {
         self,
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> anyhow::Result<PostSetup> {
-        // The nodes agree on the magic by being the same build; the enforcers
-        // are told it only to keep their view of the chain consistent with
-        // their node.
-        let magic_args: Vec<String> = crate::setup::bitcoind_regtest_magic()
-            .iter()
-            .map(|magic| format!("--network-magic={magic}"))
-            .collect();
-        let setup_opts = || SetupOpts {
+        // The nodes agree on the magic by being the same build.
+        let setup_opts = || SetupOpts::<String, String> {
             bitcoind_args: vec!["-debug=mempool".to_owned(), "-debug=net".to_owned()],
             bitcoind_kind: BitcoindKind::Patched,
-            enforcer_args: magic_args.clone(),
             ..Default::default()
         };
         // Signet is only mineable through the enforcer's template server, so

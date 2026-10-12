@@ -1114,7 +1114,8 @@ impl Wallet {
         sidechain_ctip: Option<&Ctip>,
         fee: Option<Amount>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateDepositPsbt> {
-        let op_drivechain = self.validator().network_params().op_drivechain;
+        let network_params = self.validator().network_params();
+        let op_drivechain = network_params.op_drivechain;
         let sidechain_number =
             match op_drivechain.parse(op_drivechain_output.script_pubkey.as_bytes()) {
                 Ok((_, sidechain_number)) => sidechain_number,
@@ -1153,6 +1154,10 @@ impl Wallet {
             tokio::task::block_in_place(|| {
                 wallet_write.with_mut(|wallet| {
                     let mut builder = wallet.build_tx();
+                    Self::apply_replay_protection(
+                        &mut builder,
+                        network_params.replay_protection_lock_time,
+                    );
                     builder
                         // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
                         .add_recipient(
@@ -1567,9 +1572,11 @@ impl Wallet {
         wallet: &mut bdk_wallet::Wallet,
         destinations: HashMap<bitcoin::Address, Amount>,
         params: CreateTransactionParams,
+        replay_protection_lock_time: Option<u32>,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateSendPsbt> {
         let mut timestamp = Instant::now();
         let mut builder = wallet.build_tx();
+        Self::apply_replay_protection(&mut builder, replay_protection_lock_time);
 
         if let Some(op_return_message) = params.op_return_message {
             let op_return_output = Self::create_op_return_output(op_return_message)?;
@@ -1650,10 +1657,32 @@ impl Wallet {
         destinations: HashMap<bitcoin::Address, Amount>,
         params: CreateTransactionParams,
     ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateSendPsbt> {
+        let replay_protection_lock_time = self
+            .validator()
+            .network_params()
+            .replay_protection_lock_time;
         let mut wallet_write = self.inner.write_wallet().await?;
         tokio::task::block_in_place(|| {
-            wallet_write.with_mut(|wallet| Self::build_send_psbt(wallet, destinations, params))
+            wallet_write.with_mut(|wallet| {
+                Self::build_send_psbt(wallet, destinations, params, replay_protection_lock_time)
+            })
         })
+    }
+
+    /// Stamp the replay-protection `nLockTime`, with non-final inputs so it
+    /// is enforced.
+    fn apply_replay_protection<Cs>(
+        builder: &mut bdk_wallet::TxBuilder<'_, Cs>,
+        replay_protection_lock_time: Option<u32>,
+    ) {
+        let Some(lock_time) = replay_protection_lock_time else {
+            return;
+        };
+        let lock_time = bdk_wallet::bitcoin::absolute::LockTime::from_height(lock_time)
+            .expect("replay-protection nLockTime is validated as a block height");
+        builder
+            .nlocktime(lock_time)
+            .set_exact_sequence(bdk_wallet::bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME);
     }
 
     /// Creates a transaction, sends it, and returns the TXID.
@@ -2385,6 +2414,7 @@ mod tests {
                     op_return_message: Some(message.clone()),
                     ..Default::default()
                 },
+                None,
             )
             .unwrap();
 
