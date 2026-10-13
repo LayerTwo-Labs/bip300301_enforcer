@@ -9,13 +9,22 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Deps live at the primary worktree so all worktrees of this clone share them.
 # `git rev-parse --git-common-dir` returns the primary worktree's .git regardless
 # of which worktree we're invoked from.
-GIT_COMMON_DIR="$(cd "$REPO_ROOT" && git rev-parse --git-common-dir)"
-case "$GIT_COMMON_DIR" in
-    /*) ;;
-    *)  GIT_COMMON_DIR="$REPO_ROOT/$GIT_COMMON_DIR" ;;
-esac
-DEPS_ROOT="$(cd "$GIT_COMMON_DIR/.." && pwd)"
-DEPS_DIR="$DEPS_ROOT/.integration-deps"
+#
+# As a submodule, though, each worktree of the superproject gets its own
+# submodule git dir, so the common dir is per-worktree there. Superprojects
+# set INTEGRATION_DEPS_DIR to a location of their own to share deps anyway.
+if [ -n "${INTEGRATION_DEPS_DIR:-}" ]; then
+    mkdir -p "$INTEGRATION_DEPS_DIR"
+    DEPS_DIR="$(cd "$INTEGRATION_DEPS_DIR" && pwd)"
+else
+    GIT_COMMON_DIR="$(cd "$REPO_ROOT" && git rev-parse --git-common-dir)"
+    case "$GIT_COMMON_DIR" in
+        /*) ;;
+        *)  GIT_COMMON_DIR="$REPO_ROOT/$GIT_COMMON_DIR" ;;
+    esac
+    DEPS_ROOT="$(cd "$GIT_COMMON_DIR/.." && pwd)"
+    DEPS_DIR="$DEPS_ROOT/.integration-deps"
+fi
 
 # Stock Bitcoin Core version to download as BITCOIND_UNPATCHED. Derived from
 # CI_BITCOIN_CORE_VERSIONS in lib/version.rs.
