@@ -92,21 +92,14 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     };
 
     // A bitcoind build that rebrands the P2P magic writes its own bytes as the
-    // per-block prefix in blk*.dat, so the parser has to be told which to
-    // expect. Without this the rebranded flavors cannot parse block files at all.
-    let mut enforcer_args = Vec::new();
-    if let Some(magic) = crate::setup::bitcoind_regtest_magic() {
-        tracing::info!("Node build uses a non-stock regtest magic: {magic}");
-        enforcer_args.push(format!("--network-magic={magic}"));
-    }
-
+    // per-block prefix in blk*.dat. The parser takes them from `--fork`.
     tracing::info!("Starting enforcer");
     let _enforcer_task = enforcer.spawn_command_with_args(
         [(
             "RUST_LOG",
             "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
         )],
-        enforcer_args,
+        Vec::<String>::new(),
         move |err| {
             let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
         },

@@ -1,4 +1,4 @@
-//! Verifies that a `--network-preset` BIP300/301 activation height cleanly
+//! Verifies that a BIP300/301 activation height cleanly
 //! gates enforcement: sidechain-proposal and sidechain-ACK RPCs are rejected
 //! while the next block is still below the activation height, and proposals
 //! become available one block before it — the earliest block whose coinbase
@@ -16,8 +16,8 @@
 //! sync log). The rest of the test then runs against that header-synced
 //! prefix, proving it supports the full activation lifecycle on top.
 //!
-//! Runs with the hidden `test-activation` preset; all preset parameters are
-//! learned over RPC via `GetChainInfo`, keeping the test black-box.
+//! Runs with the hidden `--bip300-activation-height`; the height is learned
+//! over RPC via `GetChainInfo`, keeping the test black-box.
 
 use bip300301_enforcer_lib::proto::{
     self,
@@ -42,10 +42,10 @@ use crate::{
 
 pub const TEST_NAME: &str = "activation_height";
 
-/// Args for every enforcer this test spawns, restarts included: the preset
-/// carries the activation height the whole test is built around.
+/// Args for every enforcer this test spawns, restarts included: the
+/// activation height the whole test is built around.
 fn enforcer_args() -> Vec<String> {
-    vec!["--network-preset=test-activation".to_owned()]
+    vec!["--bip300-activation-height=10".to_owned()]
 }
 
 async fn block_count(post_setup: &PostSetup) -> anyhow::Result<u32> {
@@ -85,8 +85,8 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
         .setup(Mode::GetBlockTemplate, setup_opts, res_tx.clone())
         .await?;
 
-    // Black box: learn the preset's parameters over RPC, like any client.
-    // This also verifies GetChainInfo reports the preset rather than the
+    // Black box: learn the activation height over RPC, like any client.
+    // This also verifies GetChainInfo reports the override rather than the
     // network defaults.
     let constants = post_setup
         .validator_service_client
@@ -99,7 +99,7 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
     let activation_height = constants.activation_height;
     anyhow::ensure!(
         activation_height > 0,
-        "test-activation preset must report a nonzero activation height"
+        "the override must report a nonzero activation height"
     );
 
     // Mine most of the pre-activation blocks while the enforcer is down. On
@@ -246,7 +246,7 @@ pub async fn test_activation_height(bin_paths: BinPaths) -> anyhow::Result<()> {
     );
 
     // And the rest of the machinery runs normally from here: activation
-    // needs strictly more acks than the preset's threshold.
+    // needs strictly more acks than the threshold.
     let acks = constants.unused_sidechain_slot_activation_threshold + 1;
     tracing::info!("Mining {acks} acked blocks to activate the sidechain");
     let () = mine::<DummySidechain>(&mut post_setup, acks, MiningPolicy::VOTE).await?;

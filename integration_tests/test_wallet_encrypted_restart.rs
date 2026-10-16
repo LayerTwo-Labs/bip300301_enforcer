@@ -37,13 +37,8 @@ const PASSWORD: &str = "correct horse battery staple";
 /// die before UnlockWallet can be called.
 const BLOCKS_WHILE_LOCKED: u32 = 3;
 
-/// The enforcer's seed file, laid out as `app/main.rs` does:
-/// `<data-dir>/wallet/<chain>`, with no datadir suffix on plain regtest.
 fn seed_path(enforcer_dir: &Path) -> PathBuf {
-    enforcer_dir
-        .join("wallet")
-        .join("regtest")
-        .join("seed.json")
+    crate::setup::enforcer_regtest_wallet_dir(enforcer_dir).join("seed.json")
 }
 
 /// Rewrite `seed.json` in place, replacing the plaintext mnemonic the harness

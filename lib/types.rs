@@ -104,79 +104,143 @@ impl Thresholds {
     }
 }
 
-/// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for the
-/// mainnet-fork presets, the height at which BIP 300/301 enforcement
-/// activates. Selected either implicitly from the node's reported network, or
-/// explicitly via `--network-preset` (one per fork).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum Fork {
+    Bitcoin,
+    EcashAlphanet,
+    EcashBetanet,
+    Ecash,
+}
+
+impl Fork {
+    /// Best-effort basis at detecting fork version
+    pub fn detect(subversion: &str) -> Self {
+        if subversion.starts_with("/eCash") {
+            Self::Ecash
+        } else {
+            Self::Bitcoin
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bitcoin => "bitcoin",
+            Self::EcashAlphanet => "ecash-alphanet",
+            Self::EcashBetanet => "ecash-betanet",
+            Self::Ecash => "ecash",
+        }
+    }
+}
+
+impl fmt::Display for Fork {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Resolved network parameters, from the node's fork and chain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetworkParams {
+    pub fork: Fork,
     pub thresholds: Thresholds,
-    /// Blocks strictly below this height are plain Bitcoin history: they are
-    /// recorded, but not scanned for BIP 300 messages or deposits. `0`
-    /// enforces from genesis.
+    /// Blocks strictly below this height are plain Bitcoin history.
+    /// `0` enforces from genesis.
     pub bip300_activation_height: u32,
-    /// Datadir namespace suffix (e.g. `main-alphanet`), so preset state never
-    /// collides with a non-preset enforcer datadir for the same chain.
-    pub datadir_suffix: Option<&'static str>,
     /// P2P message-start bytes.`None` means the stock magic for the
     /// reported network.
     pub network_magic: Option<[u8; 4]>,
     /// The opcode the node's build reserves for `OP_DRIVECHAIN`.
     pub op_drivechain: OpDrivechain,
+    /// `None` on Bitcoin.
+    pub replay_protection_lock_time: Option<u32>,
 }
 
 impl NetworkParams {
-    /// The non-preset defaults: thresholds from the network, enforcement
-    /// from genesis.
+    /// Bitcoin's parameters, without a signet's magic.
     pub const fn for_network(network: bitcoin::Network) -> Self {
         Self {
+            fork: Fork::Bitcoin,
             thresholds: Thresholds::for_network(network),
             bip300_activation_height: 0,
-            datadir_suffix: None,
             network_magic: None,
             op_drivechain: OpDrivechain::NOP5,
+            replay_protection_lock_time: None,
         }
     }
 
-    /// Alphanet: mainnet fork at the retarget boundary 963,648 (2016 × 478),
-    /// running [`Thresholds::ALPHANET`]. The build rebrands the P2P magic
-    /// instead of reusing mainnet's `f9beb4d9`, so its block files need the
-    /// override.
-    pub const fn alphanet() -> Self {
-        Self {
-            thresholds: Thresholds::ALPHANET,
-            bip300_activation_height: 963_648,
-            datadir_suffix: Some("alphanet"),
-            network_magic: Some([0xec, 0xa5, 0xa1, 0x04]),
-            op_drivechain: OpDrivechain::NOP5,
-        }
+    pub fn new(
+        fork: Fork,
+        network: bitcoin::Network,
+        signet_challenge: Option<&bitcoin::Script>,
+    ) -> Self {
+        let mut params = Self {
+            fork,
+            network_magic: signet_challenge
+                .map(|challenge| crate::p2p::compute_signet_magic(fork, challenge).to_bytes()),
+            ..Self::for_network(network)
+        };
+        // eCash builds rebrand every chain's magic to `eca5 <fork> <chain>`.
+        // eCash kept betanet's fork byte everywhere except mainnet.
+        let (op_drivechain, lock_time, fork_byte, mainnet) = match fork {
+            Fork::Bitcoin => return params,
+            Fork::EcashAlphanet => (
+                OpDrivechain::NOP5,
+                499_999_999,
+                0xa1,
+                (Thresholds::ALPHANET, 963_648, [0xec, 0xa5, 0xa1, 0x04]),
+            ),
+            Fork::EcashBetanet => (
+                OpDrivechain::NOP8,
+                499_999_999,
+                0xb1,
+                (Thresholds::BETANET, 967_680, [0xec, 0xa5, 0xb1, 0x04]),
+            ),
+            Fork::Ecash => (
+                OpDrivechain::NOP8,
+                499_999_998,
+                0xb1,
+                (Thresholds::MAINNET, 973_728, [0xec, 0xa5, 0xdc, 0xb7]),
+            ),
+        };
+        params.op_drivechain = op_drivechain;
+        params.replay_protection_lock_time = Some(lock_time);
+        params.network_magic = match network {
+            bitcoin::Network::Bitcoin => {
+                let (thresholds, bip300_activation_height, network_magic) = mainnet;
+                params.thresholds = thresholds;
+                params.bip300_activation_height = bip300_activation_height;
+                Some(network_magic)
+            }
+            bitcoin::Network::Signet => params.network_magic,
+            bitcoin::Network::Testnet => Some([0xec, 0xa5, fork_byte, 0x14]),
+            bitcoin::Network::Testnet4 => Some([0xec, 0xa5, fork_byte, 0x24]),
+            _ => Some([0xec, 0xa5, fork_byte, 0x34]),
+        };
+        params
     }
 
-    /// Betanet: the successor to [`Self::alphanet`], a mainnet fork at the
-    /// retarget boundary 967,680 (2016 × 480), trialing
-    /// [`Thresholds::BETANET`] at mainnet scale. The build rebrands the P2P
-    /// magic with `b1` in place of alphanet's `a1`, and moves `OP_DRIVECHAIN`
-    /// from `OP_NOP5` to `OP_NOP8`.
-    pub const fn betanet() -> Self {
-        Self {
-            thresholds: Thresholds::BETANET,
-            bip300_activation_height: 967_680,
-            datadir_suffix: Some("betanet"),
-            network_magic: Some([0xec, 0xa5, 0xb1, 0x04]),
-            op_drivechain: OpDrivechain::NOP8,
-        }
-    }
-
-    /// Integration-test parameters: a tiny activation height on a fresh
-    /// chain. See `NetworkPreset::TestActivation`.
-    pub const fn test_activation() -> Self {
-        Self {
-            thresholds: Thresholds::SHORT,
-            bip300_activation_height: 10,
-            datadir_suffix: Some("test-activation"),
-            network_magic: None,
-            op_drivechain: OpDrivechain::NOP5,
-        }
+    /// `<fork>/<chain>`. Like Bitcoin Core, a custom signet's directory is
+    /// suffixed with its magic.
+    pub fn data_dir(
+        &self,
+        network: bitcoin::Network,
+        signet_challenge: Option<&bitcoin::Script>,
+    ) -> std::path::PathBuf {
+        let chain = match network {
+            bitcoin::Network::Bitcoin => "mainnet".to_owned(),
+            bitcoin::Network::Testnet => "testnet3".to_owned(),
+            bitcoin::Network::Testnet4 => "testnet4".to_owned(),
+            bitcoin::Network::Signet => match (signet_challenge, self.network_magic) {
+                (Some(challenge), Some(magic))
+                    if !crate::p2p::is_default_signet_challenge(challenge) =>
+                {
+                    format!("signet_{}", hex::encode(magic))
+                }
+                _ => "signet".to_owned(),
+            },
+            _ => "regtest".to_owned(),
+        };
+        std::path::Path::new(self.fork.name()).join(chain)
     }
 }
 

@@ -4,6 +4,8 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use bitcoin::p2p::Magic;
 
+use crate::types::Fork;
+
 mod send_tx;
 
 pub const SIGNET_MAGIC_BYTES: [u8; 4] = [0xe4, 0x09, 0xe9, 0x68];
@@ -162,22 +164,37 @@ async fn send_to_first_reachable(
 }
 
 // https://github.com/kallewoof/bips/blob/master/bip-0325.mediawiki#message-start
-pub fn compute_signet_magic(signet_challenge: &bitcoin::Script) -> Magic {
+pub fn compute_signet_magic(fork: Fork, signet_challenge: &bitcoin::Script) -> Magic {
     use bitcoin::{
         consensus::{Encodable as _, encode::VarInt},
         hashes::{Hash as _, HashEngine as _, sha256d},
     };
+    // eCash applies a special tag first, to avoid collisions
+    let tag = (fork != Fork::Bitcoin).then_some("ecash");
     let mut hasher = sha256d::Hash::engine();
-    // Core derives the signet magic from `sha256d(CompactSize(len) || challenge)`
-    // (streaming the challenge vector writes a CompactSize length prefix), so
-    // encode the length with Bitcoin's CompactSize rather than a raw single byte,
-    // which would diverge (and wrap mod 256) for challenges >= 253 bytes.
-    VarInt(signet_challenge.len() as u64)
-        .consensus_encode(&mut hasher)
-        .expect("hash engine writes are infallible");
-    hasher.input(signet_challenge.as_bytes());
+    // Core streams strings and the challenge vector with a CompactSize length
+    // prefix, so encode lengths with Bitcoin's CompactSize rather than a raw
+    // single byte, which would diverge (and wrap mod 256) for challenges >= 253
+    // bytes.
+    for bytes in tag
+        .map(str::as_bytes)
+        .into_iter()
+        .chain([signet_challenge.as_bytes()])
+    {
+        VarInt(bytes.len() as u64)
+            .consensus_encode(&mut hasher)
+            .expect("hash engine writes are infallible");
+        hasher.input(bytes);
+    }
     let hash = sha256d::Hash::from_engine(hasher);
     Magic::from_bytes(hash[..=3].try_into().unwrap())
+}
+
+/// Whether `signet_challenge` is the default signet's.
+pub fn is_default_signet_challenge(signet_challenge: &bitcoin::Script) -> bool {
+    const DEFAULT_SIGNET_CHALLENGE_HEX: &str = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae";
+
+    hex::encode(signet_challenge.as_bytes()) == DEFAULT_SIGNET_CHALLENGE_HEX
 }
 
 #[cfg(test)]
@@ -191,7 +208,7 @@ mod tests {
             "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be43051ae",
         )
         .unwrap();
-        let magic = compute_signet_magic(signet_challenge.as_script());
+        let magic = compute_signet_magic(Fork::Bitcoin, signet_challenge.as_script());
         assert_eq!(magic, Magic::from_bytes([0x7e, 0xc6, 0x53, 0xa5]));
     }
 
@@ -200,7 +217,7 @@ mod tests {
     fn test_drivechain_magic() {
         let signet_challenge =
             bitcoin::ScriptBuf::from_hex("a91484fa7c2460891fe5212cb08432e21a4207909aa987").unwrap();
-        let magic = compute_signet_magic(signet_challenge.as_script());
+        let magic = compute_signet_magic(Fork::Bitcoin, signet_challenge.as_script());
         assert_eq!(magic, Magic::from_bytes([0xe4, 0x09, 0xe9, 0x68]));
     }
 
@@ -246,7 +263,7 @@ mod tests {
     #[test]
     fn test_long_challenge_magic_matches_core() {
         let signet_challenge = bitcoin::ScriptBuf::from_bytes(vec![0x51; 253]);
-        let magic = compute_signet_magic(signet_challenge.as_script());
+        let magic = compute_signet_magic(Fork::Bitcoin, signet_challenge.as_script());
         assert_eq!(magic, Magic::from_bytes([0xae, 0x28, 0x54, 0x78]));
     }
 }

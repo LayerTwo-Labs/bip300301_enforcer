@@ -59,13 +59,8 @@ const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon \
 
 pub async fn test_seed_migration(setup: PreSetup) -> anyhow::Result<()> {
     // Pre-populate the wallet data dir as a pre-split deployment would have
-    // left it. The path matches `app/main.rs`: `<data-dir>/wallet/<chain>`,
-    // with no datadir suffix on plain regtest.
-    let wallet_dir = setup
-        .directories
-        .enforcer_dir
-        .join("wallet")
-        .join("regtest");
+    // left it.
+    let wallet_dir = crate::setup::enforcer_regtest_wallet_dir(&setup.directories.enforcer_dir);
     std::fs::create_dir_all(&wallet_dir)?;
     {
         let conn = rusqlite::Connection::open(wallet_dir.join("db.sqlite"))?;

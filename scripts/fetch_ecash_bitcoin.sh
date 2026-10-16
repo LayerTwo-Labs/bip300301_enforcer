@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download a branch build of ecash-com/bitcoin from releases.ecash.com,
+# Download a build of ecash-com/bitcoin from releases.ecash.com,
 # verify its build provenance, and install bitcoind/bitcoin-cli/bitcoin-util.
 #
 # Usage: fetch_ecash_bitcoin.sh CHANNEL TARGET DEST_DIR
@@ -15,7 +15,8 @@
 # provenance.jsonl is the Sigstore bundle from actions/attest-build-provenance.
 # `gh attestation verify --bundle` needs no GitHub login: it checks that the
 # file's digest is attested by ecash-com/bitcoin's build-release workflow,
-# run on the channel branch at the commit release.json claims.
+# run at the commit release.json claims: on the channel branch, or for
+# mainnet, on the eCash release tag release.json names.
 
 set -euo pipefail
 
@@ -67,6 +68,22 @@ EXPECTED_SHA256="$(jq -er --arg name "$ZIP_NAME" \
 case "$COMMIT" in
     *[!0-9a-f]* | '') echo "release.json: bad commit '$COMMIT'" >&2; exit 1 ;;
 esac
+if [ "$CHANNEL" = mainnet ]; then
+    TAG="$(jq -er '.tag' "$TMP/release.json")" || {
+        echo "release.json: mainnet release names no tag" >&2
+        exit 1
+    }
+    case "$TAG" in
+        ecash-v[0-9]*) ;;
+        *) echo "release.json: '$TAG' is not an eCash release tag" >&2; exit 1 ;;
+    esac
+    case "$TAG" in
+        *[!A-Za-z0-9._-]*) echo "release.json: bad tag '$TAG'" >&2; exit 1 ;;
+    esac
+    SOURCE_REF="refs/tags/$TAG"
+else
+    SOURCE_REF="refs/heads/$CHANNEL"
+fi
 case "$RELEASE_PATH" in
     "$ECASH_PROJECT/$CHANNEL/"*) ;;
     *) echo "release.json: path '$RELEASE_PATH' is outside $ECASH_PROJECT/$CHANNEL/" >&2; exit 1 ;;
@@ -88,7 +105,7 @@ verify() {
         --bundle "$TMP/provenance.jsonl" \
         --repo "$ECASH_REPO" \
         --signer-workflow "$ECASH_REPO/.github/workflows/build-release.yml" \
-        --source-ref "refs/heads/$CHANNEL" \
+        --source-ref "$SOURCE_REF" \
         --source-digest "$COMMIT" \
         --deny-self-hosted-runners
 }
