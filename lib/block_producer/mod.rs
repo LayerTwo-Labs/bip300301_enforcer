@@ -448,7 +448,7 @@ impl BlockProducer {
                 };
                 (slot_number.into(), fake_ctip)
             }));
-            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips).await?;
+            let fake_suffix_txs = self.generate_suffix_txs(&fake_ctips, None).await?;
             template
                 .suffix_txs
                 .extend(fake_suffix_txs.into_iter().map(|tx| {
@@ -549,14 +549,20 @@ impl BlockProducer {
                         .chain(template.prefix_txs.iter().map(|(tx, _)| tx.clone()))
                         .collect(),
                 };
-                let ctips = crate::validator::cusf_enforcer::get_ctips_after(
+                // CTIPs and pending bundles from ONE dry run of coinbase +
+                // prefix: a prefix tx (e.g. an M6 from the mempool) may already
+                // have paid a bundle we hold, and a second M6 for it makes the
+                // block invalid.
+                let state_after = crate::validator::cusf_enforcer::get_sidechain_state_after(
                     &self.inner.validator,
                     &block,
                 )?
                 .map_err(|reason| {
                     error::FinalizeBlockTemplateInner::InitialBlockTemplate { reason }
                 })?;
-                let suffix_txs = self.generate_suffix_txs(&ctips).await?;
+                let suffix_txs = self
+                    .generate_suffix_txs(&state_after.ctips, Some(&state_after.pending_m6ids))
+                    .await?;
                 template
                     .suffix_txs
                     .extend(suffix_txs.into_iter().map(|tx| (tx, bitcoin::Amount::ZERO)));

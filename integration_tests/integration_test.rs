@@ -1329,6 +1329,19 @@ pub fn tests(
             crate::test_withdrawal_payout::test_stale_payout_after_reorg,
         )
     }));
+    async_trials.extend([Mode::Mempool, Mode::GetBlockTemplate].map(|mode| {
+        new_trial_with_setup(
+            format!("mempool_m6_for_a_held_bundle (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_withdrawal_payout::test_mempool_m6_for_a_held_bundle,
+        )
+    }));
     async_trials.push(new_trial_with_setup(
         "invalid_block".to_string(),
         TestSetupComponents {
