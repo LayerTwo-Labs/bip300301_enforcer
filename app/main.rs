@@ -1954,6 +1954,7 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
 
+    // Must be built before the validator starts syncing.
     let producer = BlockProducer::new(
         &wallet_data_dir,
         validator.clone(),

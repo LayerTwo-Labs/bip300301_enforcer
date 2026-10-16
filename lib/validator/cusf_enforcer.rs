@@ -23,7 +23,7 @@ use crate::{
     proto::mainchain::HeaderSyncProgress,
     types::{Ctip, Event, M6id, SidechainNumber},
     validator::{
-        Validator,
+        PendingM6ids, Validator,
         task::{
             self, BlockHandler, ValidatedTx, error::ValidateTransaction as ValidateTransactionError,
         },
@@ -523,32 +523,47 @@ impl Validator {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum GetCtipsAfterError {
+pub(crate) enum GetWithdrawalStateAfterError {
     #[error(transparent)]
     ConnectBlock(#[from] ConnectBlockError),
     #[error(transparent)]
     DbIter(#[from] db::error::Iter),
 }
 
-/// Get ctips after (speculatively) applying a block.
+/// Treasuries and pending withdrawal bundles, as of some block.
+pub(crate) struct WithdrawalState {
+    pub ctips: HashMap<SidechainNumber, Ctip>,
+    pub pending_withdrawals: HashMap<SidechainNumber, PendingM6ids>,
+}
+
+/// Get the withdrawal state after (speculatively) applying a block.
 /// Returns the rejection reason if the block would be rejected.
-pub(crate) fn get_ctips_after(
+pub(crate) fn get_withdrawal_state_after(
     validator: &Validator,
     block: &Block,
-) -> Result<Result<HashMap<SidechainNumber, Ctip>, String>, GetCtipsAfterError> {
-    match ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, _> {
-        validator
-            .dbs
-            .active_sidechains
+) -> Result<Result<WithdrawalState, String>, GetWithdrawalStateAfterError> {
+    match ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, db::error::Iter> {
+        let active_sidechains = &validator.dbs.active_sidechains;
+        let ctips = active_sidechains
             .ctip()
             .iter(rotxn)
             .map_err(db::error::Iter::Init)?
             .collect()
-            .map_err(db::error::Iter::Item)
+            .map_err(db::error::Iter::Item)?;
+        let pending_withdrawals = active_sidechains
+            .pending_m6ids()
+            .iter(rotxn)
+            .map_err(db::error::Iter::Init)?
+            .collect()
+            .map_err(db::error::Iter::Item)?;
+        Ok(WithdrawalState {
+            ctips,
+            pending_withdrawals,
+        })
     })
     .connect_block(validator, block)?
     {
-        Ok(ctips) => Ok(Ok(ctips?)),
+        Ok(state) => Ok(Ok(state?)),
         Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
     }
 }
