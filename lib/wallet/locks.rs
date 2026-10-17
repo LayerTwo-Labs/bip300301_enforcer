@@ -58,6 +58,9 @@ pub(in crate::wallet) type FullScanGuard<'a> = tokio::sync::MutexGuard<'a, ()>;
 /// The full scan slot, the BDK wallet, and its persistence, which must
 /// always be taken in that order.
 pub(in crate::wallet) struct WalletLocks {
+    /// Invalidates network snapshots on every possible wallet mutation,
+    /// including wallet replacement and upgradable/full-scan access.
+    revision: std::sync::atomic::AtomicU64,
     /// Held for the duration of a full scan. Outermost of the three: a scan
     /// takes this before the wallet lock, and nothing takes it while a wallet
     /// guard is held.
@@ -76,6 +79,7 @@ pub(in crate::wallet) struct WalletLocks {
 impl WalletLocks {
     pub(in crate::wallet) fn new(wallet: Option<BdkWallet>, database: Persistence) -> Self {
         Self {
+            revision: std::sync::atomic::AtomicU64::new(0),
             full_scan: tokio::sync::Mutex::new(()),
             bitcoin_wallet: async_lock::RwLock::new(wallet),
             bdk_db: tokio::sync::Mutex::new(database),
@@ -123,6 +127,7 @@ impl WalletLocks {
             "upgradable read lock",
         )
         .await;
+        self.invalidate_snapshot();
         RwLockUpgradableReadGuardSome::new(guard).ok_or(error::NotUnlocked)
     }
 
@@ -130,7 +135,49 @@ impl WalletLocks {
         &self,
     ) -> Result<RwLockWriteGuardSome<'_, BdkWallet>, error::NotUnlocked> {
         let guard = acquire_warn_slow(self.bitcoin_wallet.write(), "write lock").await;
+        self.invalidate_snapshot();
         RwLockWriteGuardSome::new(guard).ok_or(error::NotUnlocked)
+    }
+
+    /// Invalidate snapshots taken while a full scan held its upgradable reader.
+    /// Acquisition-time invalidation alone cannot cover those later snapshots.
+    pub(in crate::wallet) async fn upgrade<'a>(
+        &'a self,
+        guard: RwLockUpgradableReadGuardSome<'a, BdkWallet>,
+    ) -> RwLockWriteGuardSome<'a, BdkWallet> {
+        let guard = RwLockUpgradableReadGuardSome::upgrade(guard).await;
+        self.invalidate_snapshot();
+        guard
+    }
+
+    /// Read only while holding a wallet read guard.
+    pub(in crate::wallet) fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn invalidate_snapshot(&self) {
+        self.revision
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |value| value.checked_add(1),
+            )
+            .expect("wallet revision exhausted");
+    }
+
+    /// Atomically check the network snapshot and acquire mutation permission.
+    pub(in crate::wallet) async fn write_if_unchanged(
+        &self,
+        revision: u64,
+    ) -> Result<Option<RwLockWriteGuardSome<'_, BdkWallet>>, error::NotUnlocked> {
+        let guard = acquire_warn_slow(self.bitcoin_wallet.write(), "sync write lock").await;
+        if self.revision() != revision {
+            return Ok(None);
+        }
+        self.invalidate_snapshot();
+        RwLockWriteGuardSome::new(guard)
+            .map(Some)
+            .ok_or(error::NotUnlocked)
     }
 
     /// The wallet slot itself, including when it is empty: for asking whether
@@ -144,6 +191,8 @@ impl WalletLocks {
     pub(in crate::wallet) async fn write_slot(
         &self,
     ) -> async_lock::RwLockWriteGuard<'_, Option<BdkWallet>> {
-        acquire_warn_slow(self.bitcoin_wallet.write(), "write lock (slot)").await
+        let guard = acquire_warn_slow(self.bitcoin_wallet.write(), "write lock (slot)").await;
+        self.invalidate_snapshot();
+        guard
     }
 }
