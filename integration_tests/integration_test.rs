@@ -12,7 +12,7 @@ use bip300301_enforcer_lib::{
             ListSidechainDepositTransactionsRequest, block_info, withdrawal_bundle_event,
         },
     },
-    types::{SidechainNumber, Thresholds},
+    types::{NetworkParams, SidechainNumber, Thresholds},
 };
 use bitcoin::Amount;
 use futures::{FutureExt as _, channel::mpsc};
@@ -804,11 +804,20 @@ where
             }
         })
         .await?;
+    // Where the withdrawal bundle safety rules apply (regtest), a bundle that
+    // no block upvotes fails after `upvote_expiry_blocks` blocks; elsewhere,
+    // once it is older than `withdrawal_bundle_max_age`.
+    let safety = NetworkParams::for_network(post_setup.network.into()).withdrawal_bundle_safety;
+    let expiry_seq = if safety.activation_height == Some(0) {
+        safety.upvote_expiry_blocks - 1
+    } else {
+        u32::from(Thresholds::SHORT.withdrawal_bundle_max_age)
+    };
     tracing::debug!("Mining blocks until withdrawal bundle failure due to expiry");
     let () =
         mine_check_block_events::<_, S>(post_setup, 11, MiningPolicy::SILENT, |seq, block_info| {
             match (seq, block_info.events.as_slice()) {
-                (10, [event]) => {
+                (seq, [event]) if seq == expiry_seq => {
                     let (event_m6id, event) = expect_withdrawal_bundle_event(event)?;
                     let withdrawal_bundle_event::event::Event::Failed(_) = event else {
                         anyhow::bail!("Expected withdrawal bundle failed event, found `{event:?}`")
@@ -816,7 +825,7 @@ where
                     anyhow::ensure!(*event_m6id == ConsensusHex::encode(&m6id.0));
                     Ok(())
                 }
-                (10, events) => {
+                (seq, events) if seq == expiry_seq => {
                     anyhow::bail!("Expected withdrawal bundle failed event, found `{events:?}`")
                 }
                 (_, []) => Ok(()),

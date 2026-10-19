@@ -637,11 +637,73 @@ impl Diff for M6 {
     }
 }
 
+/// A successful M6, as connected by this version: the payout itself, plus the
+/// bookkeeping of [`crate::types::WithdrawalBundleSafety`].
+#[derive(Debug, Deserialize, Serialize)]
+#[must_use]
+pub struct Payout {
+    pub m6: M6,
+    /// The height of the block that made the payout, as recorded in
+    /// `paid_m6ids`
+    pub paid_height: u32,
+    /// The slot's other pending bundles, in chronological order, failed by
+    /// this payout (single payout). Empty before the safety rules activate.
+    pub failed_others: Vec<(M6id, PendingM6idInfo)>,
+}
+
+impl Diff for Payout {
+    type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
+
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
+        let Self {
+            m6,
+            paid_height,
+            failed_others,
+        } = self;
+        let () = m6.apply(rwtxn, dbs, height)?;
+        let key = (m6.sidechain_number, m6.removed_pending_withdrawal);
+        let () = dbs.add_paid_height(rwtxn, key, *paid_height)?;
+        if !failed_others.is_empty() {
+            let () = dbs.with_pending_withdrawals(rwtxn, &m6.sidechain_number, |pending| {
+                for (m6id, _) in failed_others {
+                    pending.remove(m6id);
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+        let Self {
+            m6,
+            paid_height,
+            failed_others,
+        } = self;
+        // `failed_others` were all of the slot's pending bundles but the paid
+        // one, so put them back first, then the paid one at its index.
+        if !failed_others.is_empty() {
+            let () = dbs.with_pending_withdrawals(rwtxn, &m6.sidechain_number, |pending| {
+                for (m6id, info) in failed_others {
+                    pending.insert(*m6id, *info);
+                }
+            })?;
+        }
+        let key = (m6.sidechain_number, m6.removed_pending_withdrawal);
+        let () = dbs.remove_paid_height(rwtxn, key, *paid_height)?;
+        m6.undo(rwtxn, dbs)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[must_use]
 pub enum Tx {
     M5(M5),
+    /// A payout connected by a version predating [`Payout`]. Kept so that
+    /// the stored diffs of those blocks still decode and undo.
     M6(M6),
+    Payout(Payout),
 }
 
 impl Diff for Tx {
@@ -653,6 +715,7 @@ impl Diff for Tx {
         match self {
             Self::M5(m5) => m5.apply(rwtxn, dbs, height),
             Self::M6(m6) => m6.apply(rwtxn, dbs, height),
+            Self::Payout(payout) => payout.apply(rwtxn, dbs, height),
         }
     }
 
@@ -660,6 +723,7 @@ impl Diff for Tx {
         match self {
             Self::M5(m5) => m5.undo(rwtxn, dbs),
             Self::M6(m6) => m6.undo(rwtxn, dbs),
+            Self::Payout(payout) => payout.undo(rwtxn, dbs),
         }
     }
 }

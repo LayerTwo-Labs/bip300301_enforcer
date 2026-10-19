@@ -104,6 +104,75 @@ impl Thresholds {
     }
 }
 
+/// Withdrawal bundle safety rules, on top of BIP 300:
+///
+/// * single payout: paying out a bundle fails every other pending bundle of
+///   its sidechain slot;
+/// * paid-bundle memory: a bundle that was paid out can never be proposed
+///   (M3) again in its slot;
+/// * upvote expiry: a pending bundle fails once `upvote_expiry_blocks` blocks
+///   in a row have not upvoted it, counting from the block that proposed it;
+/// * idle expiry: a pending bundle with a vote count of 0 fails once it is
+///   `idle_expiry_blocks` blocks old.
+///
+/// These change block validity, so they apply from a per-network activation
+/// height.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WithdrawalBundleSafety {
+    /// First block height at which the rules apply. `None`: never.
+    pub activation_height: Option<u32>,
+    pub upvote_expiry_blocks: u32,
+    pub idle_expiry_blocks: u32,
+}
+
+impl WithdrawalBundleSafety {
+    /// Mainnet-scale values. A bundle needs more than 13,150 upvotes within
+    /// 26,300 blocks, i.e. the upvotes of a majority of blocks for half a
+    /// year. A day (144 blocks) in which not one block upvotes it means it
+    /// has (next to) no hashrate behind it: with a share `p` of blocks
+    /// upvoting, the chance of a 144-block gap is `(1 - p)^144`, below
+    /// 10^-6 at `p` = 10%. A week (1008 blocks) at a vote count of 0 means
+    /// the blocks that do vote downvote it. Either way it could not be paid,
+    /// and failing it early lets the sidechain refund its withdrawals in days
+    /// rather than half a year.
+    pub const MAINNET: Self = Self {
+        activation_height: None,
+        upvote_expiry_blocks: 144,
+        idle_expiry_blocks: 1008,
+    };
+
+    /// Values for [`Thresholds::SHORT`], whose bundles live 10 blocks: half
+    /// that without an upvote, or at a vote count of 0.
+    pub const SHORT: Self = Self {
+        activation_height: None,
+        upvote_expiry_blocks: 5,
+        idle_expiry_blocks: 5,
+    };
+
+    #[inline]
+    pub const fn for_network(network: bitcoin::Network) -> Self {
+        match network {
+            bitcoin::Network::Bitcoin => Self::MAINNET,
+            // A regtest chain is local and disposable, so the rules apply
+            // from genesis.
+            bitcoin::Network::Regtest => Self {
+                activation_height: Some(0),
+                ..Self::SHORT
+            },
+            _ => Self::SHORT,
+        }
+    }
+
+    /// Whether the rules apply to the block at `height`.
+    #[inline]
+    pub const fn is_active(&self, height: u32) -> bool {
+        match self.activation_height {
+            Some(activation_height) => height >= activation_height,
+            None => false,
+        }
+    }
+}
+
 /// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for the
 /// mainnet-fork presets, the height at which BIP 300/301 enforcement
 /// activates. Selected either implicitly from the node's reported network, or
@@ -123,6 +192,7 @@ pub struct NetworkParams {
     pub network_magic: Option<[u8; 4]>,
     /// The opcode the node's build reserves for `OP_DRIVECHAIN`.
     pub op_drivechain: OpDrivechain,
+    pub withdrawal_bundle_safety: WithdrawalBundleSafety,
 }
 
 impl NetworkParams {
@@ -135,6 +205,7 @@ impl NetworkParams {
             datadir_suffix: None,
             network_magic: None,
             op_drivechain: OpDrivechain::NOP5,
+            withdrawal_bundle_safety: WithdrawalBundleSafety::for_network(network),
         }
     }
 
@@ -149,6 +220,11 @@ impl NetworkParams {
             datadir_suffix: Some("alphanet"),
             network_magic: Some([0xec, 0xa5, 0xa1, 0x04]),
             op_drivechain: OpDrivechain::NOP5,
+            withdrawal_bundle_safety: WithdrawalBundleSafety {
+                activation_height: None,
+                upvote_expiry_blocks: 36,
+                idle_expiry_blocks: 72,
+            },
         }
     }
 
@@ -164,6 +240,7 @@ impl NetworkParams {
             datadir_suffix: Some("betanet"),
             network_magic: Some([0xec, 0xa5, 0xb1, 0x04]),
             op_drivechain: OpDrivechain::NOP8,
+            withdrawal_bundle_safety: WithdrawalBundleSafety::MAINNET,
         }
     }
 
@@ -176,6 +253,10 @@ impl NetworkParams {
             datadir_suffix: Some("test-activation"),
             network_magic: None,
             op_drivechain: OpDrivechain::NOP5,
+            withdrawal_bundle_safety: WithdrawalBundleSafety {
+                activation_height: Some(10),
+                ..WithdrawalBundleSafety::SHORT
+            },
         }
     }
 }
@@ -1273,9 +1354,37 @@ mod tests {
     use miette::Diagnostic as _;
 
     use crate::types::{
-        BlindedM6, M6id, SidechainDeclaration, SidechainNumber, SidechainProposal, Thresholds,
-        WithdrawalBundlePolicy, WithdrawalBundleVote,
+        BlindedM6, M6id, NetworkParams, SidechainDeclaration, SidechainNumber, SidechainProposal,
+        Thresholds, WithdrawalBundlePolicy, WithdrawalBundleSafety, WithdrawalBundleVote,
     };
+
+    /// The withdrawal bundle safety rules change block validity, so they must
+    /// stay off on every network with a live chain until an activation height
+    /// is agreed on, and are on from genesis on regtest.
+    #[test]
+    fn withdrawal_bundle_safety_activation() {
+        for network in [
+            bitcoin::Network::Bitcoin,
+            bitcoin::Network::Signet,
+            bitcoin::Network::Testnet,
+            bitcoin::Network::Testnet4,
+        ] {
+            let safety = NetworkParams::for_network(network).withdrawal_bundle_safety;
+            assert_eq!(safety.activation_height, None, "{network}");
+            assert!(!safety.is_active(u32::MAX), "{network}");
+        }
+        for params in [NetworkParams::alphanet(), NetworkParams::betanet()] {
+            assert_eq!(params.withdrawal_bundle_safety.activation_height, None);
+        }
+        let regtest = NetworkParams::for_network(bitcoin::Network::Regtest);
+        assert!(regtest.withdrawal_bundle_safety.is_active(0));
+        let at_10 = WithdrawalBundleSafety {
+            activation_height: Some(10),
+            ..WithdrawalBundleSafety::SHORT
+        };
+        assert!(!at_10.is_active(9));
+        assert!(at_10.is_active(10));
+    }
 
     #[test]
     fn unused_slot_activation_boundary() {

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use bitcoin::{Amount, OutPoint};
+use bitcoin::{Amount, OutPoint, hashes::Hash as _};
 use fallible_iterator::FallibleIterator;
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
@@ -21,7 +21,7 @@ pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 
 pub type PendingM6ids = OrderMap<M6id, PendingM6idInfo>;
 
-/// These DBs should all contain exacty the same keys.
+/// These DBs should all contain exacty the same keys, except `paid_m6ids`.
 #[derive(Clone)]
 pub(super) struct ActiveSidechainDbs {
     ctip: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
@@ -31,6 +31,12 @@ pub(super) struct ActiveSidechainDbs {
         DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
     // ALL active sidechains MUST exist as keys
     pending_m6ids: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>>,
+    /// Bundles paid out by an M6, with the heights of the blocks of the
+    /// active chain that paid them, ascending (a bundle could be paid more
+    /// than once before the withdrawal bundle safety rules). Kept for good,
+    /// also once the slot's sidechain is replaced: see
+    /// [`crate::types::WithdrawalBundleSafety`].
+    paid_m6ids: DatabaseUnique<SerdeBincode<(SidechainNumber, M6id)>, SerdeBincode<Vec<u32>>>,
     // ALL active sidechains MUST exist as keys
     sidechain: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
     slot_sequence_to_treasury_utxo:
@@ -40,7 +46,7 @@ pub(super) struct ActiveSidechainDbs {
 }
 
 impl ActiveSidechainDbs {
-    const NUM_DBS: u32 = 6;
+    const NUM_DBS: u32 = 7;
 
     fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
         let ctip = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_ctip")?;
@@ -48,6 +54,8 @@ impl ActiveSidechainDbs {
             DatabaseUnique::create(env, rwtxn, "active_sidechain_ctip_outpoint_to_value_seq")?;
         let pending_m6ids =
             DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_pending_m6ids")?;
+        let paid_m6ids =
+            DatabaseUnique::create(env, rwtxn, "sidechain_number_m6id_to_paid_heights")?;
         let sidechain = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_sidechain")?;
         let slot_sequence_to_treasury_utxo = DatabaseUnique::create(
             env,
@@ -60,6 +68,7 @@ impl ActiveSidechainDbs {
             ctip,
             ctip_outpoint_to_value_seq,
             pending_m6ids,
+            paid_m6ids,
             sidechain,
             slot_sequence_to_treasury_utxo,
             treasury_utxo_count,
@@ -81,6 +90,60 @@ impl ActiveSidechainDbs {
         &self,
     ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>> {
         &self.pending_m6ids
+    }
+
+    pub fn paid_m6ids(
+        &self,
+    ) -> &RoDatabaseUnique<SerdeBincode<(SidechainNumber, M6id)>, SerdeBincode<Vec<u32>>> {
+        &self.paid_m6ids
+    }
+
+    /// The height of the latest block that paid out `key`, if any did.
+    pub fn last_paid_height(
+        &self,
+        rotxn: &RoTxn,
+        key: (SidechainNumber, M6id),
+    ) -> Result<Option<u32>, db::Error> {
+        Ok(self
+            .paid_m6ids
+            .try_get(rotxn, &key)?
+            .and_then(|heights| heights.last().copied()))
+    }
+
+    /// Record that the block at `height` paid out `key`.
+    pub fn add_paid_height(
+        &self,
+        rwtxn: &mut RwTxn,
+        key: (SidechainNumber, M6id),
+        height: u32,
+    ) -> Result<(), db::Error> {
+        let mut heights = self.paid_m6ids.try_get(rwtxn, &key)?.unwrap_or_default();
+        let index = heights.partition_point(|paid| *paid <= height);
+        heights.insert(index, height);
+        self.paid_m6ids.put(rwtxn, &key, &heights)?;
+        Ok(())
+    }
+
+    /// Undo [`Self::add_paid_height`]: forget one payout of `key` at
+    /// `height`, keeping its other payouts.
+    pub fn remove_paid_height(
+        &self,
+        rwtxn: &mut RwTxn,
+        key: (SidechainNumber, M6id),
+        height: u32,
+    ) -> Result<(), db::Error> {
+        let Some(mut heights) = self.paid_m6ids.try_get(rwtxn, &key)? else {
+            return Ok(());
+        };
+        if let Some(index) = heights.iter().rposition(|paid| *paid == height) {
+            heights.remove(index);
+        }
+        if heights.is_empty() {
+            let _: bool = self.paid_m6ids.delete(rwtxn, &key)?;
+        } else {
+            self.paid_m6ids.put(rwtxn, &key, &heights)?;
+        }
+        Ok(())
     }
 
     pub fn sidechain(
@@ -314,7 +377,15 @@ pub enum CreateDbsError {
         source: std::io::Error,
     },
     #[error(transparent)]
+    Db(#[from] Box<db::Error>),
+    #[error(transparent)]
     Env(#[from] env::Error),
+}
+
+impl From<db::Error> for CreateDbsError {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 pub type ProposalIdToSidechain =
@@ -330,10 +401,13 @@ pub(super) struct Dbs {
     pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub proposal_id_to_sidechain: ProposalIdToSidechain,
+    /// Set once `active_sidechains.paid_m6ids` holds the payouts of every
+    /// connected block, including those connected by versions predating it.
+    pub _paid_m6ids_backfilled: DatabaseUnique<UnitKey, SerdeBincode<()>>,
 }
 
 impl Dbs {
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 5;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -361,6 +435,15 @@ impl Dbs {
         let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
         let proposal_id_to_sidechain =
             DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
+        let paid_m6ids_backfilled =
+            DatabaseUnique::create(&env, &mut rwtxn, "paid_m6ids_backfilled")?;
+        let () = Self::backfill_paid_m6ids(
+            &mut rwtxn,
+            &active_sidechains,
+            &block_hashes,
+            &current_chain_tip,
+            &paid_m6ids_backfilled,
+        )?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -372,7 +455,46 @@ impl Dbs {
             _leading_by_50: leading_by_50,
             _previous_votes: previous_votes,
             proposal_id_to_sidechain,
+            _paid_m6ids_backfilled: paid_m6ids_backfilled,
         })
+    }
+
+    /// Record in `paid_m6ids` the payouts of the active chain that a version
+    /// predating it connected, from the blocks' stored events, so that the
+    /// withdrawal bundle safety rules see every payout. Runs once.
+    fn backfill_paid_m6ids(
+        rwtxn: &mut RwTxn,
+        active_sidechains: &ActiveSidechainDbs,
+        block_hashes: &BlockHashDbs,
+        current_chain_tip: &DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
+        paid_m6ids_backfilled: &DatabaseUnique<UnitKey, SerdeBincode<()>>,
+    ) -> Result<(), db::Error> {
+        if paid_m6ids_backfilled.try_get(rwtxn, &())?.is_some() {
+            return Ok(());
+        }
+        let mut block_hash = current_chain_tip.try_get(rwtxn, &())?;
+        let mut n_payouts = 0;
+        while let Some(hash) = block_hash.filter(|hash| *hash != bitcoin::BlockHash::all_zeros()) {
+            let Some(header_info) = block_hashes.try_get_header_info(rwtxn, &hash)? else {
+                break;
+            };
+            if let Some(block_info) = block_hashes.try_get_block_info(rwtxn, &hash)? {
+                for event in block_info.withdrawal_bundle_events() {
+                    if let crate::types::WithdrawalBundleEventKind::Succeeded { .. } = event.kind {
+                        let key = (event.sidechain_id, event.m6id);
+                        let () =
+                            active_sidechains.add_paid_height(rwtxn, key, header_info.height)?;
+                        n_payouts += 1;
+                    }
+                }
+            }
+            block_hash = Some(header_info.prev_block_hash);
+        }
+        if n_payouts > 0 {
+            tracing::info!("Recorded {n_payouts} past withdrawal bundle payout(s)");
+        }
+        paid_m6ids_backfilled.put(rwtxn, &(), &())?;
+        Ok(())
     }
 
     pub fn read_txn(&self) -> Result<RoTxn<'_, heed::WithTls>, env::error::ReadTxn> {

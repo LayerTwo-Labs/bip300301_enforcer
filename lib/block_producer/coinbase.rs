@@ -22,7 +22,9 @@ impl BlockProducer {
     /// `used_slots` -- are dropped: per BIP300 M3, a bundle proposed for an
     /// inactive slot is just an ordinary script (a no-op), so there is nothing
     /// to gain by proposing it. Those can sneak in by activating a sidechain
-    /// and then reorging it out of existence.
+    /// and then reorging it out of existence. Bundles already paid out are
+    /// dropped too: proposing one again is invalid once the withdrawal bundle
+    /// safety rules apply, and would only let it be paid twice before.
     pub(crate) async fn get_bundle_proposals(
         &self,
         used_slots: &HashSet<SidechainNumber>,
@@ -37,10 +39,17 @@ impl BlockProducer {
                     return Ok(None);
                 }
                 let pending_m6ids = self.validator().get_pending_withdrawals(&sidechain_id)?;
-                let res: Vec<_> = m6ids
-                    .into_iter()
-                    .map(|(m6id, blinded_m6)| (m6id, blinded_m6, pending_m6ids.get(&m6id).copied()))
-                    .collect();
+                let mut res = Vec::with_capacity(m6ids.len());
+                for (m6id, blinded_m6) in m6ids {
+                    if self
+                        .validator()
+                        .try_get_paid_withdrawal_height(sidechain_id, m6id)?
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    res.push((m6id, blinded_m6, pending_m6ids.get(&m6id).copied()));
+                }
                 if res.is_empty() {
                     Ok(None)
                 } else {
@@ -472,12 +481,22 @@ impl BlockProducer {
         ctips: &HashMap<SidechainNumber, Ctip>,
     ) -> Result<Vec<Transaction>, error::GetBundleProposals> {
         let params = self.validator().network_params();
+        let next_height = match self.validator().try_get_mainchain_tip()? {
+            Some(tip) => self
+                .validator()
+                .get_header_info(&tip)?
+                .height
+                .saturating_add(1),
+            None => 0,
+        };
+        let single_payout = params.withdrawal_bundle_safety.is_active(next_height);
         let used_slots = Self::used_slots(&self.validator().get_active_sidechains()?);
         let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
         Ok(Self::suffix_txs_for_proposals(
             bundle_proposals,
             ctips,
             &params,
+            single_payout,
         ))
     }
 
@@ -485,6 +504,9 @@ impl BlockProducer {
     /// suffix will be built against. Split out from
     /// [`Self::generate_suffix_txs`] so the payout rules are exercisable without
     /// a validator or a DB.
+    ///
+    /// With `single_payout` (the withdrawal bundle safety rules apply to the
+    /// block), at most one bundle per sidechain: paying one fails the others.
     ///
     /// Infallible by construction: a bundle that cannot be paid out is skipped,
     /// never fatal. The suffix is the *rest* of a block that is being built, so
@@ -495,6 +517,7 @@ impl BlockProducer {
         bundle_proposals: HashMap<SidechainNumber, BundleProposals>,
         ctips: &HashMap<SidechainNumber, Ctip>,
         params: &NetworkParams,
+        single_payout: bool,
     ) -> Vec<Transaction> {
         let mut res = Vec::new();
         for (sidechain_id, m6ids) in bundle_proposals {
@@ -545,6 +568,9 @@ impl BlockProducer {
                 };
                 ctip = Some(successor_ctip);
                 res.push(m6);
+                if single_payout {
+                    break;
+                }
             }
         }
         res
@@ -643,7 +669,8 @@ mod tests {
             HashMap::from_iter([(NO_CTIP, approved_bundle()), (WITH_CTIP, approved_bundle())]);
         let ctips = HashMap::from_iter([(WITH_CTIP, ctip(1))]);
 
-        let suffix_txs = BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS);
+        let suffix_txs =
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS, false);
 
         // The payable sidechain still gets its M6, spending its own CTIP.
         assert_eq!(suffix_txs.len(), 1);
@@ -661,8 +688,12 @@ mod tests {
     #[test]
     fn suffix_txs_are_empty_when_no_sidechain_has_a_ctip() {
         let bundle_proposals = HashMap::from_iter([(SidechainNumber(0), approved_bundle())]);
-        let suffix_txs =
-            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &HashMap::new(), &PARAMS);
+        let suffix_txs = BlockProducer::suffix_txs_for_proposals(
+            bundle_proposals,
+            &HashMap::new(),
+            &PARAMS,
+            false,
+        );
         assert!(suffix_txs.is_empty());
     }
 
@@ -685,7 +716,8 @@ mod tests {
         let bundle_proposals = HashMap::from_iter([(SIDECHAIN, bundles)]);
         let ctips = HashMap::from_iter([(SIDECHAIN, ctip(0))]);
 
-        let suffix_txs = BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS);
+        let suffix_txs =
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS, false);
 
         let [first_m6, second_m6] = suffix_txs.as_slice() else {
             panic!("expected exactly the two payable M6s, got {suffix_txs:?}");
@@ -732,6 +764,26 @@ mod tests {
                 .any(|output| output.value == SECOND_PAYOUT),
             "the second surviving M6 is not the second payable bundle: {second_m6:?}"
         );
+    }
+
+    /// Once the withdrawal bundle safety rules apply, paying a bundle fails
+    /// the sidechain's other pending bundles, so a block pays at most one per
+    /// sidechain: a second M6 chained onto the first would be invalid.
+    #[test]
+    fn suffix_txs_pay_one_bundle_per_sidechain_under_single_payout() {
+        const SIDECHAIN: SidechainNumber = SidechainNumber(0);
+        let mut bundles = approved_bundle_paying(PAYOUT);
+        bundles.extend(approved_bundle_paying(Amount::from_sat(30_000)));
+        let bundle_proposals = HashMap::from_iter([(SIDECHAIN, bundles)]);
+        let ctips = HashMap::from_iter([(SIDECHAIN, ctip(0))]);
+
+        let suffix_txs =
+            BlockProducer::suffix_txs_for_proposals(bundle_proposals, &ctips, &PARAMS, true);
+
+        let [m6] = suffix_txs.as_slice() else {
+            panic!("expected a single M6, got {suffix_txs:?}");
+        };
+        assert!(m6.output.iter().any(|output| output.value == PAYOUT));
     }
 
     #[test]

@@ -485,6 +485,22 @@ impl Validator {
             .and_then(|pending| pending.get(m6id).copied()))
     }
 
+    /// The height of the latest block that paid out withdrawal bundle `m6id`
+    /// for `sidechain_number`, if one did.
+    pub fn try_get_paid_withdrawal_height(
+        &self,
+        sidechain_number: SidechainNumber,
+        m6id: crate::types::M6id,
+    ) -> Result<Option<u32>, GetPendingWithdrawalsError> {
+        let rotxn = self.dbs.read_txn()?;
+        Ok(self
+            .dbs
+            .active_sidechains
+            .paid_m6ids()
+            .try_get(&rotxn, &(sidechain_number, m6id))?
+            .and_then(|heights| heights.last().copied()))
+    }
+
     pub fn network(&self) -> bitcoin::Network {
         self.network
     }

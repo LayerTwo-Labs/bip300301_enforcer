@@ -77,6 +77,18 @@ pub(in crate::validator) enum HandleM3ProposeBundle {
         sidechain_number: SidechainNumber,
         m6id: M6id,
     },
+    /// Paid-bundle memory (`WithdrawalBundleSafety`): a bundle that was paid
+    /// out must never be proposed again, or it could be paid out twice.
+    #[error(
+        "withdrawal bundle {m6id} for sidechain slot {} was already paid out at height {paid_height}",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    BundleAlreadyPaid {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+        paid_height: u32,
+    },
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
@@ -162,6 +174,9 @@ pub(in crate::validator) enum HandleFailedM6Ids {
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
+    #[error(transparent)]
+    #[fatal(true)]
+    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
 }
 
 impl From<db::Error> for HandleFailedM6Ids {
@@ -197,6 +212,19 @@ pub(in crate::validator) enum InvalidM6 {
         m6id: M6id,
         sidechain_number: SidechainNumber,
     },
+    /// Paid-bundle memory (`WithdrawalBundleSafety`): a bundle that was paid
+    /// out, then proposed again before the rules applied, is never paid twice.
+    #[error(
+        "withdrawal bundle {} for sidechain {} was already paid out at height {}",
+        .m6id,
+        .sidechain_number,
+        .paid_height,
+    )]
+    AlreadyPaid {
+        m6id: M6id,
+        sidechain_number: SidechainNumber,
+        paid_height: u32,
+    },
     #[error(
         "invalid treasury output count ({}); must create exactly 1 ctip",
         .n_treasury_outputs,
@@ -210,8 +238,9 @@ pub(in crate::validator) enum InvalidM6 {
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]
+#[expect(clippy::duplicated_attributes)]
 #[split(attrs(derive(Debug, Error)))]
-#[transitive(from(db::error::TryGet, db::Error))]
+#[transitive(from(db::error::Get, db::Error), from(db::error::TryGet, db::Error))]
 pub(in crate::validator) enum HandleM5M6 {
     #[error("Cannot be both M5 deposit and M6 withdrawal")]
     #[fatal(false)]

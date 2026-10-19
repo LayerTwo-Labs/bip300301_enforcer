@@ -27,20 +27,26 @@ enum GetBundleProposalsInner {
     #[error(transparent)]
     DecodeBlindedM6(#[from] crate::types::BlindedM6DecodeError),
     #[error(transparent)]
+    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    #[error(transparent)]
     GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
     #[error(transparent)]
     GetSidechains(#[from] crate::validator::GetSidechainsError),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
 }
 
 impl ToStatus for GetBundleProposalsInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DecodeBlindedM6(err) => err.builder(),
+            Self::GetHeaderInfo(err) => err.builder(),
             Self::GetPendingWithdrawals(err) => err.builder(),
             Self::GetSidechains(err) => err.builder(),
             Self::Rusqlite(_) => StatusBuilder::new(self),
+            Self::TryGetMainchainTip(err) => err.builder(),
         }
     }
 }

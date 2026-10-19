@@ -10,7 +10,7 @@ use miette::IntoDiagnostic;
 
 use super::{Validator, dbs::Dbs, main_rest_client::MainRestClient};
 use crate::types::{
-    M6id, NetworkParams, OpDrivechain, Sidechain, SidechainDescription, SidechainNumber,
+    BlindedM6, M6id, NetworkParams, OpDrivechain, Sidechain, SidechainDescription, SidechainNumber,
     SidechainProposal, SidechainProposalStatus,
 };
 
@@ -55,6 +55,28 @@ pub fn test_sidechain(sidechain_number: u8, proposal_height: u32) -> Sidechain {
 
 pub fn test_m6id(byte: u8) -> M6id {
     M6id(Txid::from_byte_array([byte; 32]))
+}
+
+/// A blinded M6 paying `payout` to a fixed P2WPKH output, with `fee_sats` to
+/// the miner. Distinct payouts give distinct m6ids.
+pub fn test_blinded_m6(fee_sats: u64, payout: Amount) -> BlindedM6<'static> {
+    let fee_output = TxOut {
+        value: Amount::ZERO,
+        script_pubkey: ScriptBuf::new_op_return(fee_sats.to_be_bytes()),
+    };
+    let payout_output = TxOut {
+        value: payout,
+        script_pubkey: ScriptBuf::from_bytes([vec![0x00, 0x14], vec![0x11; 20]].concat()),
+    };
+    let tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: Vec::new(),
+        output: vec![fee_output, payout_output],
+    };
+    BlindedM6::try_from(std::borrow::Cow::Owned(tx))
+        .expect("valid blinded M6")
+        .into_owned()
 }
 
 /// Minimal block header for tests — only `prev_blockhash` is meaningful

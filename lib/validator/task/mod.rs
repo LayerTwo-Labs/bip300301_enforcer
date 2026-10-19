@@ -101,7 +101,7 @@ enum DepositsOrSuccessfulWithdrawal {
         sidechain_id: SidechainNumber,
         m6id: M6id,
         sequence_number: u64,
-        diff: diff::M6,
+        diff: diff::Payout,
     },
 }
 
@@ -114,7 +114,11 @@ enum CoinbaseMessageEvent {
 #[derive(Debug)]
 enum TransactionEvent {
     Deposits(HashMap<SidechainNumber, Deposit>),
-    WithdrawalBundle(WithdrawalBundleEvent),
+    WithdrawalBundle {
+        succeeded: WithdrawalBundleEvent,
+        /// The slot's other pending bundles, failed by the payout
+        failed: Vec<WithdrawalBundleEvent>,
+    },
 }
 
 fn downvoted_others_for_upvote(pending: &PendingM6ids, upvote_target: M6id) -> Vec<M6id> {
@@ -366,6 +370,7 @@ impl BlockHandler<'_> {
     fn handle_m3_propose_bundle(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         sidechain_number: SidechainNumber,
         m6id: M6id,
     ) -> Result<diff::ProposeBundle, error::HandleM3ProposeBundle> {
@@ -388,6 +393,19 @@ impl BlockHandler<'_> {
             return Err(error::HandleM3ProposeBundle::BundleAlreadyPending {
                 sidechain_number,
                 m6id,
+            });
+        }
+        // Paid-bundle memory: proposing a paid bundle again would let a
+        // majority of the hashrate pay the same withdrawals twice.
+        if self.params.withdrawal_bundle_safety.is_active(height)
+            && let Some(paid_height) = dbs
+                .active_sidechains
+                .last_paid_height(rotxn, (sidechain_number, m6id))?
+        {
+            return Err(error::HandleM3ProposeBundle::BundleAlreadyPaid {
+                sidechain_number,
+                m6id,
+                paid_height,
             });
         }
         Ok(diff::ProposeBundle {
@@ -622,18 +640,84 @@ impl BlockHandler<'_> {
         }
     }
 
+    /// The bundles upvoted by the block whose coinbase messages are
+    /// `coinbase_msgs` (not yet stored) and by its `n_ancestors` closest
+    /// ancestors, starting at `parent`.
+    fn recently_upvoted_m6ids(
+        &self,
+        rotxn: &RoTxn,
+        coinbase_msgs: &[diff::CoinbaseMsg],
+        parent: BlockHash,
+        n_ancestors: u32,
+    ) -> Result<HashSet<(SidechainNumber, M6id)>, error::HandleFailedM6Ids> {
+        fn add_upvotes(upvoted: &mut HashSet<(SidechainNumber, M6id)>, msgs: &[diff::CoinbaseMsg]) {
+            for msg in msgs {
+                let diff::CoinbaseMsg::AckBundles(ack_bundles) = msg else {
+                    continue;
+                };
+                for (sidechain_number, action) in &ack_bundles.0 {
+                    if let diff::AckBundleAction::Upvote { m6id, .. } = action {
+                        upvoted.insert((*sidechain_number, *m6id));
+                    }
+                }
+            }
+        }
+        let dbs = self.dbs;
+        let mut upvoted = HashSet::new();
+        add_upvotes(&mut upvoted, coinbase_msgs);
+        let mut block_hash = parent;
+        for _ in 0..n_ancestors {
+            if block_hash == BlockHash::all_zeros() {
+                break;
+            }
+            let block_diff = dbs.block_hashes.diff().get(rotxn, &block_hash)?;
+            add_upvotes(&mut upvoted, &block_diff.coinbase.msgs);
+            block_hash = dbs
+                .block_hashes
+                .get_header_info(rotxn, &block_hash)?
+                .prev_block_hash;
+        }
+        Ok(upvoted)
+    }
+
     /// BIP 300 M6 failure path: removes pending withdrawal bundles whose age
-    /// has exceeded `withdrawal_bundle_max_age`.
+    /// has exceeded `withdrawal_bundle_max_age`. Once the
+    /// [`WithdrawalBundleSafety`](crate::types::WithdrawalBundleSafety) rules
+    /// apply, also those that `upvote_expiry_blocks` blocks in a row (this
+    /// one included) did not upvote, and those with a vote count of 0 that
+    /// are `idle_expiry_blocks` old.
+    ///
+    /// `coinbase_msgs` are this block's applied coinbase message diffs, and
+    /// `parent` its parent.
     ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m6-withdrawal-bundle>
     fn handle_failed_m6ids(
         &self,
         rotxn: &RoTxn,
         block_height: u32,
+        parent: BlockHash,
+        coinbase_msgs: &[diff::CoinbaseMsg],
     ) -> Result<diff::FailedM6ids, error::HandleFailedM6Ids> {
         let dbs = self.dbs;
         let thresholds = self.thresholds;
+        let safety = self.params.withdrawal_bundle_safety;
+        let safety_active = safety.is_active(block_height);
         let active_sidechains = dbs.active_sidechains.numbers(rotxn)?;
+        // Bundles upvoted by one of the last `upvote_expiry_blocks` blocks,
+        // read from the stored block diffs only if some bundle is old enough
+        // to expire for lack of upvotes.
+        let mut recently_upvoted = None;
+        // At the activation height, apply single payout to the payouts made
+        // before it: a bundle pending since (or proposed in) the block that
+        // made its slot's latest payout fails, as it would have then.
+        let mut last_payout_heights = HashMap::<SidechainNumber, u32>::new();
+        if safety_active && safety.activation_height == Some(block_height) {
+            let mut paid = dbs.active_sidechains.paid_m6ids().iter(rotxn)?;
+            while let Some(((sidechain_number, _), paid_heights)) = paid.next()? {
+                let last = last_payout_heights.entry(sidechain_number).or_default();
+                *last = paid_heights.into_iter().fold(*last, u32::max);
+            }
+        }
 
         let mut failed_m6ids = HashMap::<_, BTreeMap<_, _>>::new();
 
@@ -645,14 +729,46 @@ impl BlockHandler<'_> {
                 .active_sidechains
                 .pending_m6ids()
                 .get(rotxn, &sidechain_number)?;
-            let failed = pending_m6ids
-                .into_iter()
-                .enumerate()
-                .filter(|(_, (_, info))| {
-                    let age = block_height.saturating_sub(info.proposal_height);
-                    age > thresholds.withdrawal_bundle_max_age as u32
-                })
-                .collect::<BTreeMap<_, _>>();
+            let mut failed = BTreeMap::new();
+            for (index, (m6id, info)) in pending_m6ids.into_iter().enumerate() {
+                let age = block_height.saturating_sub(info.proposal_height);
+                let expired = if age > thresholds.withdrawal_bundle_max_age as u32 {
+                    true
+                } else if !safety_active {
+                    false
+                } else if last_payout_heights
+                    .get(&sidechain_number)
+                    .is_some_and(|last_payout| info.proposal_height <= *last_payout)
+                {
+                    true
+                } else if dbs
+                    .active_sidechains
+                    .paid_m6ids()
+                    .try_get(rotxn, &(sidechain_number, m6id))?
+                    .is_some()
+                {
+                    // Paid before, and proposed again before the rules applied
+                    true
+                } else if info.vote_count == 0 && age >= safety.idle_expiry_blocks {
+                    true
+                } else if age >= safety.upvote_expiry_blocks {
+                    let recently_upvoted = match &recently_upvoted {
+                        Some(recently_upvoted) => recently_upvoted,
+                        None => recently_upvoted.insert(self.recently_upvoted_m6ids(
+                            rotxn,
+                            coinbase_msgs,
+                            parent,
+                            safety.upvote_expiry_blocks.saturating_sub(1),
+                        )?),
+                    };
+                    !recently_upvoted.contains(&(sidechain_number, m6id))
+                } else {
+                    false
+                };
+                if expired {
+                    failed.insert(index, (m6id, info));
+                }
+            }
             if !failed.is_empty() {
                 failed_m6ids.insert(sidechain_number, failed);
             }
@@ -718,6 +834,7 @@ impl BlockHandler<'_> {
     fn handle_m5_m6(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         transaction: Cow<'_, Transaction>,
     ) -> Result<Option<DepositsOrSuccessfulWithdrawal>, error::HandleM5M6> {
         let dbs = &self.dbs.active_sidechains;
@@ -831,12 +948,43 @@ impl BlockHandler<'_> {
                         .treasury_utxo_count
                         .try_get(rotxn, &sidechain_number)?
                         .map_or(0, |count| count.get());
-                    let diff = diff::M6 {
-                        sidechain_number,
-                        new_ctip,
-                        removed_pending_withdrawal: m6id,
-                        removed_pending_withdrawal_index: removed_index,
-                        removed_pending_withdrawal_info: info,
+                    let previously_paid_height =
+                        dbs.last_paid_height(rotxn, (sidechain_number, m6id))?;
+                    let safety_active = self.params.withdrawal_bundle_safety.is_active(height);
+                    // Paid-bundle memory: a bundle proposed again before the
+                    // rules applied must not be paid a second time after.
+                    if safety_active && let Some(paid_height) = previously_paid_height {
+                        let err = error::InvalidM6::AlreadyPaid {
+                            m6id,
+                            sidechain_number,
+                            paid_height,
+                        };
+                        return Err(err.into());
+                    }
+                    // Single payout: the slot's other pending bundles fail.
+                    // Each is a copy of withdrawals just paid (e.g. one a
+                    // sidechain reorg left behind) or a bundle the sidechain
+                    // no longer backs: paying it later could pay the same
+                    // withdrawals twice.
+                    let failed_others = if safety_active {
+                        dbs.pending_m6ids()
+                            .get(rotxn, &sidechain_number)?
+                            .into_iter()
+                            .filter(|(pending, _)| *pending != m6id)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let diff = diff::Payout {
+                        m6: diff::M6 {
+                            sidechain_number,
+                            new_ctip,
+                            removed_pending_withdrawal: m6id,
+                            removed_pending_withdrawal_index: removed_index,
+                            removed_pending_withdrawal_info: info,
+                        },
+                        paid_height: height,
+                        failed_others,
                     };
                     match res {
                         None => {
@@ -963,8 +1111,12 @@ impl BlockHandler<'_> {
                 sidechain_number,
                 bundle_txid,
             }) => {
-                let diff =
-                    self.handle_m3_propose_bundle(rotxn, sidechain_number, bundle_txid.into())?;
+                let diff = self.handle_m3_propose_bundle(
+                    rotxn,
+                    height,
+                    sidechain_number,
+                    bundle_txid.into(),
+                )?;
                 let event = CoinbaseMessageEvent::WithdrawalBundle(WithdrawalBundleEvent {
                     sidechain_id: sidechain_number,
                     m6id: bundle_txid.into(),
@@ -997,12 +1149,13 @@ impl BlockHandler<'_> {
     fn handle_transaction(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         accepted_bmm_requests: Option<&BmmCommitments>,
         prev_mainchain_block_hash: &BlockHash,
         transaction: &Transaction,
     ) -> Result<Option<(TransactionEvent, diff::Tx)>, error::HandleTransaction> {
         let mut res = None;
-        match self.handle_m5_m6(rotxn, Cow::Borrowed(transaction))? {
+        match self.handle_m5_m6(rotxn, height, Cow::Borrowed(transaction))? {
             Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) => {
                 res = Some((TransactionEvent::Deposits(deposits), diff::Tx::M5(diff)));
             }
@@ -1012,7 +1165,7 @@ impl BlockHandler<'_> {
                 sequence_number,
                 diff,
             }) => {
-                let withdrawal_bundle_event = WithdrawalBundleEvent {
+                let succeeded = WithdrawalBundleEvent {
                     m6id,
                     sidechain_id,
                     kind: WithdrawalBundleEventKind::Succeeded {
@@ -1020,9 +1173,18 @@ impl BlockHandler<'_> {
                         transaction: transaction.clone(),
                     },
                 };
+                let failed = diff
+                    .failed_others
+                    .iter()
+                    .map(|(m6id, _)| WithdrawalBundleEvent {
+                        m6id: *m6id,
+                        sidechain_id,
+                        kind: WithdrawalBundleEventKind::Failed,
+                    })
+                    .collect();
                 res = Some((
-                    TransactionEvent::WithdrawalBundle(withdrawal_bundle_event),
-                    diff::Tx::M6(diff),
+                    TransactionEvent::WithdrawalBundle { succeeded, failed },
+                    diff::Tx::Payout(diff),
                 ));
             }
             None => (),
@@ -1062,14 +1224,24 @@ impl BlockHandler<'_> {
             require_payable_bundles: false,
             ..*self
         };
-        match handler.handle_transaction(&child_rwtxn, None, &tip_hash, transaction) {
+        match handler.handle_transaction(
+            &child_rwtxn,
+            tip_height.saturating_add(1),
+            None,
+            &tip_hash,
+            transaction,
+        ) {
             Ok(None) => Ok(ValidatedTx::Valid),
             Ok(Some((event, diff))) => {
-                let () = diff.apply(&mut child_rwtxn, &dbs.active_sidechains, tip_height)?;
+                let () = diff.apply(
+                    &mut child_rwtxn,
+                    &dbs.active_sidechains,
+                    tip_height.saturating_add(1),
+                )?;
                 Ok(match event {
-                    TransactionEvent::WithdrawalBundle(event) => ValidatedTx::Payout {
-                        sidechain_number: event.sidechain_id,
-                        m6id: event.m6id,
+                    TransactionEvent::WithdrawalBundle { succeeded, .. } => ValidatedTx::Payout {
+                        sidechain_number: succeeded.sidechain_id,
+                        m6id: succeeded.m6id,
                     },
                     TransactionEvent::Deposits(_) => ValidatedTx::Valid,
                 })
@@ -1233,7 +1405,8 @@ impl BlockHandler<'_> {
             self.handle_failed_sidechain_proposals(rwtxn, height)?;
         let () =
             failed_sidechain_proposals_diff.apply(rwtxn, &dbs.proposal_id_to_sidechain, height)?;
-        let failed_m6ids_diff = self.handle_failed_m6ids(rwtxn, height)?;
+        let failed_m6ids_diff =
+            self.handle_failed_m6ids(rwtxn, height, parent, &coinbase_msg_diffs)?;
         let () = failed_m6ids_diff.apply(rwtxn, &dbs.active_sidechains, height)?;
         events.extend(
             failed_m6ids_diff
@@ -1266,6 +1439,7 @@ impl BlockHandler<'_> {
                 .rotxn(|rotxn, _dbs| {
                     self.handle_transaction(
                         rotxn,
+                        height,
                         Some(&accepted_bmm_requests),
                         &parent,
                         transaction,
@@ -1294,8 +1468,9 @@ impl BlockHandler<'_> {
                 TransactionEvent::Deposits(deposits) => {
                     events.push(BlockEvent::Deposits(deposits));
                 }
-                TransactionEvent::WithdrawalBundle(withdrawal_bundle_event) => {
-                    events.push(withdrawal_bundle_event.into());
+                TransactionEvent::WithdrawalBundle { succeeded, failed } => {
+                    events.push(succeeded.into());
+                    events.extend(failed.into_iter().map(BlockEvent::from));
                 }
             }
         }
@@ -1383,6 +1558,18 @@ impl BlockHandler<'_> {
         }
         let header_info = dbs.block_hashes.get_header_info(rwtxn, &block_hash)?;
         let () = diff.undo(rwtxn, dbs)?;
+        // `diff::Tx::Payout` undoes its own `paid_m6ids` record. Only a legacy
+        // `diff::Tx::M6`, stored by a version predating `paid_m6ids`, knows
+        // nothing of the record that the backfill made for it at this block's
+        // height, so remove that one here.
+        for tx in &diff.txs {
+            if let diff::Tx::M6(m6) = tx {
+                let key = (m6.sidechain_number, m6.removed_pending_withdrawal);
+                let () =
+                    dbs.active_sidechains
+                        .remove_paid_height(rwtxn, key, header_info.height)?;
+            }
+        }
         if header_info.prev_block_hash != BlockHash::all_zeros() {
             dbs.current_chain_tip
                 .put(rwtxn, &(), &header_info.prev_block_hash)?;
@@ -2370,12 +2557,12 @@ mod tests {
     use crate::{
         messages::{M4AckBundles, M8BmmRequest},
         types::{
-            BmmCommitment, BmmCommitments, Ctip, M6id, OpDrivechain, SidechainDescription,
-            SidechainNumber, SidechainProposal,
+            BlindedM6, BmmCommitment, BmmCommitments, Ctip, M6id, OpDrivechain,
+            SidechainDescription, SidechainNumber, SidechainProposal, WithdrawalBundleSafety,
         },
         validator::test_utils::{
             TestBlockParts, build_m5_deposit_tx, build_test_block, create_test_dbs,
-            test_block_header, test_m6id, test_sidechain,
+            test_blinded_m6, test_block_header, test_m6id, test_sidechain,
         },
     };
 
@@ -2641,12 +2828,12 @@ mod tests {
         let handler = test_handler(&dbs);
         let empty: BmmCommitments = LinkedHashMap::new();
         let err = handler
-            .handle_transaction(&rotxn, Some(&empty), &prev_hash, &tx)
+            .handle_transaction(&rotxn, 0, Some(&empty), &prev_hash, &tx)
             .expect_err("not-accepted M8 must error");
         assert!(!err.is_fatal());
 
         let err = handler
-            .handle_transaction(&rotxn, None, &dummy_block_hash(0xBB), &tx)
+            .handle_transaction(&rotxn, 0, None, &dummy_block_hash(0xBB), &tx)
             .expect_err("expired M8 must error");
         assert!(!err.is_fatal());
         Ok(())
@@ -2664,7 +2851,7 @@ mod tests {
         accepted.insert(sc, BmmCommitment([0x42; 32]));
 
         let result = test_handler(&dbs)
-            .handle_transaction(&rotxn, Some(&accepted), &prev_hash, &tx)
+            .handle_transaction(&rotxn, 0, Some(&accepted), &prev_hash, &tx)
             .into_diagnostic()?;
         assert!(result.is_none(), "valid M8 should not produce a tx event");
         Ok(())
@@ -3056,7 +3243,7 @@ mod tests {
         let rotxn = dbs.read_txn().into_diagnostic()?;
         assert!(
             test_handler(&dbs)
-                .handle_m5_m6(&rotxn, Cow::Borrowed(&build_plain_tx()))
+                .handle_m5_m6(&rotxn, 0, Cow::Borrowed(&build_plain_tx()))
                 .into_diagnostic()?
                 .is_none()
         );
@@ -3076,7 +3263,7 @@ mod tests {
         let tx = build_m5_deposit_tx(sc, OutPoint::default(), Amount::ZERO, deposit_amount);
 
         let result = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+            .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx))
             .into_diagnostic()?;
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) = result else {
             panic!("expected M5 deposit");
@@ -3119,7 +3306,7 @@ mod tests {
 
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) =
             test_handler(&dbs)
-                .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+                .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx))
                 .into_diagnostic()?
         else {
             panic!("expected M5 deposit");
@@ -3173,7 +3360,7 @@ mod tests {
 
         assert!(
             matches!(
-                test_handler(&dbs).handle_m5_m6(&rwtxn, Cow::Borrowed(&tx)),
+                test_handler(&dbs).handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx)),
                 Err(error::HandleM5M6::MissingDepositAddress { sidechain_number })
                     if sidechain_number == sc
             ),
@@ -3211,7 +3398,7 @@ mod tests {
             Amount::from_sat(1_000),
         );
         let err = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+            .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx))
             .expect_err("spending wrong outpoint must error");
         assert!(matches!(err, error::HandleM5M6::OldCtipUnspent { .. }));
         assert!(!err.is_fatal());
@@ -3256,7 +3443,7 @@ mod tests {
         };
 
         let err = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&theft_tx))
+            .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&theft_tx))
             .expect_err("spending a treasury without creating a new one must be invalid");
         assert!(matches!(
             err,
@@ -3343,7 +3530,7 @@ mod tests {
         );
         assert!(
             test_handler(&dbs)
-                .handle_m5_m6(&rotxn, Cow::Borrowed(&tx))
+                .handle_m5_m6(&rotxn, 0, Cow::Borrowed(&tx))
                 .into_diagnostic()?
                 .is_none(),
             "inactive-slot OP_DRIVECHAIN output must be ignored, not treated as a CTIP",
@@ -3790,7 +3977,7 @@ mod tests {
 
         let m6id = test_m6id(0xAA);
         let diff = test_handler(&dbs)
-            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .handle_m3_propose_bundle(&rwtxn, 0, sc, m6id)
             .into_diagnostic()?;
         diff.apply(&mut rwtxn, &dbs.active_sidechains, 0)
             .into_diagnostic()?;
@@ -3818,14 +4005,14 @@ mod tests {
         // Propose a bundle and apply it, so the m6id is pending.
         let m6id = test_m6id(0xAA);
         let diff = test_handler(&dbs)
-            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .handle_m3_propose_bundle(&rwtxn, 0, sc, m6id)
             .into_diagnostic()?;
         diff.apply(&mut rwtxn, &dbs.active_sidechains, 0)
             .into_diagnostic()?;
 
         // Re-proposing the same m6id is rejected.
         let err = test_handler(&dbs)
-            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .handle_m3_propose_bundle(&rwtxn, 0, sc, m6id)
             .expect_err("re-proposing a pending bundle must be rejected");
         assert!(matches!(
             err,
@@ -3837,7 +4024,7 @@ mod tests {
         // A different, not-yet-pending m6id is still accepted.
         assert!(
             test_handler(&dbs)
-                .handle_m3_propose_bundle(&rwtxn, sc, test_m6id(0xBB))
+                .handle_m3_propose_bundle(&rwtxn, 0, sc, test_m6id(0xBB))
                 .is_ok(),
             "a not-yet-pending bundle should be accepted"
         );
@@ -4564,6 +4751,632 @@ mod tests {
                 .expect("checking an empty queue must succeed"),
             "an empty queue below the target tip must be reported as a gap"
         );
+        Ok(())
+    }
+
+    // ── withdrawal bundle safety ──
+
+    const SAFETY_SLOT: SidechainNumber = SidechainNumber(1);
+    const THRESHOLDS_SHORT_PAYABLE: u16 =
+        Thresholds::SHORT.withdrawal_bundle_inclusion_threshold + 1;
+    const SAFETY_TREASURY: Amount = Amount::from_sat(1_000_000);
+
+    /// Regtest parameters, with the withdrawal bundle safety rules active
+    /// from genesis or never.
+    fn safety_params(activation_height: Option<u32>) -> NetworkParams {
+        let mut params = NetworkParams::for_network(bitcoin::Network::Regtest);
+        params.withdrawal_bundle_safety.activation_height = activation_height;
+        params
+    }
+
+    /// A chain of test blocks connected by one handler, starting from a
+    /// genesis block with [`SAFETY_SLOT`] active and funded.
+    struct SafetyChain<'a> {
+        handler: BlockHandler<'a>,
+        tip: BlockHash,
+        height: u32,
+        ctip: Ctip,
+    }
+
+    impl<'a> SafetyChain<'a> {
+        fn new(dbs: &'a Dbs, rwtxn: &mut RwTxn, active: bool) -> Result<Self> {
+            Self::with_activation_height(dbs, rwtxn, active.then_some(0))
+        }
+
+        fn with_activation_height(
+            dbs: &'a Dbs,
+            rwtxn: &mut RwTxn,
+            activation_height: Option<u32>,
+        ) -> Result<Self> {
+            let handler = BlockHandler::new(
+                dbs,
+                bitcoin::Network::Regtest,
+                safety_params(activation_height),
+            );
+            dbs.active_sidechains
+                .put_sidechain(rwtxn, &SAFETY_SLOT, &test_sidechain(SAFETY_SLOT.0, 0))
+                .into_diagnostic()?;
+            let ctip = Ctip {
+                outpoint: OutPoint {
+                    txid: Txid::from_byte_array([0xC7; 32]),
+                    vout: 0,
+                },
+                value: SAFETY_TREASURY,
+            };
+            let _: u64 = dbs
+                .active_sidechains
+                .put_ctip(rwtxn, SAFETY_SLOT, &ctip)
+                .into_diagnostic()?;
+            let mut chain = Self {
+                handler,
+                tip: BlockHash::all_zeros(),
+                height: 0,
+                ctip,
+            };
+            let _genesis: BlockInfo = chain
+                .connect(rwtxn, TestBlockParts::default())
+                .into_diagnostic()?;
+            Ok(chain)
+        }
+
+        /// Connect a block on the tip. On success, it is the new tip.
+        #[expect(clippy::result_large_err)]
+        fn connect(
+            &mut self,
+            rwtxn: &mut RwTxn,
+            parts: TestBlockParts,
+        ) -> Result<BlockInfo, error::ConnectBlock> {
+            let height = if self.tip == BlockHash::all_zeros() {
+                0
+            } else {
+                self.height + 1
+            };
+            let mut block = build_test_block(self.tip, parts);
+            // Regtest's minimum difficulty: the cumulative work of a long
+            // chain of `build_test_block`'s headers would overflow.
+            block.header.bits = bitcoin::CompactTarget::from_consensus(0x207f_ffff);
+            self.handler
+                .dbs
+                .block_hashes
+                .put_headers(rwtxn, &[(block.header, height)])
+                .expect("store header");
+            // As the sync does, connect in a child txn: a rejected block
+            // leaves no partial changes.
+            let mut child = self
+                .handler
+                .dbs
+                .nested_write_txn(rwtxn)
+                .expect("nested txn");
+            let Event::ConnectBlock { block_info, .. } =
+                self.handler.connect_block(&mut child, &block)?
+            else {
+                panic!("expected ConnectBlock event");
+            };
+            child.commit().expect("commit child txn");
+            self.tip = block.block_hash();
+            self.height = height;
+            Ok(block_info)
+        }
+
+        #[expect(clippy::result_large_err)]
+        fn connect_coinbase_msgs(
+            &mut self,
+            rwtxn: &mut RwTxn,
+            scripts: Vec<ScriptBuf>,
+        ) -> Result<BlockInfo, error::ConnectBlock> {
+            let extra_coinbase_outputs = scripts
+                .into_iter()
+                .map(|script_pubkey| TxOut {
+                    script_pubkey,
+                    value: Amount::ZERO,
+                })
+                .collect();
+            self.connect(
+                rwtxn,
+                TestBlockParts {
+                    extra_coinbase_outputs,
+                    ..Default::default()
+                },
+            )
+        }
+
+        /// Connect a block with an M6 paying `blinded_m6` out of the treasury.
+        #[expect(clippy::result_large_err)]
+        fn connect_payout(
+            &mut self,
+            rwtxn: &mut RwTxn,
+            blinded_m6: BlindedM6<'static>,
+        ) -> Result<BlockInfo, error::ConnectBlock> {
+            let m6 = blinded_m6
+                .into_m6(
+                    OpDrivechain::NOP5,
+                    SAFETY_SLOT,
+                    self.ctip.outpoint,
+                    self.ctip.value,
+                )
+                .expect("payout within the treasury");
+            let ctip = Ctip {
+                outpoint: OutPoint {
+                    txid: m6.compute_txid(),
+                    vout: 0,
+                },
+                value: m6.output[0].value,
+            };
+            let res = self.connect(
+                rwtxn,
+                TestBlockParts {
+                    extra_txs: vec![m6],
+                    ..Default::default()
+                },
+            )?;
+            self.ctip = ctip;
+            Ok(res)
+        }
+
+        fn disconnect_tip(&mut self, rwtxn: &mut RwTxn) -> Result<()> {
+            let header = self
+                .handler
+                .dbs
+                .block_hashes
+                .get_header_info(rwtxn, &self.tip)
+                .into_diagnostic()?;
+            self.handler
+                .disconnect_block(rwtxn, &mut Vec::new(), self.tip)
+                .into_diagnostic()?;
+            self.tip = header.prev_block_hash;
+            self.height -= 1;
+            Ok(())
+        }
+
+        fn pending(&self, rotxn: &RoTxn) -> Vec<(M6id, PendingM6idInfo)> {
+            self.handler
+                .dbs
+                .active_sidechains
+                .pending_m6ids()
+                .get(rotxn, &SAFETY_SLOT)
+                .expect("pending bundles of an active slot")
+                .into_iter()
+                .collect()
+        }
+
+        fn add_pending(&self, rwtxn: &mut RwTxn, m6id: M6id, vote_count: u16) {
+            let dbs = &self.handler.dbs.active_sidechains;
+            dbs.put_pending_m6id(rwtxn, &SAFETY_SLOT, m6id, self.height)
+                .unwrap();
+            dbs.with_pending_withdrawals(rwtxn, &SAFETY_SLOT, |pending| {
+                pending[&m6id].vote_count = vote_count;
+            })
+            .unwrap();
+        }
+    }
+
+    fn m3_script(m6id: M6id) -> ScriptBuf {
+        M3ProposeBundle {
+            sidechain_number: SAFETY_SLOT,
+            bundle_txid: m6id.0.to_byte_array(),
+        }
+        .try_into()
+        .expect("M3 script")
+    }
+
+    fn upvote_script(index: u8) -> ScriptBuf {
+        M4AckBundles::OneByte {
+            upvotes: vec![index],
+        }
+        .try_into()
+        .expect("M4 script")
+    }
+
+    fn withdrawal_bundle_events(block_info: &BlockInfo) -> Vec<(M6id, bool)> {
+        block_info
+            .withdrawal_bundle_events()
+            .filter_map(|event| match event.kind {
+                WithdrawalBundleEventKind::Succeeded { .. } => Some((event.m6id, true)),
+                WithdrawalBundleEventKind::Failed => Some((event.m6id, false)),
+                WithdrawalBundleEventKind::Submitted => None,
+            })
+            .collect()
+    }
+
+    /// Attack: a slot holds two approved bundles carrying the same
+    /// withdrawals (e.g. a copy left by a sidechain reorg). Before the safety
+    /// rules, paying one leaves the other pending and payable, so a majority
+    /// of the hashrate can pay the same withdrawals twice. After, paying one
+    /// fails the other, so it can never be paid.
+    #[test]
+    fn single_payout_fails_the_other_pending_bundles() -> Result<()> {
+        let first = test_blinded_m6(1_000, Amount::from_sat(50_000));
+        let copy = test_blinded_m6(1_000, Amount::from_sat(50_001));
+        let (first_id, copy_id) = (first.compute_m6id(), copy.compute_m6id());
+        for active in [false, true] {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let mut chain = SafetyChain::new(&dbs, &mut rwtxn, active)?;
+            chain.add_pending(&mut rwtxn, first_id, THRESHOLDS_SHORT_PAYABLE);
+            chain.add_pending(&mut rwtxn, copy_id, THRESHOLDS_SHORT_PAYABLE);
+
+            let block_info = chain
+                .connect_payout(&mut rwtxn, first.clone())
+                .into_diagnostic()?;
+            if !active {
+                assert_eq!(withdrawal_bundle_events(&block_info), [(first_id, true)]);
+                let pending = chain.pending(&rwtxn);
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending[0].0, copy_id);
+                // The double payout goes through.
+                chain
+                    .connect_payout(&mut rwtxn, copy.clone())
+                    .into_diagnostic()?;
+                continue;
+            }
+            assert_eq!(
+                withdrawal_bundle_events(&block_info),
+                [(first_id, true), (copy_id, false)]
+            );
+            assert!(chain.pending(&rwtxn).is_empty());
+            assert_eq!(
+                dbs.active_sidechains
+                    .paid_m6ids()
+                    .try_get(&rwtxn, &(SAFETY_SLOT, first_id))
+                    .into_diagnostic()?,
+                Some(vec![chain.height])
+            );
+            // The copy can no longer be paid.
+            let err = chain
+                .connect_payout(&mut rwtxn, copy.clone())
+                .expect_err("paying the failed copy must be invalid");
+            assert!(!err.is_fatal(), "{err:#}");
+
+            // A reorg across the payout restores both bundles, in order, and
+            // forgets the payout.
+            chain.disconnect_tip(&mut rwtxn)?;
+            let pending: Vec<M6id> = chain.pending(&rwtxn).into_iter().map(|(m, _)| m).collect();
+            assert_eq!(pending, [first_id, copy_id]);
+            assert_eq!(
+                dbs.active_sidechains
+                    .paid_m6ids()
+                    .try_get(&rwtxn, &(SAFETY_SLOT, first_id))
+                    .into_diagnostic()?,
+                None
+            );
+        }
+        Ok(())
+    }
+
+    /// Attack: once a bundle is paid, proposing (M3) it again and voting it
+    /// back up would pay it twice. After activation, such an M3 is invalid.
+    #[test]
+    fn paid_bundle_cannot_be_proposed_again() -> Result<()> {
+        let bundle = test_blinded_m6(1_000, Amount::from_sat(50_000));
+        let m6id = bundle.compute_m6id();
+        for active in [false, true] {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let mut chain = SafetyChain::new(&dbs, &mut rwtxn, active)?;
+            chain.add_pending(&mut rwtxn, m6id, THRESHOLDS_SHORT_PAYABLE);
+            chain
+                .connect_payout(&mut rwtxn, bundle.clone())
+                .into_diagnostic()?;
+
+            let res = chain.connect_coinbase_msgs(&mut rwtxn, vec![m3_script(m6id)]);
+            if active {
+                assert!(
+                    matches!(
+                        res,
+                        Err(error::ConnectBlock::M3ProposeBundle(
+                            error::HandleM3ProposeBundle::BundleAlreadyPaid { .. }
+                        ))
+                    ),
+                    "{res:?}"
+                );
+            } else {
+                res.into_diagnostic()?;
+                assert_eq!(chain.pending(&rwtxn).len(), 1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Attack: a single miner proposes a bundle nobody else backs, stalling
+    /// the sidechain's withdrawals and refunds (which wait on what is
+    /// pending) for the whole `withdrawal_bundle_max_age`. After activation
+    /// it fails once `upvote_expiry_blocks` blocks in a row did not upvote
+    /// it, unless the miner keeps upvoting it.
+    #[test]
+    fn bundle_fails_after_blocks_without_an_upvote() -> Result<()> {
+        let n = WithdrawalBundleSafety::SHORT.upvote_expiry_blocks;
+        let max_age = u32::from(Thresholds::SHORT.withdrawal_bundle_max_age);
+        let m6id = test_m6id(0xAB);
+        for active in [false, true] {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let mut chain = SafetyChain::new(&dbs, &mut rwtxn, active)?;
+            chain
+                .connect_coinbase_msgs(&mut rwtxn, vec![m3_script(m6id)])
+                .into_diagnostic()?;
+            let proposal_height = chain.height;
+            let failed_at = loop {
+                let block_info = chain
+                    .connect(&mut rwtxn, TestBlockParts::default())
+                    .into_diagnostic()?;
+                if !withdrawal_bundle_events(&block_info).is_empty() {
+                    assert_eq!(withdrawal_bundle_events(&block_info), [(m6id, false)]);
+                    break chain.height - proposal_height;
+                }
+            };
+            assert_eq!(failed_at, if active { n } else { max_age + 1 });
+        }
+
+        // An upvote within every window keeps it pending.
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let mut chain = SafetyChain::new(&dbs, &mut rwtxn, true)?;
+        chain
+            .connect_coinbase_msgs(&mut rwtxn, vec![m3_script(m6id)])
+            .into_diagnostic()?;
+        for i in 1..=max_age {
+            let scripts = if i % n == 0 {
+                vec![upvote_script(0)]
+            } else {
+                Vec::new()
+            };
+            chain
+                .connect_coinbase_msgs(&mut rwtxn, scripts)
+                .into_diagnostic()?;
+            assert_eq!(chain.pending(&rwtxn).len(), 1, "failed after {i} blocks");
+        }
+        Ok(())
+    }
+
+    /// A bundle at a vote count of 0 (downvoted by ALARMs or by upvotes of
+    /// its rivals) fails once it is `idle_expiry_blocks` old, even if a miner
+    /// upvotes it often enough to escape the upvote expiry.
+    #[test]
+    fn bundle_at_zero_votes_fails_once_idle_expiry_old() -> Result<()> {
+        let m = WithdrawalBundleSafety::SHORT.idle_expiry_blocks;
+        let alarm: ScriptBuf = M4AckBundles::OneByte {
+            upvotes: vec![M4AckBundles::ALARM_ONE_BYTE],
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let m6id = test_m6id(0xAC);
+        for active in [false, true] {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let mut chain = SafetyChain::new(&dbs, &mut rwtxn, active)?;
+            chain.add_pending(&mut rwtxn, m6id, 0);
+            // Upvoted (to 1) at odd ages, ALARMed (back to 0) at even ones.
+            let mut age = 0;
+            let failed_at = loop {
+                age += 1;
+                let script = if age % 2 == 1 {
+                    upvote_script(0)
+                } else {
+                    alarm.clone()
+                };
+                let block_info = chain
+                    .connect_coinbase_msgs(&mut rwtxn, vec![script])
+                    .into_diagnostic()?;
+                if !withdrawal_bundle_events(&block_info).is_empty() {
+                    assert_eq!(withdrawal_bundle_events(&block_info), [(m6id, false)]);
+                    break age;
+                }
+            };
+            // The first block at 0 votes and at least `m` old.
+            let expected = if active {
+                m + m % 2
+            } else {
+                u32::from(Thresholds::SHORT.withdrawal_bundle_max_age) + 1
+            };
+            assert_eq!(failed_at, expected);
+        }
+        Ok(())
+    }
+
+    /// The rules activate on a chain with history: payouts made before the
+    /// activation height count. At the activation block, a bundle that was
+    /// pending when (or proposed in the block where) its slot last paid out
+    /// fails, as single payout would have failed it, and so does a paid
+    /// bundle proposed again; a bundle proposed after the payout is unaffected.
+    #[test]
+    fn activation_block_applies_the_rules_to_earlier_payouts() -> Result<()> {
+        let paid = test_blinded_m6(1_000, Amount::from_sat(50_000));
+        let paid_id = paid.compute_m6id();
+        let leftover = test_m6id(0xD1);
+        let later = test_m6id(0xD2);
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let activation_height = 4;
+        let mut chain =
+            SafetyChain::with_activation_height(&dbs, &mut rwtxn, Some(activation_height))?;
+        chain.add_pending(&mut rwtxn, paid_id, THRESHOLDS_SHORT_PAYABLE);
+        chain.add_pending(&mut rwtxn, leftover, THRESHOLDS_SHORT_PAYABLE);
+        // Height 1: before activation, the payout leaves `leftover` pending.
+        chain
+            .connect_payout(&mut rwtxn, paid.clone())
+            .into_diagnostic()?;
+        assert_eq!(chain.pending(&rwtxn).len(), 1);
+        // Height 2: the paid bundle is proposed again, which is still valid.
+        chain
+            .connect_coinbase_msgs(&mut rwtxn, vec![m3_script(paid_id)])
+            .into_diagnostic()?;
+        // Height 3: a new bundle, proposed after the payout.
+        chain
+            .connect_coinbase_msgs(&mut rwtxn, vec![m3_script(later)])
+            .into_diagnostic()?;
+        assert_eq!(chain.pending(&rwtxn).len(), 3);
+        // Height 4: activation.
+        let block_info = chain
+            .connect_coinbase_msgs(&mut rwtxn, vec![upvote_script(2)])
+            .into_diagnostic()?;
+        assert_eq!(chain.height, activation_height);
+        let mut failed = withdrawal_bundle_events(&block_info);
+        failed.sort_by_key(|(m6id, _)| *m6id == paid_id);
+        assert_eq!(failed, [(leftover, false), (paid_id, false)]);
+        let pending: Vec<M6id> = chain.pending(&rwtxn).into_iter().map(|(m, _)| m).collect();
+        assert_eq!(pending, [later]);
+        Ok(())
+    }
+
+    /// A paid bundle that is pending again once the rules apply cannot be
+    /// paid a second time (the activation block fails it in any case, so this
+    /// is checked directly).
+    #[test]
+    fn paid_bundle_pending_again_cannot_be_paid_after_activation() -> Result<()> {
+        let bundle = test_blinded_m6(1_000, Amount::from_sat(50_000));
+        let m6id = bundle.compute_m6id();
+        for active in [false, true] {
+            let (_dir, dbs) = create_test_dbs()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let chain = SafetyChain::new(&dbs, &mut rwtxn, active)?;
+            chain.add_pending(&mut rwtxn, m6id, THRESHOLDS_SHORT_PAYABLE);
+            dbs.active_sidechains
+                .add_paid_height(&mut rwtxn, (SAFETY_SLOT, m6id), 0)
+                .into_diagnostic()?;
+            let m6 = bundle
+                .clone()
+                .into_m6(
+                    OpDrivechain::NOP5,
+                    SAFETY_SLOT,
+                    chain.ctip.outpoint,
+                    chain.ctip.value,
+                )
+                .into_diagnostic()?;
+            let res = chain.handler.handle_m5_m6(&rwtxn, 1, Cow::Borrowed(&m6));
+            if active {
+                assert!(
+                    matches!(
+                        res,
+                        Err(error::HandleM5M6::InvalidM6(
+                            error::InvalidM6::AlreadyPaid { .. }
+                        ))
+                    ),
+                    "{res:?}"
+                );
+            } else {
+                assert!(res.into_diagnostic()?.is_some());
+            }
+        }
+        Ok(())
+    }
+
+    /// Payouts connected by an earlier version are recorded from the stored
+    /// block events when the DBs are first opened by this version, and kept
+    /// across restarts.
+    #[test]
+    fn paid_m6ids_are_backfilled_from_block_events() -> Result<()> {
+        let bundle = test_blinded_m6(1_000, Amount::from_sat(50_000));
+        let m6id = bundle.compute_m6id();
+        let dir = temp_dir::TempDir::new().into_diagnostic()?;
+        {
+            let dbs = Dbs::new(dir.path(), bitcoin::Network::Regtest).into_diagnostic()?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let mut chain = SafetyChain::new(&dbs, &mut rwtxn, false)?;
+            chain.add_pending(&mut rwtxn, m6id, THRESHOLDS_SHORT_PAYABLE);
+            chain.connect_payout(&mut rwtxn, bundle).into_diagnostic()?;
+            let paid_height = chain.height;
+            // Forget the payout, as a version predating `paid_m6ids` would
+            // not have recorded it, and let the backfill run again.
+            dbs.active_sidechains
+                .remove_paid_height(&mut rwtxn, (SAFETY_SLOT, m6id), paid_height)
+                .into_diagnostic()?;
+            dbs._paid_m6ids_backfilled
+                .delete(&mut rwtxn, &())
+                .into_diagnostic()?;
+            rwtxn.commit().into_diagnostic()?;
+            drop(dbs);
+            let dbs = Dbs::new(dir.path(), bitcoin::Network::Regtest).into_diagnostic()?;
+            let rotxn = dbs.read_txn().into_diagnostic()?;
+            assert_eq!(
+                dbs.active_sidechains
+                    .paid_m6ids()
+                    .try_get(&rotxn, &(SAFETY_SLOT, m6id))
+                    .into_diagnostic()?,
+                Some(vec![paid_height])
+            );
+            drop(rotxn);
+            drop(dbs);
+            // Later restarts neither run the backfill again nor lose records.
+            let dbs = Dbs::new(dir.path(), bitcoin::Network::Regtest).into_diagnostic()?;
+            let rotxn = dbs.read_txn().into_diagnostic()?;
+            assert_eq!(
+                dbs.active_sidechains
+                    .paid_m6ids()
+                    .try_get(&rotxn, &(SAFETY_SLOT, m6id))
+                    .into_diagnostic()?,
+                Some(vec![paid_height])
+            );
+        }
+        Ok(())
+    }
+
+    /// A bundle paid twice before activation keeps the record of its first
+    /// payout when a reorg undoes the second, and the rules then fail it,
+    /// also after a reorg across the activation height.
+    #[test]
+    fn paid_record_survives_reorg_of_a_second_payout() -> Result<()> {
+        let bundle = test_blinded_m6(1_000, Amount::from_sat(50_000));
+        let m6id = bundle.compute_m6id();
+        let key = (SAFETY_SLOT, m6id);
+        let activation_height = 5;
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let mut chain =
+            SafetyChain::with_activation_height(&dbs, &mut rwtxn, Some(activation_height))?;
+        let paid_heights = |rotxn: &RoTxn| {
+            dbs.active_sidechains
+                .paid_m6ids()
+                .try_get(rotxn, &key)
+                .unwrap()
+                .unwrap_or_default()
+        };
+        // Paid at height 1, proposed again at 2, paid again at 3.
+        chain.add_pending(&mut rwtxn, m6id, THRESHOLDS_SHORT_PAYABLE);
+        chain
+            .connect_payout(&mut rwtxn, bundle.clone())
+            .into_diagnostic()?;
+        chain
+            .connect_coinbase_msgs(&mut rwtxn, vec![m3_script(m6id)])
+            .into_diagnostic()?;
+        chain.add_pending(&mut rwtxn, m6id, THRESHOLDS_SHORT_PAYABLE);
+        let ctip_before_second_payout = chain.ctip;
+        chain
+            .connect_payout(&mut rwtxn, bundle.clone())
+            .into_diagnostic()?;
+        assert_eq!(paid_heights(&rwtxn), [1, 3]);
+
+        // A reorg undoes the second payout only.
+        chain.disconnect_tip(&mut rwtxn)?;
+        chain.ctip = ctip_before_second_payout;
+        assert_eq!(paid_heights(&rwtxn), [1]);
+        assert_eq!(chain.pending(&rwtxn).len(), 1);
+
+        // Up to the activation block, which fails the paid bundle.
+        let connect_to_activation = |chain: &mut SafetyChain<'_>, rwtxn: &mut RwTxn| {
+            while chain.height < activation_height {
+                chain
+                    .connect(rwtxn, TestBlockParts::default())
+                    .expect("connect");
+            }
+        };
+        connect_to_activation(&mut chain, &mut rwtxn);
+        assert!(chain.pending(&rwtxn).is_empty());
+        // Paying it now is invalid.
+        let err = chain
+            .connect_payout(&mut rwtxn, bundle.clone())
+            .expect_err("a paid bundle cannot be paid again");
+        assert!(!err.is_fatal(), "{err:#}");
+
+        // A deep reorg across the activation height restores it, and
+        // reconnecting fails it again.
+        while chain.height > 2 {
+            chain.disconnect_tip(&mut rwtxn)?;
+        }
+        assert_eq!(chain.pending(&rwtxn).len(), 1);
+        assert_eq!(paid_heights(&rwtxn), [1]);
+        connect_to_activation(&mut chain, &mut rwtxn);
+        assert!(chain.pending(&rwtxn).is_empty());
+        assert_eq!(paid_heights(&rwtxn), [1]);
         Ok(())
     }
 }
