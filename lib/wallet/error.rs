@@ -769,6 +769,8 @@ pub enum CreateDeposit {
     BroadcastUnsuccessful { txid: bitcoin::Txid },
     #[error("failed to convert sidechain address to PushBytesBuf")]
     ConvertSidechainAddress(#[source] bitcoin::script::PushBytesError),
+    #[error("sidechain address is {len} bytes long, above the maximum of {max} bytes")]
+    SidechainAddressTooLong { len: usize, max: usize },
     #[error(transparent)]
     OutputAmountOverflow(#[from] crate::types::AmountOverflowError),
     #[error(transparent)]
@@ -794,6 +796,9 @@ impl ToStatus for CreateDeposit {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
             Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
+            Self::SidechainAddressTooLong { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
+            }
             Self::OutputAmountOverflow(err) => err.builder(),
             Self::ApplyUnconfirmedTx(err) => err.builder(),
             Self::Psbt(err) => err.builder(),

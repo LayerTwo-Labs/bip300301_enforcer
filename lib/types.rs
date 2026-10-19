@@ -104,6 +104,69 @@ impl Thresholds {
     }
 }
 
+/// Limits on BIP 300 messages, on top of the spec:
+///
+/// * a sidechain slot holds at most `max_pending_bundles` pending withdrawal
+///   bundles. An M3 into a full slot fails the slot's weakest bundle (lowest
+///   vote count, oldest first) if that one has at most the vote count of a
+///   new bundle (1), and is invalid otherwise;
+/// * a block proposes (M3) at most one bundle per sidechain slot;
+/// * an M4 in the two-byte form must need it: at least one vote must be a
+///   bundle index above [`M4AckBundles::MAX_ONE_BYTE_UPVOTE`]. Abstain and
+///   alarm have one-byte forms;
+/// * a deposit (M5) names a sidechain destination of at most
+///   `max_deposit_address_bytes` bytes;
+/// * a transaction creates at most one treasury output.
+///
+/// These change block validity, so they apply from a per-network activation
+/// height.
+///
+/// [`M4AckBundles::MAX_ONE_BYTE_UPVOTE`]: crate::messages::M4AckBundles::MAX_ONE_BYTE_UPVOTE
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessageLimits {
+    /// First block height at which the limits apply. `None`: never.
+    pub activation_height: Option<u32>,
+    pub max_pending_bundles: u16,
+    pub max_deposit_address_bytes: usize,
+}
+
+impl MessageLimits {
+    /// A miner can propose one bundle per slot per block, so without a cap
+    /// the pending list (which every M4 indexes, and every node keeps and
+    /// re-serializes on each vote) grows without bound for as long as
+    /// `withdrawal_bundle_max_age`. 64 leaves ample room for honest bundles
+    /// (a sidechain normally has one, or a few after a reorg), and the
+    /// eviction of weak bundles keeps a spammer from filling it.
+    /// 100 bytes is enough for any sidechain address format in use.
+    pub const DEFAULT: Self = Self {
+        activation_height: None,
+        max_pending_bundles: 64,
+        max_deposit_address_bytes: 100,
+    };
+
+    #[inline]
+    pub const fn for_network(network: bitcoin::Network) -> Self {
+        match network {
+            // A regtest chain is local and disposable, so the limits apply
+            // from genesis.
+            bitcoin::Network::Regtest => Self {
+                activation_height: Some(0),
+                ..Self::DEFAULT
+            },
+            _ => Self::DEFAULT,
+        }
+    }
+
+    /// Whether the limits apply to the block at `height`.
+    #[inline]
+    pub const fn is_active(&self, height: u32) -> bool {
+        match self.activation_height {
+            Some(activation_height) => height >= activation_height,
+            None => false,
+        }
+    }
+}
+
 /// Resolved network parameters: the BIP 300 [`Thresholds`] plus, for the
 /// mainnet-fork presets, the height at which BIP 300/301 enforcement
 /// activates. Selected either implicitly from the node's reported network, or
@@ -123,6 +186,7 @@ pub struct NetworkParams {
     pub network_magic: Option<[u8; 4]>,
     /// The opcode the node's build reserves for `OP_DRIVECHAIN`.
     pub op_drivechain: OpDrivechain,
+    pub message_limits: MessageLimits,
 }
 
 impl NetworkParams {
@@ -135,6 +199,7 @@ impl NetworkParams {
             datadir_suffix: None,
             network_magic: None,
             op_drivechain: OpDrivechain::NOP5,
+            message_limits: MessageLimits::for_network(network),
         }
     }
 
@@ -149,6 +214,7 @@ impl NetworkParams {
             datadir_suffix: Some("alphanet"),
             network_magic: Some([0xec, 0xa5, 0xa1, 0x04]),
             op_drivechain: OpDrivechain::NOP5,
+            message_limits: MessageLimits::DEFAULT,
         }
     }
 
@@ -164,6 +230,7 @@ impl NetworkParams {
             datadir_suffix: Some("betanet"),
             network_magic: Some([0xec, 0xa5, 0xb1, 0x04]),
             op_drivechain: OpDrivechain::NOP8,
+            message_limits: MessageLimits::DEFAULT,
         }
     }
 
@@ -176,6 +243,10 @@ impl NetworkParams {
             datadir_suffix: Some("test-activation"),
             network_magic: None,
             op_drivechain: OpDrivechain::NOP5,
+            message_limits: MessageLimits {
+                activation_height: Some(10),
+                ..MessageLimits::DEFAULT
+            },
         }
     }
 }
@@ -1273,9 +1344,37 @@ mod tests {
     use miette::Diagnostic as _;
 
     use crate::types::{
-        BlindedM6, M6id, SidechainDeclaration, SidechainNumber, SidechainProposal, Thresholds,
-        WithdrawalBundlePolicy, WithdrawalBundleVote,
+        BlindedM6, M6id, MessageLimits, NetworkParams, SidechainDeclaration, SidechainNumber,
+        SidechainProposal, Thresholds, WithdrawalBundlePolicy, WithdrawalBundleVote,
     };
+
+    /// The message limits change block validity, so they must stay off on
+    /// every network with a live chain until an activation height is agreed
+    /// on, and are on from genesis on regtest.
+    #[test]
+    fn message_limits_activation() {
+        for network in [
+            bitcoin::Network::Bitcoin,
+            bitcoin::Network::Signet,
+            bitcoin::Network::Testnet,
+            bitcoin::Network::Testnet4,
+        ] {
+            let limits = NetworkParams::for_network(network).message_limits;
+            assert_eq!(limits.activation_height, None, "{network}");
+            assert!(!limits.is_active(u32::MAX), "{network}");
+        }
+        for params in [NetworkParams::alphanet(), NetworkParams::betanet()] {
+            assert_eq!(params.message_limits.activation_height, None);
+        }
+        let regtest = NetworkParams::for_network(bitcoin::Network::Regtest);
+        assert!(regtest.message_limits.is_active(0));
+        let at_10 = MessageLimits {
+            activation_height: Some(10),
+            ..MessageLimits::DEFAULT
+        };
+        assert!(!at_10.is_active(9));
+        assert!(at_10.is_active(10));
+    }
 
     #[test]
     fn unused_slot_activation_boundary() {

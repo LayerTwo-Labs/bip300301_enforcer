@@ -8,7 +8,7 @@ use crate::{
     messages::{CoinbaseBuilder, CoinbaseMessage, CoinbaseMessages, M4AckBundles},
     types::{
         AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, M6id, NetworkParams,
-        OpDrivechain, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
+        OpDrivechain, PendingM6idInfo, Sidechain, SidechainAck, SidechainNumber, SidechainProposal,
         SidechainProposalId, WithdrawalBundlePolicy, WithdrawalBundleVote,
     },
 };
@@ -320,13 +320,6 @@ impl BlockProducer {
         }
 
         let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
-        for (sidechain_id, m6ids) in &bundle_proposals {
-            for (m6id, _blinded_m6, m6id_info) in m6ids {
-                if m6id_info.is_none() {
-                    coinbase_builder.propose_bundle(*sidechain_id, *m6id)?;
-                }
-            }
-        }
 
         // Ack bundles (BIP300 M4), one vote per active sidechain in the same
         // order the validator reads them back.
@@ -358,8 +351,81 @@ impl BlockProducer {
         {
             coinbase_builder.ack_bundles(M4AckBundles::from_votes(&bundle_votes))?;
         }
+
+        // Propose bundles (BIP300 M3) after the M4: the validator handles
+        // coinbase messages in order, and an M3 into a full slot fails a
+        // bundle, which would shift the indices the M4 votes by.
+        let limits = self.validator().network_params().message_limits;
+        let limits_active = limits.is_active(next_height);
+        for (sidechain_id, m6ids) in &bundle_proposals {
+            for (m6id, _blinded_m6, m6id_info) in m6ids {
+                if m6id_info.is_some() {
+                    continue;
+                }
+                if limits_active {
+                    let pending = self.validator().get_pending_withdrawals(sidechain_id)?;
+                    let vote = active_sidechains
+                        .iter()
+                        .position(|sidechain| sidechain.proposal.sidechain_number == *sidechain_id)
+                        .and_then(|index| bundle_votes.get(index))
+                        .copied()
+                        .unwrap_or(WithdrawalBundleVote::Abstain);
+                    if !Self::slot_has_room(&pending, vote, limits.max_pending_bundles) {
+                        tracing::debug!(
+                            %sidechain_id,
+                            %m6id,
+                            "not proposing a withdrawal bundle: the slot is full of voted bundles"
+                        );
+                        break;
+                    }
+                }
+                coinbase_builder.propose_bundle(*sidechain_id, *m6id)?;
+                // At most one M3 per slot per block
+                if limits_active {
+                    break;
+                }
+            }
+        }
         let () = coinbase_builder.build()?;
         Ok(())
+    }
+
+    /// Whether an M3 into a slot with `pending` bundles is valid in a block
+    /// that casts `vote` for the slot first: the slot has room, or once the
+    /// vote is applied its weakest bundle has at most the votes of a new
+    /// bundle (1), and fails to make room.
+    fn slot_has_room(
+        pending: &ordermap::OrderMap<M6id, PendingM6idInfo>,
+        vote: WithdrawalBundleVote,
+        max_pending_bundles: u16,
+    ) -> bool {
+        if pending.len() < max_pending_bundles as usize {
+            return true;
+        }
+        // Mirrors the validator's M4 handling: an upvote raises its target
+        // and lowers the others, unless the target is saturated (no vote at
+        // all); an alarm lowers them all.
+        let upvote_target = match vote {
+            WithdrawalBundleVote::Upvote(index) => pending
+                .get_index(index as usize)
+                .filter(|(_, info)| info.vote_count < u16::MAX)
+                .map(|(m6id, _)| *m6id),
+            WithdrawalBundleVote::Abstain | WithdrawalBundleVote::Alarm => None,
+        };
+        let lowers_all = upvote_target.is_some() || vote == WithdrawalBundleVote::Alarm;
+        pending
+            .iter()
+            .map(|(m6id, info)| {
+                if Some(*m6id) == upvote_target {
+                    info.vote_count + 1
+                } else if lowers_all {
+                    info.vote_count.saturating_sub(1)
+                } else {
+                    info.vote_count
+                }
+            })
+            .min()
+            .is_some_and(|weakest| weakest <= 1)
     }
 
     /// One M4 vote per active sidechain, in active-sidechain order, plus the
@@ -566,11 +632,61 @@ mod tests {
     use crate::{
         block_producer::{BlockProducer, BundleProposals},
         types::{
-            AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, NetworkParams,
+            AckAllProposalsPolicy, AmountUnderflowError, BlindedM6, Ctip, M6id, NetworkParams,
             OpDrivechain, PendingM6idInfo, SidechainAck, SidechainDescription, SidechainNumber,
-            SidechainProposal, Thresholds,
+            SidechainProposal, Thresholds, WithdrawalBundleVote,
         },
     };
+
+    /// The block producer only proposes a bundle into a full slot if the M3
+    /// is valid: after the block's own vote for the slot, which comes first in
+    /// the coinbase, the weakest bundle has at most one vote.
+    #[test]
+    fn slot_has_room_after_the_blocks_own_vote() {
+        let pending = |votes: &[u16]| -> ordermap::OrderMap<M6id, PendingM6idInfo> {
+            votes
+                .iter()
+                .enumerate()
+                .map(|(i, vote_count)| {
+                    let m6id = M6id(Txid::from_byte_array([i as u8; 32]));
+                    let info = PendingM6idInfo {
+                        vote_count: *vote_count,
+                        proposal_height: 0,
+                    };
+                    (m6id, info)
+                })
+                .collect()
+        };
+        use WithdrawalBundleVote::{Abstain, Alarm, Upvote};
+        // Not full
+        assert!(BlockProducer::slot_has_room(&pending(&[5, 5]), Abstain, 3));
+        // Full of voted bundles
+        assert!(!BlockProducer::slot_has_room(
+            &pending(&[2, 5, 5]),
+            Abstain,
+            3
+        ));
+        // An unvoted bundle can be failed
+        assert!(BlockProducer::slot_has_room(
+            &pending(&[5, 1, 5]),
+            Abstain,
+            3
+        ));
+        // Upvoting the only weak bundle leaves none ...
+        assert!(!BlockProducer::slot_has_room(
+            &pending(&[1, 5, 5]),
+            Upvote(0),
+            3
+        ));
+        // ... while upvoting another lowers a bundle at 2 to 1
+        assert!(BlockProducer::slot_has_room(
+            &pending(&[2, 5, 5]),
+            Upvote(1),
+            3
+        ));
+        // An alarm lowers them all
+        assert!(BlockProducer::slot_has_room(&pending(&[2, 5, 5]), Alarm, 3));
+    }
 
     fn test_proposal(sidechain_number: SidechainNumber, description: &[u8]) -> SidechainProposal {
         SidechainProposal {

@@ -1236,6 +1236,16 @@ impl Wallet {
             .validator()
             .try_get_block_height()?
             .unwrap_or_default();
+        // A deposit naming a longer address could never be mined
+        let limits = self.inner.validator().network_params().message_limits;
+        if limits.is_active(block_height.saturating_add(1))
+            && sidechain_address.len() > limits.max_deposit_address_bytes
+        {
+            return Err(error::CreateDeposit::SidechainAddressTooLong {
+                len: sidechain_address.len(),
+                max: limits.max_deposit_address_bytes,
+            });
+        }
         // If this is None, there's been no deposit to this sidechain yet. We're the first one!
         let sidechain_ctip = self.inner.validator().try_get_ctip(sidechain_number)?;
         let sidechain_ctip = sidechain_ctip.as_ref();

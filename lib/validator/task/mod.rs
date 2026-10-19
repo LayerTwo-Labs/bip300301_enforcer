@@ -108,7 +108,7 @@ enum DepositsOrSuccessfulWithdrawal {
 #[derive(Debug)]
 enum CoinbaseMessageEvent {
     NewSidechainProposal { sidechain: Sidechain },
-    WithdrawalBundle(WithdrawalBundleEvent),
+    WithdrawalBundles(Vec<WithdrawalBundleEvent>),
 }
 
 #[derive(Debug)]
@@ -360,15 +360,19 @@ impl BlockHandler<'_> {
     }
 
     /// BIP 300 M3 (Propose Bundle). Adds a new pending withdrawal bundle for an
-    /// active sidechain; rejects proposals for inactive slots.
+    /// active sidechain; rejects proposals for inactive slots. Once the
+    /// [`MessageLimits`](crate::types::MessageLimits) apply, a proposal into a
+    /// full slot fails the slot's weakest bundle if that one has no more
+    /// votes than a new bundle, and is rejected otherwise.
     ///
     /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#m3-propose-bundle>
     fn handle_m3_propose_bundle(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         sidechain_number: SidechainNumber,
         m6id: M6id,
-    ) -> Result<diff::ProposeBundle, error::HandleM3ProposeBundle> {
+    ) -> Result<diff::CoinbaseMsg, error::HandleM3ProposeBundle> {
         let dbs = self.dbs;
         if !dbs
             .active_sidechains
@@ -390,10 +394,38 @@ impl BlockHandler<'_> {
                 m6id,
             });
         }
-        Ok(diff::ProposeBundle {
+        let propose = diff::ProposeBundle {
             m6id,
             sidechain_number,
-        })
+        };
+        let limits = self.params.message_limits;
+        if !limits.is_active(height) || pending.len() < limits.max_pending_bundles as usize {
+            return Ok(diff::CoinbaseMsg::ProposeBundle(propose));
+        }
+        // A full slot makes room by failing its weakest bundle, but only one
+        // nobody voted up: otherwise a miner could fill the slot with bundles
+        // nobody votes for and keep every honest bundle out. A bundle with
+        // votes is never pushed out.
+        let new_bundle_votes = PendingM6idInfo::new(height).vote_count;
+        let weakest = pending
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (_, info))| info.vote_count)
+            .filter(|(_, (_, info))| info.vote_count <= new_bundle_votes);
+        let Some((evicted_index, (evicted_m6id, evicted_info))) = weakest else {
+            return Err(error::HandleM3ProposeBundle::TooManyPendingBundles {
+                sidechain_number,
+                max: limits.max_pending_bundles,
+            });
+        };
+        Ok(diff::CoinbaseMsg::ProposeBundleEvicting(
+            diff::ProposeBundleEvicting {
+                propose,
+                evicted_index,
+                evicted_m6id: *evicted_m6id,
+                evicted_info: *evicted_info,
+            },
+        ))
     }
 
     /// Core M4 upvote resolver: for each active sidechain, interprets the vote
@@ -590,6 +622,7 @@ impl BlockHandler<'_> {
     fn handle_m4_ack_bundles(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         prev_block_hash: BlockHash,
         m4: &M4AckBundles,
     ) -> Result<diff::AckBundles, error::HandleM4AckBundles> {
@@ -613,8 +646,24 @@ impl BlockHandler<'_> {
             M4AckBundles::TwoBytes { upvotes } => {
                 // BIP 300 M4: TwoBytes is only allowed if at least one element
                 // exceeds the one-byte range.
-                if upvotes.iter().all(|v| *v <= 253) {
+                if upvotes
+                    .iter()
+                    .all(|v| *v <= M4AckBundles::MAX_ONE_BYTE_UPVOTE)
+                {
                     return Err(error::HandleM4AckBundles::TwoBytesWithinByteRange);
+                }
+                // Canonical votes (`MessageLimits`): the two-byte form must
+                // need two bytes, i.e. carry a bundle index above the one-byte
+                // range. Abstain and alarm have one-byte forms, so a message
+                // of only those (and small indices) has a shorter encoding.
+                if self.params.message_limits.is_active(height)
+                    && !upvotes.iter().any(|v| {
+                        *v > M4AckBundles::MAX_ONE_BYTE_UPVOTE
+                            && *v != M4AckBundles::ABSTAIN_TWO_BYTES
+                            && *v != M4AckBundles::ALARM_TWO_BYTES
+                    })
+                {
+                    return Err(error::HandleM4AckBundles::TwoBytesNotNeeded);
                 }
                 self.handle_m4_votes(rotxn, upvotes)
                     .map_err(error::HandleM4AckBundles::from)
@@ -718,8 +767,10 @@ impl BlockHandler<'_> {
     fn handle_m5_m6(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         transaction: Cow<'_, Transaction>,
     ) -> Result<Option<DepositsOrSuccessfulWithdrawal>, error::HandleM5M6> {
+        let limits_active = self.params.message_limits.is_active(height);
         let dbs = &self.dbs.active_sidechains;
         let txid = transaction.compute_txid();
         let ctip_spends: HashMap<SidechainNumber, bitcoin::Amount> = transaction
@@ -770,6 +821,12 @@ impl BlockHandler<'_> {
             new_ctips
         };
         let n_new_ctips = new_ctips.len();
+        // `MessageLimits`: a transaction creates at most one treasury output
+        if limits_active && n_new_ctips > 1 {
+            return Err(error::HandleM5M6::MultipleTreasuryOutputs {
+                n_treasury_outputs: n_new_ctips,
+            });
+        }
         // BIP 300: a tx that spends a treasury UTXO must also create a new
         // treasury UTXO for that sidechain. Without this check, a spend of the
         // anyone-can-spend OP_DRIVECHAIN treasury that creates no replacement
@@ -872,6 +929,14 @@ impl BlockHandler<'_> {
                     else {
                         return Err(error::HandleM5M6::MissingDepositAddress { sidechain_number });
                     };
+                    let max_address_len = self.params.message_limits.max_deposit_address_bytes;
+                    if limits_active && address.len() > max_address_len {
+                        return Err(error::HandleM5M6::DepositAddressTooLong {
+                            sidechain_number,
+                            len: address.len(),
+                            max: max_address_len,
+                        });
+                    }
                     let sequence_number = dbs
                         .treasury_utxo_count
                         .try_get(rotxn, &sidechain_number)?
@@ -963,17 +1028,30 @@ impl BlockHandler<'_> {
                 sidechain_number,
                 bundle_txid,
             }) => {
-                let diff =
-                    self.handle_m3_propose_bundle(rotxn, sidechain_number, bundle_txid.into())?;
-                let event = CoinbaseMessageEvent::WithdrawalBundle(WithdrawalBundleEvent {
+                let diff = self.handle_m3_propose_bundle(
+                    rotxn,
+                    height,
+                    sidechain_number,
+                    bundle_txid.into(),
+                )?;
+                let mut events = Vec::with_capacity(2);
+                if let diff::CoinbaseMsg::ProposeBundleEvicting(evicting) = &diff {
+                    events.push(WithdrawalBundleEvent {
+                        sidechain_id: sidechain_number,
+                        m6id: evicting.evicted_m6id,
+                        kind: WithdrawalBundleEventKind::Failed,
+                    });
+                }
+                events.push(WithdrawalBundleEvent {
                     sidechain_id: sidechain_number,
                     m6id: bundle_txid.into(),
                     kind: WithdrawalBundleEventKind::Submitted,
                 });
-                Ok((Some(event), Some(diff::CoinbaseMsg::ProposeBundle(diff))))
+                let event = CoinbaseMessageEvent::WithdrawalBundles(events);
+                Ok((Some(event), Some(diff)))
             }
             CoinbaseMessage::M4AckBundles(m4) => {
-                let diff = self.handle_m4_ack_bundles(rotxn, prev_block_hash, &m4)?;
+                let diff = self.handle_m4_ack_bundles(rotxn, height, prev_block_hash, &m4)?;
                 let diff = if diff.0.is_empty() {
                     None
                 } else {
@@ -997,12 +1075,13 @@ impl BlockHandler<'_> {
     fn handle_transaction(
         &self,
         rotxn: &RoTxn,
+        height: u32,
         accepted_bmm_requests: Option<&BmmCommitments>,
         prev_mainchain_block_hash: &BlockHash,
         transaction: &Transaction,
     ) -> Result<Option<(TransactionEvent, diff::Tx)>, error::HandleTransaction> {
         let mut res = None;
-        match self.handle_m5_m6(rotxn, Cow::Borrowed(transaction))? {
+        match self.handle_m5_m6(rotxn, height, Cow::Borrowed(transaction))? {
             Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) => {
                 res = Some((TransactionEvent::Deposits(deposits), diff::Tx::M5(diff)));
             }
@@ -1062,7 +1141,13 @@ impl BlockHandler<'_> {
             require_payable_bundles: false,
             ..*self
         };
-        match handler.handle_transaction(&child_rwtxn, None, &tip_hash, transaction) {
+        match handler.handle_transaction(
+            &child_rwtxn,
+            tip_height.saturating_add(1),
+            None,
+            &tip_hash,
+            transaction,
+        ) {
             Ok(None) => Ok(ValidatedTx::Valid),
             Ok(Some((event, diff))) => {
                 let () = diff.apply(&mut child_rwtxn, &dbs.active_sidechains, tip_height)?;
@@ -1184,7 +1269,18 @@ impl BlockHandler<'_> {
         let mut events = Vec::<BlockEvent>::new();
         let mut coinbase_msg_diffs = diff::DiffBuilder::new(rwtxn, dbs, height);
         let m4_exists = coinbase_messages.m4_exists();
+        let limits_active = self.params.message_limits.is_active(height);
+        let mut m3_slots = HashSet::<SidechainNumber>::new();
         for (message, _vout) in coinbase_messages {
+            // `MessageLimits`: at most one M3 per sidechain slot per block
+            if let CoinbaseMessage::M3ProposeBundle(m3) = &message
+                && !m3_slots.insert(m3.sidechain_number)
+                && limits_active
+            {
+                return Err(error::ConnectBlock::MultipleM3s {
+                    sidechain_number: m3.sidechain_number,
+                });
+            }
             let (event, diff) = coinbase_msg_diffs.rotxn(|rotxn, _dbs| {
                 self.handle_coinbase_message(
                     rotxn,
@@ -1205,8 +1301,8 @@ impl BlockHandler<'_> {
                         proposal,
                     })
                 }
-                Some(CoinbaseMessageEvent::WithdrawalBundle(withdrawal_bundle_event)) => {
-                    events.push(withdrawal_bundle_event.into());
+                Some(CoinbaseMessageEvent::WithdrawalBundles(withdrawal_bundle_events)) => {
+                    events.extend(withdrawal_bundle_events.into_iter().map(BlockEvent::from));
                 }
                 None => (),
             };
@@ -1220,7 +1316,7 @@ impl BlockHandler<'_> {
                 let upvotes =
                     vec![M4AckBundles::ABSTAIN_ONE_BYTE; active_sidechains_count as usize];
                 let m4 = M4AckBundles::OneByte { upvotes };
-                let diff = self.handle_m4_ack_bundles(rotxn, parent, &m4)?;
+                let diff = self.handle_m4_ack_bundles(rotxn, height, parent, &m4)?;
                 Ok::<_, error::ConnectBlock>(diff)
             })?;
             if !diff.0.is_empty() {
@@ -1266,6 +1362,7 @@ impl BlockHandler<'_> {
                 .rotxn(|rotxn, _dbs| {
                     self.handle_transaction(
                         rotxn,
+                        height,
                         Some(&accepted_bmm_requests),
                         &parent,
                         transaction,
@@ -2641,12 +2738,12 @@ mod tests {
         let handler = test_handler(&dbs);
         let empty: BmmCommitments = LinkedHashMap::new();
         let err = handler
-            .handle_transaction(&rotxn, Some(&empty), &prev_hash, &tx)
+            .handle_transaction(&rotxn, 0, Some(&empty), &prev_hash, &tx)
             .expect_err("not-accepted M8 must error");
         assert!(!err.is_fatal());
 
         let err = handler
-            .handle_transaction(&rotxn, None, &dummy_block_hash(0xBB), &tx)
+            .handle_transaction(&rotxn, 0, None, &dummy_block_hash(0xBB), &tx)
             .expect_err("expired M8 must error");
         assert!(!err.is_fatal());
         Ok(())
@@ -2664,7 +2761,7 @@ mod tests {
         accepted.insert(sc, BmmCommitment([0x42; 32]));
 
         let result = test_handler(&dbs)
-            .handle_transaction(&rotxn, Some(&accepted), &prev_hash, &tx)
+            .handle_transaction(&rotxn, 0, Some(&accepted), &prev_hash, &tx)
             .into_diagnostic()?;
         assert!(result.is_none(), "valid M8 should not produce a tx event");
         Ok(())
@@ -3056,7 +3153,7 @@ mod tests {
         let rotxn = dbs.read_txn().into_diagnostic()?;
         assert!(
             test_handler(&dbs)
-                .handle_m5_m6(&rotxn, Cow::Borrowed(&build_plain_tx()))
+                .handle_m5_m6(&rotxn, 0, Cow::Borrowed(&build_plain_tx()))
                 .into_diagnostic()?
                 .is_none()
         );
@@ -3076,7 +3173,7 @@ mod tests {
         let tx = build_m5_deposit_tx(sc, OutPoint::default(), Amount::ZERO, deposit_amount);
 
         let result = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+            .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx))
             .into_diagnostic()?;
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) = result else {
             panic!("expected M5 deposit");
@@ -3119,7 +3216,7 @@ mod tests {
 
         let Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, diff }) =
             test_handler(&dbs)
-                .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+                .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx))
                 .into_diagnostic()?
         else {
             panic!("expected M5 deposit");
@@ -3173,7 +3270,7 @@ mod tests {
 
         assert!(
             matches!(
-                test_handler(&dbs).handle_m5_m6(&rwtxn, Cow::Borrowed(&tx)),
+                test_handler(&dbs).handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx)),
                 Err(error::HandleM5M6::MissingDepositAddress { sidechain_number })
                     if sidechain_number == sc
             ),
@@ -3211,7 +3308,7 @@ mod tests {
             Amount::from_sat(1_000),
         );
         let err = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
+            .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&tx))
             .expect_err("spending wrong outpoint must error");
         assert!(matches!(err, error::HandleM5M6::OldCtipUnspent { .. }));
         assert!(!err.is_fatal());
@@ -3256,7 +3353,7 @@ mod tests {
         };
 
         let err = test_handler(&dbs)
-            .handle_m5_m6(&rwtxn, Cow::Borrowed(&theft_tx))
+            .handle_m5_m6(&rwtxn, 0, Cow::Borrowed(&theft_tx))
             .expect_err("spending a treasury without creating a new one must be invalid");
         assert!(matches!(
             err,
@@ -3343,7 +3440,7 @@ mod tests {
         );
         assert!(
             test_handler(&dbs)
-                .handle_m5_m6(&rotxn, Cow::Borrowed(&tx))
+                .handle_m5_m6(&rotxn, 0, Cow::Borrowed(&tx))
                 .into_diagnostic()?
                 .is_none(),
             "inactive-slot OP_DRIVECHAIN output must be ignored, not treated as a CTIP",
@@ -3790,10 +3887,9 @@ mod tests {
 
         let m6id = test_m6id(0xAA);
         let diff = test_handler(&dbs)
-            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .handle_m3_propose_bundle(&rwtxn, 0, sc, m6id)
             .into_diagnostic()?;
-        diff.apply(&mut rwtxn, &dbs.active_sidechains, 0)
-            .into_diagnostic()?;
+        diff.apply(&mut rwtxn, &dbs, 0).into_diagnostic()?;
 
         let pending = dbs
             .active_sidechains
@@ -3818,14 +3914,13 @@ mod tests {
         // Propose a bundle and apply it, so the m6id is pending.
         let m6id = test_m6id(0xAA);
         let diff = test_handler(&dbs)
-            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .handle_m3_propose_bundle(&rwtxn, 0, sc, m6id)
             .into_diagnostic()?;
-        diff.apply(&mut rwtxn, &dbs.active_sidechains, 0)
-            .into_diagnostic()?;
+        diff.apply(&mut rwtxn, &dbs, 0).into_diagnostic()?;
 
         // Re-proposing the same m6id is rejected.
         let err = test_handler(&dbs)
-            .handle_m3_propose_bundle(&rwtxn, sc, m6id)
+            .handle_m3_propose_bundle(&rwtxn, 0, sc, m6id)
             .expect_err("re-proposing a pending bundle must be rejected");
         assert!(matches!(
             err,
@@ -3837,7 +3932,7 @@ mod tests {
         // A different, not-yet-pending m6id is still accepted.
         assert!(
             test_handler(&dbs)
-                .handle_m3_propose_bundle(&rwtxn, sc, test_m6id(0xBB))
+                .handle_m3_propose_bundle(&rwtxn, 0, sc, test_m6id(0xBB))
                 .is_ok(),
             "a not-yet-pending bundle should be accepted"
         );
@@ -4007,7 +4102,7 @@ mod tests {
         // The single vote fits in one byte (≤ 253), so TwoBytes is wasteful.
         let m4 = M4AckBundles::TwoBytes { upvotes: vec![253] };
         let err = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4)
+            .handle_m4_ack_bundles(&rwtxn, 0, BlockHash::all_zeros(), &m4)
             .expect_err("TwoBytes with all elements ≤ 253 must be rejected");
         assert!(matches!(
             err,
@@ -4031,11 +4126,13 @@ mod tests {
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
             .into_diagnostic()?;
 
+        // Before the message limits apply, ALARM counts as a value over the
+        // byte range (see `two_byte_m4_must_carry_a_two_byte_index`).
         let m4 = M4AckBundles::TwoBytes {
             upvotes: vec![M4AckBundles::ALARM_TWO_BYTES],
         };
-        let _diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &m4)
+        let _diff = limits_handler(&dbs, false)
+            .handle_m4_ack_bundles(&rwtxn, 0, BlockHash::all_zeros(), &m4)
             .into_diagnostic()?;
         Ok(())
     }
@@ -4075,14 +4172,24 @@ mod tests {
         set_vote_count(&mut rwtxn, &dbs, &sc, leader, 60);
         set_vote_count(&mut rwtxn, &dbs, &sc, rival, 11);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty(), "lead of 49 should not trigger upvote");
 
         // Lead of exactly 50 → upvote leader
         set_vote_count(&mut rwtxn, &dbs, &sc, rival, 10);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -4093,7 +4200,12 @@ mod tests {
         set_vote_count(&mut rwtxn, &dbs, &sc, leader, 100);
         set_vote_count(&mut rwtxn, &dbs, &sc, rival, 100);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty(), "ties should not trigger upvote");
         Ok(())
@@ -4115,14 +4227,24 @@ mod tests {
         // vote_count 49, no rival → lead = 49 (vs implicit 0) → no upvote
         set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 49);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
 
         // vote_count 50 → lead = 50 → upvote
         set_vote_count(&mut rwtxn, &dbs, &sc, m6id, 50);
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -4138,7 +4260,12 @@ mod tests {
 
         // No sidechains → empty diff
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
 
@@ -4148,7 +4275,12 @@ mod tests {
             .put_sidechain(&mut rwtxn, &sc, &test_sidechain(1, 0))
             .into_diagnostic()?;
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
         Ok(())
@@ -4170,7 +4302,12 @@ mod tests {
 
         // Leader already at u16::MAX → no further upvote
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(diff.0.is_empty());
         Ok(())
@@ -4241,7 +4378,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, 0, prev_hash, &M4AckBundles::RepeatPrevious)
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -4259,7 +4396,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), None);
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, 0, prev_hash, &M4AckBundles::RepeatPrevious)
             .into_diagnostic()?;
         assert!(
             diff.0.is_empty(),
@@ -4294,7 +4431,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, 0, prev_hash, &M4AckBundles::RepeatPrevious)
             .into_diagnostic()?;
         assert!(
             diff.0.is_empty(),
@@ -4350,7 +4487,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(stale));
 
         let rebuilt = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, 0, prev_hash, &M4AckBundles::RepeatPrevious)
             .into_diagnostic()?;
         let Some(diff::AckBundleAction::Upvote {
             m6id,
@@ -4404,7 +4541,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(stale));
 
         let rebuilt = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, 0, prev_hash, &M4AckBundles::RepeatPrevious)
             .into_diagnostic()?;
         let Some(diff::AckBundleAction::Alarm {
             positive_votes_proposals,
@@ -4432,6 +4569,7 @@ mod tests {
         let diff = test_handler(&dbs)
             .handle_m4_ack_bundles(
                 &rwtxn,
+                0,
                 BlockHash::all_zeros(),
                 &M4AckBundles::RepeatPrevious,
             )
@@ -4472,7 +4610,7 @@ mod tests {
         let prev_hash = store_block_diff(&mut rwtxn, &dbs, BlockHash::all_zeros(), Some(prior));
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, prev_hash, &M4AckBundles::RepeatPrevious)
+            .handle_m4_ack_bundles(&rwtxn, 0, prev_hash, &M4AckBundles::RepeatPrevious)
             .into_diagnostic()?;
         assert!(
             diff.0.is_empty(),
@@ -4505,7 +4643,12 @@ mod tests {
         set_vote_count(&mut rwtxn, &dbs, &sc, tied_b, 60);
 
         let diff = test_handler(&dbs)
-            .handle_m4_ack_bundles(&rwtxn, BlockHash::all_zeros(), &M4AckBundles::LeadingBy50)
+            .handle_m4_ack_bundles(
+                &rwtxn,
+                0,
+                BlockHash::all_zeros(),
+                &M4AckBundles::LeadingBy50,
+            )
             .into_diagnostic()?;
         assert!(matches!(
             diff.0.get(&sc),
@@ -4564,6 +4707,307 @@ mod tests {
                 .expect("checking an empty queue must succeed"),
             "an empty queue below the target tip must be reported as a gap"
         );
+        Ok(())
+    }
+
+    // ── message limits ──
+
+    const LIMITS_SLOT: SidechainNumber = SidechainNumber(1);
+
+    /// Regtest parameters, with the message limits active from genesis or
+    /// never, and a pending bundle cap of 3.
+    fn limits_handler(dbs: &Dbs, active: bool) -> BlockHandler<'_> {
+        let mut params = NetworkParams::for_network(bitcoin::Network::Regtest);
+        params.message_limits.activation_height = active.then_some(0);
+        params.message_limits.max_pending_bundles = 3;
+        BlockHandler::new(dbs, bitcoin::Network::Regtest, params)
+    }
+
+    /// DBs with sidechains active in `slots`, the first [`LIMITS_SLOT`].
+    fn limits_dbs(slots: &[u8]) -> Result<(temp_dir::TempDir, Dbs)> {
+        let (dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        for slot in slots {
+            dbs.active_sidechains
+                .put_sidechain(
+                    &mut rwtxn,
+                    &SidechainNumber(*slot),
+                    &test_sidechain(*slot, 0),
+                )
+                .into_diagnostic()?;
+        }
+        rwtxn.commit().into_diagnostic()?;
+        Ok((dir, dbs))
+    }
+
+    /// Connect a block with `coinbase_scripts` and `txs` on the empty chain.
+    #[expect(clippy::result_large_err)]
+    fn connect_limits_block(
+        handler: &BlockHandler<'_>,
+        rwtxn: &mut RwTxn,
+        coinbase_scripts: Vec<ScriptBuf>,
+        txs: Vec<Transaction>,
+    ) -> Result<BlockInfo, error::ConnectBlock> {
+        let block = build_test_block(
+            BlockHash::all_zeros(),
+            TestBlockParts {
+                extra_coinbase_outputs: coinbase_scripts
+                    .into_iter()
+                    .map(|script_pubkey| TxOut {
+                        script_pubkey,
+                        value: Amount::ZERO,
+                    })
+                    .collect(),
+                extra_txs: txs,
+            },
+        );
+        handler
+            .dbs
+            .block_hashes
+            .put_headers(rwtxn, &[(block.header, 0)])
+            .expect("store header");
+        match handler.connect_block(rwtxn, &block)? {
+            Event::ConnectBlock { block_info, .. } => Ok(block_info),
+            Event::DisconnectBlock { .. } => panic!("expected ConnectBlock event"),
+        }
+    }
+
+    fn limits_m3(m6id: M6id) -> ScriptBuf {
+        M3ProposeBundle {
+            sidechain_number: LIMITS_SLOT,
+            bundle_txid: m6id.0.to_byte_array(),
+        }
+        .try_into()
+        .expect("M3 script")
+    }
+
+    fn pending_m6ids(dbs: &Dbs, rotxn: &RoTxn) -> Vec<(M6id, u16)> {
+        dbs.active_sidechains
+            .pending_m6ids()
+            .get(rotxn, &LIMITS_SLOT)
+            .unwrap()
+            .into_iter()
+            .map(|(m6id, info)| (m6id, info.vote_count))
+            .collect()
+    }
+
+    /// Spam: a miner can grow a slot's pending list (which every vote indexes
+    /// and every node rewrites) by many bundles per block. With the limits,
+    /// a block proposes at most one bundle per slot.
+    #[test]
+    fn at_most_one_m3_per_slot_per_block() -> Result<()> {
+        for active in [false, true] {
+            let (_dir, dbs) = limits_dbs(&[LIMITS_SLOT.0])?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            let res = connect_limits_block(
+                &limits_handler(&dbs, active),
+                &mut rwtxn,
+                vec![limits_m3(test_m6id(1)), limits_m3(test_m6id(2))],
+                Vec::new(),
+            );
+            if active {
+                assert!(
+                    matches!(res, Err(error::ConnectBlock::MultipleM3s { .. })),
+                    "{res:?}"
+                );
+            } else {
+                res.into_diagnostic()?;
+                assert_eq!(pending_m6ids(&dbs, &rwtxn).len(), 2);
+            }
+        }
+        Ok(())
+    }
+
+    /// Spam: a miner fills a slot with bundles nobody votes for. With the
+    /// cap, a new bundle into the full slot fails the weakest of them (the
+    /// oldest at the lowest vote count) rather than being kept out; a reorg
+    /// restores it in place. A slot full of voted bundles takes no more.
+    #[test]
+    fn full_slot_fails_its_weakest_bundle_or_rejects_the_m3() -> Result<()> {
+        let (spam_a, spam_b, voted) = (test_m6id(1), test_m6id(2), test_m6id(3));
+        let honest = test_m6id(4);
+        for active in [false, true] {
+            let (_dir, dbs) = limits_dbs(&[LIMITS_SLOT.0])?;
+            let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+            for (m6id, votes) in [(spam_a, 1), (spam_b, 1), (voted, 7)] {
+                dbs.active_sidechains
+                    .put_pending_m6id(&mut rwtxn, &LIMITS_SLOT, m6id, 0)
+                    .into_diagnostic()?;
+                set_vote_count(&mut rwtxn, &dbs, &LIMITS_SLOT, m6id, votes);
+            }
+            let handler = limits_handler(&dbs, active);
+            let block_info =
+                connect_limits_block(&handler, &mut rwtxn, vec![limits_m3(honest)], Vec::new())
+                    .into_diagnostic()?;
+            if !active {
+                assert_eq!(pending_m6ids(&dbs, &rwtxn).len(), 4);
+                continue;
+            }
+            let events: Vec<_> = block_info
+                .withdrawal_bundle_events()
+                .map(|event| (event.m6id, event.kind.clone()))
+                .collect();
+            assert!(matches!(
+                events.as_slice(),
+                [
+                    (failed, WithdrawalBundleEventKind::Failed),
+                    (submitted, WithdrawalBundleEventKind::Submitted),
+                ] if *failed == spam_a && *submitted == honest
+            ));
+            assert_eq!(
+                pending_m6ids(&dbs, &rwtxn),
+                [(spam_b, 1), (voted, 7), (honest, 1)]
+            );
+            // A reorg restores the failed bundle at its index.
+            let block_hash = dbs.current_chain_tip.get(&rwtxn, &()).into_diagnostic()?;
+            handler
+                .disconnect_block(&mut rwtxn, &mut Vec::new(), block_hash)
+                .into_diagnostic()?;
+            assert_eq!(
+                pending_m6ids(&dbs, &rwtxn),
+                [(spam_a, 1), (spam_b, 1), (voted, 7)]
+            );
+            // Once every bundle has votes, the slot takes no more.
+            set_vote_count(&mut rwtxn, &dbs, &LIMITS_SLOT, spam_a, 2);
+            set_vote_count(&mut rwtxn, &dbs, &LIMITS_SLOT, spam_b, 2);
+            let res =
+                connect_limits_block(&handler, &mut rwtxn, vec![limits_m3(honest)], Vec::new());
+            assert!(
+                matches!(
+                    res,
+                    Err(error::ConnectBlock::M3ProposeBundle(
+                        error::HandleM3ProposeBundle::TooManyPendingBundles { max: 3, .. }
+                    ))
+                ),
+                "{res:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The two-byte M4 form must need two bytes: an all-abstain (or alarm)
+    /// message has a one-byte form, so two encodings of the same vote would
+    /// be valid (malleable coinbases, and two block contents for one vote).
+    #[test]
+    fn two_byte_m4_must_carry_a_two_byte_index() -> Result<()> {
+        for active in [false, true] {
+            let (_dir, dbs) = limits_dbs(&[LIMITS_SLOT.0, 2])?;
+            let rwtxn = dbs.write_txn().into_diagnostic()?;
+            let handler = limits_handler(&dbs, active);
+            let all_abstain = M4AckBundles::TwoBytes {
+                upvotes: vec![
+                    M4AckBundles::ABSTAIN_TWO_BYTES,
+                    M4AckBundles::ALARM_TWO_BYTES,
+                ],
+            };
+            let res =
+                handler.handle_m4_ack_bundles(&rwtxn, 0, BlockHash::all_zeros(), &all_abstain);
+            if active {
+                assert!(
+                    matches!(res, Err(error::HandleM4AckBundles::TwoBytesNotNeeded)),
+                    "{res:?}"
+                );
+            } else {
+                let _diff: diff::AckBundles = res.into_diagnostic()?;
+            }
+            // An index above the one-byte range needs the two-byte form: it
+            // passes the encoding check (and fails here only for lack of a
+            // 255th pending bundle).
+            let big_index = M4AckBundles::TwoBytes {
+                upvotes: vec![
+                    M4AckBundles::MAX_ONE_BYTE_UPVOTE + 1,
+                    M4AckBundles::ABSTAIN_TWO_BYTES,
+                ],
+            };
+            let res = handler.handle_m4_ack_bundles(&rwtxn, 0, BlockHash::all_zeros(), &big_index);
+            assert!(
+                matches!(
+                    res,
+                    Err(error::HandleM4AckBundles::Votes(
+                        error::HandleM4Votes::UpvoteFailed { .. }
+                    ))
+                ),
+                "{res:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A deposit with an address of `len` bytes into a fresh treasury.
+    fn deposit_with_address_len(slot: SidechainNumber, len: usize) -> Transaction {
+        let mut tx = build_m5_deposit_tx(
+            slot,
+            OutPoint::null(),
+            Amount::ZERO,
+            Amount::from_sat(10_000),
+        );
+        tx.input[0].previous_output = OutPoint {
+            txid: Txid::from_byte_array([0xDE; 32]),
+            vout: slot.0.into(),
+        };
+        tx.output[1].script_pubkey = ScriptBuf::new_op_return(
+            bitcoin::script::PushBytesBuf::try_from(vec![b'a'; len]).unwrap(),
+        );
+        tx
+    }
+
+    #[test]
+    fn deposit_address_is_at_most_100_bytes() -> Result<()> {
+        for active in [false, true] {
+            for len in [100, 101] {
+                let (_dir, dbs) = limits_dbs(&[LIMITS_SLOT.0])?;
+                let rotxn = dbs.read_txn().into_diagnostic()?;
+                let tx = deposit_with_address_len(LIMITS_SLOT, len);
+                let res = limits_handler(&dbs, active).handle_m5_m6(&rotxn, 0, Cow::Borrowed(&tx));
+                if active && len > 100 {
+                    assert!(
+                        matches!(
+                            res,
+                            Err(error::HandleM5M6::DepositAddressTooLong {
+                                len: 101,
+                                max: 100,
+                                ..
+                            })
+                        ),
+                        "{res:?}"
+                    );
+                } else {
+                    assert!(res.into_diagnostic()?.is_some());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A transaction depositing into two sidechains creates two treasury
+    /// outputs; with the limits, a transaction creates at most one.
+    #[test]
+    fn at_most_one_treasury_output_per_transaction() -> Result<()> {
+        for active in [false, true] {
+            let (_dir, dbs) = limits_dbs(&[LIMITS_SLOT.0, 2])?;
+            let rotxn = dbs.read_txn().into_diagnostic()?;
+            let mut tx = deposit_with_address_len(LIMITS_SLOT, 20);
+            let second = deposit_with_address_len(SidechainNumber(2), 20);
+            tx.output.extend(second.output);
+            let res = limits_handler(&dbs, active).handle_m5_m6(&rotxn, 0, Cow::Borrowed(&tx));
+            if active {
+                assert!(
+                    matches!(
+                        res,
+                        Err(error::HandleM5M6::MultipleTreasuryOutputs {
+                            n_treasury_outputs: 2
+                        })
+                    ),
+                    "{res:?}"
+                );
+            } else {
+                assert!(matches!(
+                    res.into_diagnostic()?,
+                    Some(DepositsOrSuccessfulWithdrawal::M5Deposits { deposits, .. })
+                        if deposits.len() == 2
+                ));
+            }
+        }
         Ok(())
     }
 }

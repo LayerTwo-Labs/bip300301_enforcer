@@ -235,6 +235,42 @@ impl Diff for ProposeBundle {
     }
 }
 
+/// An M3 into a full sidechain slot (see
+/// [`MessageLimits`](crate::types::MessageLimits)): the slot's weakest bundle
+/// fails to make room for the new one.
+#[derive(Debug, Deserialize, Serialize)]
+#[must_use]
+pub struct ProposeBundleEvicting {
+    pub propose: ProposeBundle,
+    /// Position of the failed bundle in the chronological pending list, so
+    /// undo can restore it there (M4 votes index pending bundles by position)
+    pub evicted_index: usize,
+    pub evicted_m6id: M6id,
+    pub evicted_info: PendingM6idInfo,
+}
+
+impl Diff for ProposeBundleEvicting {
+    type Dbs = dbs::ActiveSidechainDbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
+
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
+        let () = dbs.delete_pending_withdrawal(
+            rwtxn,
+            &self.propose.sidechain_number,
+            self.evicted_m6id,
+        )?;
+        self.propose.apply(rwtxn, dbs, height)
+    }
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+        let () = self.propose.undo(rwtxn, dbs)?;
+        dbs.with_pending_withdrawals(rwtxn, &self.propose.sidechain_number, |pending| {
+            pending.shift_insert(self.evicted_index, self.evicted_m6id, self.evicted_info);
+        })
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub enum AckBundleAction {
     Alarm {
@@ -353,6 +389,9 @@ pub enum CoinbaseMsg {
     AckSidechainProposal(AckSidechainProposal),
     NewSidechainProposal(NewSidechainProposal),
     ProposeBundle(ProposeBundle),
+    /// Appended after the variants above, so that diffs stored by earlier
+    /// versions still decode.
+    ProposeBundleEvicting(ProposeBundleEvicting),
 }
 
 impl Diff for CoinbaseMsg {
@@ -374,6 +413,9 @@ impl Diff for CoinbaseMsg {
             Self::ProposeBundle(diff) => {
                 let () = diff.apply(rwtxn, &dbs.active_sidechains, height)?;
             }
+            Self::ProposeBundleEvicting(diff) => {
+                let () = diff.apply(rwtxn, &dbs.active_sidechains, height)?;
+            }
         }
         Ok(())
     }
@@ -390,6 +432,9 @@ impl Diff for CoinbaseMsg {
                 let () = diff.undo(rwtxn, &dbs.proposal_id_to_sidechain)?;
             }
             Self::ProposeBundle(diff) => {
+                let () = diff.undo(rwtxn, &dbs.active_sidechains)?;
+            }
+            Self::ProposeBundleEvicting(diff) => {
                 let () = diff.undo(rwtxn, &dbs.active_sidechains)?;
             }
         }

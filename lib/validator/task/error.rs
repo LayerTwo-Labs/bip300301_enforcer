@@ -77,6 +77,17 @@ pub(in crate::validator) enum HandleM3ProposeBundle {
         sidechain_number: SidechainNumber,
         m6id: M6id,
     },
+    /// `MessageLimits`: the slot holds the maximum number of pending bundles,
+    /// and none of them is weak enough to be failed to make room.
+    #[error(
+        "sidechain slot {} already holds {max} pending withdrawal bundles, all with votes",
+        .sidechain_number.0
+    )]
+    #[fatal(false)]
+    TooManyPendingBundles {
+        sidechain_number: SidechainNumber,
+        max: u16,
+    },
     #[error(transparent)]
     #[fatal(true)]
     Db(Box<db::Error>),
@@ -141,6 +152,11 @@ pub(in crate::validator) enum HandleM4AckBundles {
     #[error("M4 TwoBytes encoding with no element > 253")]
     #[fatal(false)]
     TwoBytesWithinByteRange,
+    /// `MessageLimits`: the two-byte form must carry a bundle index above the
+    /// one-byte range; abstain and alarm have one-byte forms.
+    #[error("M4 TwoBytes encoding with no bundle index > 253")]
+    #[fatal(false)]
+    TwoBytesNotNeeded,
 }
 
 impl From<db::Error> for HandleM4AckBundles {
@@ -248,6 +264,21 @@ pub(in crate::validator) enum HandleM5M6 {
     #[error("Multiple OP_DRIVECHAIN outputs for sidechain {0}")]
     #[fatal(false)]
     MultipleOpDrivechainOutputs(SidechainNumber),
+    /// `MessageLimits`: a transaction creates at most one treasury output.
+    #[error("transaction creates {n_treasury_outputs} treasury outputs")]
+    #[fatal(false)]
+    MultipleTreasuryOutputs { n_treasury_outputs: usize },
+    /// `MessageLimits`: the destination of a deposit is limited in size.
+    #[error(
+        "deposit to sidechain {} names a {len}-byte address, above the maximum of {max} bytes",
+        .sidechain_number
+    )]
+    #[fatal(false)]
+    DepositAddressTooLong {
+        sidechain_number: SidechainNumber,
+        len: usize,
+        max: usize,
+    },
     /// BIP 300 M5: If the treasury UTXO for sidechain slot `S` exists and
     /// a transaction creates a new treasury UTXO for `S` without spending
     /// the already existing treasury UTXO, then this transaction MUST be
@@ -375,6 +406,10 @@ pub(in crate::validator) enum ConnectBlock {
     #[error("Multiple blocks BMM'd in sidechain slot {}", .sidechain_number.0)]
     #[fatal(false)]
     MultipleBmmBlocks { sidechain_number: SidechainNumber },
+    /// `MessageLimits`: a block proposes at most one bundle per slot.
+    #[error("Multiple M3 bundle proposals in sidechain slot {}", .sidechain_number.0)]
+    #[fatal(false)]
+    MultipleM3s { sidechain_number: SidechainNumber },
     #[error(
         "Multiple BMM requests accepted in sidechain slot {}",
         .sidechain_number.0
