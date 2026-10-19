@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bitcoin::{Amount, BlockHash, Transaction, Txid, hashes::Hash as _};
 use cusf_enforcer_mempool::{
@@ -54,6 +57,11 @@ struct Inner {
     /// threshold, which can change with every block. Only held in memory: the
     /// mempool replays `accept_tx` on restart.
     mempool_payouts: parking_lot::Mutex<HashMap<Txid, (SidechainNumber, M6id)>>,
+    /// BMM requests (M8s) accepted into the mempool, by txid, with the
+    /// previous mainchain block each commits to. One can only go into a block
+    /// on top of that block: once the tip moves on, it is stale. Only held in
+    /// memory: the mempool replays `accept_tx` on restart.
+    mempool_bmm_requests: parking_lot::Mutex<HashMap<Txid, BlockHash>>,
 }
 
 #[derive(Clone)]
@@ -80,6 +88,7 @@ impl BlockProducer {
                 last_gbt_error: parking_lot::RwLock::new(None),
                 generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
                 mempool_payouts: parking_lot::Mutex::default(),
+                mempool_bmm_requests: parking_lot::Mutex::default(),
             }),
         })
     }
@@ -136,9 +145,13 @@ impl BlockProducer {
         &mut self,
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, <Validator as CusfEnforcer>::ConnectBlockError> {
-        let res = self.inner.validator.clone().connect_block(block).await?;
-        if let ConnectBlockAction::Accept { .. } = &res {
+        let mut res = self.inner.validator.clone().connect_block(block).await?;
+        if let ConnectBlockAction::Accept { remove_mempool_txs } = &mut res {
             self.forget_mempool_payouts(block);
+            // Every BMM request in the mempool that does not build on this
+            // block is stale now. The validator names those it saw on top of
+            // the block's parent; this also covers any left over from a reorg.
+            remove_mempool_txs.extend(self.forget_stale_bmm_requests(block));
         }
         Ok(res)
     }
@@ -200,6 +213,20 @@ impl BlockProducer {
         Ok(res)
     }
 
+    /// Stop tracking the BMM requests that `block` mined or made stale, and
+    /// return the stale ones.
+    fn forget_stale_bmm_requests(&self, block: &bitcoin::Block) -> HashSet<Txid> {
+        let block_hash = block.block_hash();
+        let mut mempool_bmm_requests = self.inner.mempool_bmm_requests.lock();
+        for tx in &block.txdata {
+            mempool_bmm_requests.remove(&tx.compute_txid());
+        }
+        let stale = stale_bmm_requests(&mempool_bmm_requests, block_hash);
+        mempool_bmm_requests.retain(|txid, _| !stale.contains(txid));
+        drop(mempool_bmm_requests);
+        stale
+    }
+
     fn forget_mempool_payouts(&self, block: &bitcoin::Block) {
         let mut mempool_payouts = self.inner.mempool_payouts.lock();
         for tx in &block.txdata {
@@ -259,6 +286,12 @@ impl CusfEnforcer for BlockProducer {
             .clone()
             .disconnect_block(block_hash)
             .await?;
+        // The validator drops the BMM requests on top of the disconnected
+        // block from the mempool; stop tracking them.
+        self.inner
+            .mempool_bmm_requests
+            .lock()
+            .retain(|_, prev_mainchain_block_hash| *prev_mainchain_block_hash != block_hash);
 
         // No disconnect logic is applied to the policy DB. Its tables are
         // wiped upon generating a new block, so sidechain proposals etc. must
@@ -271,6 +304,14 @@ impl CusfEnforcer for BlockProducer {
 
     fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
         let (action, payout) = self.inner.validator.clone().accept_tx_with_payout(tx)?;
+        if let TxAcceptAction::Accept { .. } = &action
+            && let Some(bmm_request) = parse_m8_tx(tx)
+        {
+            self.inner
+                .mempool_bmm_requests
+                .lock()
+                .insert(tx.compute_txid(), bmm_request.prev_mainchain_block_hash);
+        }
         if let Some(payout) = payout {
             self.inner
                 .mempool_payouts
@@ -387,6 +428,13 @@ impl BlockProducer {
         template
             .exclude_mempool_txs
             .extend(self.unpayable_mempool_payouts()?);
+        // A BMM request that commits to another previous block than this
+        // template's parent would make the block invalid. Stale ones are
+        // dropped from the mempool as blocks connect, but never serve one.
+        template.exclude_mempool_txs.extend(stale_bmm_requests(
+            &self.inner.mempool_bmm_requests.lock(),
+            *parent_block_hash,
+        ));
         tracing::debug!(
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
@@ -567,6 +615,16 @@ impl BlockProducer {
     }
 }
 
+/// The BMM requests (txid, with the previous mainchain block each commits to)
+/// that no block on top of `tip` can include.
+fn stale_bmm_requests(requests: &HashMap<Txid, BlockHash>, tip: BlockHash) -> HashSet<Txid> {
+    requests
+        .iter()
+        .filter(|(_, prev_mainchain_block_hash)| **prev_mainchain_block_hash != tip)
+        .map(|(txid, _)| *txid)
+        .collect()
+}
+
 fn bmm_auction_winners(
     bids: impl IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
 ) -> HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> {
@@ -580,4 +638,38 @@ fn bmm_auction_winners(
         }
     }
     winners
+}
+
+#[cfg(test)]
+mod stale_bmm_request_tests {
+    use std::collections::{HashMap, HashSet};
+
+    use bitcoin::{BlockHash, Txid, hashes::Hash as _};
+
+    use super::stale_bmm_requests;
+
+    /// After a new block (or a reorg), a BMM request committing to any other
+    /// previous block than the template's parent is stale: it is dropped
+    /// from the mempool and kept out of served templates.
+    #[test]
+    fn only_requests_on_top_of_the_tip_are_fresh() {
+        let (old_tip, tip) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+        );
+        let (stale, fresh) = (
+            Txid::from_byte_array([3; 32]),
+            Txid::from_byte_array([4; 32]),
+        );
+        let requests = HashMap::from_iter([(stale, old_tip), (fresh, tip)]);
+        assert_eq!(
+            stale_bmm_requests(&requests, tip),
+            HashSet::from_iter([stale])
+        );
+        assert_eq!(
+            stale_bmm_requests(&requests, old_tip),
+            HashSet::from_iter([fresh])
+        );
+        assert!(stale_bmm_requests(&HashMap::new(), tip).is_empty());
+    }
 }

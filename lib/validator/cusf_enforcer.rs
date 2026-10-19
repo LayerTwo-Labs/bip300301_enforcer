@@ -91,6 +91,8 @@ enum DisconnectBlockErrorInner {
     #[error(transparent)]
     DisconnectBlock(#[from] task::error::DisconnectBlock),
     #[error(transparent)]
+    GetSeenBmmRequests(#[from] db::error::Range),
+    #[error(transparent)]
     WriteTxn(#[from] env::error::WriteTxn),
 }
 
@@ -426,9 +428,20 @@ impl CusfEnforcer for Validator {
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
         let mut events = Vec::new();
         let () = handler.disconnect_block(&mut rwtxn, &mut events, block_hash)?;
+        // BMM requests (M8) seen on top of the disconnected block commit to
+        // it as their previous mainchain block, so no block on the new tip
+        // can include them: drop them from the mempool, as `connect_block`
+        // drops those on top of a block's parent.
+        let remove_mempool_txs = self
+            .dbs
+            .block_hashes
+            .get_seen_bmm_requests_for_parent_block(&rwtxn, block_hash)?
+            .into_values()
+            .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
+            .collect();
         rwtxn.commit()?;
         crate::validator::task::broadcast_events(&self.events_tx, events);
-        Ok(DisconnectBlockAction::default())
+        Ok(DisconnectBlockAction { remove_mempool_txs })
     }
 
     type AcceptTxError = AcceptTxError;
@@ -705,6 +718,48 @@ mod tests {
                 Event::ConnectBlock { header_info, .. }
                     if header_info.block_hash == block.block_hash()
             ));
+            Ok(())
+        }
+
+        /// A BMM request (M8) commits to its previous mainchain block. Once
+        /// that block is disconnected, no block on the new tip can include
+        /// the request, so the mempool must drop it, as it drops those on
+        /// top of a connected block's parent.
+        #[tokio::test]
+        async fn disconnect_drops_bmm_requests_on_top_of_the_block() -> Result<()> {
+            use cusf_enforcer_mempool::cusf_enforcer::{CusfEnforcer as _, DisconnectBlockAction};
+
+            use crate::types::BmmCommitment;
+
+            let dir = temp_dir::TempDir::new().into_diagnostic()?;
+            let mut validator = validator(&dir)?;
+            let block = accepted_block();
+            let block_hash = block.block_hash();
+            let _action = ConnectBlockCommit.connect_block(&validator, &block)?;
+            let stale = Txid::from_byte_array([0x8A; 32]);
+            let elsewhere = Txid::from_byte_array([0x8B; 32]);
+            {
+                let mut rwtxn = validator.dbs.write_txn().into_diagnostic()?;
+                for (parent, txid) in [(block_hash, stale), (BlockHash::all_zeros(), elsewhere)] {
+                    validator
+                        .dbs
+                        .block_hashes
+                        .put_seen_bmm_request(
+                            &mut rwtxn,
+                            parent,
+                            SIDECHAIN,
+                            txid,
+                            BmmCommitment([0x42; 32]),
+                        )
+                        .into_diagnostic()?;
+                }
+                rwtxn.commit().into_diagnostic()?;
+            }
+            let DisconnectBlockAction { remove_mempool_txs } = validator
+                .disconnect_block(block_hash)
+                .await
+                .into_diagnostic()?;
+            assert_eq!(remove_mempool_txs, [stale].into_iter().collect());
             Ok(())
         }
 
