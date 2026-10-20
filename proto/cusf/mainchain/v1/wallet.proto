@@ -84,16 +84,9 @@ message CreateBmmCriticalDataTransactionResponse {
 
 message CreateDepositTransactionRequest {
   google.protobuf.UInt32Value sidechain_id = 1;
-  // Addresses are encoded in UTF8.
-  // *Sidechain deposit addresses* (not sidechain addresses) are typically
-  // formatted as `s<SLOT_NUMBER>_<ADDRESS>_<CHECKSUM>`,
-  // where `CHECKSUM` is a hex encoding of the first 6 bytes of the SHA256
-  // hash of `s<SLOT_NUMBER>_<ADDRESS>`.
-  // protolint:disable:next MAX_LINE_LENGTH
-  // https://github.com/LayerTwo-Labs/testchain-deprecated/blob/4b7bae3e1218e058f59a43caf6ccac2a4e9a91f6/src/sidechain.cpp#L219
-  // The address used here is a sidechain address, the middle component of a
-  // sidechain deposit address.
-  google.protobuf.StringValue address = 2;
+  // Sidechain addresses are arbitrary byte arrays.
+  // Sidechains interpret these according to their protocol rules.
+  cusf.common.v1.Hex sidechain_address = 2;
   google.protobuf.UInt64Value value_sats = 3;
   google.protobuf.UInt64Value fee_sats = 4;
 }

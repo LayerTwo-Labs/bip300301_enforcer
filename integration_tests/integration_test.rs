@@ -612,7 +612,7 @@ const DEPOSIT_FEE: bitcoin::Amount = bitcoin::Amount::from_sat(1_000_000);
 pub async fn deposit<S>(
     post_setup: &mut PostSetup,
     sidechain: &mut S,
-    sidechain_address: &str,
+    sidechain_address: &[u8],
     deposit_amount: bitcoin::Amount,
     deposit_fee: bitcoin::Amount,
 ) -> anyhow::Result<()>
@@ -628,7 +628,7 @@ where
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
             sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
-            address: proto::wrap_string(sidechain_address.to_owned()),
+            sidechain_address: proto::wrap_sidechain_address(sidechain_address),
             value_sats: proto::wrap_u64(deposit_amount.to_sat()),
             fee_sats: proto::wrap_u64(deposit_fee.to_sat()),
         })

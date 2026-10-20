@@ -22,13 +22,13 @@ const DEPOSIT_FEE: bitcoin::Amount = bitcoin::Amount::from_sat(1_000_000);
 /// Create a deposit via the wallet gRPC, without mining a block.
 async fn create_deposit(
     post_setup: &mut PostSetup,
-    sidechain_address: &str,
+    sidechain_address: &[u8],
 ) -> anyhow::Result<bitcoin::Txid> {
     let deposit_txid = post_setup
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
             sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            address: proto::wrap_string(sidechain_address),
+            sidechain_address: proto::wrap_sidechain_address(sidechain_address),
             value_sats: proto::wrap_u64(DEPOSIT_AMOUNT.to_sat()),
             fee_sats: proto::wrap_u64(DEPOSIT_FEE.to_sat()),
         })
@@ -139,14 +139,14 @@ pub async fn test_consecutive_deposits(mut post_setup: PostSetup) -> anyhow::Res
     tracing::info!("Consolidated wallet into a single UTXO");
 
     // First deposit: always succeeds, spending the sole UTXO.
-    let deposit_txid_1 = create_deposit(&mut post_setup, "sidechain address 1").await?;
+    let deposit_txid_1 = create_deposit(&mut post_setup, b"sidechain address 1").await?;
     tracing::info!(%deposit_txid_1, "Created first deposit");
     let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &deposit_txid_1).await?;
 
     // Second deposit, without a block in between. This must succeed: it should
     // be funded from the first deposit's change output, not by reselecting the
     // first deposit's (now spent) input.
-    let deposit_txid_2 = create_deposit(&mut post_setup, "sidechain address 2")
+    let deposit_txid_2 = create_deposit(&mut post_setup, b"sidechain address 2")
         .await
         .map_err(|err| {
             anyhow::anyhow!(

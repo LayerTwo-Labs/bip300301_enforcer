@@ -1698,14 +1698,14 @@ pub trait Sidechain: Sized {
     /// Get a sidechain address to deposit to
     fn get_deposit_address(
         &self,
-    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send;
+    ) -> impl Future<Output = Result<Vec<u8>, Self::GetDepositAddressError>> + Send;
 
     type ConfirmDepositError: std::error::Error + Send + Sync + 'static;
 
     fn confirm_deposit(
         &mut self,
         post_setup: &mut PostSetup,
-        address: &str,
+        sidechain_address: &[u8],
         value: bitcoin::Amount,
         txid: bitcoin::Txid,
     ) -> impl Future<Output = Result<(), Self::ConfirmDepositError>> + Send;
@@ -2009,8 +2009,8 @@ impl Sidechain for DummySidechain {
 
     fn get_deposit_address(
         &self,
-    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send {
-        future::ok("sidechain address".to_owned())
+    ) -> impl Future<Output = Result<Vec<u8>, Self::GetDepositAddressError>> + Send {
+        future::ok("sidechain address".as_bytes().to_owned())
     }
 
     type ConfirmDepositError = std::convert::Infallible;
@@ -2018,7 +2018,7 @@ impl Sidechain for DummySidechain {
     async fn confirm_deposit(
         &mut self,
         _: &mut PostSetup,
-        _: &str,
+        _: &[u8],
         _: bitcoin::Amount,
         _: bitcoin::Txid,
     ) -> Result<(), Self::ConfirmDepositError> {

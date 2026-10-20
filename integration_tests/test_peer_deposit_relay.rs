@@ -51,7 +51,7 @@ const SENDER_FUNDING: bitcoin::Amount = bitcoin::Amount::from_sat(100_000_000);
 const DEPOSIT_AMOUNT: bitcoin::Amount = bitcoin::Amount::from_sat(21_000_000);
 const DEPOSIT_FEE: bitcoin::Amount = bitcoin::Amount::from_sat(1_000_000);
 
-const SIDECHAIN_ADDRESS: &str = "peer relay sidechain address";
+const SIDECHAIN_ADDRESS: &[u8] = b"peer relay sidechain address";
 
 struct Directories<'a> {
     /// Mines the blocks
@@ -403,7 +403,7 @@ async fn test_peer_deposit_relay_task(mut post_setup: PostSetup) -> anyhow::Resu
         .wallet_service_client
         .create_deposit_transaction(CreateDepositTransactionRequest {
             sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            address: proto::wrap_string(SIDECHAIN_ADDRESS),
+            sidechain_address: proto::wrap_sidechain_address(SIDECHAIN_ADDRESS),
             value_sats: proto::wrap_u64(DEPOSIT_AMOUNT.to_sat()),
             fee_sats: proto::wrap_u64(DEPOSIT_FEE.to_sat()),
         })

@@ -51,7 +51,7 @@ async fn pending_bundles(post_setup: &PostSetup) -> anyhow::Result<usize> {
 /// which must be kept alive, and its deposit address.
 async fn activate_funded_sidechain(
     post_setup: &mut PostSetup,
-) -> anyhow::Result<(DummySidechain, String)> {
+) -> anyhow::Result<(DummySidechain, Vec<u8>)> {
     let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
     let mut sidechain = DummySidechain::setup((), post_setup, sidechain_res_tx).await?;
     let () = propose_sidechain::<DummySidechain>(post_setup).await?;

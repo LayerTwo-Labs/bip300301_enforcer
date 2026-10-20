@@ -1227,7 +1227,7 @@ impl Wallet {
     pub async fn create_deposit(
         &self,
         sidechain_number: SidechainNumber,
-        sidechain_address: String,
+        sidechain_address: Vec<u8>,
         value: Amount,
         fee: Option<Amount>,
     ) -> Result<bitcoin::Txid, error::CreateDeposit> {
@@ -1254,7 +1254,7 @@ impl Wallet {
             "Created OP_DRIVECHAIN output",
         );
         let sidechain_address_data =
-            bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address.into_bytes())
+            bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address)
                 .map_err(error::CreateDeposit::ConvertSidechainAddress)?;
         let psbt = self
             .create_deposit_psbt(

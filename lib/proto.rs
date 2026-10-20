@@ -332,6 +332,13 @@ impl From<Error> for ConnectError {
     }
 }
 
+pub fn wrap_sidechain_address<T>(sidechain_address: T) -> MessageField<Hex, Inline<Hex>>
+where
+    T: hex::ToHex,
+{
+    MessageField::some(Hex::encode(&sidechain_address))
+}
+
 pub fn wrap_string(value: impl Into<String>) -> MessageField<StringValue, Inline<StringValue>> {
     MessageField::some(StringValue {
         value: value.into(),

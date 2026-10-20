@@ -27,7 +27,7 @@ use crate::{
             list_unspent_outputs_response, send_transaction_request::RequiredUtxo,
         },
         mainchain_service::WalletService,
-        unwrap_string, unwrap_u32, unwrap_u64, wrap_timestamp, wrap_u32,
+        unwrap_u32, unwrap_u64, wrap_timestamp, wrap_u32,
     },
     server::{
         internal_err, invalid_field_value, missing_field, parse_sidechain_id,
@@ -264,17 +264,20 @@ impl WalletService for crate::wallet::Wallet {
         use crate::proto::mainchain::CreateDepositTransactionRequest;
         let CreateDepositTransactionRequest {
             sidechain_id,
-            address,
+            sidechain_address,
             value_sats,
             fee_sats,
             ..
         } = request.to_owned_message();
         let sidechain_number =
             parse_sidechain_id::<CreateDepositTransactionRequest>(sidechain_id, "sidechain_id")?;
-        let address: String = unwrap_string(address)
-            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("address"))?;
-        if address.is_empty() {
-            return Err(ConnectError::invalid_argument("address must be non-empty"));
+        let sidechain_address: Vec<u8> = sidechain_address
+            .into_option()
+            .ok_or_else(|| missing_field::<CreateDepositTransactionRequest>("sidechain_address"))?
+            .decode_status::<CreateDepositTransactionRequest, _>("sidechain_address")?;
+        if sidechain_address.is_empty() {
+            let err_msg = "sidechain address must be non-empty";
+            return Err(ConnectError::invalid_argument(err_msg));
         }
         let value = Amount::from_sat(
             unwrap_u64(value_sats)
@@ -298,7 +301,7 @@ impl WalletService for crate::wallet::Wallet {
             )));
         }
         let txid = self
-            .create_deposit(sidechain_number, address, value, Some(fee))
+            .create_deposit(sidechain_number, sidechain_address, value, Some(fee))
             .await
             .map_err(|err| err.builder().to_connect_error())?;
 
