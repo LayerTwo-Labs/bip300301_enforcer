@@ -262,7 +262,9 @@ async fn returned_m6(post_setup: &PostSetup, paid_in_txids: Vec<Txid>) -> anyhow
 
 /// Reorging out a payout returns its M6 to the mempool, and the bundle to
 /// pending. The template carries the M6 again, so the producer must not also
-/// pay the bundle out itself: that block would pay it twice.
+/// pay the bundle out itself: that block would pay it twice. And when our own
+/// coinbase ALARMs the bundle to the threshold, the M6 must stay out of the
+/// template, or no block can be built.
 pub async fn test_returned_payout_paid_once(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (_sidechain, _sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
     let paid_tx = make_blinded_m6(1_000, Amount::from_sat(60_000));
@@ -273,6 +275,34 @@ pub async fn test_returned_payout_paid_once(mut post_setup: PostSetup) -> anyhow
     tracing::info!("Reorging out the payout, the template offers its M6 again");
     let () = reorg_out(&post_setup, paid_in, || async { Ok(()) }).await?;
     let m6_txid = returned_m6(&post_setup, paid_in_txids).await?;
+    let paid_tx_id = paid_tx.compute_txid();
+
+    // The M6 is payable at the tip, but our own coinbase ALARM takes its
+    // bundle to the threshold before the block's txs are read.
+    tracing::info!("An ALARM in our own coinbase, with the payable M6 in the mempool");
+    let threshold = u32::from(Thresholds::SHORT.withdrawal_bundle_inclusion_threshold);
+    anyhow::ensure!(
+        bundle_vote_count(&mut post_setup, paid_tx_id).await? == threshold + 1,
+        "the bundle is not at exactly one vote over the threshold"
+    );
+    let () = mine::<DummySidechain>(
+        &mut post_setup,
+        1,
+        MiningPolicy {
+            bundle: WithdrawalBundlePolicy::Alarm,
+            ..MiningPolicy::VOTE
+        },
+    )
+    .await?;
+    anyhow::ensure!(
+        bundle_vote_count(&mut post_setup, paid_tx_id).await? <= threshold,
+        "the ALARM did not take the bundle to the threshold"
+    );
+    anyhow::ensure!(
+        mempool_txids(&post_setup).await?.contains(&m6_txid),
+        "the M6 its own ALARM made unpayable left the mempool"
+    );
+
     let paid_again_in = mine_until_settled(&mut post_setup, MiningPolicy::VOTE).await?;
     anyhow::ensure!(
         block_txids(&post_setup, paid_again_in)

@@ -16,8 +16,8 @@ use tracing::instrument;
 use crate::{
     errors::ErrorChain,
     messages::{CoinbaseBuilder, parse_m8_tx},
-    types::{BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber, Thresholds},
-    validator::Validator,
+    types::{BlindedM6, BmmCommitment, M6id, PendingM6idInfo, SidechainNumber},
+    validator::{PendingM6ids, Validator},
 };
 
 mod coinbase;
@@ -130,24 +130,32 @@ impl BlockProducer {
 }
 
 impl BlockProducer {
-    /// The mempool M6s whose bundle is not payable in the block at `height`:
-    /// no longer pending, not voted past the inclusion threshold, or too old.
+    /// The mempool M6s whose bundle is not payable in a block with this
+    /// node's coinbase: no longer pending, or not over the inclusion threshold.
+    /// `pending_after` is the state after the coinbase, which is applied before
+    /// the block's txs: it carries the votes of our own M4, and has already
+    /// dropped a bundle that is too old.
     fn unpayable_mempool_payouts(
         &self,
-        height: u32,
-    ) -> Result<Vec<Txid>, crate::validator::GetPendingWithdrawalsError> {
-        let thresholds = self.validator().network_params().thresholds;
-        let mut res = Vec::new();
-        for (txid, (sidechain_number, m6id)) in self.inner.mempool_payouts.lock().iter() {
-            let payable = self
-                .validator()
-                .try_get_pending_withdrawal(sidechain_number, m6id)?
-                .is_some_and(|info| mempool_m6_payable(&info, height, &thresholds));
-            if !payable {
-                res.push(*txid);
-            }
-        }
-        Ok(res)
+        pending_after: &HashMap<SidechainNumber, PendingM6ids>,
+    ) -> Vec<Txid> {
+        let threshold = self
+            .validator()
+            .network_params()
+            .thresholds
+            .withdrawal_bundle_inclusion_threshold;
+        self.inner
+            .mempool_payouts
+            .lock()
+            .iter()
+            .filter(|(_txid, (sidechain_number, m6id))| {
+                pending_after
+                    .get(sidechain_number)
+                    .and_then(|pending| pending.get(m6id))
+                    .is_none_or(|info| info.vote_count <= threshold)
+            })
+            .map(|(txid, _)| *txid)
+            .collect()
     }
 
     fn forget_mempool_payouts(&self, block: &bitcoin::Block) {
@@ -319,15 +327,19 @@ impl BlockProducer {
             .extend_coinbase_txouts(ack_policy, bundle_policy, mainchain_tip, coinbase_txouts)
             .await?;
         // An M6 accepted into the mempool can stop being payable, e.g. when a
-        // reorg returns it and the new chain votes its bundle down. Keep it out
-        // of this block, but in the mempool: it can become payable again.
-        // A bundle that is too old in this block is failed by `connect_block`
-        // before it reads the block's txs, so its M6 would make the template
-        // invalid.
+        // reorg returns it and the new chain votes its bundle down, or when our
+        // own M4 does. Keep it out of this block, but in the mempool: it can
+        // become payable again. Payability is judged after the coinbase, which
+        // `connect_block` applies before the block's txs.
         let height = self.validator().get_header_info(&mainchain_tip)?.height + 1;
+        let coinbase_state = crate::validator::cusf_enforcer::get_withdrawal_state_after(
+            self.validator(),
+            &Self::dry_run_block(mainchain_tip, height, coinbase_txouts, &[]),
+        )?
+        .map_err(|reason| error::InitialBlockTemplateInner::ApplyCoinbase { reason })?;
         template
             .exclude_mempool_txs
-            .extend(self.unpayable_mempool_payouts(height)?);
+            .extend(self.unpayable_mempool_payouts(&coinbase_state.pending_withdrawals));
         tracing::debug!(
             "Initial coinbase txouts post-extension: {:?}",
             coinbase_txouts
@@ -401,6 +413,60 @@ impl BlockProducer {
         Ok(())
     }
 
+    /// An unmined block: `coinbase_txouts`, then `prefix_txs`. Only fit to be
+    /// applied speculatively.
+    fn dry_run_block(
+        tip: BlockHash,
+        height: u32,
+        coinbase_txouts: &[bitcoin::TxOut],
+        prefix_txs: &[&Transaction],
+    ) -> bitcoin::Block {
+        const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
+        let bip34_height_script = bitcoin::blockdata::script::Builder::new()
+            .push_int(height as i64)
+            .push_opcode(bitcoin::opcodes::OP_0)
+            .into_script();
+        let coinbase_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout: 0xFFFF_FFFF,
+                },
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
+                script_sig: bip34_height_script,
+            }],
+            output: coinbase_txouts.to_vec(),
+        };
+        let merkle_root = {
+            let hashes = std::iter::once(coinbase_tx.compute_txid().to_raw_hash())
+                .chain(prefix_txs.iter().map(|tx| tx.compute_txid().to_raw_hash()));
+            bitcoin::merkle_tree::calculate_root(hashes)
+                .map(bitcoin::TxMerkleNode::from_raw_hash)
+                .unwrap()
+        };
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        let header = bitcoin::block::Header {
+            version: bitcoin::block::Version::TWO,
+            prev_blockhash: tip,
+            merkle_root,
+            time,
+            bits: bitcoin::Target::MAX.to_compact_lossy(),
+            nonce: 0,
+        };
+        bitcoin::Block {
+            header,
+            txdata: std::iter::once(coinbase_tx)
+                .chain(prefix_txs.iter().map(|tx| (*tx).clone()))
+                .collect(),
+        }
+    }
+
     async fn block_template_suffix_inner<const COINBASE_TXN: bool>(
         &self,
         _parent_block_hash: &BlockHash,
@@ -420,11 +486,6 @@ impl BlockProducer {
                     }
                     None => (BlockHash::all_zeros(), 0),
                 };
-                const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
-                let bip34_height_script = bitcoin::blockdata::script::Builder::new()
-                    .push_int(height as i64)
-                    .push_opcode(bitcoin::opcodes::OP_0)
-                    .into_script();
                 let coinbase_txouts = wit
                     .map(CoinbaseTxouts)
                     .in_mut()
@@ -447,49 +508,8 @@ impl BlockProducer {
                     .build_extension()
                     .map_err(error::FinalizeBlockTemplateInner::GenerateSuffixCoinbaseTxouts)?;
                 coinbase_txouts.extend(coinbase_txouts_suffix.iter().cloned());
-                let coinbase_tx = Transaction {
-                    version: bitcoin::transaction::Version::TWO,
-                    lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-                    input: vec![bitcoin::TxIn {
-                        previous_output: bitcoin::OutPoint {
-                            txid: Txid::all_zeros(),
-                            vout: 0xFFFF_FFFF,
-                        },
-                        sequence: bitcoin::Sequence::MAX,
-                        witness: bitcoin::Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
-                        script_sig: bip34_height_script,
-                    }],
-                    output: coinbase_txouts.clone(),
-                };
-                let merkle_root = {
-                    let hashes = std::iter::once(coinbase_tx.compute_txid().to_raw_hash()).chain(
-                        template
-                            .prefix_txs
-                            .iter()
-                            .map(|(tx, _)| tx.compute_txid().to_raw_hash()),
-                    );
-                    bitcoin::merkle_tree::calculate_root(hashes)
-                        .map(bitcoin::TxMerkleNode::from_raw_hash)
-                        .unwrap()
-                };
-                let time = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as u32;
-                let header = bitcoin::block::Header {
-                    version: bitcoin::block::Version::TWO,
-                    prev_blockhash: tip,
-                    merkle_root,
-                    time,
-                    bits: bitcoin::Target::MAX.to_compact_lossy(),
-                    nonce: 0,
-                };
-                let block = bitcoin::Block {
-                    header,
-                    txdata: std::iter::once(coinbase_tx)
-                        .chain(template.prefix_txs.iter().map(|(tx, _)| tx.clone()))
-                        .collect(),
-                };
+                let prefix_txs: Vec<_> = template.prefix_txs.iter().map(|(tx, _)| tx).collect();
+                let block = Self::dry_run_block(tip, height, coinbase_txouts, &prefix_txs);
                 let withdrawal_state = crate::validator::cusf_enforcer::get_withdrawal_state_after(
                     &self.inner.validator,
                     &block,
@@ -515,16 +535,6 @@ impl BlockProducer {
     }
 }
 
-/// Whether a mempool M6 for a bundle with `info` can go into the block at
-/// `height`: voted past the inclusion threshold, and not failed for age in that
-/// block. `connect_block` fails a bundle whose age is over `max_age` before it
-/// reads the block's txs; an age of exactly `max_age` is still payable.
-fn mempool_m6_payable(info: &PendingM6idInfo, height: u32, thresholds: &Thresholds) -> bool {
-    info.vote_count > thresholds.withdrawal_bundle_inclusion_threshold
-        && height.saturating_sub(info.proposal_height)
-            <= u32::from(thresholds.withdrawal_bundle_max_age)
-}
-
 fn bmm_auction_winners(
     bids: impl IntoIterator<Item = (SidechainNumber, BmmCommitment, Txid, Amount)>,
 ) -> HashMap<SidechainNumber, (BmmCommitment, Txid, Amount)> {
@@ -538,36 +548,4 @@ fn bmm_auction_winners(
         }
     }
     winners
-}
-
-#[cfg(test)]
-mod tests {
-    use super::mempool_m6_payable;
-    use crate::types::{PendingM6idInfo, Thresholds};
-
-    #[test]
-    fn mempool_m6_payable_needs_votes_over_threshold_and_age_up_to_max_age() {
-        const THRESHOLDS: Thresholds = Thresholds::SHORT;
-        let threshold = THRESHOLDS.withdrawal_bundle_inclusion_threshold;
-        let max_age = u32::from(THRESHOLDS.withdrawal_bundle_max_age);
-        let info = |vote_count| PendingM6idInfo {
-            vote_count,
-            proposal_height: 100,
-        };
-        // Votes: strictly over the threshold.
-        assert!(!mempool_m6_payable(&info(threshold), 101, &THRESHOLDS));
-        assert!(mempool_m6_payable(&info(threshold + 1), 101, &THRESHOLDS));
-        // Age in the block being built: max_age still pays, max_age + 1 has
-        // already failed when the block's txs are read.
-        assert!(mempool_m6_payable(
-            &info(threshold + 1),
-            100 + max_age,
-            &THRESHOLDS
-        ));
-        assert!(!mempool_m6_payable(
-            &info(threshold + 1),
-            101 + max_age,
-            &THRESHOLDS
-        ));
-    }
 }
