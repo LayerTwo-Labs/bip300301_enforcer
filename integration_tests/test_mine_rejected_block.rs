@@ -9,7 +9,7 @@ use bitcoin::{Amount, ScriptBuf, TxOut};
 use either::Either;
 
 use crate::{
-    mine::{MineGbtError, mine_gbt_check_with_coinbase_outputs},
+    mine::{MineGbtError, MiningPolicy, mine_gbt_check_with_coinbase_outputs},
     setup::{DummySidechain, PostSetup, Sidechain},
 };
 
@@ -28,6 +28,7 @@ pub async fn test_mine_rejected_block(mut post_setup: PostSetup) -> anyhow::Resu
     let res = mine_gbt_check_with_coinbase_outputs::<_, Infallible, DummySidechain>(
         &mut post_setup,
         1,
+        MiningPolicy::VOTE,
         &duplicate_m1,
         |_| Ok(()),
     )

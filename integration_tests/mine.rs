@@ -184,7 +184,7 @@ fn proto_err_to_connect(err: proto::Error) -> ConnectError {
 }
 
 // Mine blocks, running a check after each block
-pub async fn mine_signet_check<F, Err, S>(
+async fn mine_signet_check<F, Err, S>(
     post_setup: &mut PostSetup,
     blocks: u32,
     mut check: F,
@@ -266,7 +266,7 @@ async fn block_rejected(post_setup: &PostSetup, block_hash: bitcoin::BlockHash) 
 }
 
 // Mine blocks, running a check after each block
-pub async fn mine_gbt_check<F, Err, S>(
+async fn mine_gbt_check<F, Err, S>(
     post_setup: &mut PostSetup,
     blocks: u32,
     check: F,
@@ -275,12 +275,29 @@ where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
     S: Sidechain,
 {
-    mine_gbt_check_with_coinbase_outputs::<_, _, S>(post_setup, blocks, &[], check).await
+    mine_gbt_blocks::<_, _, S>(post_setup, blocks, &[], check).await
 }
 
-/// [`mine_gbt_check`], appending `extra_coinbase_outputs` to each block's
-/// coinbase.
+/// [`mine_check`] in GetBlockTemplate mode, appending `extra_coinbase_outputs`
+/// to each block's coinbase.
 pub async fn mine_gbt_check_with_coinbase_outputs<F, Err, S>(
+    post_setup: &mut PostSetup,
+    blocks: u32,
+    policy: MiningPolicy,
+    extra_coinbase_outputs: &[TxOut],
+    check: F,
+) -> Result<(), Either<MineGbtError, Err>>
+where
+    F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
+    S: Sidechain,
+{
+    let () = apply_policy(post_setup, policy)
+        .await
+        .map_err(|err| Either::Left(err.into()))?;
+    mine_gbt_blocks::<_, _, S>(post_setup, blocks, extra_coinbase_outputs, check).await
+}
+
+async fn mine_gbt_blocks<F, Err, S>(
     post_setup: &mut PostSetup,
     blocks: u32,
     extra_coinbase_outputs: &[TxOut],
@@ -384,34 +401,39 @@ impl MiningPolicy {
     };
 }
 
-// Mine blocks via `GenerateToAddress`, running a check after each block.
-// `GenerateToAddress` mines with the persisted policies, so set them first to
-// mirror the requested per-call behavior.
-pub async fn mine_generateblocks_check<F, Err>(
+/// Make the enforcer vote `policy`. Block production reads the persisted
+/// policies in every mining mode, so this is the one place they are set, and
+/// every public way of mining goes through it.
+async fn apply_policy(
     post_setup: &mut PostSetup,
-    blocks: u32,
     policy: MiningPolicy,
-    mut check: F,
-) -> Result<(), Either<ConnectError, Err>>
-where
-    F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
-{
+) -> Result<(), ConnectError> {
     let () = post_setup
         .block_producer_service_client
         .set_ack_all_proposals(SetAckAllProposalsRequest {
             policy: policy.ack.into(),
         })
         .await
-        .map(|_| ())
-        .map_err(Either::Left)?;
+        .map(|_| ())?;
     let () = post_setup
         .block_producer_service_client
         .set_withdrawal_bundle_policy(SetWithdrawalBundlePolicyRequest {
             policy: policy.bundle.into(),
         })
         .await
-        .map(|_| ())
-        .map_err(Either::Left)?;
+        .map(|_| ())?;
+    Ok(())
+}
+
+// Mine blocks via `GenerateToAddress`, running a check after each block.
+async fn mine_generateblocks_check<F, Err>(
+    post_setup: &mut PostSetup,
+    blocks: u32,
+    mut check: F,
+) -> Result<(), Either<ConnectError, Err>>
+where
+    F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
+{
     let request = GenerateToAddressRequest {
         blocks: proto::wrap_u32(blocks),
         address: post_setup.mining_address.to_string(),
@@ -433,6 +455,8 @@ where
 
 #[derive(Debug, Error)]
 pub enum MineError {
+    #[error("failed to set the mining policy")]
+    Policy(#[source] ConnectError),
     #[error(transparent)]
     GenerateToAddress(ConnectError),
     #[error(transparent)]
@@ -441,6 +465,44 @@ pub enum MineError {
     Signet(MineSignetError),
     #[error("the GenerateBlocks mining mode is not supported on Signet")]
     SignetGenerateBlocks,
+}
+
+/// Mine blocks voting `policy`, running a check after each block. The only
+/// public way to mine in every network and mode: the policy is applied here,
+/// before the mode is chosen, so the modes cannot differ in what they vote.
+pub async fn mine_check<F, Err, S>(
+    post_setup: &mut PostSetup,
+    blocks: u32,
+    policy: MiningPolicy,
+    check: F,
+) -> Result<(), Either<MineError, Err>>
+where
+    F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
+    S: Sidechain,
+{
+    let () = apply_policy(post_setup, policy)
+        .await
+        .map_err(|err| Either::Left(MineError::Policy(err)))?;
+    match (post_setup.network, post_setup.mode.mining_mode()) {
+        (Network::Regtest, MiningMode::GenerateBlocks) => {
+            mine_generateblocks_check(post_setup, blocks, check)
+                .await
+                .map_err(|err| err.map_left(MineError::GenerateToAddress))
+        }
+        (Network::Regtest, MiningMode::GetBlockTemplate) => {
+            mine_gbt_check::<_, Err, S>(post_setup, blocks, check)
+                .await
+                .map_err(|err| err.map_left(MineError::Gbt))
+        }
+        (Network::Signet, MiningMode::GetBlockTemplate) => {
+            mine_signet_check::<_, Err, S>(post_setup, blocks, check)
+                .await
+                .map_err(|err| err.map_left(MineError::Signet))
+        }
+        (Network::Signet, MiningMode::GenerateBlocks) => {
+            Err(Either::Left(MineError::SignetGenerateBlocks))
+        }
+    }
 }
 
 pub async fn mine<S>(
@@ -452,30 +514,11 @@ where
     S: Sidechain,
 {
     use std::convert::Infallible;
-    match (post_setup.network, post_setup.mode.mining_mode()) {
-        (Network::Regtest, MiningMode::GenerateBlocks) => {
-            mine_generateblocks_check(post_setup, blocks, policy, |_| Ok::<_, Infallible>(()))
-                .await
-                .map_err(|err| match err {
-                    Either::Left(err) => MineError::GenerateToAddress(err),
-                })
-        }
-        (Network::Regtest, MiningMode::GetBlockTemplate) => {
-            mine_gbt_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
-                .await
-                .map_err(|err| match err {
-                    Either::Left(err) => MineError::Gbt(err),
-                })
-        }
-        (Network::Signet, MiningMode::GetBlockTemplate) => {
-            mine_signet_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
-                .await
-                .map_err(|err| match err {
-                    Either::Left(err) => MineError::Signet(err),
-                })
-        }
-        (Network::Signet, MiningMode::GenerateBlocks) => Err(MineError::SignetGenerateBlocks),
-    }
+    mine_check::<_, Infallible, S>(post_setup, blocks, policy, |_| Ok(()))
+        .await
+        .map_err(|err| match err {
+            Either::Left(err) => err,
+        })
 }
 
 /// Mine blocks, and check the events for each block

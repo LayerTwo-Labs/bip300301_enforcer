@@ -14,8 +14,8 @@ use bip300301_enforcer_lib::{
             GetBlockProducerStateRequest, GetChainInfoRequest, GetChainTipRequest,
             GetSidechainProposalsRequest, GetSidechainProposalsResponse, GetSidechainsRequest,
             GetWithdrawalBundleProposalsRequest, GetWithdrawalBundleProposalsResponse,
-            SetAckAllProposalsRequest, SetSidechainAckRequest, SetWithdrawalBundlePolicyRequest,
-            WithdrawalBundlePolicy, get_sidechain_proposals_response,
+            SetSidechainAckRequest, SetWithdrawalBundlePolicyRequest, WithdrawalBundlePolicy,
+            get_sidechain_proposals_response,
         },
     },
     types::SidechainNumber,
@@ -25,7 +25,7 @@ use futures::channel::mpsc;
 use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
-    integration_test::{deposit, fund_enforcer, propose_sidechain, propose_sidechain_for_slot},
+    integration_test::{deposit, fund_enforcer, propose_sidechain_for_slot_voting},
     mine::{MiningPolicy, mine},
     setup::{DummySidechain, PostSetup, Sidechain as _},
     test_blinded_m6_roundtrip::{make_blinded_m6, serialize_zero_input_legacy},
@@ -38,20 +38,6 @@ pub(crate) async fn set_bundle_policy(
     post_setup
         .block_producer_service_client
         .set_withdrawal_bundle_policy(SetWithdrawalBundlePolicyRequest {
-            policy: policy.into(),
-        })
-        .await
-        .map(|_| ())
-        .map_err(Into::into)
-}
-
-async fn set_ack_policy(
-    post_setup: &mut PostSetup,
-    policy: AckAllProposalsPolicy,
-) -> anyhow::Result<()> {
-    post_setup
-        .block_producer_service_client
-        .set_ack_all_proposals(SetAckAllProposalsRequest {
             policy: policy.into(),
         })
         .await
@@ -196,12 +182,15 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
         "unexpected initial ACK policy: `{state:?}`"
     );
 
-    let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::None).await?;
     // The M4 has its own policy now; this test drives the M2 side, so hold
     // bundle voting off until it explicitly wants an M4 below.
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
-
-    let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = propose_sidechain_for_slot_voting::<DummySidechain>(
+        &mut post_setup,
+        DummySidechain::SIDECHAIN_NUMBER,
+        "sidechain",
+        MiningPolicy::SILENT,
+    )
+    .await?;
 
     tracing::info!("Mining without ACKing: the proposal must gather no votes");
     let () =
@@ -319,16 +308,18 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
     // (activation requires strictly more ACKs than the threshold), so the M2
     // must not suppress the M4 that votes on the bundle.
     const OTHER_SLOT: SidechainNumber = SidechainNumber(1);
-    let () = propose_sidechain_for_slot::<DummySidechain>(&mut post_setup, OTHER_SLOT, "sidechain")
-        .await?;
+    let () = propose_sidechain_for_slot_voting::<DummySidechain>(
+        &mut post_setup,
+        OTHER_SLOT,
+        "sidechain",
+        MiningPolicy::SILENT,
+    )
+    .await?;
     anyhow::ensure!(
         bundle_vote_count(&mut post_setup, bundle_m6id).await? == 1,
         "bundle gathered a vote in a block without an M4"
     );
-    let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::NewSlots).await?;
     // The bundle was broadcast through this node, so `Known` backs it.
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::Known).await?;
-
     tracing::info!("Mining with auto-ACK on: expecting an M2 and an M4 in one coinbase");
     let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
 
@@ -382,12 +373,15 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
     // keeps the other slot's proposal, which is still gathering ACKs on an
     // unused slot, well clear of activating and changing the active set under
     // the assertions below.
-    let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::None).await?;
     let occupied_slot = DummySidechain::SIDECHAIN_NUMBER;
-    let () = propose_sidechain_for_slot::<DummySidechain>(
+    let () = propose_sidechain_for_slot_voting::<DummySidechain>(
         &mut post_setup,
         occupied_slot,
         "replacement sidechain",
+        MiningPolicy {
+            ack: AckAllProposalsPolicy::None,
+            ..MiningPolicy::VOTE
+        },
     )
     .await?;
     let replacement_hash: sha256d::Hash = proposal_for_slot(&mut post_setup, occupied_slot)
@@ -398,7 +392,6 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
         .decode::<GetSidechainProposalsResponse, _>("description_sha256d_hash")?;
 
     tracing::info!("Mining under NEW_SLOTS: the replacement must gather no votes");
-    let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::NewSlots).await?;
     let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
 
     let coinbase_messages = tip_coinbase_messages(&mut post_setup).await?;
@@ -426,8 +419,15 @@ pub async fn test_sidechain_ack_policy(mut post_setup: PostSetup) -> anyhow::Res
     );
 
     tracing::info!("Mining under ALL: the replacement must be ACKed");
-    let () = set_ack_policy(&mut post_setup, AckAllProposalsPolicy::All).await?;
-    let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
+    let () = mine::<DummySidechain>(
+        &mut post_setup,
+        1,
+        MiningPolicy {
+            ack: AckAllProposalsPolicy::All,
+            ..MiningPolicy::VOTE
+        },
+    )
+    .await?;
 
     let coinbase_messages = tip_coinbase_messages(&mut post_setup).await?;
     anyhow::ensure!(
