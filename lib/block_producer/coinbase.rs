@@ -445,7 +445,8 @@ impl BlockProducer {
     /// [`Self::suffix_txs_for_proposals`].
     ///
     /// `pending_withdrawals` are the bundles still pending once the txs that the
-    /// suffix follows are applied. Any of ours those txs settle is left out.
+    /// suffix follows are applied. Any of ours those txs settle is left out, as
+    /// is any that the block's own M4 votes back to the inclusion threshold.
     pub(crate) async fn generate_suffix_txs(
         &self,
         ctips: &HashMap<SidechainNumber, Ctip>,
@@ -455,10 +456,14 @@ impl BlockProducer {
         let used_slots = Self::used_slots(&self.validator().get_active_sidechains()?);
         let mut bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
         if let Some(pending_withdrawals) = pending_withdrawals {
+            let threshold = params.thresholds.withdrawal_bundle_inclusion_threshold;
             for (sidechain_id, m6ids) in &mut bundle_proposals {
                 let pending = pending_withdrawals.get(sidechain_id);
                 for (m6id, _blinded_m6, info) in m6ids {
-                    if !pending.is_some_and(|pending| pending.contains_key(m6id)) {
+                    let still_payable = pending
+                        .and_then(|pending| pending.get(m6id))
+                        .is_some_and(|after| after.vote_count > threshold);
+                    if !still_payable {
                         *info = None;
                     }
                 }
