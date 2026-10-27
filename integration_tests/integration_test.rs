@@ -1174,6 +1174,21 @@ pub fn tests(
             test_bmm_bid_auction::test_bmm_bid_auction,
         )
     }));
+    // A BMM request on top of a block a reorg disconnects must leave the
+    // template, in both block production modes.
+    async_trials.extend([Mode::GetBlockTemplate, Mode::Mempool].map(|mode| {
+        new_trial_with_setup(
+            format!("bmm_stale_request_after_reorg (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            test_bmm_bid_auction::test_bmm_stale_request_after_reorg,
+        )
+    }));
     // Bespoke: the test kills and restarts the enforcer to drive the
     // pre-activation header-only sync, so it owns its setup.
     async_trials.push(new_bespoke_trial(

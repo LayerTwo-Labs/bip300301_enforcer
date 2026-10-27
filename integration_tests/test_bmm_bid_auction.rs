@@ -25,11 +25,15 @@ use buffa::MessageField;
 use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
+    block_verdict::wait_for_enforcer_tip_hash,
     integration_test::{
         fund_enforcer, propose_sidechain, propose_sidechain_for_slot, wait_for_wallet_sync,
     },
     mine::{MiningPolicy, mine_check_block_events},
-    setup::{DummySidechain, Mode, PostSetup, Sidechain, wait_for_tx_in_mempool, wait_until},
+    setup::{
+        DummySidechain, Mode, PostSetup, Sidechain, best_block_hash, invalidate_block,
+        wait_for_tx_in_mempool, wait_until,
+    },
 };
 
 const OTHER_SLOT: SidechainNumber = SidechainNumber(1);
@@ -290,6 +294,25 @@ fn coinbase_m7_accepts(block: &bitcoin::Block) -> anyhow::Result<Vec<M7BmmAccept
         .collect())
 }
 
+/// The enforcer's current block template.
+async fn block_template(
+    post_setup: &PostSetup,
+) -> anyhow::Result<bitcoin_jsonrpsee::client::BlockTemplate> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+    let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+    gbt_request.capabilities.insert("coinbasetxn".to_owned());
+    crate::util::expect_block_template(
+        post_setup
+            .gbt_client
+            .get_block_template(gbt_request)
+            .await?,
+    )
+}
+
+fn template_txids(template: &bitcoin_jsonrpsee::client::BlockTemplate) -> Vec<Txid> {
+    template.transactions.iter().map(|tx| tx.txid).collect()
+}
+
 /// Wait until the enforcer's block template selects all of `want` and none
 /// of `not_want`. Whatever the mining mode, blocks are built from that
 /// template, and the mempool mirror behind it trails bitcoind's mempool, so
@@ -299,27 +322,36 @@ async fn wait_for_template_txs(
     want: Vec<Txid>,
     not_want: Vec<Txid>,
 ) -> anyhow::Result<()> {
-    use cusf_enforcer_mempool::server::RpcClient as _;
-    let gbt_client = post_setup.gbt_client.clone();
     wait_until(
         "enforcer block template to settle the BMM auction",
-        move || {
-            let gbt_client = gbt_client.clone();
-            let want = want.clone();
-            let not_want = not_want.clone();
-            async move {
-                let mut gbt_request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
-                gbt_request.capabilities.insert("coinbasetxn".to_owned());
-                let template = crate::util::expect_block_template(
-                    gbt_client.get_block_template(gbt_request).await?,
-                )?;
-                let txids: Vec<Txid> = template.transactions.iter().map(|tx| tx.txid).collect();
-                Ok(want.iter().all(|txid| txids.contains(txid))
-                    && not_want.iter().all(|txid| !txids.contains(txid)))
-            }
+        || async {
+            let txids = template_txids(&block_template(post_setup).await?);
+            Ok(want.iter().all(|txid| txids.contains(txid))
+                && not_want.iter().all(|txid| !txids.contains(txid)))
         },
     )
     .await
+}
+
+/// Wait until the enforcer's block template builds on `parent`, and return
+/// that template. After a reorg, the template follows the mempool mirror's
+/// tip, which trails the validator's.
+async fn wait_for_template_on(
+    post_setup: &PostSetup,
+    parent: BlockHash,
+) -> anyhow::Result<bitcoin_jsonrpsee::client::BlockTemplate> {
+    let () = wait_until(
+        &format!("enforcer block template to build on {parent}"),
+        || async { Ok(block_template(post_setup).await?.prev_blockhash == parent) },
+    )
+    .await?;
+    let template = block_template(post_setup).await?;
+    anyhow::ensure!(
+        template.prev_blockhash == parent,
+        "the template moved off {parent} to {}",
+        template.prev_blockhash
+    );
+    Ok(template)
 }
 
 /// Wait until every one of `outpoints` shows up in the enforcer wallet's
@@ -830,5 +862,68 @@ pub async fn test_bmm_bid_auction(mut post_setup: PostSetup) -> anyhow::Result<(
     }
     tracing::info!("Round 5: absolute fee beat fee rate for the slot");
 
+    Ok(())
+}
+
+/// A BMM request commits to the block it must be mined on top of. A reorg
+/// that disconnects that block leaves the request in Bitcoin Core's mempool,
+/// but no block on the new tip can include it: the template must drop it, or
+/// the block mined from the template is invalid.
+pub async fn test_bmm_stale_request_after_reorg(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = mine_check_block_events::<_, DummySidechain>(
+        &mut post_setup,
+        6,
+        MiningPolicy::VOTE,
+        |_, _| Ok(()),
+    )
+    .await?;
+    // The crafted bid spends from Core's wallet, which the served coinbases
+    // do not pay in GetBlockTemplate mode.
+    let core_addr: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _mined: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![104, core_addr.clone()])
+        .await?;
+    let old_tip = best_block_hash(&post_setup.bitcoind_client).await?;
+    let _mined: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![1, core_addr])
+        .await?;
+    let tip = best_block_hash(&post_setup.bitcoind_client).await?;
+    let () = wait_for_enforcer_tip_hash(&post_setup, tip).await?;
+    tracing::info!(%old_tip, %tip, "Activated the sidechain and funded Core's wallet");
+
+    let h_bid = h_star("bid on the tip a reorg disconnects");
+    let bid_txid = craft_core_bid(
+        &post_setup,
+        DummySidechain::SIDECHAIN_NUMBER,
+        LOW_BID,
+        &h_bid,
+        tip,
+        0,
+    )
+    .await?;
+    let () = wait_for_template_txs(&post_setup, vec![bid_txid], vec![]).await?;
+    tracing::info!(%bid_txid, "The bid is in the template on top of {tip}");
+
+    let () = invalidate_block(&post_setup.bitcoind_client, tip).await?;
+    let () = wait_for_enforcer_tip_hash(&post_setup, old_tip).await?;
+    let template = wait_for_template_on(&post_setup, old_tip).await?;
+    anyhow::ensure!(
+        !template_txids(&template).contains(&bid_txid),
+        "the template on {old_tip} must not include the bid on top of the disconnected {tip}"
+    );
+    tracing::info!("The bid left the template once its block was disconnected");
+
+    let (block, _) = mine_and_check_commitment(&mut post_setup, None).await?;
+    anyhow::ensure!(
+        !block_txids(&block).contains(&bid_txid),
+        "the block replacing {tip} must not include the bid on top of it"
+    );
+    tracing::info!("Mined a valid block on {old_tip} without the stale bid");
     Ok(())
 }

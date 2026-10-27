@@ -89,9 +89,17 @@ enum DisconnectBlockErrorInner {
     #[error(transparent)]
     CommitWriteTxn(#[from] rwtxn::error::Commit),
     #[error(transparent)]
+    DbRange(Box<db::error::Range>),
+    #[error(transparent)]
     DisconnectBlock(#[from] task::error::DisconnectBlock),
     #[error(transparent)]
     WriteTxn(#[from] env::error::WriteTxn),
+}
+
+impl From<db::error::Range> for DisconnectBlockErrorInner {
+    fn from(err: db::error::Range) -> Self {
+        Self::DbRange(Box::new(err))
+    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -426,9 +434,20 @@ impl CusfEnforcer for Validator {
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
         let mut events = Vec::new();
         let () = handler.disconnect_block(&mut rwtxn, &mut events, block_hash)?;
+        // The BMM requests (M8) seen on top of the disconnected block commit
+        // to it as their previous mainchain block, so no block on the new
+        // tip can include them. Drop them from the mempool, as `connect_block`
+        // drops those seen on top of the block's parent.
+        let remove_mempool_txs = self
+            .dbs
+            .block_hashes
+            .get_seen_bmm_requests_for_parent_block(&rwtxn, block_hash)?
+            .into_values()
+            .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
+            .collect();
         rwtxn.commit()?;
         crate::validator::task::broadcast_events(&self.events_tx, events);
-        Ok(DisconnectBlockAction::default())
+        Ok(DisconnectBlockAction { remove_mempool_txs })
     }
 
     type AcceptTxError = AcceptTxError;
