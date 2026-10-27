@@ -10,6 +10,12 @@ use std::{
 use thiserror::Error;
 use tokio::task::JoinHandle;
 
+/// Credentials embedded in the esplora URL the harness hands the enforcer.
+/// The mempool-electrs server ignores them; they are there so a leak of the
+/// URL has something to leak.
+pub const ESPLORA_USER: &str = "alice";
+pub const ESPLORA_PASSWORD: &str = "hunter2";
+
 /// Information about a failed test
 #[derive(Clone, Debug)]
 pub struct TestFailure {
@@ -1065,7 +1071,7 @@ impl Enforcer {
                 format!("--wallet-electrum-host=127.0.0.1"),
                 format!("--wallet-electrum-port={}", self.wallet_electrum_rpc_port),
                 format!(
-                    "--wallet-esplora-url=http://127.0.0.1:{}",
+                    "--wallet-esplora-url=http://{ESPLORA_USER}:{ESPLORA_PASSWORD}@127.0.0.1:{}",
                     self.wallet_electrum_http_port
                 ),
                 "--wallet-skip-periodic-sync".to_owned(),

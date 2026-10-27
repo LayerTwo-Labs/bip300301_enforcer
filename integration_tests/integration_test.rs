@@ -1551,11 +1551,27 @@ pub fn tests(
     ));
 
     async_trials.push(new_bespoke_trial(
+        crate::test_wallet_derivation::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_derivation::test_wallet_derivation,
+    ));
+
+    async_trials.push(new_bespoke_trial(
         crate::test_wallet_descriptor_fallback::LEGACY_TEST_NAME,
         bin_paths,
         &file_registry,
         &failure_collector,
         crate::test_wallet_descriptor_fallback::test_wallet_legacy_descriptor,
+    ));
+
+    async_trials.push(new_bespoke_trial(
+        crate::test_wallet_sync_endpoint::TEST_NAME,
+        bin_paths,
+        &file_registry,
+        &failure_collector,
+        crate::test_wallet_sync_endpoint::test_wallet_sync_endpoint,
     ));
 
     async_trials.push(new_bespoke_trial(

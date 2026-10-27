@@ -21,7 +21,10 @@ use futures::channel::mpsc;
 
 use crate::{
     integration_test::{fund_enforcer, wait_for_wallet_sync},
-    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, read_enforcer_log},
+    setup::{
+        DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, read_enforcer_log,
+        send_and_wait_for_mempool,
+    },
     util::BinPaths,
 };
 
@@ -162,6 +165,12 @@ pub async fn test_wallet_legacy_descriptor(bin_paths: BinPaths) -> anyhow::Resul
          enforcer come up without --wallet-derivation-coin-type={MAINNET_COIN_TYPE}, \
          leaving it deriving what was already persisted?",
     );
+
+    // The fallback wallet holds no keys of its own; it has to sign with the
+    // ones derived for the descriptor it actually opened under.
+    let () = send_and_wait_for_mempool(&mut post_setup)
+        .await
+        .context("a wallet adopted under the legacy coin type must still sign")?;
 
     drop(post_setup);
     Ok(())
