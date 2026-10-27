@@ -530,54 +530,30 @@ impl Validator {
                 };
 
                 (conflicts_with, BMM_ACCEPT_OUTPUT_WEIGHT)
-            } else if tx.output.iter().any(|out| {
-                self.network_params
-                    .op_drivechain
-                    .parse(out.script_pubkey.as_bytes())
-                    .is_ok()
-            }) {
-                // M5 txs may require another tx to consolidate CTIPs.
-                // Unfortunately, this rule also applies to M6 txs, which
-                // never create unconsolidated CTIPs.
-
-                /// Weight, in wu, of the Ctip consolidation (M5) tx that block
-                /// production appends for an unconsolidated Ctip.
-                const M5_CONSOLIDATE_TX_WEIGHT: i64 = {
-                    let version_size = 4;
-                    let txin_size = {
-                        let outpoint_size = 36;
-                        let script_sig_size = 1;
-                        let sequence_size = 4;
-                        let witness_size = 1;
-                        outpoint_size + script_sig_size + sequence_size + witness_size
-                    };
-                    let vin_size = {
-                        let max_prefix_size_increase = 4;
-                        max_prefix_size_increase + (2 * txin_size)
-                    };
-                    let txout_size = {
-                        let value_size = 4;
-                        let spk_size = {
-                            let prefix_size = 1;
-                            let script_size = 4;
-                            prefix_size + script_size
-                        };
-                        value_size + spk_size
-                    };
-                    let vout_size = {
-                        let max_prefix_size_increase = 4;
-                        max_prefix_size_increase + txout_size
-                    };
-                    let tx_size = version_size
-                        + bitcoin::absolute::LockTime::SIZE as i64
-                        + vin_size
-                        + vout_size;
-                    tx_size * bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR as i64
-                };
-                (HashSet::new(), M5_CONSOLIDATE_TX_WEIGHT)
             } else {
                 (HashSet::new(), 0)
             };
+            // A deposit into an existing treasury leaves the treasury UTXO
+            // unspent, so block production appends a tx consolidating it. That
+            // is reserved here, on top of any BMM accept, as one tx can be
+            // both. It also applies to M6 txs, which never create
+            // unconsolidated CTIPs, so those are over-reserved.
+            let n_treasury_outputs = tx
+                .output
+                .iter()
+                .filter(|out| {
+                    self.network_params
+                        .op_drivechain
+                        .parse(out.script_pubkey.as_bytes())
+                        .is_ok()
+                })
+                .count();
+            let weight_tweak = weight_tweak
+                + if n_treasury_outputs == 0 {
+                    0
+                } else {
+                    crate::types::consolidation_tx_weight(n_treasury_outputs as u64).to_wu() as i64
+                };
             TxAcceptAction::Accept {
                 conflicts_with,
                 weight_tweak,

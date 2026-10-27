@@ -204,6 +204,11 @@ pub(in crate::validator) enum InvalidM6 {
     TreasuryOutputIndex { treasury_vout: u32 },
     #[error("unexpected input ({unexpected})")]
     UnexpectedInput { unexpected: bitcoin::OutPoint },
+    #[error(
+        "withdrawal from sidechain {} does not spend the consolidated treasury UTXO",
+        .sidechain_number,
+    )]
+    MissingConsolidatedInput { sidechain_number: SidechainNumber },
 }
 
 #[derive(Debug, Error, Fatality, Split, Transitive)]

@@ -563,7 +563,9 @@ impl BlockProducer {
                     .get_by_sidechain(sidechain_id)
                     .iter()
                     .flat_map(|ctips| ctips.iter().copied())
-                    .collect();
+                    .collect::<Vec<Ctip>>();
+                let treasury_value_in = current_consolidated_ctip.value
+                    + unconsolidated_ctips.iter().map(|ctip| ctip.value).sum();
                 let Ok((m6, successor_consolidated_ctip)) = Self::finalize_m6(
                     params.op_drivechain,
                     sidechain_id,
@@ -576,7 +578,7 @@ impl BlockProducer {
                         %m6id,
                         %fee,
                         %payout,
-                        treasury = %current_consolidated_ctip.value,
+                        treasury = %treasury_value_in,
                         "skipping an approved withdrawal bundle: payout and fee exceed the treasury"
                     );
                     continue;
@@ -702,6 +704,32 @@ mod tests {
                 vout: 0,
             },
             value: TREASURY_VALUE,
+        }
+    }
+
+    /// What the mempool reserves for a deposit must cover the consolidation the
+    /// producer then builds, for every number of treasuries it touches.
+    #[test]
+    fn consolidation_weight_is_reserved() {
+        for n_treasuries in 1..=3u8 {
+            let mut ctips = Ctips::default();
+            for slot in 0..n_treasuries {
+                let sidechain = SidechainNumber(slot);
+                ctips.consolidated.insert(sidechain, ctip(slot));
+                ctips.unconsolidated.insert(sidechain, ctip(100 + slot));
+            }
+            let suffix_txs =
+                BlockProducer::suffix_txs_for_proposals(HashMap::new(), ctips, &PARAMS);
+            let [consolidation] = suffix_txs.as_slice() else {
+                panic!("expected only the consolidation, got {suffix_txs:?}");
+            };
+            let reserved = crate::types::consolidation_tx_weight(n_treasuries.into());
+            assert!(
+                consolidation.weight() <= reserved,
+                "{n_treasuries} treasuries: built {} but reserved {}",
+                consolidation.weight(),
+                reserved
+            );
         }
     }
 

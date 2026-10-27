@@ -180,7 +180,7 @@ pub(crate) struct UnconsolidatedCtips {
 }
 
 impl UnconsolidatedCtips {
-    fn insert(&mut self, sidechain: SidechainNumber, ctip: Ctip) {
+    pub(crate) fn insert(&mut self, sidechain: SidechainNumber, ctip: Ctip) {
         self.by_outpoint
             .insert(ctip.outpoint, (sidechain, ctip.value));
         self.by_sidechain.entry(sidechain).or_default().insert(ctip);
@@ -905,11 +905,22 @@ impl BlockHandler<'_> {
                 .sum();
             let treasury_value_in =
                 consolidated_ctip_input_value + unconsolidated_ctip_inputs_value;
-            match ctip_output.value.cmp(&consolidated_ctip_input_value) {
+            // Classify against everything the tx spends from the treasury,
+            // not just the consolidated UTXO. Otherwise a tx can take value
+            // out of a pending deposit and still look like it adds to the
+            // treasury.
+            let ordering = ctip_output.value.cmp(&treasury_value_in);
+            // Equal value is only meaningful as a consolidation of deposits.
+            if ordering == Ordering::Equal && unconsolidated_ctip_inputs.is_empty() {
+                return Err(error::HandleM5M6::ZeroDiff);
+            }
+            match ordering {
                 // M6
                 Ordering::Less => {
-                    let consolidated_ctip_input = consolidated_ctip_input
-                        .expect("consolidated ctip input must exist for M6 tx");
+                    let Some(consolidated_ctip_input) = consolidated_ctip_input else {
+                        let err = error::InvalidM6::MissingConsolidatedInput { sidechain_number };
+                        return Err(err.into());
+                    };
                     // check inputs
                     {
                         let ctip_inputs: HashSet<_> = unconsolidated_ctip_inputs
@@ -977,9 +988,9 @@ impl BlockHandler<'_> {
                         }
                     }
                 }
-                // M5
-                Ordering::Greater => {
-                    let deposit = if ctip_output.value > treasury_value_in {
+                // M5 deposit, or consolidation of deposits when equal
+                Ordering::Greater | Ordering::Equal => {
+                    let deposit = if ordering == Ordering::Greater {
                         // BIP 300 requires the address OP_RETURN output immediately
                         // after the treasury UTXO; a deposit without it is invalid.
                         let Some(address_output) = transaction
@@ -1053,7 +1064,6 @@ impl BlockHandler<'_> {
                         }
                     }
                 }
-                Ordering::Equal => return Err(error::HandleM5M6::ZeroDiff),
             }
             for input in unconsolidated_ctip_inputs {
                 unconsolidated_ctips.remove(&input.outpoint);
