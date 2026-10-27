@@ -110,8 +110,12 @@ async fn m4_block(post_setup: &PostSetup, vote: u8) -> anyhow::Result<BlockHash>
     Ok(hash)
 }
 
-/// A mempool M6 whose bundle is payable at the tip but expires in the block
-/// being built. `connect_block` fails the bundle before it reads the block's
+/// A bundle that is payable at the tip but not in the block being built, because
+/// our own coinbase ALARMs it back to the threshold. The block must still be
+/// produced, without paying it.
+///
+/// Then, a mempool M6 whose bundle is payable at the tip but expires in the
+/// block being built. `connect_block` fails the bundle before it reads the block's
 /// txs, so if the M6 goes into the template, the template is invalid and no
 /// block can be produced at that height.
 pub async fn test_mempool_m6_for_an_expiring_bundle(
@@ -147,6 +151,30 @@ pub async fn test_mempool_m6_for_an_expiring_bundle(
         votes > u32::from(thresholds.withdrawal_bundle_inclusion_threshold),
         "not payable before its last block ({votes} votes)"
     );
+
+    tracing::info!("An ALARM in our own coinbase takes the payable bundle to the threshold");
+    let before_alarm = best_block_hash(&post_setup.bitcoind_client).await?;
+    let () = mine::<DummySidechain>(
+        &mut post_setup,
+        1,
+        MiningPolicy {
+            bundle: WithdrawalBundlePolicy::Alarm,
+            ..MiningPolicy::VOTE
+        },
+    )
+    .await?;
+    anyhow::ensure!(
+        bundle_vote_count(&mut post_setup, bundle).await?
+            <= u32::from(thresholds.withdrawal_bundle_inclusion_threshold),
+        "the ALARM did not take the bundle to the threshold"
+    );
+    anyhow::ensure!(
+        pending_bundles(&post_setup).await? == 1,
+        "the block paid a bundle its own ALARM made unpayable"
+    );
+    let alarm_block = best_block_hash(&post_setup.bitcoind_client).await?;
+    let () = invalidate_block(&post_setup.bitcoind_client, alarm_block).await?;
+    let () = wait_for_enforcer_tip_hash(&post_setup, before_alarm).await?;
 
     tracing::info!("Our block pays it at age max_age, its last valid block");
     let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
