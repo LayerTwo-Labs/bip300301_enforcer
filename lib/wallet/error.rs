@@ -475,6 +475,8 @@ pub enum InitWalletFromMnemonic {
     DataMismatch(#[source] DataMismatch),
     #[error("unable to derive xpriv from extended key")]
     DeriveXpriv,
+    #[error("invalid wallet descriptor")]
+    Descriptor(#[from] bdk_wallet::descriptor::DescriptorError),
     #[error("failed to load wallet")]
     LoadWallet(#[source] Box<bdk_wallet::LoadWithPersistError<Persistence>>),
     #[error("mnemonic key error")]
@@ -507,6 +509,7 @@ impl ToStatus for InitWalletFromMnemonic {
             Self::DataMismatch(source) => StatusBuilder::with_code(self, source.builder()),
             Self::CreateWallet(_)
             | Self::DeriveXpriv
+            | Self::Descriptor(_)
             | Self::LoadWallet(_)
             | Self::MnemonicKey(_) => StatusBuilder::new(self),
         }

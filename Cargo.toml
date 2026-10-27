@@ -22,7 +22,7 @@ async-lock = "3.4.0"
 axum = { version = "0.8", default-features = false, features = ["tracing"] }
 bdk_chain = "0.23.3"
 bdk_electrum = { version = "0.24.0", default-features = false }
-bdk_wallet = "3.0.0"
+bdk_wallet = "3.1.0"
 bdk_esplora = { version = "0.22.2", default-features = false }
 bitcoin = "0.32.100"
 buffa = { version = "0.9", features = ["json"] }

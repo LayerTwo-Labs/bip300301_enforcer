@@ -645,6 +645,31 @@ pub async fn wait_for_tx_in_mempool(
     .await
 }
 
+/// Spend from the enforcer wallet to the node's wallet and wait for the node
+/// to accept it. The node only admits a validly signed transaction, so this
+/// proves the wallet can sign with the keys it is currently holding.
+pub async fn send_and_wait_for_mempool(post_setup: &mut PostSetup) -> anyhow::Result<()> {
+    use bip300301_enforcer_lib::proto::mainchain::{
+        SendTransactionRequest, SendTransactionResponse,
+    };
+
+    const SEND_SATS: u64 = 100_000;
+    let txid = post_setup
+        .wallet_service_client
+        .send_transaction(SendTransactionRequest {
+            destinations: HashMap::from([(post_setup.receive_address.to_string(), SEND_SATS)])
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        })
+        .await?
+        .into_owned()
+        .txid
+        .ok_or_else(|| proto::Error::missing_field::<SendTransactionResponse>("txid"))?
+        .decode::<SendTransactionResponse, _>("txid")?;
+    wait_for_tx_in_mempool(&post_setup.bitcoind_client, &txid).await
+}
+
 /// Reported by the enforcer's `getblocktemplate` while its mempool syncs.
 const RPC_CLIENT_IN_INITIAL_DOWNLOAD: i32 = -10;
 

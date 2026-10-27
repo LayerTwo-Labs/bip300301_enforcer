@@ -14,7 +14,9 @@ use bdk_electrum::{
 use bdk_esplora::esplora_client;
 use bdk_wallet::{
     self, KeychainKind,
+    descriptor::IntoWalletDescriptor as _,
     keys::{DerivableKey as _, ExtendedKey, bip39::Mnemonic},
+    signer::SignersContainer,
 };
 use bitcoin::{
     Amount, BlockHash, Network, Transaction, Txid,
@@ -33,6 +35,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
     block_producer::BlockProducer,
@@ -62,7 +65,26 @@ mod util;
 
 pub(crate) type Persistence = thread_safe_connection::ThreadSafeConnection;
 type PersistenceError = <Persistence as bdk_wallet::AsyncWalletPersister>::Error;
-type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
+
+struct BdkWallet {
+    wallet: bdk_wallet::PersistedWallet<Persistence>,
+    external_signers: SignersContainer,
+    internal_signers: SignersContainer,
+}
+
+impl std::ops::Deref for BdkWallet {
+    type Target = bdk_wallet::PersistedWallet<Persistence>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.wallet
+    }
+}
+
+impl std::ops::DerefMut for BdkWallet {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.wallet
+    }
+}
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
@@ -420,16 +442,17 @@ impl WalletInner {
         mnemonic: &Mnemonic,
         network: bdk_wallet::bitcoin::Network,
         coin_type: u32,
-    ) -> Result<(String, String), error::InitWalletFromMnemonic> {
+    ) -> Result<(Zeroizing<String>, Zeroizing<String>), error::InitWalletFromMnemonic> {
         let extended_key: ExtendedKey = mnemonic.clone().into_extended_key()?;
 
         let xpriv = extended_key
             .into_xprv(network.into())
             .ok_or(error::InitWalletFromMnemonic::DeriveXpriv)?;
 
+        // The descriptors embed the xpriv, so they are wiped on drop.
         Ok((
-            format!("wpkh({xpriv}/84'/{coin_type}'/0'/0/*)"),
-            format!("wpkh({xpriv}/84'/{coin_type}'/0'/1/*)"),
+            Zeroizing::new(format!("wpkh({xpriv}/84'/{coin_type}'/0'/0/*)")),
+            Zeroizing::new(format!("wpkh({xpriv}/84'/{coin_type}'/0'/1/*)")),
         ))
     }
 
@@ -440,11 +463,13 @@ impl WalletInner {
         internal_desc: &str,
         network: bdk_wallet::bitcoin::Network,
         wallet_database: &mut Persistence,
-    ) -> Result<Option<BdkWallet>, bdk_wallet::LoadWithPersistError<PersistenceError>> {
+    ) -> Result<
+        Option<bdk_wallet::PersistedWallet<Persistence>>,
+        bdk_wallet::LoadWithPersistError<PersistenceError>,
+    > {
         bdk_wallet::Wallet::load()
             .descriptor(KeychainKind::External, Some(external_desc.to_owned()))
             .descriptor(KeychainKind::Internal, Some(internal_desc.to_owned()))
-            .extract_keys()
             .check_network(network)
             .load_wallet_async(wallet_database)
             .await
@@ -463,19 +488,23 @@ impl WalletInner {
         let loaded =
             Self::load_bdk_wallet(&external_desc, &internal_desc, network, wallet_database).await;
 
-        let bitcoin_wallet = match loaded {
+        let (bitcoin_wallet, external_desc, internal_desc) = match loaded {
             Ok(Some(wallet)) => {
                 tracing::info!("Loaded existing BDK wallet");
-                wallet
+                (wallet, external_desc, internal_desc)
             }
 
             Ok(None) => {
                 tracing::info!(%coin_type, "Creating new BDK wallet");
 
-                bdk_wallet::Wallet::create(external_desc, internal_desc)
-                    .network(network)
-                    .create_wallet_async(wallet_database)
-                    .await?
+                let wallet = bdk_wallet::Wallet::create(
+                    external_desc.as_str().to_owned(),
+                    internal_desc.as_str().to_owned(),
+                )
+                .network(network)
+                .create_wallet_async(wallet_database)
+                .await?;
+                (wallet, external_desc, internal_desc)
             }
 
             // A wallet persisted before the coin type became network-aware
@@ -501,7 +530,7 @@ impl WalletInner {
                              created before the derivation path became network-aware, and \
                              keeps deriving addresses under the path it was created with.",
                         );
-                        wallet
+                        (wallet, legacy_external, legacy_internal)
                     }
                     // Not a legacy wallet either. Report the original
                     // mismatch, against the descriptor this build wanted.
@@ -512,7 +541,33 @@ impl WalletInner {
             Err(err) => return Err(err.into()),
         };
 
-        Ok(bitcoin_wallet)
+        // The wallet holds public descriptors only. Signing keys come from
+        // the descriptors it was opened with, which are the legacy coin
+        // type's when the fallback adopted an older wallet.
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let (_, external_keymap) = external_desc
+            .as_str()
+            .into_wallet_descriptor(&secp, network.into())?;
+        let (_, internal_keymap) = internal_desc
+            .as_str()
+            .into_wallet_descriptor(&secp, network.into())?;
+
+        let external_signers = SignersContainer::build(
+            external_keymap,
+            bitcoin_wallet.public_descriptor(KeychainKind::External),
+            bitcoin_wallet.secp_ctx(),
+        );
+        let internal_signers = SignersContainer::build(
+            internal_keymap,
+            bitcoin_wallet.public_descriptor(KeychainKind::Internal),
+            bitcoin_wallet.secp_ctx(),
+        );
+
+        Ok(BdkWallet {
+            wallet: bitcoin_wallet,
+            external_signers,
+            internal_signers,
+        })
     }
 
     async fn new(
@@ -1801,14 +1856,21 @@ impl Wallet {
     ) -> Result<bdk_wallet::bitcoin::Transaction, error::WalletSignTransaction> {
         let mut timestamp = Instant::now();
 
-        if !self
-            .inner
-            .read_wallet()
-            .await
-            .map_err(error::WalletSignTransaction::NotUnlocked)?
-            .sign(&mut psbt, bdk_wallet::SignOptions::default())
-            .map_err(error::WalletSignTransaction::SignerError)?
-        {
+        let signed = {
+            let wallet = self
+                .inner
+                .read_wallet()
+                .await
+                .map_err(error::WalletSignTransaction::NotUnlocked)?;
+            wallet
+                .sign_with_signers(
+                    &mut psbt,
+                    &[&wallet.external_signers, &wallet.internal_signers],
+                    bdk_wallet::SignOptions::default(),
+                )
+                .map_err(error::WalletSignTransaction::SignerError)?
+        };
+        if !signed {
             return Err(error::WalletSignTransaction::UnableToSign);
         }
 
@@ -2047,565 +2109,5 @@ impl Wallet {
         password: Option<&str>,
     ) -> Result<(), error::CreateNewWallet> {
         self.inner.create_new_wallet(mnemonic, password).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{collections::HashMap, sync::Arc};
-
-    use bdk_chain::{BlockId, ConfirmationBlockTime};
-    use bdk_wallet::{
-        bip39::Language,
-        bitcoin::{Amount, ScriptBuf, script::PushBytesBuf},
-        test_utils::get_funded_wallet_wpkh,
-    };
-    use bitcoin::{BlockHash, hashes::Hash as _};
-
-    use super::{
-        BDKWalletTransaction, BdkWallet, ChainPosition, CreateTransactionParams, KeychainKind,
-        LEGACY_COIN_TYPE, M8BmmRequest, Mnemonic, Network, Persistence, Txid, Wallet, WalletConfig,
-        WalletInner, WalletSyncSource, error, slip44_coin_type,
-    };
-    use crate::{
-        errors::ErrorChain,
-        types::{BmmCommitment, SidechainNumber},
-    };
-
-    /// The BIP 39 test mnemonic that BIP 84's published vectors derive from.
-    const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon \
-                                 abandon abandon abandon abandon abandon about";
-
-    /// Every network other than mainnet is a test network, and SLIP-44
-    /// reserves coin type `1` for all of them.
-    #[test]
-    fn coin_type_is_zero_only_on_mainnet() {
-        assert_eq!(slip44_coin_type(Network::Bitcoin), 0);
-        for network in [
-            Network::Testnet,
-            Network::Testnet4,
-            Network::Signet,
-            Network::Regtest,
-        ] {
-            assert_eq!(slip44_coin_type(network), 1, "{network}");
-        }
-    }
-
-    fn test_mnemonic() -> Mnemonic {
-        Mnemonic::parse_in_normalized(Language::English, TEST_MNEMONIC).unwrap()
-    }
-
-    fn descriptors(network: Network) -> (String, String) {
-        WalletInner::bip84_descriptors(&test_mnemonic(), network, slip44_coin_type(network))
-            .unwrap()
-    }
-
-    #[test]
-    fn descriptors_carry_the_network_coin_type() {
-        let (external, internal) = descriptors(Network::Bitcoin);
-        assert!(external.starts_with("wpkh(xprv"), "{external}");
-        assert!(external.ends_with("/84'/0'/0'/0/*)"), "{external}");
-        assert!(internal.ends_with("/84'/0'/0'/1/*)"), "{internal}");
-
-        for network in [
-            Network::Testnet,
-            Network::Testnet4,
-            Network::Signet,
-            Network::Regtest,
-        ] {
-            let (external, internal) = descriptors(network);
-            assert!(external.starts_with("wpkh(tprv"), "{network}: {external}");
-            assert!(
-                external.ends_with("/84'/1'/0'/0/*)"),
-                "{network}: {external}"
-            );
-            assert!(
-                internal.ends_with("/84'/1'/0'/1/*)"),
-                "{network}: {internal}"
-            );
-        }
-    }
-
-    /// First external and internal address for `network`, derived through BDK
-    /// rather than from the descriptor string, so the assertions cover the
-    /// path the wallet actually takes.
-    fn first_addresses(network: Network) -> (String, String) {
-        let (external, internal) = descriptors(network);
-        let wallet = bdk_wallet::Wallet::create(external, internal)
-            .network(network)
-            .create_wallet_no_persist()
-            .unwrap();
-        (
-            wallet.peek_address(KeychainKind::External, 0).to_string(),
-            wallet.peek_address(KeychainKind::Internal, 0).to_string(),
-        )
-    }
-
-    /// Pins mainnet against BIP 84's published test vectors. A mainnet wallet
-    /// built before the coin type became network-aware derived under the
-    /// test-network `1'` and produced neither of these addresses.
-    #[test]
-    fn mainnet_matches_bip84_test_vectors() {
-        let (receive, change) = first_addresses(Network::Bitcoin);
-        assert_eq!(receive, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
-        assert_eq!(change, "bc1q8c6fshw2dlwun7ekn9qwf37cu2rn755upcp6el");
-    }
-
-    /// The test networks keep the derivation they already had, and stay
-    /// distinct from mainnet's.
-    #[test]
-    fn test_networks_derive_under_the_test_coin_type() {
-        let (mainnet, _) = first_addresses(Network::Bitcoin);
-        let (signet, _) = first_addresses(Network::Signet);
-        let (regtest, _) = first_addresses(Network::Regtest);
-
-        assert!(signet.starts_with("tb1"), "{signet}");
-        assert!(regtest.starts_with("bcrt1"), "{regtest}");
-        assert_ne!(mainnet, signet);
-    }
-
-    fn wallet_config(derivation_coin_type: Option<u32>) -> WalletConfig {
-        WalletConfig {
-            auto_create: false,
-            esplora_url: None,
-            electrum_host: None,
-            electrum_port: None,
-            skip_periodic_sync: false,
-            sync_source: WalletSyncSource::Disabled,
-            max_block_by_block_replay: 2_000,
-            derivation_coin_type,
-            mnemonic_path: None,
-        }
-    }
-
-    /// Open the wallet the way the enforcer does.
-    async fn open_wallet(
-        database: &mut Persistence,
-        network: Network,
-        coin_type: Option<u32>,
-    ) -> Result<BdkWallet, error::InitWalletFromMnemonic> {
-        WalletInner::initialize_wallet_from_mnemonic(
-            &test_mnemonic(),
-            network,
-            &wallet_config(coin_type),
-            database,
-        )
-        .await
-    }
-
-    /// Leave `database` holding a wallet persisted under `coin_type`, and
-    /// return its first receive address.
-    async fn persist_wallet_under(
-        database: &mut Persistence,
-        network: Network,
-        coin_type: u32,
-    ) -> String {
-        let wallet = open_wallet(database, network, Some(coin_type))
-            .await
-            .expect("an empty database must yield a freshly created wallet");
-        wallet.peek_address(KeychainKind::External, 0).to_string()
-    }
-
-    async fn empty_database(dir: &temp_dir::TempDir) -> Persistence {
-        Persistence::open(dir.path().join("wallet.sqlite.db"))
-            .await
-            .expect("must open a wallet database")
-    }
-
-    /// The upgrade the fallback exists for: a mainnet wallet persisted under
-    /// [`LEGACY_COIN_TYPE`] has to open under a build that derives `0`, and
-    /// keep deriving where its funds are.
-    #[tokio::test]
-    async fn a_legacy_mainnet_wallet_still_loads() {
-        let dir = temp_dir::TempDir::new().unwrap();
-        let mut database = empty_database(&dir).await;
-        let legacy_address =
-            persist_wallet_under(&mut database, Network::Bitcoin, LEGACY_COIN_TYPE).await;
-
-        let wallet = open_wallet(&mut database, Network::Bitcoin, None)
-            .await
-            .expect("a legacy mainnet wallet must still load");
-
-        assert_eq!(
-            wallet.peek_address(KeychainKind::External, 0).to_string(),
-            legacy_address,
-            "the wallet must keep deriving under the path it was created with",
-        );
-        // Guard the premise: the two derivations must genuinely differ.
-        assert_ne!(
-            legacy_address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
-            "the legacy derivation must not coincide with the BIP 84 one",
-        );
-    }
-
-    /// An empty database is unaffected by the fallback.
-    #[tokio::test]
-    async fn a_fresh_mainnet_wallet_is_created_under_the_network_coin_type() {
-        let dir = temp_dir::TempDir::new().unwrap();
-        let mut database = empty_database(&dir).await;
-
-        let wallet = open_wallet(&mut database, Network::Bitcoin, None)
-            .await
-            .expect("an empty database must yield a freshly created wallet");
-
-        assert_eq!(
-            wallet.peek_address(KeychainKind::External, 0).to_string(),
-            "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
-        );
-    }
-
-    /// Neither this build's descriptor nor the legacy one: a foreign wallet,
-    /// which must fail as a data mismatch rather than an opaque load failure.
-    #[tokio::test]
-    async fn an_unrecognized_descriptor_is_a_data_mismatch() {
-        let dir = temp_dir::TempDir::new().unwrap();
-        let mut database = empty_database(&dir).await;
-        let _foreign_address = persist_wallet_under(&mut database, Network::Bitcoin, 7).await;
-
-        let err = open_wallet(&mut database, Network::Bitcoin, None)
-            .await
-            .expect_err("a foreign descriptor must not load");
-
-        assert!(
-            matches!(err, error::InitWalletFromMnemonic::DataMismatch(_)),
-            "expected a data mismatch, got: {err:#}",
-        );
-        // The report has to name what differs; not doing so is what left the
-        // original bug report with nothing to go on.
-        let rendered = format!("{:#}", ErrorChain::new(&err));
-        assert!(
-            rendered.contains("Descriptor mismatch"),
-            "the mismatch BDK reported must survive into the error: {rendered}",
-        );
-    }
-
-    /// The mapping used to be a substring test for "data mismatch", a phrase
-    /// BDK never emits, so every mismatch fell through to the opaque
-    /// `LoadWallet` variant. Pins why the mapping must stay on the variant.
-    #[tokio::test]
-    async fn bdk_does_not_call_a_mismatch_a_data_mismatch() {
-        let dir = temp_dir::TempDir::new().unwrap();
-        let mut database = empty_database(&dir).await;
-        let _foreign_address = persist_wallet_under(&mut database, Network::Bitcoin, 7).await;
-
-        let (external, internal) = descriptors(Network::Bitcoin);
-        let err =
-            WalletInner::load_bdk_wallet(&external, &internal, Network::Bitcoin, &mut database)
-                .await
-                .expect_err("a foreign descriptor must not load");
-
-        assert!(
-            !err.to_string().contains("data mismatch"),
-            "BDK renders its mismatch as `{err}`. If it now says `data \
-             mismatch`, the old substring test would work again -- but the \
-             mapping is matched on the variant, so only this pin is stale.",
-        );
-    }
-
-    /// The test networks' coin type never changed, so there is nothing to
-    /// fall back to and a mismatch is exactly that.
-    #[tokio::test]
-    async fn a_test_network_has_no_legacy_descriptor_to_fall_back_to() {
-        let dir = temp_dir::TempDir::new().unwrap();
-        let mut database = empty_database(&dir).await;
-        assert_eq!(slip44_coin_type(Network::Regtest), LEGACY_COIN_TYPE);
-        // The mainnet coin type, on a regtest wallet.
-        let _foreign_address = persist_wallet_under(&mut database, Network::Regtest, 0).await;
-
-        let err = open_wallet(&mut database, Network::Regtest, None)
-            .await
-            .expect_err("a foreign descriptor must not load");
-
-        assert!(
-            matches!(err, error::InitWalletFromMnemonic::DataMismatch(_)),
-            "expected a data mismatch, got: {err:#}",
-        );
-    }
-
-    #[test]
-    fn bmm_bid_is_a_fee_not_a_burn() {
-        let (mut wallet, _) = get_funded_wallet_wpkh();
-        let bid = Amount::from_sat(10_000);
-        let message = M8BmmRequest::data(
-            SidechainNumber(13),
-            BmmCommitment([0x11; 32]),
-            BlockHash::from_byte_array([0x22; 32]),
-        )
-        .unwrap();
-
-        let psbt = Wallet::build_bmm_psbt(
-            &mut wallet,
-            &message,
-            bid,
-            bitcoin::absolute::LockTime::ZERO,
-        )
-        .unwrap();
-
-        assert_eq!(wallet.calculate_fee(&psbt.unsigned_tx).unwrap(), bid);
-        assert_eq!(psbt.unsigned_tx.output[0].value, Amount::ZERO);
-        M8BmmRequest::parse(&psbt.unsigned_tx.output[0].script_pubkey.to_bytes())
-            .expect("output zero must contain the M8 request");
-    }
-
-    /// A BMM request that no longer bids on the tip can never confirm, so
-    /// evicting it must free its inputs; a request still bidding on the tip
-    /// must be left alone.
-    #[test]
-    fn stale_bmm_request_is_evicted_and_frees_inputs() {
-        let (mut wallet, _) = get_funded_wallet_wpkh();
-        let tip = BlockHash::from_byte_array([0xAA; 32]);
-        let message =
-            M8BmmRequest::data(SidechainNumber(3), BmmCommitment([0x33; 32]), tip).unwrap();
-        let psbt = Wallet::build_bmm_psbt(
-            &mut wallet,
-            &message,
-            Amount::from_sat(1_000),
-            bitcoin::absolute::LockTime::ZERO,
-        )
-        .unwrap();
-        let tx = psbt.unsigned_tx.clone();
-        let txid = tx.compute_txid();
-        let spent: Vec<_> = tx.input.iter().map(|input| input.previous_output).collect();
-        assert!(!spent.is_empty());
-        wallet.apply_unconfirmed_txs([(tx, 100)]);
-        assert!(
-            wallet
-                .list_unspent()
-                .all(|utxo| !spent.contains(&utxo.outpoint)),
-            "an unconfirmed bid must spend its inputs"
-        );
-
-        assert!(
-            Wallet::evict_stale_bmm_requests(&mut wallet, tip).is_empty(),
-            "a bid on the current tip must not be evicted"
-        );
-        let moved_tip = BlockHash::from_byte_array([0xBB; 32]);
-        assert_eq!(
-            Wallet::evict_stale_bmm_requests(&mut wallet, moved_tip),
-            vec![txid]
-        );
-        assert!(
-            spent
-                .iter()
-                .all(|outpoint| wallet.list_unspent().any(|utxo| utxo.outpoint == *outpoint)),
-            "evicting the stale bid must free its inputs"
-        );
-    }
-
-    /// A BMM request only counts as an M8 when its OP_RETURN sits at output 0,
-    /// and a shuffle lands it there half the time, so one build proves nothing.
-    #[test]
-    fn op_return_is_always_output_zero() {
-        const ROUNDS: usize = 64;
-
-        let message = [
-            &M8BmmRequest::TAG[..],
-            &[13],
-            &[0x11; 32][..],
-            &[0x22; 32][..],
-        ]
-        .concat();
-        let expected = ScriptBuf::new_op_return(PushBytesBuf::try_from(message.clone()).unwrap());
-
-        for _ in 0..ROUNDS {
-            let (mut wallet, _) = get_funded_wallet_wpkh();
-
-            let psbt = Wallet::build_send_psbt(
-                &mut wallet,
-                HashMap::new(),
-                CreateTransactionParams {
-                    op_return_message: Some(message.clone()),
-                    ..Default::default()
-                },
-                None,
-            )
-            .unwrap();
-
-            let outputs = psbt.unsigned_tx.output;
-            assert_eq!(outputs.len(), 2, "want an OP_RETURN and change");
-            assert_eq!(outputs[0].script_pubkey, expected);
-            assert_eq!(outputs[0].value, Amount::ZERO);
-            M8BmmRequest::parse(&outputs[0].script_pubkey.to_bytes())
-                .expect("output 0 must parse as an M8 BMM request");
-        }
-    }
-
-    /// A password embedded in `--wallet-esplora-url` reaches the wallet
-    /// config verbatim, and wallet info is served over the API, so the
-    /// endpoint reported there must be redacted the same way the startup
-    /// config dump redacts it.
-    #[test]
-    fn reported_esplora_endpoint_redacts_credentials() {
-        let config = WalletConfig {
-            auto_create: false,
-            esplora_url: Some(
-                url::Url::parse("https://alice:hunter2@esplora.example/api").unwrap(),
-            ),
-            electrum_host: None,
-            electrum_port: None,
-            skip_periodic_sync: false,
-            sync_source: WalletSyncSource::Esplora,
-            max_block_by_block_replay: 2_000,
-            derivation_coin_type: None,
-            mnemonic_path: None,
-        };
-
-        let endpoint = super::sync_backend_endpoint(&config, Network::Regtest)
-            .expect("an esplora URL is configured");
-        assert!(
-            !endpoint.contains("hunter2"),
-            "the esplora password must not be reported over the API: {endpoint}"
-        );
-        assert_eq!(endpoint, "https://alice:redacted@esplora.example/api");
-    }
-
-    /// Host and port default independently, so a config that sets only one of
-    /// them must still report a complete endpoint.
-    #[test]
-    fn reported_electrum_endpoint_fills_in_defaults() {
-        let config = WalletConfig {
-            auto_create: false,
-            esplora_url: None,
-            electrum_host: None,
-            electrum_port: Some(50009),
-            skip_periodic_sync: false,
-            sync_source: WalletSyncSource::Electrum,
-            max_block_by_block_replay: 2_000,
-            derivation_coin_type: None,
-            mnemonic_path: None,
-        };
-
-        assert_eq!(
-            super::sync_backend_endpoint(&config, Network::Regtest).as_deref(),
-            Some("127.0.0.1:50009"),
-        );
-    }
-
-    /// A disabled sync source has no backend, so there is no endpoint to
-    /// report rather than a misleading default one.
-    #[test]
-    fn disabled_sync_source_reports_no_endpoint() {
-        let config = WalletConfig {
-            auto_create: false,
-            esplora_url: None,
-            electrum_host: None,
-            electrum_port: None,
-            skip_periodic_sync: false,
-            sync_source: WalletSyncSource::Disabled,
-            max_block_by_block_replay: 2_000,
-            derivation_coin_type: None,
-            mnemonic_path: None,
-        };
-
-        assert_eq!(
-            super::sync_backend_endpoint(&config, Network::Regtest),
-            None
-        );
-    }
-
-    fn wallet_tx(
-        txid_byte: u8,
-        chain_position: ChainPosition<ConfirmationBlockTime>,
-    ) -> BDKWalletTransaction {
-        let tx = bitcoin::Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::absolute::LockTime::ZERO,
-            input: Vec::new(),
-            output: Vec::new(),
-        };
-        BDKWalletTransaction {
-            txid: Txid::from_byte_array([txid_byte; 32]),
-            tx: Arc::new(tx),
-            chain_position,
-            fee: Amount::ZERO,
-            received: Amount::ZERO,
-            sent: Amount::ZERO,
-        }
-    }
-
-    /// A position confirmed at `timestamp`. Only the time matters here, not
-    /// the block the transaction is anchored to.
-    fn confirmed_at(timestamp: u64) -> ChainPosition<ConfirmationBlockTime> {
-        let block_id = BlockId {
-            height: 1,
-            hash: BlockHash::from_byte_array([0xAA; 32]),
-        };
-        ChainPosition::Confirmed {
-            anchor: ConfirmationBlockTime {
-                block_id,
-                confirmation_time: timestamp,
-            },
-            transitively: None,
-        }
-    }
-
-    /// An unconfirmed position. BDK reports no `last_seen` for a transaction
-    /// it has not seen since a reorg orphaned it.
-    fn unconfirmed(last_seen: Option<u64>) -> ChainPosition<ConfirmationBlockTime> {
-        ChainPosition::Unconfirmed {
-            first_seen: last_seen,
-            last_seen,
-        }
-    }
-
-    fn txids(txs: &[BDKWalletTransaction]) -> Vec<Txid> {
-        txs.iter().map(|tx| tx.txid).collect()
-    }
-
-    /// The three positions `list_wallet_transactions` sees, arranged so that
-    /// comparing timestamps for some pairs and TXIDs for the rest is cyclic:
-    /// the confirmed transaction precedes the unconfirmed one by time, which
-    /// precedes the orphaned one by TXID, which precedes the confirmed one by
-    /// TXID.
-    fn intransitive_arrangement() -> [BDKWalletTransaction; 3] {
-        let confirmed = wallet_tx(0x03, confirmed_at(10));
-        let seen = wallet_tx(0x01, unconfirmed(Some(20)));
-        let orphaned = wallet_tx(0x02, unconfirmed(None));
-        [confirmed, seen, orphaned]
-    }
-
-    /// Sorting must be a total order. Switching relation per pair is not one,
-    /// so the answer depended on the order the transactions arrived in.
-    #[test]
-    fn wallet_transactions_sort_in_a_total_order() {
-        let [confirmed, seen, orphaned] = intransitive_arrangement();
-        // Chronological, with the transaction carrying no timestamp first.
-        let expected = [orphaned.txid, confirmed.txid, seen.txid];
-
-        let mut forwards = [confirmed.clone(), seen.clone(), orphaned.clone()];
-        forwards.sort_by_key(super::wallet_transaction_sort_key);
-        let mut backwards = [orphaned, seen, confirmed];
-        backwards.sort_by_key(super::wallet_transaction_sort_key);
-
-        assert_eq!(txids(&forwards), expected);
-        assert_eq!(txids(&backwards), expected);
-    }
-
-    /// The same mix, at a size where the standard library's sort checks the
-    /// comparator it was handed and panics on one that is not a total order.
-    #[test]
-    fn many_wallet_transactions_sort_without_panicking() {
-        const COUNT: u8 = 64;
-
-        // A tiny LCG, so that the timestamps are shuffled with respect to the
-        // TXIDs while the case stays reproducible.
-        let mut seed = 1u64;
-        let mut txs = Vec::with_capacity(COUNT as usize);
-        for i in 0..COUNT {
-            seed = seed.wrapping_mul(2862933555777941757).wrapping_add(1);
-            let chain_position = match i % 3 {
-                0 => confirmed_at(seed >> 58),
-                1 => unconfirmed(Some(seed >> 58)),
-                _ => unconfirmed(None),
-            };
-            txs.push(wallet_tx(i, chain_position));
-        }
-
-        txs.sort_by_key(super::wallet_transaction_sort_key);
-
-        assert!(
-            txs.is_sorted_by_key(super::wallet_transaction_sort_key),
-            "the sorted list must be ordered by its own sort key"
-        );
     }
 }

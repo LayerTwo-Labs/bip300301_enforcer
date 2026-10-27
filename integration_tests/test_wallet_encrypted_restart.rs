@@ -24,7 +24,9 @@ use jsonrpsee::{core::client::ClientT as _, rpc_params};
 
 use crate::{
     integration_test::{fund_enforcer, wait_for_validator_tip, wait_for_wallet_sync},
-    setup::{DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts},
+    setup::{
+        DummySidechain, Mode, Network, PostSetup, PreSetup, SetupOpts, send_and_wait_for_mempool,
+    },
     util::BinPaths,
 };
 
@@ -197,6 +199,12 @@ pub async fn test_wallet_encrypted_restart(bin_paths: BinPaths) -> anyhow::Resul
         "the wallet must still see its coins after the encrypted restart.\n \
          before: {balance_before:?}\n after:  {balance_after:?}",
     );
+
+    // Unlocking rebuilds the signing keys from the decrypted seed, so a
+    // spend proves they came back with the wallet.
+    let () = send_and_wait_for_mempool(&mut post_setup)
+        .await
+        .context("an unlocked wallet must be able to sign")?;
 
     drop(post_setup);
     Ok(())
