@@ -24,7 +24,7 @@ use tokio::time::sleep;
 use tracing::Instrument as _;
 
 use crate::{
-    mine::{MiningPolicy, mine, mine_check_block_events, mine_signet_check},
+    mine::{MiningPolicy, mine, mine_check_block_events},
     setup::{
         Directories, DummySidechain, MiningMode, Mode, Network, PostSetup, PreSetup, Sidechain,
         wait_for_pending_proposal, wait_for_tx_in_mempool, wait_until,
@@ -203,6 +203,20 @@ pub async fn propose_sidechain_for_slot<S>(
 where
     S: Sidechain,
 {
+    propose_sidechain_for_slot_voting::<S>(post_setup, sidechain_number, title, MiningPolicy::VOTE)
+        .await
+}
+
+/// [`propose_sidechain_for_slot`], with the M1's block voting `policy`.
+pub async fn propose_sidechain_for_slot_voting<S>(
+    post_setup: &mut PostSetup,
+    sidechain_number: SidechainNumber,
+    title: &str,
+    policy: MiningPolicy,
+) -> anyhow::Result<()>
+where
+    S: Sidechain,
+{
     tracing::info!(
         "Proposing sidechain `{title}` for slot {}",
         sidechain_number.0
@@ -231,7 +245,7 @@ where
     let () = wait_for_pending_proposal(&post_setup.block_producer_service_client, sidechain_number)
         .await?;
     tracing::debug!("Mining 1 block");
-    let () = mine::<S>(post_setup, 1, MiningPolicy::VOTE).await?;
+    let () = mine::<S>(post_setup, 1, policy).await?;
     let Some(_) = create_sidechain_proposal_resp.message().await? else {
         anyhow::bail!("Expected response when proposing sidechain");
     };
@@ -544,7 +558,6 @@ pub async fn fund_enforcer<S>(post_setup: &mut PostSetup) -> anyhow::Result<()>
 where
     S: Sidechain,
 {
-    use std::convert::Infallible;
     const BLOCKS: u32 = 100;
     tracing::info!("Funding enforcer");
     let () = match post_setup.network {
@@ -591,13 +604,13 @@ where
                     .request("sendtoaddress", params)
                     .await?;
                 let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &funding_txid).await?;
-                mine_signet_check::<_, Infallible, S>(post_setup, 1, |_| Ok(())).await?;
+                mine::<S>(post_setup, 1, MiningPolicy::VOTE).await?;
             } else {
                 tracing::debug!(
                     %spendable,
                     "No pre-mined signet chain, mining {BLOCKS} blocks to coinbase maturity",
                 );
-                mine_signet_check::<_, Infallible, S>(post_setup, BLOCKS, |_| Ok(())).await?;
+                mine::<S>(post_setup, BLOCKS, MiningPolicy::VOTE).await?;
             }
         }
     };

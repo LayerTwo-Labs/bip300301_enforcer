@@ -18,8 +18,8 @@ use bip300301_enforcer_lib::{
         self,
         common::ConsensusHex,
         mainchain::{
-            AckAllProposalsPolicy, GetSidechainsRequest, SetAckAllProposalsRequest,
-            SetWithdrawalBundleAckRequest, WithdrawalBundlePolicy,
+            AckAllProposalsPolicy, GetSidechainsRequest, SetWithdrawalBundleAckRequest,
+            WithdrawalBundlePolicy,
         },
     },
     types::Thresholds,
@@ -27,7 +27,7 @@ use bip300301_enforcer_lib::{
 use bitcoin::{Amount, BlockHash, Txid, hashes::Hash as _};
 
 use crate::{
-    integration_test::propose_sidechain_for_slot,
+    integration_test::propose_sidechain_for_slot_voting,
     mine::{MiningPolicy, mine},
     setup::{
         DummySidechain, PostSetup, Sidechain as _, activate_funded_sidechain, best_block_hash,
@@ -51,16 +51,19 @@ async fn set_explicit_ack(post_setup: &PostSetup, m6id: Txid, ack: bool) -> anyh
     Ok(())
 }
 
-async fn mine_one(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
-    let () = mine::<DummySidechain>(post_setup, 1, MiningPolicy::SILENT).await?;
+async fn mine_one(post_setup: &mut PostSetup, policy: MiningPolicy) -> anyhow::Result<BlockHash> {
+    let () = mine::<DummySidechain>(post_setup, 1, policy).await?;
     best_block_hash(&post_setup.bitcoind_client).await
 }
 
 /// Mine until the one pending bundle fails or pays out, and return the block
 /// that settled it.
-async fn mine_until_settled(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
+async fn mine_until_settled(
+    post_setup: &mut PostSetup,
+    policy: MiningPolicy,
+) -> anyhow::Result<BlockHash> {
     for _ in 0..=u32::from(Thresholds::SHORT.withdrawal_bundle_max_age) + 1 {
-        let block = mine_one(post_setup).await?;
+        let block = mine_one(post_setup, policy).await?;
         if pending_bundles(post_setup).await? == 0 {
             return Ok(block);
         }
@@ -116,12 +119,11 @@ pub async fn test_withdrawal_bundle_reorg(mut post_setup: PostSetup) -> anyhow::
     let (_sidechain, _sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
 
     tracing::info!("A failed bundle is settled, and resubmitting it queues it again");
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
     let failing_tx = make_blinded_m6(1_000, Amount::from_sat(50_000));
     let failing = failing_tx.compute_txid();
     let () = broadcast_bundle(&post_setup, &failing_tx).await?;
     // Reorging out its M3 leaves it ours to propose again.
-    let submitted_in = mine_one(&mut post_setup).await?;
+    let submitted_in = mine_one(&mut post_setup, MiningPolicy::SILENT).await?;
     let () = reorg_out(&post_setup, submitted_in, || async {
         anyhow::ensure!(
             template_proposes(&post_setup, failing).await?,
@@ -130,25 +132,25 @@ pub async fn test_withdrawal_bundle_reorg(mut post_setup: PostSetup) -> anyhow::
         Ok(())
     })
     .await?;
-    let _failed_in = mine_until_settled(&mut post_setup).await?;
+    let _failed_in = mine_until_settled(&mut post_setup, MiningPolicy::SILENT).await?;
     let () = ensure_settled(&post_setup, failing).await?;
     let () = broadcast_bundle(&post_setup, &failing_tx).await?;
     anyhow::ensure!(
         template_proposes(&post_setup, failing).await?,
         "the resubmitted bundle was not proposed again"
     );
-    let _failed_in = mine_until_settled(&mut post_setup).await?;
+    let _failed_in = mine_until_settled(&mut post_setup, MiningPolicy::SILENT).await?;
     let () = ensure_settled(&post_setup, failing).await?;
 
     tracing::info!("Reorging out a payout, however deep, makes the bundle ours again");
     let paid_tx = make_blinded_m6(1_000, Amount::from_sat(60_000));
     let paid = paid_tx.compute_txid();
     let () = broadcast_bundle(&post_setup, &paid_tx).await?;
-    let _submitted_in = mine_one(&mut post_setup).await?;
+    let _submitted_in = mine_one(&mut post_setup, MiningPolicy::SILENT).await?;
     let () = set_explicit_ack(&post_setup, paid, true).await?;
-    let paid_in = mine_until_settled(&mut post_setup).await?;
+    let paid_in = mine_until_settled(&mut post_setup, MiningPolicy::SILENT).await?;
     // Built while the bundle is settled.
-    let _above = mine_one(&mut post_setup).await?;
+    let _above = mine_one(&mut post_setup, MiningPolicy::SILENT).await?;
     let () = ensure_settled(&post_setup, paid).await?;
     // Unlike a failed one, a paid-out bundle cannot be queued again: it would
     // pay out twice.
@@ -171,14 +173,14 @@ pub async fn test_withdrawal_bundle_reorg(mut post_setup: PostSetup) -> anyhow::
     })
     .await?;
     // Core's template holds the old M6 again, which must not be paid twice.
-    let _paid_in = mine_until_settled(&mut post_setup).await?;
+    let _paid_in = mine_until_settled(&mut post_setup, MiningPolicy::VOTE).await?;
     let () = ensure_settled(&post_setup, paid).await?;
 
     tracing::info!(
         "A rebuild keeps a failed bundle's resubmission, and still refuses the paid one"
     );
     let () = broadcast_bundle(&post_setup, &failing_tx).await?;
-    let _submitted_in = mine_one(&mut post_setup).await?;
+    let _submitted_in = mine_one(&mut post_setup, MiningPolicy::VOTE).await?;
     let () = post_setup.kill_enforcer().await?;
     let () = lose_policy_tip(&post_setup.directories)?;
     let () = restart_enforcer_with_defaults(&mut post_setup).await?;
@@ -193,18 +195,20 @@ pub async fn test_withdrawal_bundle_reorg(mut post_setup: PostSetup) -> anyhow::
     // pending ones, and so do we.
     tracing::info!("A replaced sidechain's pending bundle stays ours");
     let original_activation = slot_activation_height(&post_setup).await?;
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
-    let () = set_ack_policy(&post_setup, AckAllProposalsPolicy::None).await?;
-    let () = propose_sidechain_for_slot::<DummySidechain>(
+    let () = propose_sidechain_for_slot_voting::<DummySidechain>(
         &mut post_setup,
         DummySidechain::SIDECHAIN_NUMBER,
         "replacement",
+        MiningPolicy::SILENT,
     )
     .await?;
-    let () = set_ack_policy(&post_setup, AckAllProposalsPolicy::All).await?;
+    let ack_all = MiningPolicy {
+        ack: AckAllProposalsPolicy::All,
+        ..MiningPolicy::SILENT
+    };
     let mut replaced = false;
     for _ in 0..=Thresholds::SHORT.used_sidechain_slot_proposal_max_age {
-        let _block = mine_one(&mut post_setup).await?;
+        let _block = mine_one(&mut post_setup, ack_all).await?;
         if slot_activation_height(&post_setup).await? != original_activation {
             replaced = true;
             break;
@@ -233,17 +237,4 @@ async fn slot_activation_height(post_setup: &PostSetup) -> anyhow::Result<Option
                 == Some(u32::from(DummySidechain::SIDECHAIN_NUMBER.0))
         })
         .and_then(|info| proto::unwrap_u32(info.activation_height)))
-}
-
-async fn set_ack_policy(
-    post_setup: &PostSetup,
-    policy: AckAllProposalsPolicy,
-) -> anyhow::Result<()> {
-    let _resp = post_setup
-        .block_producer_service_client
-        .set_ack_all_proposals(SetAckAllProposalsRequest {
-            policy: policy.into(),
-        })
-        .await?;
-    Ok(())
 }

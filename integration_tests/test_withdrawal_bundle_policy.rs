@@ -25,7 +25,7 @@ use crate::{
     mine::{MiningPolicy, mine},
     setup::{DummySidechain, PostSetup, Sidechain as _},
     test_blinded_m6_roundtrip::{make_blinded_m6, serialize_zero_input_legacy},
-    test_sidechain_ack_policy::{bundle_vote_count, set_bundle_policy, tip_coinbase_messages},
+    test_sidechain_ack_policy::{bundle_vote_count, tip_coinbase_messages},
 };
 
 /// The chain tip's M4, or `None` if its coinbase carries none.
@@ -83,8 +83,6 @@ pub async fn test_withdrawal_bundle_policy(mut post_setup: PostSetup) -> anyhow:
     )
     .await?;
 
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
-
     tracing::info!("Proposing a withdrawal bundle");
     let bundle_tx = make_blinded_m6(1_000, Amount::from_sat(50_000));
     let bundle_m6id: Txid = bundle_tx.compute_txid();
@@ -119,8 +117,15 @@ pub async fn test_withdrawal_bundle_policy(mut post_setup: PostSetup) -> anyhow:
 
     // The bundle was broadcast through this node, so it is one of ours.
     tracing::info!("Mining under KNOWN: the bundle must be upvoted");
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::Known).await?;
-    let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::SILENT).await?;
+    let () = mine::<DummySidechain>(
+        &mut post_setup,
+        1,
+        MiningPolicy {
+            bundle: WithdrawalBundlePolicy::Known,
+            ..MiningPolicy::SILENT
+        },
+    )
+    .await?;
     anyhow::ensure!(
         tip_m4_vote(&mut post_setup).await? == Some(0),
         "expected KNOWN to upvote the sidechain's only pending bundle"
@@ -133,8 +138,15 @@ pub async fn test_withdrawal_bundle_policy(mut post_setup: PostSetup) -> anyhow:
     // ALARM is a stance no other policy can express: it actively takes votes
     // back off every bundle that has them.
     tracing::info!("Mining under ALARM: the bundle must be downvoted");
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::Alarm).await?;
-    let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::SILENT).await?;
+    let () = mine::<DummySidechain>(
+        &mut post_setup,
+        1,
+        MiningPolicy {
+            bundle: WithdrawalBundlePolicy::Alarm,
+            ..MiningPolicy::SILENT
+        },
+    )
+    .await?;
     anyhow::ensure!(
         tip_m4_vote(&mut post_setup).await? == Some(M4AckBundles::ALARM_ONE_BYTE),
         "expected ALARM to alarm the active sidechain"
@@ -147,7 +159,6 @@ pub async fn test_withdrawal_bundle_policy(mut post_setup: PostSetup) -> anyhow:
     // An explicit ACK is the only way to back a bundle under NONE, and the
     // point of keeping per-bundle ACKs at all.
     tracing::info!("Mining under NONE with an explicit ACK: the bundle must be upvoted anyway");
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
     let set_bundle_ack = |ack: bool| SetWithdrawalBundleAckRequest {
         sidechain_number: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
         m6id: buffa::MessageField::some(ConsensusHex::encode(&bundle_m6id)),

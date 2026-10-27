@@ -23,7 +23,7 @@ use crate::{
         activate_sidechain, deposit, fund_enforcer, mine_until_unpayable_bundle_expires,
         propose_sidechain,
     },
-    mine::{MiningPolicy, mine_generateblocks_check},
+    mine::{MiningPolicy, mine_check},
     setup::{DummySidechain, PostSetup, Sidechain as _},
 };
 
@@ -106,13 +106,13 @@ async fn mine_block_and_collect_proposed_m6ids(
     post_setup: &mut PostSetup,
 ) -> anyhow::Result<Vec<[u8; 32]>> {
     let mut block_hashes = Vec::new();
-    mine_generateblocks_check(post_setup, 1, MiningPolicy::SILENT, |block_hash| {
+    mine_check::<_, _, DummySidechain>(post_setup, 1, MiningPolicy::SILENT, |block_hash| {
         block_hashes.push(block_hash);
         Ok::<(), std::convert::Infallible>(())
     })
     .await
     .map_err(|err| match err {
-        Either::Left(status) => anyhow::anyhow!("generate_blocks RPC failed: {status}"),
+        Either::Left(err) => anyhow::anyhow!("mining failed: {err}"),
         Either::Right(never) => match never {},
     })?;
     let block_hash = block_hashes

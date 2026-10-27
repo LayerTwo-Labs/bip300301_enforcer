@@ -16,7 +16,7 @@ use crate::{
         restart_enforcer_with_defaults,
     },
     test_blinded_m6_roundtrip::make_blinded_m6,
-    test_sidechain_ack_policy::{bundle_vote_count, set_bundle_policy},
+    test_sidechain_ack_policy::bundle_vote_count,
 };
 
 /// Mine with `policy` until the one pending bundle fails or pays out, and
@@ -25,7 +25,6 @@ async fn mine_until_settled(
     post_setup: &mut PostSetup,
     policy: MiningPolicy,
 ) -> anyhow::Result<BlockHash> {
-    let () = set_bundle_policy(post_setup, policy.bundle).await?;
     for _ in 0..=u32::from(Thresholds::SHORT.withdrawal_bundle_max_age) + 1 {
         let () = mine::<DummySidechain>(post_setup, 1, policy).await?;
         if pending_bundles(post_setup).await? == 0 {
@@ -71,7 +70,6 @@ pub async fn test_stale_payout_after_reorg(mut post_setup: PostSetup) -> anyhow:
     let () = restart_enforcer_with_defaults(&mut post_setup).await?;
 
     tracing::info!("Mining on top, without voting the bundle back up");
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::None).await?;
     let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::SILENT).await?;
     anyhow::ensure!(
         mempool_txids(&post_setup).await?.contains(&m6_txid),
@@ -124,7 +122,6 @@ pub async fn test_mempool_m6_for_an_expiring_bundle(
     let bundle_tx = make_blinded_m6(1_000, Amount::from_sat(60_000));
     let bundle = bundle_tx.compute_txid();
     let () = broadcast_bundle(&post_setup, &bundle_tx).await?;
-    let () = set_bundle_policy(&post_setup, WithdrawalBundlePolicy::Known).await?;
     let () = mine::<DummySidechain>(&mut post_setup, 1, MiningPolicy::VOTE).await?;
     anyhow::ensure!(
         pending_bundles(&post_setup).await? == 1,
