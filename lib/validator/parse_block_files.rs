@@ -1032,17 +1032,17 @@ mod tests {
         );
     }
 
-    /// The eCash betanet build rebrands the P2P magic, so its block files are
+    /// eCash builds rebrand the P2P magic, so its block files are
     /// prefixed with `eca5b134` on regtest rather than the stock `fabfb5da`.
-    /// The fixture is a real `blk00000.dat` from that build (6 blocks mined
+    /// The fixture is a real `blk00000.dat` from such a build (6 blocks mined
     /// with `-blocksxor=0`, trimmed of Core's 16 MiB preallocation), so this
     /// covers the actual on-disk bytes rather than a hand-built approximation
     /// of them.
     #[test]
-    fn parses_betanet_block_file_with_magic_override() {
-        const BETANET_REGTEST_MAGIC: [u8; 4] = [0xec, 0xa5, 0xb1, 0x34];
+    fn parses_ecash_block_file_with_magic_override() {
+        const ECASH_REGTEST_MAGIC: [u8; 4] = [0xec, 0xa5, 0xb1, 0x34];
         let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("validator/testdata/betanet-blk00000.dat");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("validator/testdata/ecash-blk00000.dat");
 
         // Without the override the stock regtest magic is expected, so the very
         // first entry is rejected: a rebranded build's block files cannot be
@@ -1053,19 +1053,19 @@ mod tests {
             matches!(
                 stock.next_block(),
                 Err(ParseBlockFileError::InvalidMagic { found, expected, offset: 0 })
-                    if found == BETANET_REGTEST_MAGIC && expected == REGTEST_MAGIC
+                    if found == ECASH_REGTEST_MAGIC && expected == REGTEST_MAGIC
             ),
             "expected an InvalidMagic error naming both magics"
         );
 
         // With it, the file parses.
         let mut parser =
-            BlockFileParser::new(None, path, Network::Regtest, Some(BETANET_REGTEST_MAGIC))
+            BlockFileParser::new(None, path, Network::Regtest, Some(ECASH_REGTEST_MAGIC))
                 .expect("failed to create parser");
         let parsed_blocks = parser.all_blocks().expect("failed to parse blocks");
         assert_eq!(parsed_blocks.len(), 6);
 
-        // betanet keeps the stock regtest genesis, so the first block hash is
+        // eCash keeps the stock regtest genesis, so the first block hash is
         // the same one the stock-magic fixtures above start from. That the
         // hashes come out valid at all is what shows the bodies were read at
         // the right offsets, not just that a 4 byte comparison passed.

@@ -431,10 +431,7 @@ pub struct Config {
     #[command(flatten)]
     pub node_blocks_dir_opts: NodeBlocksDirConfig,
     /// The fork the node is on. Detected from the node's user agent if unset,
-    /// defaulting to bitcoin. Only `ecash` is detectable: alphanet and betanet
-    /// nodes report the same user agent as Bitcoin Core, so they must be named
-    /// explicitly or they run with Bitcoin's parameters, including no replay
-    /// protection.
+    /// defaulting to bitcoin.
     #[arg(long, value_enum)]
     pub fork: Option<Fork>,
     /// P2P message-start bytes as hex, e.g. `eca5d404`. Overrides the value

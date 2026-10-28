@@ -38,19 +38,18 @@ fi
 BITCOIN_VERSION="${ALL_BITCOIN_VERSIONS%%$'\n'*}"
 ELECTRS_VERSION="v3.2.0"
 PATCHED_REVISION="latest"
-# Builds of ecash-com/bitcoin published on releases.ecash.com: alphanet and
-# betanet roll with their branches, mainnet follows eCash's release tags.
+# Builds of ecash-com/bitcoin published on releases.ecash.com: mainnet follows
+# eCash's release tags.
 # Tested alongside bitcoin-patched so that L1 changes which break the enforcer
 # surface here. scripts/fetch_ecash_bitcoin.sh downloads and provenance-checks
 # them; CI reads this list via `--print-channels`.
-ECASH_CHANNELS="alphanet betanet mainnet"
+ECASH_CHANNELS="mainnet"
 
 # Regtest P2P magic of an ecash build, empty when it uses the stock bytes.
 ecash_regtest_magic() {
     case "$1" in
-        alphanet)          echo "eca5a134" ;;
-        betanet | mainnet) echo "eca5b134" ;;
-        *)                 echo "" ;;
+        mainnet) echo "eca5b134" ;;
+        *)       echo "" ;;
     esac
 }
 
@@ -58,8 +57,8 @@ ecash_regtest_magic() {
 # BIP300's OP_NOP5.
 ecash_op_drivechain() {
     case "$1" in
-        betanet | mainnet) echo "nop8" ;;
-        *)                 echo "" ;;
+        mainnet) echo "nop8" ;;
+        *)       echo "" ;;
     esac
 }
 
@@ -67,14 +66,13 @@ ecash_op_drivechain() {
 ecash_fork() {
     case "$1" in
         mainnet) echo "ecash" ;;
-        *)       echo "ecash-$1" ;;
+        *)       echo "" ;;
     esac
 }
 
 # An ecash build's replay-protection nLockTime.
 ecash_replay_protection_lock_time() {
     case "$1" in
-        alphanet | betanet) echo "499999999" ;;
         mainnet) echo "499999998" ;;
         *) echo "" ;;
     esac
@@ -280,4 +278,4 @@ for v in $ALL_BITCOIN_VERSIONS; do
 done
 
 echo "Deps cache: $DEPS_DIR"
-echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|alphanet|betanet|mainnet|all]"
+echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|mainnet|all]"

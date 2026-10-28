@@ -603,7 +603,7 @@ mod tests {
 
     const THRESHOLDS: Thresholds = Thresholds::SHORT;
     /// Regtest: [`THRESHOLDS`] and the BIP300 `OP_DRIVECHAIN` opcode.
-    const PARAMS: NetworkParams = NetworkParams::for_network(bitcoin::Network::Regtest);
+    const PARAMS: NetworkParams = NetworkParams::BITCOIN_REGTEST;
     const TREASURY_VALUE: Amount = Amount::from_sat(1_000_000);
     const FEE_SATS: u64 = 1_000;
     const PAYOUT: Amount = Amount::from_sat(50_000);

@@ -1140,7 +1140,7 @@ mod tests {
     }
 
     /// A treasury script is only a treasury script under the opcode its
-    /// network reserves: betanet's `OP_NOP8` parser must not accept an
+    /// network reserves: the `OP_NOP8` parser must not accept an
     /// `OP_NOP5` script, and vice versa.
     #[test]
     fn op_drivechain_parse_rejects_the_other_opcode() {

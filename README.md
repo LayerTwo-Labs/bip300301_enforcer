@@ -198,13 +198,11 @@ files on first run. `--bitcoind` selects the Bitcoin Core build to run against:
 $ just test-it                            # against bitcoin-patched (default)
 $ just test-it --bitcoind unpatched       # against the newest stock Bitcoin Core
 $ just test-it --bitcoind stock-30.2      # against a specific stock release
-$ just test-it --bitcoind alphanet        # against the rolling ecash-com/bitcoin alphanet build
-$ just test-it --bitcoind betanet         # against the rolling ecash-com/bitcoin betanet build
 $ just test-it --bitcoind mainnet         # against the latest eCash mainnet release
 $ just test-it --bitcoind all             # against every flavor in the CI matrix
 ```
 
-The alphanet, betanet and mainnet builds are fetched from
+The eCash mainnet build is fetched from
 [releases.ecash.com](https://releases.ecash.com) and their build provenance
 verified with `gh attestation verify`, so the
 [GitHub CLI](https://cli.github.com) must be installed (no login needed).

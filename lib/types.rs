@@ -30,6 +30,13 @@ use thiserror::Error;
 
 use crate::proto::{StatusBuilder, ToStatus};
 
+// `bitcoin::Network::Bitcoin` is mainnet, which reads like the Bitcoin fork.
+const MAINNET: bitcoin::Network = bitcoin::Network::Bitcoin;
+const TESTNET: bitcoin::Network = bitcoin::Network::Testnet;
+const TESTNET4: bitcoin::Network = bitcoin::Network::Testnet4;
+const SIGNET: bitcoin::Network = bitcoin::Network::Signet;
+const REGTEST: bitcoin::Network = bitcoin::Network::Regtest;
+
 /// BIP 300 voting / aging thresholds. Values are network-specific: mainnet
 /// follows the spec, everything else uses tiny dev-friendly values so
 /// regtest/signet sessions don't take weeks to exercise activations and
@@ -56,11 +63,6 @@ impl Thresholds {
         unused_sidechain_slot_activation_threshold: 1815,
     };
 
-    pub const BETANET: Self = Self {
-        unused_sidechain_slot_activation_threshold: 1008,
-        ..Self::MAINNET
-    };
-
     /// Dev-friendly values used on every non-mainnet network so a full
     /// activation/withdrawal cycle takes seconds rather than weeks.
     pub const SHORT: Self = Self {
@@ -70,20 +72,6 @@ impl Thresholds {
         used_sidechain_slot_activation_threshold: 5,
         unused_sidechain_slot_proposal_max_age: 10,
         unused_sidechain_slot_activation_threshold: 5,
-    };
-
-    /// Alphanet's hours-scale values. These put a sidechain activation at a
-    /// ~6h vote window and a withdrawal bundle at ~12h of votes within a ~24h
-    /// window: a full activation/deposit/withdrawal cycle is exercisable in
-    /// about a day and a half, while voting still plays out over enough
-    /// blocks to be meaningful, unlike [`Self::SHORT`].
-    pub const ALPHANET: Self = Self {
-        withdrawal_bundle_max_age: 144,
-        withdrawal_bundle_inclusion_threshold: 72,
-        used_sidechain_slot_proposal_max_age: 144,
-        used_sidechain_slot_activation_threshold: 72,
-        unused_sidechain_slot_proposal_max_age: 36,
-        unused_sidechain_slot_activation_threshold: 30,
     };
 
     #[inline]
@@ -107,8 +95,6 @@ impl Thresholds {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
 pub enum Fork {
     Bitcoin,
-    EcashAlphanet,
-    EcashBetanet,
     Ecash,
 }
 
@@ -125,8 +111,6 @@ impl Fork {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Bitcoin => "bitcoin",
-            Self::EcashAlphanet => "ecash-alphanet",
-            Self::EcashBetanet => "ecash-betanet",
             Self::Ecash => "ecash",
         }
     }
@@ -156,15 +140,28 @@ pub struct NetworkParams {
 }
 
 impl NetworkParams {
-    /// Bitcoin's parameters, without a signet's magic.
-    pub const fn for_network(network: bitcoin::Network) -> Self {
-        Self {
-            fork: Fork::Bitcoin,
-            thresholds: Thresholds::for_network(network),
-            bip300_activation_height: 0,
-            network_magic: None,
-            op_drivechain: OpDrivechain::NOP5,
-            replay_protection_lock_time: None,
+    /// Bitcoin regtest's parameters, for tests that don't care about the
+    /// network.
+    #[cfg(test)]
+    pub const BITCOIN_REGTEST: Self = Self {
+        fork: Fork::Bitcoin,
+        thresholds: Thresholds::SHORT,
+        bip300_activation_height: 0,
+        network_magic: None,
+        op_drivechain: OpDrivechain::NOP5,
+        replay_protection_lock_time: None,
+    };
+
+    /// eCash rebrands every chain's P2P magic to `eca5 b1 <chain>`, except
+    /// mainnet's. `None` for signet, whose magic comes from its challenge, and
+    /// for any network without a known magic.
+    const fn ecash_network_magic(network: bitcoin::Network) -> Option<[u8; 4]> {
+        match network {
+            MAINNET => Some([0xec, 0xa5, 0xdc, 0xb7]),
+            TESTNET => Some([0xec, 0xa5, 0xb1, 0x14]),
+            TESTNET4 => Some([0xec, 0xa5, 0xb1, 0x24]),
+            REGTEST => Some([0xec, 0xa5, 0xb1, 0x34]),
+            _ => None,
         }
     }
 
@@ -177,45 +174,23 @@ impl NetworkParams {
             fork,
             network_magic: signet_challenge
                 .map(|challenge| crate::p2p::compute_signet_magic(fork, challenge).to_bytes()),
-            ..Self::for_network(network)
+            thresholds: Thresholds::for_network(network),
+            bip300_activation_height: 0,
+            op_drivechain: OpDrivechain::NOP5,
+            replay_protection_lock_time: None,
         };
-        // eCash builds rebrand every chain's magic to `eca5 <fork> <chain>`.
-        // eCash kept betanet's fork byte everywhere except mainnet.
-        let (op_drivechain, lock_time, fork_byte, mainnet) = match fork {
-            Fork::Bitcoin => return params,
-            Fork::EcashAlphanet => (
-                OpDrivechain::NOP5,
-                499_999_999,
-                0xa1,
-                (Thresholds::ALPHANET, 963_648, [0xec, 0xa5, 0xa1, 0x04]),
-            ),
-            Fork::EcashBetanet => (
-                OpDrivechain::NOP8,
-                499_999_999,
-                0xb1,
-                (Thresholds::BETANET, 967_680, [0xec, 0xa5, 0xb1, 0x04]),
-            ),
-            Fork::Ecash => (
-                OpDrivechain::NOP8,
-                499_999_998,
-                0xb1,
-                (Thresholds::MAINNET, 973_728, [0xec, 0xa5, 0xdc, 0xb7]),
-            ),
-        };
-        params.op_drivechain = op_drivechain;
-        params.replay_protection_lock_time = Some(lock_time);
-        params.network_magic = match network {
-            bitcoin::Network::Bitcoin => {
-                let (thresholds, bip300_activation_height, network_magic) = mainnet;
-                params.thresholds = thresholds;
-                params.bip300_activation_height = bip300_activation_height;
-                Some(network_magic)
-            }
-            bitcoin::Network::Signet => params.network_magic,
-            bitcoin::Network::Testnet => Some([0xec, 0xa5, fork_byte, 0x14]),
-            bitcoin::Network::Testnet4 => Some([0xec, 0xa5, fork_byte, 0x24]),
-            _ => Some([0xec, 0xa5, fork_byte, 0x34]),
-        };
+        if fork == Fork::Bitcoin {
+            return params;
+        }
+        params.op_drivechain = OpDrivechain::NOP8;
+        params.replay_protection_lock_time = Some(499_999_998);
+        if network == MAINNET {
+            params.bip300_activation_height = 973_728;
+        }
+        // Signet keeps the magic derived from its challenge.
+        if let Some(magic) = Self::ecash_network_magic(network) {
+            params.network_magic = Some(magic);
+        }
         params
     }
 
@@ -227,10 +202,10 @@ impl NetworkParams {
         signet_challenge: Option<&bitcoin::Script>,
     ) -> std::path::PathBuf {
         let chain = match network {
-            bitcoin::Network::Bitcoin => "mainnet".to_owned(),
-            bitcoin::Network::Testnet => "testnet3".to_owned(),
-            bitcoin::Network::Testnet4 => "testnet4".to_owned(),
-            bitcoin::Network::Signet => match (signet_challenge, self.network_magic) {
+            MAINNET => "mainnet".to_owned(),
+            TESTNET => "testnet3".to_owned(),
+            TESTNET4 => "testnet4".to_owned(),
+            SIGNET => match (signet_challenge, self.network_magic) {
                 (Some(challenge), Some(magic))
                     if !crate::p2p::is_default_signet_challenge(challenge) =>
                 {
@@ -982,9 +957,8 @@ impl From<bitcoin::FeeRate> for FeePolicy {
 }
 
 /// The opcode a network's node build reserves for `OP_DRIVECHAIN`, which
-/// marks a sidechain's treasury output. BIP300 repurposes `OP_NOP5`, as does
-/// every drivechain-patched build up to alphanet; betanet moved it to
-/// `OP_NOP8`. It is therefore a network parameter, see
+/// marks a sidechain's treasury output. BIP300 repurposes `OP_NOP5`; eCash
+/// uses `OP_NOP8`. It is therefore a network parameter, see
 /// [`NetworkParams::op_drivechain`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OpDrivechain(Opcode);
@@ -992,7 +966,7 @@ pub struct OpDrivechain(Opcode);
 impl OpDrivechain {
     /// `OP_NOP5` (`0xb4`), as specified by BIP300.
     pub const NOP5: Self = Self(OP_NOP5);
-    /// `OP_NOP8` (`0xb7`), which betanet uses instead.
+    /// `OP_NOP8` (`0xb7`), which eCash uses instead.
     pub const NOP8: Self = Self(OP_NOP8);
 
     pub const fn opcode(self) -> Opcode {
