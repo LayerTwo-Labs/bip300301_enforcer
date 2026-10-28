@@ -161,18 +161,6 @@ fn handle_m8(
     }
 }
 
-/// Whether a tx is valid on top of the current tip. See
-/// [`BlockHandler::validate_tx`].
-pub(in crate::validator) enum ValidatedTx {
-    Invalid,
-    Valid,
-    /// A valid M6, paying out this withdrawal bundle
-    Payout {
-        sidechain_number: SidechainNumber,
-        m6id: M6id,
-    },
-}
-
 #[derive(Default)]
 pub(crate) struct UnconsolidatedCtips {
     by_outpoint: HashMap<OutPoint, (SidechainNumber, Amount)>,
@@ -216,6 +204,15 @@ impl UnconsolidatedCtips {
     }
 
     #[inline(always)]
+    pub fn into_iter_by_outpoint(
+        self,
+    ) -> impl IntoIterator<Item = (OutPoint, SidechainNumber, Amount)> {
+        self.by_outpoint
+            .into_iter()
+            .map(|(outpoint, (sidechain_number, amount))| (outpoint, sidechain_number, amount))
+    }
+
+    #[inline(always)]
     pub fn into_iter_by_sidechain(
         self,
     ) -> impl IntoIterator<Item = (SidechainNumber, LinkedHashSet<Ctip>)> {
@@ -230,6 +227,22 @@ impl UnconsolidatedCtips {
         }
         res
     }
+}
+
+/// Whether a tx is valid on top of the current tip. See
+/// [`BlockHandler::validate_tx`].
+pub(in crate::validator) enum ValidatedTx {
+    /// A valid M5 Deposit / Consolidation
+    M5 {
+        new_unconsolidated_ctips: UnconsolidatedCtips,
+    },
+    Invalid,
+    Valid,
+    /// A valid M6, paying out this withdrawal bundle
+    Payout {
+        sidechain_number: SidechainNumber,
+        m6id: M6id,
+    },
 }
 
 pub(in crate::validator) struct PartiallyConnectedBlockInfo {
@@ -909,12 +922,11 @@ impl BlockHandler<'_> {
             // not just the consolidated UTXO. Otherwise a tx can take value
             // out of a pending deposit and still look like it adds to the
             // treasury.
-            let ordering = ctip_output.value.cmp(&treasury_value_in);
             // Equal value is only meaningful as a consolidation of deposits.
-            if ordering == Ordering::Equal && unconsolidated_ctip_inputs.is_empty() {
-                return Err(error::HandleM5M6::ZeroDiff);
-            }
-            match ordering {
+            match ctip_output.value.cmp(&treasury_value_in) {
+                Ordering::Equal if unconsolidated_ctip_inputs.is_empty() => {
+                    return Err(error::HandleM5M6::ZeroDiff);
+                }
                 // M6
                 Ordering::Less => {
                     let Some(consolidated_ctip_input) = consolidated_ctip_input else {
@@ -989,7 +1001,7 @@ impl BlockHandler<'_> {
                     }
                 }
                 // M5 deposit, or consolidation of deposits when equal
-                Ordering::Greater | Ordering::Equal => {
+                ordering @ (Ordering::Greater | Ordering::Equal) => {
                     let deposit = if ordering == Ordering::Greater {
                         // BIP 300 requires the address OP_RETURN output immediately
                         // after the treasury UTXO; a deposit without it is invalid.
@@ -1237,10 +1249,25 @@ impl BlockHandler<'_> {
             require_payable_bundles: false,
             ..*self
         };
+        let mut unconsolidated_ctips = UnconsolidatedCtips::default();
+        for input in &transaction.input {
+            if let Some((sidechain_number, value)) = dbs
+                .seen_unconsolidated_ctip_outputs
+                .try_get(&child_rwtxn, &input.previous_output)?
+            {
+                unconsolidated_ctips.insert(
+                    sidechain_number,
+                    Ctip {
+                        outpoint: input.previous_output,
+                        value,
+                    },
+                );
+            }
+        }
         match handler.handle_transaction(
             &child_rwtxn,
             None,
-            &mut UnconsolidatedCtips::default(),
+            &mut unconsolidated_ctips,
             &tip_hash,
             transaction,
         ) {
@@ -1252,7 +1279,9 @@ impl BlockHandler<'_> {
                         sidechain_number: event.sidechain_id,
                         m6id: event.m6id,
                     },
-                    TransactionEvent::Deposits(_) => ValidatedTx::Valid,
+                    TransactionEvent::Deposits(_) => ValidatedTx::M5 {
+                        new_unconsolidated_ctips: unconsolidated_ctips,
+                    },
                 })
             }
             Err(err) => match err.split() {

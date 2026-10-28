@@ -330,10 +330,13 @@ pub(super) struct Dbs {
     pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
     pub proposal_id_to_sidechain: ProposalIdToSidechain,
+    /// Used for determining conflicts for mempool txs.
+    pub seen_unconsolidated_ctip_outputs:
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount)>>,
 }
 
 impl Dbs {
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 5;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -361,6 +364,8 @@ impl Dbs {
         let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
         let proposal_id_to_sidechain =
             DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
+        let seen_unconsolidated_ctip_outputs =
+            DatabaseUnique::create(&env, &mut rwtxn, "seen_unconsolidated_ctip_outputs")?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -372,6 +377,7 @@ impl Dbs {
             _leading_by_50: leading_by_50,
             _previous_votes: previous_votes,
             proposal_id_to_sidechain,
+            seen_unconsolidated_ctip_outputs,
         })
     }
 

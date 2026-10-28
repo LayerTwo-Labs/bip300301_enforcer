@@ -480,17 +480,23 @@ impl Validator {
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
-        let payout = match handler.validate_tx(&mut rwtxn, tx)? {
+        let (payout, new_unconsolidated_ctips) = match handler.validate_tx(&mut rwtxn, tx)? {
+            ValidatedTx::M5 {
+                new_unconsolidated_ctips,
+            } => (None, new_unconsolidated_ctips),
             ValidatedTx::Invalid => return Ok((TxAcceptAction::Reject, None)),
-            ValidatedTx::Valid => None,
+            ValidatedTx::Valid => (None, UnconsolidatedCtips::default()),
             ValidatedTx::Payout {
                 sidechain_number,
                 m6id,
-            } => Some((sidechain_number, m6id)),
+            } => (
+                Some((sidechain_number, m6id)),
+                UnconsolidatedCtips::default(),
+            ),
         };
+        let txid = tx.compute_txid();
         let res = {
             let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
-                let txid = tx.compute_txid();
                 let conflicts_with = {
                     let mut seen_bmm_request_txs = self
                         .dbs
@@ -517,7 +523,6 @@ impl Validator {
                         bmm_request.sidechain_block_hash,
                     )
                     .map_err(db::Error::from)?;
-                rwtxn.commit()?;
 
                 /// Weight, in wu, of the BMM accept (M7) coinbase output that block
                 /// production appends for an accepted BMM request (M8).
@@ -559,6 +564,17 @@ impl Validator {
                 weight_tweak,
             }
         };
+        if matches!(res, TxAcceptAction::Accept { .. }) {
+            for (outpoint, sidechain_number, value) in
+                new_unconsolidated_ctips.into_iter_by_outpoint()
+            {
+                self.dbs
+                    .seen_unconsolidated_ctip_outputs
+                    .put(&mut rwtxn, &outpoint, &(sidechain_number, value))
+                    .map_err(db::Error::from)?;
+            }
+            rwtxn.commit()?;
+        }
         Ok((res, payout))
     }
 }
