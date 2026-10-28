@@ -12,7 +12,7 @@ authors = [
 ]
 edition = "2024"
 publish = false
-version = "0.3.4"
+version = "1.0.0-rc.1"
 
 [workspace.dependencies]
 aes-gcm = "0.10.3"
