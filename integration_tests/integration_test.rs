@@ -1399,6 +1399,17 @@ pub fn tests(
         },
         crate::test_mine_rejected_block::test_mine_rejected_block,
     ));
+    async_trials.push(new_trial_with_setup(
+        crate::test_one_m1_per_block::TEST_NAME.to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_one_m1_per_block::test_one_m1_per_block,
+    ));
     // Needs direct `bin_paths` (to respawn the enforcer mid-test), so it uses
     // a bespoke trial rather than `new_trial_with_setup`.
     async_trials.push({
