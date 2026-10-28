@@ -25,7 +25,8 @@ use crate::{
     validator::{
         PendingM6ids, Validator,
         task::{
-            self, BlockHandler, ValidatedTx, error::ValidateTransaction as ValidateTransactionError,
+            self, BlockHandler, PartiallyConnectedBlockInfo, UnconsolidatedCtips, ValidatedTx,
+            error::ValidateTransaction as ValidateTransactionError,
         },
     },
 };
@@ -153,6 +154,41 @@ enum RejectReason {
     },
 }
 
+/// Used to specify commit/dry-run modes
+trait ConnectBlockMode<'validator>: Sized {
+    type Output;
+    /// Carried from finishing the child rwtxn to finishing the parent
+    type Accepted;
+
+    fn connect_block(
+        self,
+        validator: &'validator Validator,
+        block: &Block,
+    ) -> Result<Self::Output, ConnectBlockError>;
+
+    /// The block was accepted in `child_rwtxn`. Commit or abort it.
+    fn finish_child(
+        self,
+        child_rwtxn: RwTxn<'_>,
+        event: Event,
+        remove_mempool_txs: HashSet<Txid>,
+    ) -> Result<Self::Accepted, ConnectBlockError>;
+
+    /// Commit or abort the parent rwtxn, once the child is finished.
+    fn finish_parent(
+        validator: &'validator Validator,
+        parent_rwtxn: RwTxn<'_>,
+        accepted: Self::Accepted,
+    ) -> Result<Self::Output, ConnectBlockError>;
+
+    /// The block was rejected. `header_rwtxn` holds its header, if newly
+    /// stored.
+    fn reject(
+        header_rwtxn: RwTxn<'_>,
+        reason: RejectReason,
+    ) -> Result<Self::Output, ConnectBlockError>;
+}
+
 /// Connect a block, leaving `mode` to commit or abort the result.
 /// The block connect happens in a child rwtxn nested in the rwtxn that
 /// stores its header, so that in commit mode a rejected block still keeps
@@ -214,41 +250,6 @@ where
             Mode::reject(parent_rwtxn, RejectReason::ConnectBlock(jfyi))
         }
     }
-}
-
-/// Used to specify commit/dry-run modes
-trait ConnectBlockMode<'validator>: Sized {
-    type Output;
-    /// Carried from finishing the child rwtxn to finishing the parent
-    type Accepted;
-
-    fn connect_block(
-        self,
-        validator: &'validator Validator,
-        block: &Block,
-    ) -> Result<Self::Output, ConnectBlockError>;
-
-    /// The block was accepted in `child_rwtxn`. Commit or abort it.
-    fn finish_child(
-        self,
-        child_rwtxn: RwTxn<'_>,
-        event: Event,
-        remove_mempool_txs: HashSet<Txid>,
-    ) -> Result<Self::Accepted, ConnectBlockError>;
-
-    /// Commit or abort the parent rwtxn, once the child is finished.
-    fn finish_parent(
-        validator: &'validator Validator,
-        parent_rwtxn: RwTxn<'_>,
-        accepted: Self::Accepted,
-    ) -> Result<Self::Output, ConnectBlockError>;
-
-    /// The block was rejected. `header_rwtxn` holds its header, if newly
-    /// stored.
-    fn reject(
-        header_rwtxn: RwTxn<'_>,
-        reason: RejectReason,
-    ) -> Result<Self::Output, ConnectBlockError>;
 }
 
 /// Used to implement `ConnectBlockMode`.
@@ -479,17 +480,23 @@ impl Validator {
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
         let handler = BlockHandler::new(&self.dbs, self.network, self.network_params);
-        let payout = match handler.validate_tx(&mut rwtxn, tx)? {
+        let (payout, new_unconsolidated_ctips) = match handler.validate_tx(&mut rwtxn, tx)? {
+            ValidatedTx::M5 {
+                new_unconsolidated_ctips,
+            } => (None, new_unconsolidated_ctips),
             ValidatedTx::Invalid => return Ok((TxAcceptAction::Reject, None)),
-            ValidatedTx::Valid => None,
+            ValidatedTx::Valid => (None, UnconsolidatedCtips::default()),
             ValidatedTx::Payout {
                 sidechain_number,
                 m6id,
-            } => Some((sidechain_number, m6id)),
+            } => (
+                Some((sidechain_number, m6id)),
+                UnconsolidatedCtips::default(),
+            ),
         };
+        let txid = tx.compute_txid();
         let res = {
             let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
-                let txid = tx.compute_txid();
                 let conflicts_with = {
                     let mut seen_bmm_request_txs = self
                         .dbs
@@ -516,7 +523,6 @@ impl Validator {
                         bmm_request.sidechain_block_hash,
                     )
                     .map_err(db::Error::from)?;
-                rwtxn.commit()?;
 
                 /// Weight, in wu, of the BMM accept (M7) coinbase output that block
                 /// production appends for an accepted BMM request (M8).
@@ -532,13 +538,111 @@ impl Validator {
             } else {
                 (HashSet::new(), 0)
             };
+            // A deposit into an existing treasury leaves the treasury UTXO
+            // unspent, so block production appends a tx consolidating it. That
+            // is reserved here, on top of any BMM accept, as one tx can be
+            // both. It also applies to M6 txs, which never create
+            // unconsolidated CTIPs, so those are over-reserved.
+            let n_treasury_outputs = tx
+                .output
+                .iter()
+                .filter(|out| {
+                    self.network_params
+                        .op_drivechain
+                        .parse(out.script_pubkey.as_bytes())
+                        .is_ok()
+                })
+                .count();
+            let weight_tweak = weight_tweak
+                + if n_treasury_outputs == 0 {
+                    0
+                } else {
+                    crate::types::consolidation_tx_weight(n_treasury_outputs as u64).to_wu() as i64
+                };
             TxAcceptAction::Accept {
                 conflicts_with,
                 weight_tweak,
             }
         };
+        if matches!(res, TxAcceptAction::Accept { .. }) {
+            for (outpoint, sidechain_number, value) in
+                new_unconsolidated_ctips.into_iter_by_outpoint()
+            {
+                self.dbs
+                    .seen_unconsolidated_ctip_outputs
+                    .put(&mut rwtxn, &outpoint, &(sidechain_number, value))
+                    .map_err(db::Error::from)?;
+            }
+            rwtxn.commit()?;
+        }
         Ok((res, payout))
     }
+}
+
+fn partial_connect_block_dry_run<F, Output>(
+    validator: &Validator,
+    block: &Block,
+    f: F,
+) -> Result<Result<Output, RejectReason>, ConnectBlockError>
+where
+    F: FnOnce(&RoTxn<'_>, PartiallyConnectedBlockInfo) -> Output,
+{
+    let block_hash = block.block_hash();
+    let parent = block.header.prev_blockhash;
+    let mut parent_rwtxn = validator.dbs.write_txn()?;
+    if !validator
+        .dbs
+        .block_hashes
+        .contains_header(&parent_rwtxn, &block_hash)?
+    {
+        let height = if parent == BlockHash::all_zeros() {
+            0
+        } else if let Some(parent_height) = validator
+            .dbs
+            .block_hashes
+            .height()
+            .try_get(&parent_rwtxn, &parent)?
+        {
+            parent_height + 1
+        } else {
+            let reject_reason = RejectReason::MissingParentHeight { block_hash, parent };
+            tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reject_reason));
+            parent_rwtxn.abort();
+            return Ok(Err(reject_reason));
+        };
+        tracing::trace!("Storing header");
+        validator
+            .dbs
+            .block_hashes
+            .put_headers(&mut parent_rwtxn, &[(block.header, height)])?;
+    }
+    let mut child_rwtxn = validator.dbs.nested_write_txn(&mut parent_rwtxn)?;
+    let handler = BlockHandler::new(&validator.dbs, validator.network, validator.network_params);
+    match handler
+        .partial_connect_block(&mut child_rwtxn, block)
+        .map_err(task::error::ConnectBlock::from)
+        .into_nested()?
+    {
+        Ok(partially_connected_block_info) => {
+            let res = f(&child_rwtxn, partially_connected_block_info);
+            child_rwtxn.abort();
+            parent_rwtxn.abort();
+            Ok(Ok(res))
+        }
+        Err(jfyi) => {
+            child_rwtxn.abort();
+            let reject_reason = RejectReason::ConnectBlock(jfyi);
+            tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reject_reason));
+            parent_rwtxn.abort();
+            Ok(Err(reject_reason))
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Ctips {
+    pub consolidated: HashMap<SidechainNumber, Ctip>,
+    pub unconsolidated: UnconsolidatedCtips,
 }
 
 #[derive(Debug, Error)]
@@ -551,7 +655,7 @@ pub(crate) enum GetWithdrawalStateAfterError {
 
 /// Treasuries and pending withdrawal bundles, as of some block.
 pub(crate) struct WithdrawalState {
-    pub ctips: HashMap<SidechainNumber, Ctip>,
+    pub ctips: Ctips,
     pub pending_withdrawals: HashMap<SidechainNumber, PendingM6ids>,
 }
 
@@ -561,27 +665,35 @@ pub(crate) fn get_withdrawal_state_after(
     validator: &Validator,
     block: &Block,
 ) -> Result<Result<WithdrawalState, String>, GetWithdrawalStateAfterError> {
-    match ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, db::error::Iter> {
-        let active_sidechains = &validator.dbs.active_sidechains;
-        let ctips = active_sidechains
-            .ctip()
-            .iter(rotxn)
-            .map_err(db::error::Iter::Init)?
-            .collect()
-            .map_err(db::error::Iter::Item)?;
-        let pending_withdrawals = active_sidechains
-            .pending_m6ids()
-            .iter(rotxn)
-            .map_err(db::error::Iter::Init)?
-            .collect()
-            .map_err(db::error::Iter::Item)?;
-        Ok(WithdrawalState {
-            ctips,
-            pending_withdrawals,
-        })
-    })
-    .connect_block(validator, block)?
-    {
+    // Only part of the block is connected: block production appends the
+    // consolidation of pending deposits afterwards, so the end-of-block check
+    // does not apply yet.
+    match partial_connect_block_dry_run(
+        validator,
+        block,
+        |rotxn, partially_connected_block_info| -> Result<_, db::error::Iter> {
+            let active_sidechains = &validator.dbs.active_sidechains;
+            let consolidated = active_sidechains
+                .ctip()
+                .iter(rotxn)
+                .map_err(db::error::Iter::Init)?
+                .collect()
+                .map_err(db::error::Iter::Item)?;
+            let pending_withdrawals = active_sidechains
+                .pending_m6ids()
+                .iter(rotxn)
+                .map_err(db::error::Iter::Init)?
+                .collect()
+                .map_err(db::error::Iter::Item)?;
+            Ok(WithdrawalState {
+                ctips: Ctips {
+                    consolidated,
+                    unconsolidated: partially_connected_block_info.unconsolidated_ctips,
+                },
+                pending_withdrawals,
+            })
+        },
+    )? {
         Ok(state) => Ok(Ok(state?)),
         Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
     }
@@ -631,6 +743,8 @@ mod tests {
             types::{Ctip, Event, SidechainNumber},
             validator::{
                 Validator,
+                cusf_enforcer::RejectReason,
+                task::error,
                 test_utils::{
                     TestBlockParts, build_m5_deposit_tx, build_test_block, dummy_validator,
                     test_sidechain,
@@ -673,17 +787,12 @@ mod tests {
             build_test_block(BlockHash::all_zeros(), TestBlockParts::default())
         }
 
-        /// Deposits without spending the tracked CTIP
+        /// Deposits without consolidating the created CTIP
         fn rejected_block() -> Block {
             build_test_block(
                 BlockHash::all_zeros(),
                 TestBlockParts {
-                    extra_txs: vec![build_m5_deposit_tx(
-                        SIDECHAIN,
-                        OutPoint::default(),
-                        Amount::from_sat(5_000),
-                        Amount::from_sat(1_000),
-                    )],
+                    extra_txs: vec![build_m5_deposit_tx(SIDECHAIN, Amount::from_sat(1_000))],
                     ..Default::default()
                 },
             )
@@ -799,11 +908,13 @@ mod tests {
             let reason = ConnectBlockDryRun(|_: &RoTxn<'_>| ())
                 .connect_block(&validator, &block)?
                 .expect_err("block must be rejected");
-
-            let reason = format!("{:#}", crate::errors::ErrorChain::new(&reason));
-            assert!(
-                reason.contains("Old Ctip for sidechain 1 is unspent"),
-                "unexpected rejection reason `{reason}`"
+            std::assert_matches!(
+                reason,
+                RejectReason::ConnectBlock(error::JfyiConnectBlock::Finalize(
+                    error::FinalizeConnectBlock::UnconsolidatedCtip { .. }
+                )),
+                "unexpected rejection reason `{:#}`",
+                crate::errors::ErrorChain::new(&reason)
             );
             assert_eq!(tip(&validator)?, None);
             assert!(

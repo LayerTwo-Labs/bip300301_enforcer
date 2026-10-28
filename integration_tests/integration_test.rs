@@ -1442,6 +1442,151 @@ pub fn tests(
         },
         crate::test_inactive_drivechain_output::test_inactive_slot_drivechain_output,
     ));
+    // Deposits that leave the treasury UTXO unspent until a consolidation
+    // in the same block. All need the enforcer's own producer to build
+    // that consolidation, or the block it takes the place of.
+    let aggregated_deposits_comps = || TestSetupComponents {
+        bin_paths: bin_paths.clone(),
+        network: Network::Regtest,
+        mode: Mode::Mempool,
+        file_registry: file_registry.clone(),
+        failure_collector: failure_collector.clone(),
+    };
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_payout_with_unconsolidated_deposit".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_payout_with_unconsolidated_deposit,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_consolidation_theft".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_consolidation_theft,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_withdrawal_without_treasury_input".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_withdrawal_without_treasury_input,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_mempool_take_back_of_pending_deposit".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_mempool_take_back_of_pending_deposit,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_self_mining_with_take_back_of_pending_deposit".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_self_mining_with_take_back_of_pending_deposit,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_mempool_spend_of_pending_deposit".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_mempool_spend_of_pending_deposit,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_reorg".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_reorg_of_consolidated_deposit,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_block_without_consolidation_is_rejected".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_block_without_consolidation_is_rejected,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_restart_with_pending_deposit".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_restart_with_pending_deposit,
+    ));
+    /*
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_small_deposit".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_small_deposit_into_existing_treasury,
+    ));
+    */
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_returned_payout_with_pending_deposit".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_aggregated_deposits::test_returned_payout_with_pending_deposit,
+    ));
+    /*
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_wallet_history".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_wallet_deposit_history,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_sequence_numbers".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_deposit_sequence_numbers,
+    ));
+    */
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_payout_funded_by_unconsolidated_deposit".to_string(),
+        aggregated_deposits_comps(),
+        crate::test_aggregated_deposits::test_payout_funded_by_unconsolidated_deposit,
+    ));
+    // The template server's weight budget, which only the GetBlockTemplate
+    // mode builds blocks from.
+    let template_weight_comps = || TestSetupComponents {
+        bin_paths: bin_paths.clone(),
+        network: Network::Regtest,
+        mode: Mode::GetBlockTemplate,
+        file_registry: file_registry.clone(),
+        failure_collector: failure_collector.clone(),
+    };
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_template_weight_m8_deposit".to_string(),
+        template_weight_comps(),
+        crate::test_aggregated_deposit_weight::test_m8_deposit_template_weight,
+    ));
+    async_trials.push(new_trial_with_setup(
+        "aggregated_deposits_template_weight_two_treasuries".to_string(),
+        template_weight_comps(),
+        crate::test_aggregated_deposit_weight::test_two_treasury_deposit_template_weight,
+    ));
     async_trials.push(new_trial_with_setup(
         "consecutive_deposits".to_string(),
         TestSetupComponents {

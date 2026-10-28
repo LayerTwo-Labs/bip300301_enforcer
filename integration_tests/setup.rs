@@ -940,6 +940,63 @@ pub async fn template_coinbase_messages(
         .collect())
 }
 
+/// `count` distinct spendable UTXOs in bitcoind's wallet, each worth more than
+/// `min_value`. UTXOs spent by a broadcast transaction are not listed, so
+/// calling this again after broadcasting returns fresh ones.
+pub async fn core_utxos(
+    bitcoind: &BitcoindClient,
+    min_value: bitcoin::Amount,
+    count: usize,
+) -> anyhow::Result<Vec<(bitcoin::OutPoint, bitcoin::Amount)>> {
+    #[derive(serde::Deserialize)]
+    struct Utxo {
+        txid: Txid,
+        vout: u32,
+        amount: f64,
+    }
+    let utxos: Vec<Utxo> = bitcoind.request("listunspent", rpc_params![]).await?;
+    let res: Vec<_> = utxos
+        .into_iter()
+        .filter_map(|utxo| {
+            let value = bitcoin::Amount::from_btc(utxo.amount).ok()?;
+            (value > min_value).then_some((
+                bitcoin::OutPoint {
+                    txid: utxo.txid,
+                    vout: utxo.vout,
+                },
+                value,
+            ))
+        })
+        .take(count)
+        .collect();
+    anyhow::ensure!(
+        res.len() == count,
+        "wanted {count} spendable UTXOs worth more than {min_value} in bitcoind's wallet, found {}",
+        res.len()
+    );
+    Ok(res)
+}
+
+/// Sign `unsigned` with bitcoind's wallet.
+pub async fn sign_with_core_wallet(
+    bitcoind: &BitcoindClient,
+    unsigned: &bitcoin::Transaction,
+) -> anyhow::Result<bitcoin::Transaction> {
+    #[derive(serde::Deserialize)]
+    struct SignResult {
+        hex: String,
+        complete: bool,
+    }
+    let signed: SignResult = bitcoind
+        .request(
+            "signrawtransactionwithwallet",
+            rpc_params![bitcoin::consensus::encode::serialize_hex(unsigned)],
+        )
+        .await?;
+    anyhow::ensure!(signed.complete, "signrawtransactionwithwallet incomplete");
+    Ok(bitcoin::consensus::encode::deserialize_hex(&signed.hex)?)
+}
+
 /// How many withdrawal bundles the validator has pending for `sidechain_id`.
 pub async fn pending_bundle_count(
     client: &ValidatorServiceClient<Transport>,

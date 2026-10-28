@@ -1007,21 +1007,16 @@ impl Wallet {
     fn create_deposit_op_drivechain_output(
         op_drivechain: crate::types::OpDrivechain,
         sidechain_number: SidechainNumber,
-        sidechain_ctip_amount: Amount,
         value: Amount,
-    ) -> Result<bdk_wallet::bitcoin::TxOut, crate::types::AmountOverflowError> {
-        let deposit_txout = op_drivechain.create_m5_deposit_output(
-            sidechain_number,
-            sidechain_ctip_amount,
-            value,
-        )?;
+    ) -> bdk_wallet::bitcoin::TxOut {
+        let deposit_txout = op_drivechain.create_m5_deposit_output(sidechain_number, value);
 
-        Ok(bdk_wallet::bitcoin::TxOut {
+        bdk_wallet::bitcoin::TxOut {
             script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
                 deposit_txout.script_pubkey.to_bytes(),
             ),
             value: deposit_txout.value,
-        })
+        }
     }
 
     fn create_op_return_output<Msg>(
@@ -1179,8 +1174,6 @@ impl Wallet {
                 Ok((_, sidechain_number)) => sidechain_number,
                 Err(_) => return Err(error::CreateDepositPsbt::ParseSidechainNumber),
             };
-        // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
-        // Ctip.
         let ctip_foreign_utxo = match sidechain_ctip {
             Some(sidechain_ctip) => {
                 let outpoint = bdk_wallet::bitcoin::OutPoint {
@@ -1299,18 +1292,11 @@ impl Wallet {
             .validator()
             .try_get_block_height()?
             .unwrap_or_default();
-        // If this is None, there's been no deposit to this sidechain yet. We're the first one!
-        let sidechain_ctip = self.inner.validator().try_get_ctip(sidechain_number)?;
-        let sidechain_ctip = sidechain_ctip.as_ref();
-        let sidechain_ctip_amount = sidechain_ctip
-            .map(|ctip| ctip.value)
-            .unwrap_or(Amount::ZERO);
         let op_drivechain_output = Self::create_deposit_op_drivechain_output(
             self.inner.validator().network_params().op_drivechain,
             sidechain_number,
-            sidechain_ctip_amount,
             value,
-        )?;
+        );
         tracing::debug!(
             value = %op_drivechain_output.value,
             spk = %op_drivechain_output.script_pubkey.to_asm_string(),
@@ -1320,12 +1306,7 @@ impl Wallet {
             bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address.into_bytes())
                 .map_err(error::CreateDeposit::ConvertSidechainAddress)?;
         let psbt = self
-            .create_deposit_psbt(
-                op_drivechain_output,
-                sidechain_address_data,
-                sidechain_ctip,
-                fee,
-            )
+            .create_deposit_psbt(op_drivechain_output, sidechain_address_data, None, fee)
             .await?;
         tracing::debug!("Created deposit PSBT: {psbt}");
         let tx = self.sign_transaction(psbt).await?;

@@ -773,8 +773,6 @@ pub enum CreateDeposit {
     #[error("failed to convert sidechain address to PushBytesBuf")]
     ConvertSidechainAddress(#[source] bitcoin::script::PushBytesError),
     #[error(transparent)]
-    OutputAmountOverflow(#[from] crate::types::AmountOverflowError),
-    #[error(transparent)]
     ApplyUnconfirmedTx(#[from] ApplyUnconfirmedTx),
     #[error(transparent)]
     Psbt(#[from] CreateDepositPsbt),
@@ -797,7 +795,6 @@ impl ToStatus for CreateDeposit {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
             Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
-            Self::OutputAmountOverflow(err) => err.builder(),
             Self::ApplyUnconfirmedTx(err) => err.builder(),
             Self::Psbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),

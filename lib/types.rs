@@ -375,10 +375,29 @@ impl From<[u8; 32]> for M6id {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct Ctip {
     pub outpoint: OutPoint,
     pub value: Amount,
+}
+
+/// Upper bound on the weight a deposit tx adds to a block, through the tx that
+/// block production appends to consolidate its treasury outputs.
+///
+/// Each of the `n_treasuries` treasuries costs two inputs (the consolidated
+/// CTIP and the deposit) and one treasury output. The tx has no witness data.
+/// The fixed part leaves room for the input and output counts to take more
+/// bytes than one. Every deposit tx reserves the fixed part, as it is not known
+/// which of them share a consolidation tx.
+pub const fn consolidation_tx_weight(n_treasuries: u64) -> bitcoin::Weight {
+    const VERSION_AND_LOCKTIME: u64 = 4 + 4;
+    const COUNTS: u64 = 2 * (1 + 4);
+    const INPUT: u64 = 36 + 1 + 4;
+    // value, script length, and `OP_DRIVECHAIN <slot> OP_TRUE`
+    const TREASURY_OUTPUT: u64 = 8 + 1 + 4;
+    bitcoin::Weight::from_non_witness_data_size(
+        VERSION_AND_LOCKTIME + COUNTS + n_treasuries * (2 * INPUT + TREASURY_OUTPUT),
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1202,8 +1221,8 @@ impl<'a> BlindedM6<'a> {
         self,
         op_drivechain: OpDrivechain,
         sidechain_number: SidechainNumber,
-        treasury_outpoint: OutPoint,
-        treasury_value: Amount,
+        consolidated_ctip_input: Ctip,
+        unconsolidated_ctip_inputs: impl IntoIterator<Item = Ctip>,
     ) -> Result<bitcoin::Transaction, AmountUnderflowError> {
         let Self { fee, payout, tx } = self;
         let mut tx = tx.into_owned();
@@ -1211,26 +1230,37 @@ impl<'a> BlindedM6<'a> {
             .output
             .first_mut()
             .expect("Blinded M6 should have a fee output at index 0");
+        // Push treasury inputs
+        assert!(tx.input.is_empty());
+        let mut treasury_value_in = consolidated_ctip_input.value;
+        tx.input.push(bitcoin::TxIn {
+            previous_output: consolidated_ctip_input.outpoint,
+            ..Default::default()
+        });
+        for unconsolidated_ctip_input in unconsolidated_ctip_inputs {
+            treasury_value_in = treasury_value_in
+                .checked_add(unconsolidated_ctip_input.value)
+                .expect("treasury inputs are bounded by the money supply");
+            tx.input.push(bitcoin::TxIn {
+                previous_output: unconsolidated_ctip_input.outpoint,
+                ..Default::default()
+            });
+        }
+        // Payout and fee are paid from all of the treasury inputs, so subtract
+        // only after summing them.
+        let treasury_output_value = treasury_value_in
+            .checked_sub(payout)
+            .ok_or(AmountUnderflowError)?
+            .checked_sub(fee)
+            .ok_or(AmountUnderflowError)?;
         // Push treasury output
         let treasury_output = {
-            let value = treasury_value
-                .checked_sub(payout)
-                .ok_or(AmountUnderflowError)?
-                .checked_sub(fee)
-                .ok_or(AmountUnderflowError)?;
             bitcoin::TxOut {
                 script_pubkey: op_drivechain.script(sidechain_number),
-                value,
+                value: treasury_output_value,
             }
         };
         *first_output = treasury_output;
-        // Push treasury input
-        assert!(tx.input.is_empty());
-        let treasury_input = bitcoin::TxIn {
-            previous_output: treasury_outpoint,
-            ..Default::default()
-        };
-        tx.input.push(treasury_input);
         Ok(tx)
     }
 }
