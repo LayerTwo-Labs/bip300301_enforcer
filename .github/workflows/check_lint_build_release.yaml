@@ -575,6 +575,27 @@ jobs:
           path: |
             release/${{ env.APP_FILENAME }}
 
+      # Input for the releases.ecash.com publisher: the binary under its plain
+      # name plus a VERSION file. Named publish-* so the publisher's glob can't
+      # match the artifact above.
+      - name: "Stage binary for releases.ecash.com"
+        run: |
+          mkdir publish
+          cp "target/${{ matrix.name }}/release/bip300301_enforcer${{ matrix.binary-suffix }}" \
+            "publish/bip300301-enforcer${{ matrix.binary-suffix }}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            printf '%s\n' "$APP_VERSION" > publish/VERSION
+          else
+            printf '%s-nightly.%s\n' "$APP_VERSION" "${GITHUB_SHA:0:12}" > publish/VERSION
+          fi
+
+      - name: "Upload artifacts (releases.ecash.com)"
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-bip300301-enforcer-${{ matrix.name }}
+          if-no-files-found: error
+          path: publish
+
       - name: Release
         uses: softprops/action-gh-release@v3.0.3
         if: startsWith(github.ref, 'refs/tags/')
@@ -582,6 +603,34 @@ jobs:
           files: |
             release/${{ env.APP_FILENAME }}
           fail_on_unmatched_files: true
+
+  # Signed, immutable builds on releases.ecash.com. Pin the publisher to a
+  # commit SHA and bump it through a reviewed PR: the pinned revision decides
+  # what gets signed under this repository's identity. Needs the `releases`
+  # environment (deployment branches: master) holding the R2_* secrets.
+  publish-releases-ecash-com:
+    name: Publish to releases.ecash.com
+    needs: [integration-test, test-build-release]
+    if: >-
+      github.repository_owner == 'LayerTwo-Labs' && github.ref_type == 'branch'
+      && github.ref_name == 'master' && contains(fromJSON('["push",
+      "workflow_dispatch"]'), github.event_name)
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ecash-com/releases/.github/workflows/publish.yml@ae509e8628feafeef86a5d5a329f3cd78c5eab5d
+    with:
+      project: bip300301-enforcer
+      channel: nightly
+      zip-naming: versioned
+      artifact-pattern: publish-bip300301-enforcer-*
+      targets: |
+        x86_64-unknown-linux-gnu
+        x86_64-apple-darwin
+        aarch64-apple-darwin
+        x86_64-pc-windows-gnu
+    secrets: inherit
 
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
