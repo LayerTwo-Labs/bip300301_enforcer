@@ -207,7 +207,7 @@ pub async fn test_withdrawal_bundle_reorg(mut post_setup: PostSetup) -> anyhow::
         ..MiningPolicy::SILENT
     };
     let mut replaced = false;
-    for _ in 0..=Thresholds::SHORT.used_sidechain_slot_proposal_max_age {
+    for _ in 0..=Thresholds::SHORT.withdrawal_bundle_max_age {
         let _block = mine_one(&mut post_setup, ack_all).await?;
         if slot_activation_height(&post_setup).await? != original_activation {
             replaced = true;
