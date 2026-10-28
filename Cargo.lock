@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "axum",
  "bdk_wallet",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer_integration_tests"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bdk_wallet",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer_lib"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "argon2",
