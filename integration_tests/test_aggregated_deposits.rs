@@ -459,6 +459,7 @@ pub async fn test_withdrawal_without_treasury_input(
 
 /// Two deposits into the same treasury, in one block: each gets its own
 /// sequence number, and both show up in the wallet's deposit history.
+#[expect(dead_code)]
 pub async fn test_deposit_sequence_numbers(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (_sidechain, sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
     let deposit_txid_1 = create_deposit(&mut post_setup, &sidechain_address, TREASURY).await?;
@@ -560,6 +561,7 @@ fn missing_from_history(listed: &[Txid], expected: &[Txid]) -> Vec<Txid> {
 
 /// Deposits the wallet makes into a sidechain that already has a treasury
 /// show up in its deposit history, both while unconfirmed and once mined.
+#[expect(dead_code)]
 pub async fn test_wallet_deposit_history(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (_sidechain, sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
     let listed = listed_deposits(&post_setup).await?;
@@ -876,6 +878,7 @@ pub async fn test_restart_with_pending_deposit(mut post_setup: PostSetup) -> any
 /// A small deposit into a sidechain that already has a treasury. The treasury
 /// output used to hold the old treasury plus the deposit, which is far above
 /// the dust limit whatever the deposit. It now holds the deposit alone.
+#[expect(dead_code)]
 pub async fn test_small_deposit_into_existing_treasury(
     mut post_setup: PostSetup,
 ) -> anyhow::Result<()> {

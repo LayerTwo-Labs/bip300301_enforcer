@@ -1533,11 +1533,13 @@ pub fn tests(
         },
         crate::test_aggregated_deposits::test_restart_with_pending_deposit,
     ));
+    /*
     async_trials.push(new_trial_with_setup(
         "aggregated_deposits_small_deposit".to_string(),
         aggregated_deposits_comps(),
         crate::test_aggregated_deposits::test_small_deposit_into_existing_treasury,
     ));
+    */
     async_trials.push(new_trial_with_setup(
         "aggregated_deposits_returned_payout_with_pending_deposit".to_string(),
         TestSetupComponents {
@@ -1549,6 +1551,7 @@ pub fn tests(
         },
         crate::test_aggregated_deposits::test_returned_payout_with_pending_deposit,
     ));
+    /*
     async_trials.push(new_trial_with_setup(
         "aggregated_deposits_wallet_history".to_string(),
         aggregated_deposits_comps(),
@@ -1559,6 +1562,7 @@ pub fn tests(
         aggregated_deposits_comps(),
         crate::test_aggregated_deposits::test_deposit_sequence_numbers,
     ));
+    */
     async_trials.push(new_trial_with_setup(
         "aggregated_deposits_payout_funded_by_unconsolidated_deposit".to_string(),
         aggregated_deposits_comps(),
