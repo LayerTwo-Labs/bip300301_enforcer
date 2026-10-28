@@ -1361,6 +1361,57 @@ pub fn tests(
         },
         crate::test_withdrawal_bundle_policy::test_withdrawal_bundle_policy,
     ));
+    async_trials.push(new_trial_with_setup(
+        "withdrawal_bundle_reorg".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            // Same reason as `withdrawal_bundle_policy`.
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_withdrawal_bundle_reorg::test_withdrawal_bundle_reorg,
+    ));
+    async_trials.extend([Mode::Mempool, Mode::GetBlockTemplate].map(|mode| {
+        new_trial_with_setup(
+            format!("stale_payout_after_reorg (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_withdrawal_payout::test_stale_payout_after_reorg,
+        )
+    }));
+    async_trials.extend([Mode::Mempool, Mode::GetBlockTemplate].map(|mode| {
+        new_trial_with_setup(
+            format!("returned_payout_paid_once (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_withdrawal_payout::test_returned_payout_paid_once,
+        )
+    }));
+    async_trials.extend([Mode::Mempool, Mode::GetBlockTemplate].map(|mode| {
+        new_trial_with_setup(
+            format!("mempool_m6_for_an_expiring_bundle (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            crate::test_withdrawal_payout::test_mempool_m6_for_an_expiring_bundle,
+        )
+    }));
     // Both block production modes build the coinbase through the same M3
     // selection.
     async_trials.extend([Mode::GetBlockTemplate, Mode::Mempool].map(|mode| {
