@@ -1440,7 +1440,7 @@ pub fn tests(
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
             network: Network::Regtest,
-            mode: Mode::NoMempool,
+            mode: Mode::GetBlockTemplate,
             file_registry: file_registry.clone(),
             failure_collector: failure_collector.clone(),
         },

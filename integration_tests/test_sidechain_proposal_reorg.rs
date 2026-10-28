@@ -73,31 +73,46 @@ async fn wait_for_mined(post_setup: &PostSetup, slot: SidechainNumber) -> anyhow
     wait_for_no_pending_proposal(&post_setup.block_producer_service_client, slot).await
 }
 
-/// Mine one block with the enforcer and return the slots of its M1s, sorted.
-async fn mine_one(post_setup: &mut PostSetup) -> anyhow::Result<Vec<SidechainNumber>> {
+/// Mine one block with the enforcer and return the slot of its M1.
+async fn mine_one(post_setup: &mut PostSetup) -> anyhow::Result<Option<SidechainNumber>> {
     let () = mine::<DummySidechain>(post_setup, 1, MiningPolicy::SILENT).await?;
-    let mut slots: Vec<_> = tip_coinbase_messages(post_setup)
+    let slot = tip_coinbase_messages(post_setup)
         .await?
         .into_iter()
-        .filter_map(|message| match message {
+        .find_map(|message| match message {
             CoinbaseMessage::M1ProposeSidechain(m1) => Some(m1.sidechain_number),
             _ => None,
-        })
-        .collect();
-    slots.sort_unstable();
-    Ok(slots)
+        });
+    Ok(slot)
 }
 
-async fn mine_expecting_m1s(
+async fn mine_expecting_no_m1(post_setup: &mut PostSetup) -> anyhow::Result<BlockHash> {
+    let slot = mine_one(post_setup).await?;
+    if let Some(slot) = slot {
+        anyhow::bail!("expected no M1, got M1 for {slot}")
+    }
+    best_block_hash(&post_setup.bitcoind_client).await
+}
+
+async fn mine_expecting_m1(
     post_setup: &mut PostSetup,
-    expected: &[SidechainNumber],
+    expected: SidechainNumber,
 ) -> anyhow::Result<BlockHash> {
-    let slots = mine_one(post_setup).await?;
+    let slot = mine_one(post_setup).await?;
     anyhow::ensure!(
-        slots == expected,
-        "expected M1s for slots {expected:?}, got {slots:?}"
+        slot == Some(expected),
+        "expected M1 for slot {expected}, got {slot:?}"
     );
     best_block_hash(&post_setup.bitcoind_client).await
+}
+
+async fn mine_expecting_any_m1(
+    post_setup: &mut PostSetup,
+) -> anyhow::Result<(SidechainNumber, BlockHash)> {
+    let slot = mine_one(post_setup).await?;
+    let slot = slot.ok_or_else(|| anyhow::anyhow!("expected an M1 message"))?;
+    let block_hash = best_block_hash(&post_setup.bitcoind_client).await?;
+    Ok((slot, block_hash))
 }
 
 /// Mine one block with the enforcer, expecting M2s for exactly `expected`.
@@ -203,14 +218,14 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
             .is_err_and(|err| err.code == connectrpc::ErrorCode::AlreadyExists),
         "resubmitting a pending proposal must fail with AlreadyExists, got: {duplicate:?}"
     );
-    let _m1_block = mine_expecting_m1s(&mut post_setup, &[slot]).await?;
+    let _m1_block = mine_expecting_m1(&mut post_setup, slot).await?;
     let () = wait_for_mined(&post_setup, slot).await?;
-    let _next = mine_expecting_m1s(&mut post_setup, &[]).await?;
+    let _next = mine_expecting_no_m1(&mut post_setup).await?;
 
     tracing::info!("A multi-block reorg queues every proposal it takes out, and keeps its ACKs");
     let (deeper, shallower) = (SidechainNumber(3), SidechainNumber(4));
     let () = submit_proposal(&post_setup, deeper).await?;
-    let deeper_block = mine_expecting_m1s(&mut post_setup, &[deeper]).await?;
+    let deeper_block = mine_expecting_m1(&mut post_setup, deeper).await?;
     let () = wait_for_mined(&post_setup, deeper).await?;
     let () = set_sidechain_ack(
         &post_setup,
@@ -219,30 +234,39 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
     )
     .await?;
     let () = submit_proposal(&post_setup, shallower).await?;
-    let _shallower_block = mine_expecting_m1s(&mut post_setup, &[shallower]).await?;
+    let _shallower_block = mine_expecting_m1(&mut post_setup, shallower).await?;
     let () = wait_for_mined(&post_setup, shallower).await?;
-    let _above = mine_expecting_m1s(&mut post_setup, &[]).await?;
+    let _above = mine_expecting_no_m1(&mut post_setup).await?;
     let () = reorg_out(&post_setup, deeper_block, || async {
         let () = wait_for_pending(&post_setup, deeper).await?;
         wait_for_pending(&post_setup, shallower).await
     })
     .await?;
     // Built while the ACKed proposal is off the chain.
-    let _m1_block = mine_expecting_m1s(&mut post_setup, &[deeper, shallower]).await?;
-    let () = wait_for_mined(&post_setup, deeper).await?;
-    let () = wait_for_mined(&post_setup, shallower).await?;
+    let (slot, _m1_block) = mine_expecting_any_m1(&mut post_setup).await?;
+    if slot == deeper {
+        let () = wait_for_mined(&post_setup, deeper).await?;
+        let _m1_block = mine_expecting_m1(&mut post_setup, shallower).await?;
+        let () = wait_for_mined(&post_setup, shallower).await?;
+    } else if slot == shallower {
+        let () = wait_for_mined(&post_setup, shallower).await?;
+        let _m1_block = mine_expecting_m1(&mut post_setup, deeper).await?;
+        let () = wait_for_mined(&post_setup, deeper).await?;
+    } else {
+        anyhow::bail!("expected M1 for slot {deeper} or {shallower}, got {slot}")
+    }
     let () = mine_expecting_m2s(&mut post_setup, &[deeper]).await?;
 
     tracing::info!("A reorg above the M1's block leaves the proposal mined");
-    let above = mine_expecting_m1s(&mut post_setup, &[]).await?;
+    let above = mine_expecting_no_m1(&mut post_setup).await?;
     let () = reorg_out(&post_setup, above, || async { Ok(()) }).await?;
     let () = wait_for_mined(&post_setup, deeper).await?;
-    let _next = mine_expecting_m1s(&mut post_setup, &[]).await?;
+    let _next = mine_expecting_no_m1(&mut post_setup).await?;
 
     tracing::info!("Swapping the M1's block for a competitor carrying the same M1 keeps it mined");
     let swapped = SidechainNumber(8);
     let () = submit_proposal(&post_setup, swapped).await?;
-    let m1_block = mine_expecting_m1s(&mut post_setup, &[swapped]).await?;
+    let m1_block = mine_expecting_m1(&mut post_setup, swapped).await?;
     let () = wait_for_mined(&post_setup, swapped).await?;
     let m1_script = m1_script(&post_setup, m1_block).await?;
     // Nothing reads the queue in between, so one catch-up both disconnects
@@ -261,10 +285,10 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
     let () = submit_proposal(&post_setup, requeued).await?;
     // Nothing reads the queue between mining the M1 and resubmitting, so a
     // resubmission that missed the M1 would fail with AlreadyExists.
-    let requeued_m1_block = mine_expecting_m1s(&mut post_setup, &[requeued]).await?;
+    let requeued_m1_block = mine_expecting_m1(&mut post_setup, requeued).await?;
     let () = submit_proposal(&post_setup, requeued).await?;
     // Queued, but not proposed again while its first proposal is alive.
-    let next = mine_expecting_m1s(&mut post_setup, &[]).await?;
+    let next = mine_expecting_no_m1(&mut post_setup).await?;
 
     tracing::info!("Reorging the requeued M1's block out and back in keeps it queued");
     let parent = parent_of(&post_setup, requeued_m1_block).await?;
@@ -280,9 +304,9 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
     tracing::info!("A rebuild re-marks the queue from the chain, keeping the requeue");
     let (kept, lost) = (SidechainNumber(6), SidechainNumber(7));
     let () = submit_proposal(&post_setup, kept).await?;
-    let _kept_block = mine_expecting_m1s(&mut post_setup, &[kept]).await?;
+    let _kept_block = mine_expecting_m1(&mut post_setup, kept).await?;
     let () = submit_proposal(&post_setup, lost).await?;
-    let lost_block = mine_expecting_m1s(&mut post_setup, &[lost]).await?;
+    let lost_block = mine_expecting_m1(&mut post_setup, lost).await?;
     let () = wait_for_mined(&post_setup, kept).await?;
     let () = wait_for_mined(&post_setup, lost).await?;
     let () = post_setup.kill_enforcer().await?;
@@ -301,7 +325,7 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
         let () = wait_for_mined(&post_setup, mined).await?;
     }
     // The requeued proposal's first one is still alive here.
-    let _m1_block = mine_expecting_m1s(&mut post_setup, &[lost]).await?;
+    let _m1_block = mine_expecting_m1(&mut post_setup, lost).await?;
     let () = wait_for_mined(&post_setup, lost).await?;
 
     tracing::info!("Upgrading from a DB without a cursor keeps the requeue");
@@ -313,12 +337,12 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
     tracing::info!("Once its first proposal fails, the requeued one goes out");
     let mut second_m1_block = None;
     for _ in 0..=Thresholds::SHORT.unused_sidechain_slot_proposal_max_age {
-        let slots = mine_one(&mut post_setup).await?;
-        if slots == [requeued] {
+        let slot = mine_one(&mut post_setup).await?;
+        if slot == Some(requeued) {
             second_m1_block = Some(best_block_hash(&post_setup.bitcoind_client).await?);
             break;
         }
-        anyhow::ensure!(slots.is_empty(), "expected no M1s, got {slots:?}");
+        anyhow::ensure!(slot.is_none(), "expected no M1, got {slot:?}");
     }
     let second_m1_block = second_m1_block
         .ok_or_else(|| anyhow::anyhow!("the requeued proposal never went out again"))?;
@@ -329,7 +353,7 @@ pub async fn test_sidechain_proposal_reorg(mut post_setup: PostSetup) -> anyhow:
         wait_for_pending(&post_setup, requeued)
     })
     .await?;
-    let _m1_block = mine_expecting_m1s(&mut post_setup, &[requeued]).await?;
+    let _m1_block = mine_expecting_m1(&mut post_setup, requeued).await?;
 
     tracing::info!("A rebuild re-marks it by the new M1, not the one it was queued past");
     let () = post_setup.kill_enforcer().await?;
