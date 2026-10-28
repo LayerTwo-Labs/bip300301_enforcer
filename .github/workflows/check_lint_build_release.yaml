@@ -630,7 +630,14 @@ jobs:
         x86_64-apple-darwin
         aarch64-apple-darwin
         x86_64-pc-windows-gnu
-    secrets: inherit
+    # By name, not `inherit`: the values live in the `releases` environment,
+    # which the publisher attaches to its own job, and it only resolves
+    # secrets the caller passes.
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
