@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - master
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
 env:
@@ -560,6 +562,10 @@ jobs:
           # Use 'latest' in the filename instead of the version
           APP_DIRNAME="bip300301-enforcer-latest-${{ matrix.name }}"
           APP_FILENAME="${APP_DIRNAME}${{ matrix.binary-suffix }}"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$APP_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $APP_VERSION"
+            exit 1
+          fi
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
           echo "APP_DIRNAME=$APP_DIRNAME" >> "$GITHUB_ENV"
@@ -634,6 +640,60 @@ jobs:
     # By name, not `inherit`: the values live in the `releases` environment,
     # which the publisher attaches to its own job, and it only resolves
     # secrets the caller passes.
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  # Release directory and channel for a tag: the tag without its `v`, and
+  # `rc` for pre-releases (v1.0.0-rc.1) so they never move stable/latest.
+  # test-build-release has already checked the tag against Cargo.toml.
+  tagged-release-version:
+    name: Tagged release version
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          case "$version" in
+            *-*) channel=rc ;;
+            *) channel=stable ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+  # Tagged releases go to the stable (or rc) channel, in a directory named
+  # after the version. The `releases` environment must also allow tag
+  # `v*.*.*`.
+  publish-releases-ecash-com-tagged:
+    name: Publish tagged release to releases.ecash.com
+    needs: [test-build-release, tagged-release-version]
+    if: >-
+      github.repository_owner == 'LayerTwo-Labs' && github.ref_type == 'tag' &&
+      github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ecash-com/releases/.github/workflows/publish.yml@a00ddba7a20020ef0a80219c9f63c6b1a8ddfd74
+    with:
+      project: bip300301-enforcer
+      channel: ${{ needs.tagged-release-version.outputs.channel }}
+      release-id: ${{ needs.tagged-release-version.outputs.version }}
+      zip-naming: versioned
+      artifact-pattern: publish-bip300301-enforcer-*
+      targets: |
+        x86_64-unknown-linux-gnu
+        x86_64-apple-darwin
+        aarch64-apple-darwin
+        x86_64-pc-windows-gnu
     secrets:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
