@@ -115,12 +115,16 @@ pub enum Fork {
 }
 
 impl Fork {
-    /// Best-effort basis at detecting fork version
-    pub fn detect(subversion: &str) -> Self {
+    /// Identifies the build from the node's user agent. Only Bitcoin Core
+    /// (`/Satoshi:`, which Knots and other derivatives keep) and eCash
+    /// (`/eCash`) are recognised; anything else is `None` rather than a guess.
+    pub fn detect(subversion: &str) -> Option<Self> {
         if subversion.starts_with("/eCash") {
-            Self::Ecash
+            Some(Self::Ecash)
+        } else if subversion.starts_with("/Satoshi:") {
+            Some(Self::Bitcoin)
         } else {
-            Self::Bitcoin
+            None
         }
     }
 
@@ -156,6 +160,10 @@ pub struct NetworkParams {
 }
 
 impl NetworkParams {
+    /// BIP300 is not active on Bitcoin mainnet, so every block there is plain
+    /// Bitcoin history.
+    pub const NEVER_ACTIVATES: u32 = u32::MAX;
+
     /// Bitcoin regtest's parameters, for tests that don't care about the
     /// network.
     #[cfg(test)]
@@ -191,7 +199,10 @@ impl NetworkParams {
             network_magic: signet_challenge
                 .map(|challenge| crate::p2p::compute_signet_magic(fork, challenge).to_bytes()),
             thresholds: Thresholds::for_network(fork, network),
-            bip300_activation_height: 0,
+            bip300_activation_height: match network {
+                MAINNET => Self::NEVER_ACTIVATES,
+                _ => 0,
+            },
             op_drivechain: OpDrivechain::NOP5,
             replay_protection_lock_time: None,
         };
