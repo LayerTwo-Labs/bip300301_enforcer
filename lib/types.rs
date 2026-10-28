@@ -38,29 +38,46 @@ const SIGNET: bitcoin::Network = bitcoin::Network::Signet;
 const REGTEST: bitcoin::Network = bitcoin::Network::Regtest;
 
 /// BIP 300 voting / aging thresholds. Values are network-specific: mainnet
-/// follows the spec, everything else uses tiny dev-friendly values so
-/// regtest/signet sessions don't take weeks to exercise activations and
-/// withdrawals.
+/// follows the spec (eCash's own, where it differs), everything else uses tiny
+/// dev-friendly values so regtest/signet sessions don't take weeks to exercise
+/// activations and withdrawals.
 ///
 /// <https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip300.md#constants>
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Thresholds {
+    /// How many blocks a withdrawal bundle (M3) has to collect enough ACKs.
+    /// A bundle that is still short of `withdrawal_bundle_inclusion_threshold`
+    /// after this many blocks fails. Also the window for a proposal to replace
+    /// a sidechain in a used slot.
     pub withdrawal_bundle_max_age: u16,
+    /// ACKs (M4) a withdrawal bundle must strictly exceed before it can be
+    /// paid out (M6). Also the ACKs a proposal to replace a sidechain in a
+    /// used slot must strictly exceed.
     pub withdrawal_bundle_inclusion_threshold: u16,
-    pub used_sidechain_slot_proposal_max_age: u16,
-    pub used_sidechain_slot_activation_threshold: u16,
+    /// How many blocks after its M1 a sidechain proposal has to collect
+    /// `unused_sidechain_slot_activation_threshold` ACKs. The window is
+    /// inclusive.
     pub unused_sidechain_slot_proposal_max_age: u16,
+    /// ACKs a sidechain proposal for an unused slot must strictly exceed to
+    /// activate.
     pub unused_sidechain_slot_activation_threshold: u16,
 }
 
 impl Thresholds {
-    pub const MAINNET: Self = Self {
+    pub const BTC_MAINNET: Self = Self {
         withdrawal_bundle_max_age: 26_300,
         withdrawal_bundle_inclusion_threshold: 13_150,
-        used_sidechain_slot_proposal_max_age: 26_300,
-        used_sidechain_slot_activation_threshold: 13_150,
         unused_sidechain_slot_proposal_max_age: 2016,
         unused_sidechain_slot_activation_threshold: 1815,
+    };
+
+    /// eCash mainnet shortens the withdrawal window to ~12 weeks of blocks,
+    /// with the inclusion threshold at half of it. The unused slot constants
+    /// stay as in the spec.
+    pub const ECX_MAINNET: Self = Self {
+        withdrawal_bundle_max_age: 12_096,
+        withdrawal_bundle_inclusion_threshold: 6_048,
+        ..Self::BTC_MAINNET
     };
 
     /// Dev-friendly values used on every non-mainnet network so a full
@@ -68,16 +85,15 @@ impl Thresholds {
     pub const SHORT: Self = Self {
         withdrawal_bundle_max_age: 10,
         withdrawal_bundle_inclusion_threshold: 5,
-        used_sidechain_slot_proposal_max_age: 10,
-        used_sidechain_slot_activation_threshold: 5,
         unused_sidechain_slot_proposal_max_age: 10,
         unused_sidechain_slot_activation_threshold: 5,
     };
 
     #[inline]
-    pub const fn for_network(network: bitcoin::Network) -> Self {
-        match network {
-            bitcoin::Network::Bitcoin => Self::MAINNET,
+    pub const fn for_network(fork: Fork, network: bitcoin::Network) -> Self {
+        match (fork, network) {
+            (Fork::Bitcoin, MAINNET) => Self::BTC_MAINNET,
+            (Fork::Ecash, MAINNET) => Self::ECX_MAINNET,
             _ => Self::SHORT,
         }
     }
@@ -174,7 +190,7 @@ impl NetworkParams {
             fork,
             network_magic: signet_challenge
                 .map(|challenge| crate::p2p::compute_signet_magic(fork, challenge).to_bytes()),
-            thresholds: Thresholds::for_network(network),
+            thresholds: Thresholds::for_network(fork, network),
             bip300_activation_height: 0,
             op_drivechain: OpDrivechain::NOP5,
             replay_protection_lock_time: None,

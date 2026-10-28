@@ -287,8 +287,8 @@ impl BlockHandler<'_> {
 
         let new_sidechain_activated = {
             sidechain_slot_is_used
-                && sidechain.status.vote_count > thresholds.used_sidechain_slot_activation_threshold
-                && sidechain_proposal_age <= thresholds.used_sidechain_slot_proposal_max_age as u32
+                && sidechain.status.vote_count > thresholds.withdrawal_bundle_inclusion_threshold
+                && sidechain_proposal_age <= thresholds.withdrawal_bundle_max_age as u32
         } || {
             !sidechain_slot_is_used
                 && thresholds
@@ -337,8 +337,8 @@ impl BlockHandler<'_> {
                     .contains_key(rotxn, &sidechain.proposal.sidechain_number)?;
                 let (max_age, threshold) = if sidechain_slot_is_used {
                     (
-                        thresholds.used_sidechain_slot_proposal_max_age as u32,
-                        thresholds.used_sidechain_slot_activation_threshold as u32,
+                        thresholds.withdrawal_bundle_max_age as u32,
+                        thresholds.withdrawal_bundle_inclusion_threshold as u32,
                     )
                 } else {
                     (
@@ -3475,7 +3475,7 @@ mod tests {
 
         // Competing proposal B for slot 1, one vote short of the used-slot
         // activation threshold so the next ack activates it.
-        let threshold = handler.thresholds.used_sidechain_slot_activation_threshold;
+        let threshold = handler.thresholds.withdrawal_bundle_inclusion_threshold;
         let proposal_b = SidechainProposal {
             sidechain_number: slot,
             description: SidechainDescription(vec![0x00, 0x01, 0xBB]),

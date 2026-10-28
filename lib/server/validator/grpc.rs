@@ -180,8 +180,6 @@ impl ValidatorService for Server {
         let Thresholds {
             withdrawal_bundle_max_age,
             withdrawal_bundle_inclusion_threshold,
-            used_sidechain_slot_proposal_max_age,
-            used_sidechain_slot_activation_threshold,
             unused_sidechain_slot_proposal_max_age,
             unused_sidechain_slot_activation_threshold,
         } = network_params.thresholds;
@@ -190,8 +188,9 @@ impl ValidatorService for Server {
             bip300_constants: MessageField::some(Bip300Constants {
                 withdrawal_bundle_max_age: withdrawal_bundle_max_age.into(),
                 withdrawal_bundle_inclusion_threshold: withdrawal_bundle_inclusion_threshold.into(),
-                used_sidechain_slot_proposal_max_age: used_sidechain_slot_proposal_max_age.into(),
-                used_sidechain_slot_activation_threshold: used_sidechain_slot_activation_threshold
+                // Replacing a used slot is held to the withdrawal bundle bar.
+                used_sidechain_slot_proposal_max_age: withdrawal_bundle_max_age.into(),
+                used_sidechain_slot_activation_threshold: withdrawal_bundle_inclusion_threshold
                     .into(),
                 unused_sidechain_slot_proposal_max_age: unused_sidechain_slot_proposal_max_age
                     .into(),
