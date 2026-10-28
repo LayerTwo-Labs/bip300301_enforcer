@@ -119,6 +119,7 @@ run_tests() {
 
 skip_args=()
 if [ ${#skip_patterns[@]} -gt 0 ]; then
+    run_tests --list | "$REPO_ROOT/scripts/check_stock_skip_patterns.sh"
     # Name the tests this flavor's skip patterns exclude (on top of any
     # user-supplied filter); `--skip` is substring matching, so a listing
     # filtered by the pattern is exactly the excluded set. The `skipped: `

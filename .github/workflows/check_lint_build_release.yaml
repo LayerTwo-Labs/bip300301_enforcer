@@ -439,6 +439,7 @@ jobs:
           export BITCOIND_FORK='${{ matrix.fork }}'
           if [ -n '${{ matrix.version }}' ]; then
             export BITCOIND="$BITCOIND_UNPATCHED"
+            "$INTEGRATION_TEST_RUNNER" --list | ./scripts/check_stock_skip_patterns.sh
             skips=()
             while IFS= read -r pattern; do
               skips+=(--skip "$pattern")

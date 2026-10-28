@@ -25,9 +25,8 @@ use crate::{
     errors::ErrorChain,
     proto::{StatusBuilder, ToStatus},
     types::{
-        AmountOverflowError, BmmCommitment, M6id, OpDrivechain, SidechainDeclaration,
-        SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalId,
-        WithdrawalBundleVote,
+        BmmCommitment, M6id, OpDrivechain, SidechainDeclaration, SidechainDescription,
+        SidechainNumber, SidechainProposal, WithdrawalBundleVote,
     },
 };
 
