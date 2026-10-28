@@ -7,8 +7,6 @@
 #   bitcoin-patched  LayerTwo-Labs bitcoin-patched
 #   unpatched        newest stock Bitcoin Core release
 #   stock-X.Y        a specific stock release from CI_BITCOIN_CORE_VERSIONS
-#   alphanet         the rolling build of ecash-com/bitcoin's alphanet branch
-#   betanet          the rolling build of ecash-com/bitcoin's betanet branch
 #   mainnet          the latest eCash mainnet release of ecash-com/bitcoin
 #   all              every flavor in the CI matrix, continuing past failures
 #
@@ -98,9 +96,9 @@ case "$flavor" in
         done < <(grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/scripts/stock-skip-patterns.txt")
         ;;
     # The ecash channels: fixed names that setup always fetches.
-    alphanet | betanet | mainnet) ;;
+    mainnet) ;;
     *)
-        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, alphanet, betanet, mainnet, or all)" >&2
+        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, mainnet, or all)" >&2
         exit 1
         ;;
 esac

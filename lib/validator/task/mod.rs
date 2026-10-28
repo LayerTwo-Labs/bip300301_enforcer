@@ -2384,7 +2384,7 @@ mod tests {
         BlockHandler::new(
             dbs,
             bitcoin::Network::Regtest,
-            NetworkParams::for_network(bitcoin::Network::Regtest),
+            NetworkParams::BITCOIN_REGTEST,
         )
     }
 
@@ -2761,7 +2761,7 @@ mod tests {
                 .into_diagnostic()?;
             let params = NetworkParams {
                 bip300_activation_height: 1,
-                ..NetworkParams::for_network(bitcoin::Network::Regtest)
+                ..NetworkParams::BITCOIN_REGTEST
             };
             let handler = BlockHandler::new(&dbs, bitcoin::Network::Regtest, params);
             let Event::ConnectBlock { block_info, .. } = handler

@@ -34,7 +34,7 @@ pub fn dummy_validator(dir: &std::path::Path) -> Validator {
         None,
         dir,
         bitcoin::Network::Regtest,
-        NetworkParams::for_network(bitcoin::Network::Regtest),
+        NetworkParams::BITCOIN_REGTEST,
     )
     .expect("construct validator")
 }
