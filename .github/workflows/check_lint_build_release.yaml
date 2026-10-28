@@ -610,7 +610,7 @@ jobs:
   # environment (deployment branches: master) holding the R2_* secrets.
   publish-releases-ecash-com:
     name: Publish to releases.ecash.com
-    needs: [integration-test, test-build-release]
+    needs: [test-build-release]
     if: >-
       github.repository_owner == 'LayerTwo-Labs' && github.ref_type == 'branch'
       && github.ref_name == 'master' && contains(fromJSON('["push",
@@ -619,7 +619,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    uses: ecash-com/releases/.github/workflows/publish.yml@ae509e8628feafeef86a5d5a329f3cd78c5eab5d
+    uses: ecash-com/releases/.github/workflows/publish.yml@a00ddba7a20020ef0a80219c9f63c6b1a8ddfd74
     with:
       project: bip300301-enforcer
       channel: nightly
