@@ -430,8 +430,8 @@ pub struct Config {
     pub node_rpc_opts: NodeRpcConfig,
     #[command(flatten)]
     pub node_blocks_dir_opts: NodeBlocksDirConfig,
-    /// The fork the node is on. Detected from the node's user agent if unset,
-    /// defaulting to bitcoin.
+    /// The fork the node is on. Detected from the node's user agent if unset.
+    /// On mainnet, an unrecognised user agent is refused unless this is set.
     #[arg(long, value_enum)]
     pub fork: Option<Fork>,
     /// P2P message-start bytes as hex, e.g. `eca5d404`. Overrides the value

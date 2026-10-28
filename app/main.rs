@@ -129,6 +129,39 @@ impl MakeRequestId for RequestIdMaker {
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
+/// Picks the fork the node is on. An explicit `--fork` must agree with the
+/// user agent on whether the node is eCash. An unrecognised user agent on
+/// mainnet is refused unless `--fork` names the build, rather than silently
+/// running with Bitcoin's consensus parameters.
+fn resolve_fork(
+    requested: Option<Fork>,
+    detected: Option<Fork>,
+    chain: bitcoin::Network,
+    subversion: &str,
+) -> miette::Result<Fork> {
+    match (requested, detected) {
+        (Some(fork), Some(detected)) if (fork == Fork::Ecash) != (detected == Fork::Ecash) => {
+            Err(miette!(
+                "`--fork={fork}` does not match the node, which detects as `{detected}` from \
+                 its user agent `{subversion}`"
+            ))
+        }
+        (Some(fork), _) => Ok(fork),
+        (None, Some(detected)) => Ok(detected),
+        (None, None) if chain == bitcoin::Network::Bitcoin => Err(miette!(
+            "cannot tell which fork the node is from its user agent `{subversion}`; \
+             pass `--fork` explicitly"
+        )),
+        (None, None) => {
+            tracing::warn!(
+                %subversion,
+                "unrecognised user agent, assuming Bitcoin parameters (pass `--fork` to override)"
+            );
+            Ok(Fork::Bitcoin)
+        }
+    }
+}
+
 fn set_request_id_layer() -> SetRequestIdLayer<RequestIdMaker> {
     SetRequestIdLayer::new(HeaderName::from_static(REQUEST_ID_HEADER), RequestIdMaker)
 }
@@ -1785,18 +1818,12 @@ async fn main() -> Result<()> {
         );
     }
 
-    let detected_fork = Fork::detect(&detected_version.subversion);
-    let fork = match cli.fork {
-        None => detected_fork,
-        Some(fork) if (fork == Fork::Ecash) == (detected_fork == Fork::Ecash) => fork,
-        Some(fork) => {
-            return Err(miette!(
-                "`--fork={fork}` does not match the node, which detects as `{detected_fork}` from \
-                 its user agent `{}`",
-                detected_version.subversion
-            ));
-        }
-    };
+    let fork = resolve_fork(
+        cli.fork,
+        Fork::detect(&detected_version.subversion),
+        info.chain,
+        &detected_version.subversion,
+    )?;
 
     // The enforcer syncs full block data from its last processed block
     // (genesis, on a first run), so a pruned node can never reliably serve
