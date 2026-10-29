@@ -195,10 +195,10 @@ or via the just recipe, which downloads the required binaries and writes the env
 files on first run. `--bitcoind` selects the Bitcoin Core build to run against:
 
 ```bash
-$ just test-it                            # against bitcoin-patched (default)
-$ just test-it --bitcoind unpatched       # against the newest stock Bitcoin Core
-$ just test-it --bitcoind stock-30.2      # against a specific stock release
-$ just test-it --bitcoind mainnet         # against the latest eCash mainnet release
+$ just test-it                            # against the latest eCash mainnet release (default)
+$ just test-it --bitcoind ecx-mainnet     # same, explicitly
+$ just test-it --bitcoind btc-unpatched   # against the newest stock Bitcoin Core
+$ just test-it --bitcoind stock-30.4      # against a specific stock release
 $ just test-it --bitcoind all             # against every flavor in the CI matrix
 ```
 
