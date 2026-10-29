@@ -152,7 +152,7 @@ jobs:
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
   # matrix can't drift — a unit test (`ci_versions_match_majors`) asserts
   # the two are consistent. The channel list lives in the setup script so
-  # local `just test-it --bitcoind <channel>` runs and CI exercise the same
+  # local `just test-it --bitcoind ecx-<channel>` runs and CI exercise the same
   # builds.
   compute-integration-matrix:
     name: Compute integration-test matrix
@@ -284,7 +284,7 @@ jobs:
           popd
 
       - name: Download ecash-com/bitcoin (${{ matrix.name }})
-        # Provenance-verified; same script `just test-it --bitcoind alphanet` uses.
+        # Provenance-verified; same script `just test-it --bitcoind ecx-mainnet` uses.
         if: matrix.ecash
         run: |
           ./scripts/fetch_ecash_bitcoin.sh '${{ matrix.ecash }}' x86_64-unknown-linux-gnu ../bitcoin-bins
