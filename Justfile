@@ -60,13 +60,13 @@ fmt:
     buf format -w proto
 
 # Run integration tests. `--bitcoind` selects the Bitcoin Core build
-# (default: bitcoin-patched): bitcoin-patched, unpatched (newest stock),
-# stock-X.Y (a specific stock release), mainnet (the latest eCash release), or
+# (default: ecx-mainnet): ecx-mainnet (the latest eCash release), btc-unpatched
+# (newest stock), stock-X.Y (a specific stock release), or
 # all (every flavor in the CI matrix, continuing past failures); remaining args go to the test runner.
 # 
 # Some flavors skip tests that cannot pass on them. Naming a flavor *and* a
-# test filter overrides those skips, so `just test-it --bitcoind unpatched
-# peer_deposit_relay` reaches a test that a bare `--bitcoind unpatched` hides.
+# test filter overrides those skips, so `just test-it --bitcoind btc-unpatched
+# peer_deposit_relay` reaches a test that a bare `--bitcoind btc-unpatched` hides.
 #
 # The signet tests need a chain with mature (spendable) coinbases, which costs
 # real proof-of-work to mine. The harness mines one on first use into
