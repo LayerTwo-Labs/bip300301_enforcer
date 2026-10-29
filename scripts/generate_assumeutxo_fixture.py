@@ -70,6 +70,11 @@ CHAINPARAMS_ASSUMEUTXO_299 = {
         "txoutset_hash": "d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2",
         "nchaintx": 334,
     },
+    32: {
+        "blockhash": "0c552ced4721c249a389eb9b08cb8da261cd46f0e7b5f9d064d48f3113406853",
+        "txoutset_hash": "106b2c56233e378a824cf0d5ff2be42ed32c72f1605c9be288d00942908a40ac",
+        "nchaintx": 334,
+    },
 }
 
 CONFIG_INI_TEMPLATE = """\

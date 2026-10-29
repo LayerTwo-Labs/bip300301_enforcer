@@ -85,11 +85,11 @@ zeroize = "1.8.2"
 
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
-rev = "3ca15900bef3c9a2fd83003f71480a738411f35e"
+rev = "2ec731f3edcbc8fe290060bb9bac760256e03306"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "0150caafb9491703a227dc48d527b73b2defdc46"
+rev = "698c6e3899b931fc55d724f8def49f4b5102307a"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

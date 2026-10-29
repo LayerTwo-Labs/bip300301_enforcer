@@ -7,22 +7,24 @@
 # Idempotent: DEST_DIR records the commit it holds, and a re-run that finds
 # the channel still pointing at that commit downloads nothing.
 #
-# The server keeps an immutable L1-ecash-bitcoin/<channel>/<commit>/ per
+# The server keeps an immutable L1-ecash-bitcoin/<channel>/<version>/ per
 # build (zips, SHA256SUMS, release.json, provenance.jsonl) and a moving
 # <channel>/latest/ copy of it. Only release.json is read through latest/;
 # the rest comes from the immutable path it names.
 #
 # provenance.jsonl is the Sigstore bundle from actions/attest-build-provenance.
 # `gh attestation verify --bundle` needs no GitHub login: it checks that the
-# file's digest is attested by ecash-com/bitcoin's build-release workflow,
-# run at the commit release.json claims: on the channel branch, or for
-# mainnet, on the eCash release tag release.json names.
+# file's digest is attested for a build of ecash-com/bitcoin, signed by the
+# shared ecash-com/releases publish workflow, at the commit release.json
+# claims: on the channel branch, or for mainnet, on the eCash release tag
+# release.json names.
 
 set -euo pipefail
 
 ECASH_RELEASES="${ECASH_RELEASES:-https://releases.ecash.com}"
 ECASH_PROJECT='L1-ecash-bitcoin'
 ECASH_REPO='ecash-com/bitcoin'
+ECASH_SIGNER_WORKFLOW='ecash-com/releases/.github/workflows/publish.yml'
 
 [ $# -eq 3 ] || { echo "Usage: $(basename "$0") CHANNEL TARGET DEST_DIR" >&2; exit 2; }
 CHANNEL="$1"
@@ -48,8 +50,6 @@ case "$GH_ATTESTATION_HELP" in
 esac
 
 CHANNEL_URL="$ECASH_RELEASES/$ECASH_PROJECT/$CHANNEL"
-ZIP_NAME="$ECASH_PROJECT-$TARGET.zip"
-
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -60,27 +60,28 @@ fi
 COMMIT="$(jq -er '.commit' "$TMP/release.json")"
 RELEASE_PATH="$(jq -er '.path' "$TMP/release.json")"
 VERSION="$(jq -er '.version' "$TMP/release.json")"
-EXPECTED_SHA256="$(jq -er --arg name "$ZIP_NAME" \
-    '.files[] | select(.name == $name) | .sha256' "$TMP/release.json")" || {
-    echo "$CHANNEL@${COMMIT:0:12} publishes no $ZIP_NAME (target '$TARGET')" >&2
+ZIP_NAME="$(jq -er --arg target "$TARGET" \
+    '.files[] | select(.target == $target) | .name' "$TMP/release.json")" || {
+    echo "$CHANNEL@${COMMIT:0:12} publishes no zip for target '$TARGET'" >&2
     exit 1
 }
+EXPECTED_SHA256="$(jq -er --arg name "$ZIP_NAME" \
+    '.files[] | select(.name == $name) | .sha256' "$TMP/release.json")"
+case "$ZIP_NAME" in
+    *[!A-Za-z0-9._-]* | */*) echo "release.json: bad zip name '$ZIP_NAME'" >&2; exit 1 ;;
+esac
 case "$COMMIT" in
     *[!0-9a-f]* | '') echo "release.json: bad commit '$COMMIT'" >&2; exit 1 ;;
 esac
+SOURCE_REF="$(jq -er '.ref' "$TMP/release.json")"
 if [ "$CHANNEL" = mainnet ]; then
-    TAG="$(jq -er '.tag' "$TMP/release.json")" || {
-        echo "release.json: mainnet release names no tag" >&2
-        exit 1
-    }
-    case "$TAG" in
-        ecash-v[0-9]*) ;;
-        *) echo "release.json: '$TAG' is not an eCash release tag" >&2; exit 1 ;;
+    case "$SOURCE_REF" in
+        refs/tags/ecash-v[0-9]*) ;;
+        *) echo "release.json: '$SOURCE_REF' is not an eCash release tag" >&2; exit 1 ;;
     esac
-    case "$TAG" in
-        *[!A-Za-z0-9._-]*) echo "release.json: bad tag '$TAG'" >&2; exit 1 ;;
+    case "$SOURCE_REF" in
+        *[!A-Za-z0-9._/-]*) echo "release.json: bad ref '$SOURCE_REF'" >&2; exit 1 ;;
     esac
-    SOURCE_REF="refs/tags/$TAG"
 else
     SOURCE_REF="refs/heads/$CHANNEL"
 fi
@@ -104,7 +105,7 @@ verify() {
     gh attestation verify "$1" \
         --bundle "$TMP/provenance.jsonl" \
         --repo "$ECASH_REPO" \
-        --signer-workflow "$ECASH_REPO/.github/workflows/build-release.yml" \
+        --signer-workflow "$ECASH_SIGNER_WORKFLOW" \
         --source-ref "$SOURCE_REF" \
         --source-digest "$COMMIT" \
         --deny-self-hosted-runners
@@ -123,7 +124,7 @@ if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
 fi
 verify "$TMP/$ZIP_NAME" || { echo "$ZIP_NAME failed provenance verification; not installing it" >&2; exit 1; }
 
-# The zip holds one directory, L1-ecash-bitcoin-<version>-<commit>-<target>/.
+# The zip holds one directory, named after the zip.
 mkdir "$TMP/unpacked"
 unzip -q "$TMP/$ZIP_NAME" -d "$TMP/unpacked"
 UNPACKED_DIRS=("$TMP/unpacked"/*/)

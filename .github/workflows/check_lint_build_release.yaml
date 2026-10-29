@@ -152,7 +152,7 @@ jobs:
   # source means the Rust-side `SUPPORTED_BITCOIN_CORE_MAJORS` and the CI
   # matrix can't drift — a unit test (`ci_versions_match_majors`) asserts
   # the two are consistent. The channel list lives in the setup script so
-  # local `just test-it --bitcoind <channel>` runs and CI exercise the same
+  # local `just test-it --bitcoind ecx-<channel>` runs and CI exercise the same
   # builds.
   compute-integration-matrix:
     name: Compute integration-test matrix
@@ -186,7 +186,7 @@ jobs:
           # tests). Steps key off those fields, not off which entry they are.
           # `grpc_checks` marks the one entry that also runs the
           # flavor-independent gRPC reflection checks.
-          ITEMS='{"name":"bitcoin-patched","zip":"L1-bitcoin-patched-latest","grpc_checks":true}'
+          ITEMS=''
           for channel in $(./scripts/setup_integration_tests.sh --print-channels); do
             if ! echo "$channel" | grep -qE '^[a-z0-9]+$'; then
               echo "invalid ecash channel name from scripts/setup_integration_tests.sh: '$channel'" >&2
@@ -196,10 +196,12 @@ jobs:
             OP_DRIVECHAIN=$(./scripts/setup_integration_tests.sh --print-op-drivechain "$channel")
             REPLAY_LOCK_TIME=$(./scripts/setup_integration_tests.sh --print-replay-protection-lock-time "$channel")
             FORK=$(./scripts/setup_integration_tests.sh --print-fork "$channel")
-            ITEMS="$ITEMS,{\"name\":\"ecash-bitcoin $channel\",\"ecash\":\"$channel\",\"regtest_magic\":\"$MAGIC\",\"op_drivechain\":\"$OP_DRIVECHAIN\",\"replay_protection_lock_time\":\"$REPLAY_LOCK_TIME\",\"fork\":\"$FORK\"}"
+            ITEMS="${ITEMS:+$ITEMS,}{\"name\":\"ecash-bitcoin $channel\",\"ecash\":\"$channel\",\"regtest_magic\":\"$MAGIC\",\"op_drivechain\":\"$OP_DRIVECHAIN\",\"replay_protection_lock_time\":\"$REPLAY_LOCK_TIME\",\"fork\":\"$FORK\"}"
           done
+          GRPC_CHECKS=',"grpc_checks":true'
           for v in $VERSIONS; do
-            ITEMS="$ITEMS,{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"}"
+            ITEMS="${ITEMS:+$ITEMS,}{\"name\":\"Bitcoin Core $v\",\"version\":\"$v\"$GRPC_CHECKS}"
+            GRPC_CHECKS=''
           done
           MATRIX="{\"include\":[${ITEMS}]}"
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
@@ -282,7 +284,7 @@ jobs:
           popd
 
       - name: Download ecash-com/bitcoin (${{ matrix.name }})
-        # Provenance-verified; same script `just test-it --bitcoind alphanet` uses.
+        # Provenance-verified; same script `just test-it --bitcoind ecx-mainnet` uses.
         if: matrix.ecash
         run: |
           ./scripts/fetch_ecash_bitcoin.sh '${{ matrix.ecash }}' x86_64-unknown-linux-gnu ../bitcoin-bins
@@ -401,7 +403,11 @@ jobs:
         if: matrix.grpc_checks
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
-          export BITCOIND='../bitcoin-bins/bitcoind'
+          if [ -n '${{ matrix.version }}' ]; then
+            export BITCOIND="$RUNNER_TEMP/bitcoin-stock/bitcoind"
+          else
+            export BITCOIND='../bitcoin-bins/bitcoind'
+          fi
           export BIP300301_ENFORCER="$RUNNER_TEMP/integration-test-binaries/bip300301_enforcer"
           ./scripts/verify_reflection.sh
 

@@ -3,11 +3,10 @@
 #
 # Usage: run_integration_tests.sh [--bitcoind FLAVOR] [test-runner args...]
 #
-# FLAVOR is one of (default: bitcoin-patched):
-#   bitcoin-patched  LayerTwo-Labs bitcoin-patched
-#   unpatched        newest stock Bitcoin Core release
+# FLAVOR is one of (default: ecx-mainnet):
+#   ecx-mainnet      the latest eCash mainnet release of ecash-com/bitcoin
+#   btc-unpatched    newest stock Bitcoin Core release
 #   stock-X.Y        a specific stock release from CI_BITCOIN_CORE_VERSIONS
-#   mainnet          the latest eCash mainnet release of ecash-com/bitcoin
 #   all              every flavor in the CI matrix, continuing past failures
 #
 # Remaining args go to the test runner. Missing dependencies are downloaded
@@ -24,7 +23,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-flavor='bitcoin-patched'
+flavor='ecx-mainnet'
 flavor_explicit=''
 rest=()
 while [ $# -gt 0 ]; do
@@ -88,7 +87,7 @@ skip_patterns=()
 env_file="integrationtests.$flavor.env"
 case "$flavor" in
     bitcoin-patched) env_file='integrationtests.env' ;;
-    unpatched | stock-*)
+    btc-unpatched | stock-*)
         # Shared with the CI integration-test job, which applies the same
         # list; see the file for why each entry cannot run on stock.
         while IFS= read -r pattern; do
@@ -96,9 +95,9 @@ case "$flavor" in
         done < <(grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/scripts/stock-skip-patterns.txt")
         ;;
     # The ecash channels: fixed names that setup always fetches.
-    mainnet) ;;
+    ecx-mainnet) ;;
     *)
-        echo "unknown --bitcoind flavor '$flavor' (expected bitcoin-patched, unpatched, stock-X.Y, mainnet, or all)" >&2
+        echo "unknown --bitcoind flavor '$flavor' (expected ecx-mainnet, btc-unpatched, stock-X.Y, or all)" >&2
         exit 1
         ;;
 esac

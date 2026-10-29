@@ -82,9 +82,8 @@ ecash_replay_protection_lock_time() {
 # exit. Lets run_integration_tests.sh (`--bitcoind all`) reuse this
 # script's parsing instead of re-grepping the constants.
 if [ "${1:-}" = '--print-flavors' ]; then
-    echo 'bitcoin-patched'
     for c in $ECASH_CHANNELS; do
-        echo "$c"
+        echo "ecx-$c"
     done
     for v in $ALL_BITCOIN_VERSIONS; do
         echo "stock-$v"
@@ -266,9 +265,9 @@ EOF
 
 echo
 write_env_file "$REPO_ROOT/integrationtests.env" "$PATCHED_DIR" "$UNPATCHED_DIR"
-write_env_file "$REPO_ROOT/integrationtests.unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR"
+write_env_file "$REPO_ROOT/integrationtests.btc-unpatched.env" "$UNPATCHED_DIR" "$UNPATCHED_DIR"
 for channel in $ECASH_CHANNELS; do
-    write_env_file "$REPO_ROOT/integrationtests.$channel.env" "$(ecash_dir "$channel")" "$UNPATCHED_DIR" \
+    write_env_file "$REPO_ROOT/integrationtests.ecx-$channel.env" "$(ecash_dir "$channel")" "$UNPATCHED_DIR" \
         "$(ecash_regtest_magic "$channel")" "$(ecash_signet_chain_dir "$channel")" "$(ecash_op_drivechain "$channel")" \
         "$(ecash_replay_protection_lock_time "$channel")" "$(ecash_fork "$channel")"
 done
@@ -278,4 +277,4 @@ for v in $ALL_BITCOIN_VERSIONS; do
 done
 
 echo "Deps cache: $DEPS_DIR"
-echo "Run integration tests with: just test-it [--bitcoind bitcoin-patched|unpatched|stock-X.Y|mainnet|all]"
+echo "Run integration tests with: just test-it [--bitcoind ecx-mainnet|btc-unpatched|stock-X.Y|all]"
