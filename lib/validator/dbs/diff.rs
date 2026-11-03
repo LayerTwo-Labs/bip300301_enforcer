@@ -553,34 +553,93 @@ impl Diff for Coinbase {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[repr(transparent)]
-#[serde(transparent)]
-pub struct M5 {
-    pub new_ctips: HashMap<SidechainNumber, Ctip>,
-}
+pub mod m5 {
+    use std::collections::HashMap;
 
-impl Diff for M5 {
-    type Dbs = dbs::ActiveSidechainDbs;
-    type ApplyError = db::Error;
-    type UndoError = db::Error;
+    use bitcoin::{Amount, OutPoint, Txid};
+    use serde::{Deserialize, Serialize};
+    use sneed::{RwTxn, db};
 
-    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
-        let Self { new_ctips } = self;
-        for (sidechain_number, new_ctip) in new_ctips {
-            let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
-        }
-        Ok(())
+    use crate::{
+        types::{Ctip, SidechainNumber},
+        validator::dbs::{self, diff::Diff},
+    };
+
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct NewCtip {
+        /// `true` iff the tx that created this output spent the sidechain's
+        /// current treasury utxo.
+        pub spends_treasury_utxo: bool,
+        pub value: Amount,
+        /// The value the tx deposited into the treasury when creating this
+        /// output.
+        pub value_deposited: Amount,
+        pub vout: u32,
     }
 
-    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
-        let Self { new_ctips } = self;
-        for sidechain_number in new_ctips.keys().copied() {
-            let () = dbs.delete_ctip(rwtxn, sidechain_number)?;
+    impl NewCtip {
+        fn ctip(&self, txid: Txid) -> Ctip {
+            Ctip {
+                outpoint: OutPoint {
+                    txid,
+                    vout: self.vout,
+                },
+                value: self.value,
+            }
         }
-        Ok(())
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[must_use]
+    pub struct M5 {
+        pub txid: Txid,
+        pub new_ctips: HashMap<SidechainNumber, NewCtip>,
+    }
+
+    impl Diff for M5 {
+        type Dbs = dbs::ActiveSidechainDbs;
+        type ApplyError = db::Error;
+        type UndoError = db::Error;
+
+        fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
+            let Self { txid, new_ctips } = self;
+            for (sidechain_number, new_ctip) in new_ctips {
+                let ctip = new_ctip.ctip(*txid);
+                let is_deposit = new_ctip.value_deposited > Amount::ZERO;
+                let is_treasury_utxo = new_ctip.spends_treasury_utxo
+                    || !dbs.treasury_utxo().contains_key(rwtxn, sidechain_number)?;
+                if is_treasury_utxo {
+                    let _: u64 = dbs.put_treasury_utxo(rwtxn, *sidechain_number, &ctip)?;
+                }
+                if is_deposit {
+                    let _: u64 = dbs.put_deposit(rwtxn, *sidechain_number, &ctip)?;
+                }
+            }
+            Ok(())
+        }
+
+        fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+            let Self { txid, new_ctips } = self;
+            for (sidechain_number, new_ctip) in new_ctips {
+                let ctip = new_ctip.ctip(*txid);
+                let is_deposit = new_ctip.value_deposited > Amount::ZERO;
+                let is_treasury_utxo = new_ctip.spends_treasury_utxo
+                    || dbs
+                        .treasury_utxo_sequence_to_treasury_utxo()
+                        .try_get(rwtxn, &(*sidechain_number, 0))?
+                        .is_some_and(|first| first.outpoint == ctip.outpoint);
+                if is_treasury_utxo {
+                    let () = dbs.delete_treasury_utxo(rwtxn, *sidechain_number)?;
+                }
+                if is_deposit {
+                    let () = dbs.delete_deposit(rwtxn, *sidechain_number)?;
+                }
+            }
+            Ok(())
+        }
     }
 }
+pub use self::m5::M5;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[must_use]
@@ -608,7 +667,7 @@ impl Diff for M6 {
             removed_pending_withdrawal_index: _,
             removed_pending_withdrawal_info: _,
         } = self;
-        let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
+        let _: u64 = dbs.put_treasury_utxo(rwtxn, *sidechain_number, new_ctip)?;
         let () =
             dbs.delete_pending_withdrawal(rwtxn, sidechain_number, *removed_pending_withdrawal)?;
         Ok(())
@@ -622,7 +681,7 @@ impl Diff for M6 {
             removed_pending_withdrawal_index,
             removed_pending_withdrawal_info,
         } = self;
-        let () = dbs.delete_ctip(rwtxn, *sidechain_number)?;
+        let () = dbs.delete_treasury_utxo(rwtxn, *sidechain_number)?;
         // Restore the bundle at its original position. `apply` removed it with
         // a shift-remove, so a plain re-insert would append it at the end and
         // permanently reorder the remaining bundles.

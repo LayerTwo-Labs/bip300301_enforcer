@@ -13,7 +13,7 @@ pub use crate::block_producer::error::{
 };
 use crate::{
     proto::{StatusBuilder, ToStatus},
-    validator::{self, Validator},
+    validator::{Validator, error as validator},
 };
 
 /// The gRPC code for a failed `sendrawtransaction`.
@@ -148,10 +148,16 @@ pub enum WalletSignTransaction {
     #[error(transparent)]
     SignerError(#[from] bdk_wallet::signer::SignerError),
     #[error(transparent)]
-    ExtractTx(#[from] bdk_wallet::bitcoin::psbt::ExtractTxError),
+    ExtractTx(Box<bdk_wallet::bitcoin::psbt::ExtractTxError>),
     #[error("unable to sign transaction")]
     #[diagnostic(code(unable_to_sign_transaction))]
     UnableToSign,
+}
+
+impl From<bdk_wallet::bitcoin::psbt::ExtractTxError> for WalletSignTransaction {
+    fn from(err: bdk_wallet::bitcoin::psbt::ExtractTxError) -> Self {
+        Self::ExtractTx(Box::new(err))
+    }
 }
 
 impl ToStatus for WalletSignTransaction {
@@ -614,6 +620,7 @@ pub mod full_scan {
 
     use crate::{
         proto::{StatusBuilder, ToStatus},
+        validator::error as validator,
         wallet::{
             WalletSyncSource,
             error::{ChainSourceClient, NotUnlocked, SqliteError},
@@ -629,7 +636,7 @@ pub mod full_scan {
         ChainSourceClient(#[from] ChainSourceClient),
 
         #[error(transparent)]
-        ListHeaders(#[from] crate::validator::ListHeadersError),
+        ListHeaders(#[from] validator::ListHeaders),
 
         #[error("unable to create checkpoint from headers{}", .last_successful_header.as_ref().map_or(String::new(), |cp| format!(", last successful header at height {}", cp.height())))]
         #[diagnostic(code(create_checkpoint_from_headers))]
@@ -652,7 +659,7 @@ pub mod full_scan {
         ScanInProgress,
 
         #[error(transparent)]
-        TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+        TryGetMainchainTip(#[from] validator::TryGetMainchainTip),
 
         #[error("no mainchain tip: the validator has not synced a chain tip yet")]
         #[diagnostic(code(no_mainchain_tip))]
@@ -779,9 +786,9 @@ pub enum CreateDeposit {
     #[error(transparent)]
     SignTransaction(#[from] WalletSignTransaction),
     #[error(transparent)]
-    TryGetCtip(#[from] validator::TryGetCtipError),
+    TryGetMainchainTipHeight(#[from] validator::TryGetMainchainTipHeight),
     #[error(transparent)]
-    TryGetMainchainTipHeight(#[from] validator::TryGetMainchainTipHeightError),
+    TryGetTreasuryUtxo(#[from] validator::TryGetTreasuryUtxo),
 }
 
 impl ToStatus for CreateDeposit {
@@ -798,8 +805,8 @@ impl ToStatus for CreateDeposit {
             Self::ApplyUnconfirmedTx(err) => err.builder(),
             Self::Psbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
-            Self::TryGetCtip(err) => err.builder(),
             Self::TryGetMainchainTipHeight(err) => err.builder(),
+            Self::TryGetTreasuryUtxo(err) => err.builder(),
         }
     }
 }
@@ -858,7 +865,7 @@ pub(in crate::wallet) enum ConnectMissingBlockInner {
     #[diagnostic(code(fetch_block_error))]
     GetBlock(#[source] BitcoinCoreRPC),
     #[error(transparent)]
-    GetBlockInfos(#[from] validator::GetBlockInfosError),
+    GetBlockInfos(#[from] validator::GetBlockInfos),
     #[error("unable to fetch block hash from mainchain")]
     #[diagnostic(code(fetch_block_hash_error))]
     GetBlockHash(#[source] BitcoinCoreRPC),
@@ -890,9 +897,9 @@ pub(in crate::wallet) enum SyncWalletToTipInner {
     #[diagnostic(code(fetch_block_error))]
     GetBlock(#[source] BitcoinCoreRPC),
     #[error(transparent)]
-    GetBlockInfos(#[from] validator::GetBlockInfosError),
+    GetBlockInfos(#[from] validator::GetBlockInfos),
     #[error(transparent)]
-    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error("failed to handle connecting block to wallet")]
     HandleConnectBlock(#[from] HandleConnectBlock),
     #[error(transparent)]
@@ -916,7 +923,7 @@ where
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitialSync {
     #[error(transparent)]
-    GetMainchainTip(#[from] validator::GetMainchainTipError),
+    GetMainchainTip(#[from] validator::GetMainchainTip),
     #[error("received shutdown signal")]
     Shutdown,
     #[error(transparent)]
@@ -981,22 +988,19 @@ impl ToStatus for ListWalletTransactions {
 #[derive(Diagnostic, Debug, Error)]
 pub enum ListSidechainDepositTransactions {
     #[error(transparent)]
-    GetTreasuryUtxo(#[from] validator::GetTreasuryUtxoError),
-    #[error(transparent)]
     ListWalletTransactions(#[from] ListWalletTransactions),
     #[error(transparent)]
-    TryGetCtip(#[from] validator::TryGetCtipError),
+    TryGetDepositCtipValueSeq(#[from] validator::TryGetDepositCtipValueSeq),
     #[error(transparent)]
-    TryGetCtipValueSeq(#[from] validator::TryGetCtipValueSeqError),
+    TryGetTreasuryOutpointValueSeq(#[from] validator::TryGetTreasuryOutpointValueSeq),
 }
 
 impl ToStatus for ListSidechainDepositTransactions {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::GetTreasuryUtxo(err) => err.builder(),
             Self::ListWalletTransactions(err) => err.builder(),
-            Self::TryGetCtip(err) => err.builder(),
-            Self::TryGetCtipValueSeq(err) => err.builder(),
+            Self::TryGetDepositCtipValueSeq(err) => err.builder(),
+            Self::TryGetTreasuryOutpointValueSeq(err) => err.builder(),
         }
     }
 }
@@ -1088,7 +1092,7 @@ pub(in crate::wallet) enum CreateBmmRequestInner {
     #[error("broadcast deposit transaction failed: {txid}")]
     BroadcastUnsuccessful { txid: bitcoin::Txid },
     #[error(transparent)]
-    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error("failed to sign BMM tx")]
     SignTx(#[from] WalletSignTransaction),
 }

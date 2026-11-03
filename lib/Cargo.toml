@@ -43,6 +43,7 @@ reqwest = { workspace = true, features = ["json"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 rusqlite_migration = { workspace = true }
 rusty-leveldb = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sneed = { workspace = true, features = ["observe"] }

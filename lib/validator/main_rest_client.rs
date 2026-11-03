@@ -164,14 +164,13 @@ fn decode_block_headers(
 ) -> Result<Vec<(Header, BlockHash, u32)>, MainRestClientError> {
     const SERIALIZED_HEADER_LEN: usize = 80;
 
-    if !bytes.len().is_multiple_of(SERIALIZED_HEADER_LEN) {
+    let (chunks, []) = bytes.as_chunks::<SERIALIZED_HEADER_LEN>() else {
         return Err(MainRestClientError::InvalidBlockHeadersLength {
             length: bytes.len(),
         });
-    }
-
-    bytes
-        .chunks_exact(SERIALIZED_HEADER_LEN)
+    };
+    chunks
+        .iter()
         .enumerate()
         .map(|(offset, bytes)| {
             let header: Header = bitcoin::consensus::deserialize(bytes).map_err(|source| {

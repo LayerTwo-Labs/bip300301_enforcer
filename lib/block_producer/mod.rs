@@ -391,7 +391,7 @@ impl BlockProducer {
         }
         // Reserve suffix txs
         {
-            let fake_consolidated_ctips = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
+            let fake_treasury_utxos = HashMap::from_iter((0..=u8::MAX).map(|slot_number| {
                 let fake_ctip = crate::types::Ctip {
                     outpoint: bitcoin::OutPoint {
                         txid: bitcoin::Txid::from_byte_array([slot_number; 32]),
@@ -402,7 +402,7 @@ impl BlockProducer {
                 (slot_number.into(), fake_ctip)
             }));
             let fake_ctips = Ctips {
-                consolidated: fake_consolidated_ctips,
+                treasury: fake_treasury_utxos,
                 unconsolidated: Default::default(),
             };
             let fake_suffix_txs = self.generate_suffix_txs(fake_ctips, None).await?;
