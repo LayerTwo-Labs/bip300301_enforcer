@@ -814,6 +814,12 @@ impl WalletInner {
     }
 }
 
+/// A wallet transaction together with its stxos.
+pub struct FilledWalletTransaction {
+    pub stxos: Vec<bitcoin::TxOut>,
+    pub tx: BDKWalletTransaction,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SidechainDepositTransaction {
     pub sidechain_number: SidechainNumber,
@@ -1397,7 +1403,7 @@ impl Wallet {
     #[instrument(skip_all)]
     pub async fn list_wallet_transactions(
         &self,
-    ) -> Result<Vec<BDKWalletTransaction>, error::ListWalletTransactions> {
+    ) -> Result<Vec<FilledWalletTransaction>, error::ListWalletTransactions> {
         // Massage the wallet data into a format that we can use to calculate fees, etc.
         let wallet_data = {
             let wallet_read = self.inner.read_wallet().await?;
@@ -1446,10 +1452,14 @@ impl Wallet {
             }
 
             // Get input values using getrawtransaction
-            let mut prev_txouts = Vec::new();
+            let mut stxos = Vec::with_capacity(inputs.len());
             for input in inputs {
-                // Coinbase transactions have an empty prev output txid, which we'll be unable to fetch
+                // A coinbase input spends nothing
                 if input.previous_output.txid == bitcoin::Txid::all_zeros() {
+                    stxos.push(bitcoin::TxOut {
+                        value: Amount::ZERO,
+                        script_pubkey: bitcoin::ScriptBuf::new(),
+                    });
                     continue;
                 }
 
@@ -1478,16 +1488,16 @@ impl Wallet {
 
                 let prev_txout = prev_output.output[input.previous_output.vout as usize].clone();
                 input_value += prev_txout.value;
-                prev_txouts.push(prev_txout);
+                stxos.push(prev_txout);
             }
 
             // One wallet read covers every input of this tx, instead of
             // re-acquiring the lock per input.
             {
                 let wallet_read = self.inner.read_wallet().await?;
-                for prev_txout in prev_txouts {
-                    if wallet_read.is_mine(prev_txout.script_pubkey) {
-                        sent += prev_txout.value;
+                for stxo in &stxos {
+                    if wallet_read.is_mine(stxo.script_pubkey.clone()) {
+                        sent += stxo.value;
                     }
                 }
             }
@@ -1503,18 +1513,21 @@ impl Wallet {
                 (Amount::from_sat(0), sent - received - fee) // Net loss from wallet
             };
 
-            txs.push(BDKWalletTransaction {
-                txid,
-                tx,
-                chain_position,
-                fee,
-                received: final_received,
-                sent: final_sent,
+            txs.push(FilledWalletTransaction {
+                stxos,
+                tx: BDKWalletTransaction {
+                    txid,
+                    tx,
+                    chain_position,
+                    fee,
+                    received: final_received,
+                    sent: final_sent,
+                },
             });
         }
 
         // Make sure that the transaction list is in chronological order.
-        txs.sort_by_key(wallet_transaction_sort_key);
+        txs.sort_by_key(|filled| wallet_transaction_sort_key(&filled.tx));
         Ok(txs)
     }
 
@@ -1527,7 +1540,11 @@ impl Wallet {
             .into_iter()
             .map(Ok::<_, error::ListSidechainDepositTransactions>)
             .transpose_into_fallible()
-            .filter_map(|bdk_wallet_tx| {
+            .filter_map(|filled_wallet_tx| {
+                let FilledWalletTransaction {
+                    stxos,
+                    tx: bdk_wallet_tx,
+                } = filled_wallet_tx;
                 let Some(treasury_output) = bdk_wallet_tx.tx.output.first() else {
                     return Ok(None);
                 };
@@ -1536,58 +1553,40 @@ impl Wallet {
                 else {
                     return Ok(None);
                 };
-                let treasury_outpoint = bitcoin::OutPoint {
-                    txid: bdk_wallet_tx.txid,
-                    vout: 0,
-                };
-                let spent_ctip = match self
-                    .validator()
-                    .try_get_ctip_value_seq(&treasury_outpoint)?
-                {
-                    // `seq == 0` is the sidechain's first deposit, which created
-                    // the first treasury UTXO, so there is no previous spent ctip.
-                    Some((_, _, seq)) => match seq.checked_sub(1) {
-                        Some(prev_seq) => {
-                            let spent_treasury_utxo = self
-                                .validator()
-                                .get_treasury_utxo(sidechain_number, prev_seq)?;
-                            Some(crate::types::Ctip {
-                                outpoint: spent_treasury_utxo.outpoint,
-                                value: spent_treasury_utxo.total_value,
-                            })
-                        }
-                        None => None,
-                    },
-                    None => {
-                        // May be unconfirmed
-                        // check if current ctip in inputs
-                        match self.validator().try_get_ctip(sidechain_number)? {
-                            Some(ctip) => {
-                                if bdk_wallet_tx.tx.input.iter().any(|txin: &bitcoin::TxIn| {
-                                    txin.previous_output == ctip.outpoint
-                                }) {
-                                    Some(ctip)
-                                } else {
-                                    return Ok(None);
-                                }
-                            }
-                            None => None,
-                        }
+                // The total value of the ctips the tx spends — treasury utxos
+                // and unconsolidated ctips alike.
+                let mut spent_ctips_value = Amount::ZERO;
+                for (txin, stxo) in bdk_wallet_tx.tx.input.iter().zip(&stxos) {
+                    if let Some((input_sidechain_number, value, _)) = self
+                        .validator()
+                        .try_get_treasury_outpoint_value_seq(&txin.previous_output)?
+                        && input_sidechain_number == sidechain_number
+                    {
+                        spent_ctips_value += value;
+                        continue;
                     }
-                };
-                if let Some(spent_ctip) = spent_ctip
-                    && spent_ctip.value > treasury_output.value
-                {
+                    if let Some((input_sidechain_number, value, _)) = self
+                        .validator()
+                        .try_get_deposit_ctip_value_seq(&txin.previous_output)?
+                        && input_sidechain_number == sidechain_number
+                    {
+                        spent_ctips_value += value;
+                        continue;
+                    }
+                    // In neither DB: a ctip created by an M5 consolidation
+                    // tx that does not spend a treasury output.
+                    if let Ok((_, input_sidechain_number)) =
+                        op_drivechain.parse(stxo.script_pubkey.as_bytes())
+                        && input_sidechain_number == sidechain_number
+                    {
+                        spent_ctips_value += stxo.value;
+                    }
+                }
+                if spent_ctips_value > treasury_output.value {
+                    // The tx takes value out of the treasury; it is not a deposit.
                     return Ok(None);
                 }
-                let deposit_amount = if let Some(spent_ctip) = spent_ctip {
-                    match treasury_output.value.checked_sub(spent_ctip.value) {
-                        Some(deposit_amount) => deposit_amount,
-                        None => return Ok(None),
-                    }
-                } else {
-                    treasury_output.value
-                };
+                let deposit_amount = treasury_output.value - spent_ctips_value;
                 let Some(destination_address_output) = bdk_wallet_tx.tx.output.get(1) else {
                     return Ok(None);
                 };
@@ -1801,7 +1800,7 @@ impl Wallet {
     pub fn is_sidechain_active(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<bool, validator::GetSidechainsError> {
+    ) -> Result<bool, validator::error::GetSidechains> {
         let sidechains = self.inner.validator().get_active_sidechains()?;
         let active = sidechains
             .iter()
@@ -1861,8 +1860,7 @@ impl Wallet {
         let tx = if skip_fee_rate_check {
             psbt.extract_tx_unchecked_fee_rate()
         } else {
-            psbt.extract_tx()
-                .map_err(error::WalletSignTransaction::ExtractTx)?
+            psbt.extract_tx()?
         };
 
         tracing::debug!("Extracted transaction in {:?}", timestamp.elapsed());

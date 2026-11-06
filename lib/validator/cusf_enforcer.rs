@@ -641,7 +641,7 @@ where
 
 #[derive(Default)]
 pub(crate) struct Ctips {
-    pub consolidated: HashMap<SidechainNumber, Ctip>,
+    pub treasury: HashMap<SidechainNumber, Ctip>,
     pub unconsolidated: UnconsolidatedCtips,
 }
 
@@ -673,8 +673,8 @@ pub(crate) fn get_withdrawal_state_after(
         block,
         |rotxn, partially_connected_block_info| -> Result<_, db::error::Iter> {
             let active_sidechains = &validator.dbs.active_sidechains;
-            let consolidated = active_sidechains
-                .ctip()
+            let treasury = active_sidechains
+                .treasury_utxo()
                 .iter(rotxn)
                 .map_err(db::error::Iter::Init)?
                 .collect()
@@ -687,7 +687,7 @@ pub(crate) fn get_withdrawal_state_after(
                 .map_err(db::error::Iter::Item)?;
             Ok(WithdrawalState {
                 ctips: Ctips {
-                    consolidated,
+                    treasury,
                     unconsolidated: partially_connected_block_info.unconsolidated_ctips,
                 },
                 pending_withdrawals,
@@ -767,7 +767,7 @@ mod tests {
             validator
                 .dbs
                 .active_sidechains
-                .put_ctip(
+                .put_treasury_utxo(
                     &mut rwtxn,
                     SIDECHAIN,
                     &Ctip {

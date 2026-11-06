@@ -412,7 +412,10 @@ impl WalletService for crate::wallet::Wallet {
             .await
             .map_err(|err| err.builder().to_connect_error())?;
         Ok(Response::new(ListTransactionsResponse {
-            transactions: transactions.iter().map(WalletTransaction::from).collect(),
+            transactions: transactions
+                .iter()
+                .map(|filled| WalletTransaction::from(&filled.tx))
+                .collect(),
         }))
     }
 

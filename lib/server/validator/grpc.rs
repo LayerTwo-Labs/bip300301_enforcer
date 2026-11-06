@@ -282,12 +282,12 @@ impl ValidatorService for Server {
             parse_sidechain_id::<GetCtipRequest>(sidechain_number, "sidechain_number")?;
         let ctip = self
             .validator
-            .try_get_ctip(sidechain_number)
+            .try_get_treasury_utxo(sidechain_number)
             .map_err(|err| err.builder().to_connect_error())?;
         let response = if let Some(ctip) = ctip {
             let sequence_number = self
                 .validator
-                .get_ctip_sequence_number(sidechain_number)
+                .get_treasury_utxo_sequence_number(sidechain_number)
                 .map_err(|err| err.builder().to_connect_error())?
                 // get_ctip returned Some(ctip) above, so we know that the sequence_number will also
                 // return Some, so we just unwrap it.
