@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 use bitcoin::{Amount, BlockHash, OutPoint, Transaction, TxOut};
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
@@ -59,21 +62,67 @@ impl BlockProducer {
             .collect()
     }
 
-    /// Select one locally stored bundle that has not yet been proposed on-chain.
-    /// The total order makes template construction independent of `HashMap`
-    /// iteration order; remaining bundles become eligible in later blocks.
+    /// Select one locally stored bundle that has not yet been proposed
+    /// on-chain: the *newest* stored bundle of the sidechain that has waited
+    /// the longest for a fresh proposal. The wait starts at the proposal
+    /// height of the sidechain's most recent pending bundle, or -- with none
+    /// pending -- at the sidechain's activation: a withdrawal bundle is
+    /// meaningless before the sidechain can hold a treasury output, and
+    /// activation is the earliest that could have happened (the first
+    /// deposit's height is not tracked). Sidechains that have waited equally
+    /// long are chosen between at random -- no sidechain number is
+    /// systematically preferred. Remaining bundles become eligible in later
+    /// blocks.
     fn select_bundle_proposal(
         bundle_proposals: &HashMap<SidechainNumber, BundleProposals>,
+        active_sidechains: &[Sidechain],
+        rng: &mut impl rand::Rng,
     ) -> Option<(SidechainNumber, M6id)> {
-        bundle_proposals
+        use rand::RngExt as _;
+        let activation_heights: HashMap<SidechainNumber, u32> = active_sidechains
             .iter()
-            .flat_map(|(sidechain_number, m6ids)| {
-                m6ids
-                    .iter()
-                    .filter(|(_, _, info)| info.is_none())
-                    .map(move |(m6id, _, _)| (*sidechain_number, *m6id))
+            .filter_map(|sidechain| {
+                sidechain
+                    .status
+                    .activation_height
+                    .map(|height| (sidechain.proposal.sidechain_number, height))
             })
-            .min_by_key(|(sidechain_number, m6id)| (*sidechain_number, m6id.0))
+            .collect();
+        // All sidechains tied for the longest wait, each with the newest
+        // bundle it has not proposed yet.
+        let mut longest_wait = u32::MAX;
+        let mut candidates = Vec::new();
+        for (sidechain_number, m6ids) in bundle_proposals {
+            // The newest stored bundle not yet proposed on-chain
+            // (`BundleProposals` is ordered by submission, oldest first).
+            let Some(newest_unproposed) = m6ids
+                .iter()
+                .rev()
+                .find(|(_, _, info)| info.is_none())
+                .map(|(m6id, _, _)| *m6id)
+            else {
+                continue;
+            };
+            let waiting_since = m6ids
+                .iter()
+                .filter_map(|(_, _, info)| info.map(|info| info.proposal_height))
+                .max()
+                .or_else(|| activation_heights.get(sidechain_number).copied())
+                .unwrap_or(0);
+            match waiting_since.cmp(&longest_wait) {
+                Ordering::Less => {
+                    longest_wait = waiting_since;
+                    candidates.clear();
+                    candidates.push((*sidechain_number, newest_unproposed));
+                }
+                Ordering::Equal => candidates.push((*sidechain_number, newest_unproposed)),
+                Ordering::Greater => (),
+            }
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        Some(candidates[rng.random_range(0..candidates.len())])
     }
 
     /// Sidechain proposals from the *validator*: already included in a block, and
@@ -343,7 +392,11 @@ impl BlockProducer {
 
         let bundle_proposals = self.get_bundle_proposals(&used_slots).await?;
         if !coinbase_builder.messages().m3_exists()
-            && let Some((sidechain_number, m6id)) = Self::select_bundle_proposal(&bundle_proposals)
+            && let Some((sidechain_number, m6id)) = Self::select_bundle_proposal(
+                &bundle_proposals,
+                &active_sidechains,
+                &mut rand::rng(),
+            )
         {
             coinbase_builder.propose_bundle(sidechain_number, m6id)?;
         }

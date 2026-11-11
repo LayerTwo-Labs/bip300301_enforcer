@@ -28,7 +28,8 @@ mod mine;
 pub use self::db::Db;
 
 /// Bundle proposals for a sidechain, joined with the validator's view of how
-/// each one is doing (vote count etc).
+/// each one is doing (vote count etc). Ordered by submission, oldest first,
+/// so the last entry is the newest bundle.
 pub(crate) type BundleProposals = Vec<(M6id, BlindedM6<'static>, Option<PendingM6idInfo>)>;
 
 struct Inner {
