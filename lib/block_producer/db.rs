@@ -252,13 +252,19 @@ impl Db {
 
     /// Sidechain proposals *we* authored. Not yet on the chain, so not yet
     /// votable — these become M1s in the coinbase.
+    ///
+    /// Ordered FIFO by receipt time: `queued_at` is the mainchain tip height
+    /// the proposal was (re)queued at, and `rowid` breaks ties within one
+    /// height by insertion order. A NULL `queued_at` predates receipt
+    /// tracking and sorts oldest.
     pub(crate) async fn get_our_sidechain_proposals(
         &self,
         validator: &Validator,
     ) -> Result<Vec<SidechainProposal>, error::Reconcile> {
         self.reconciled(validator, |tx, _tip_height| {
             let mut statement = tx.prepare(
-                "SELECT sidechain_number, data FROM sidechain_proposals WHERE mined_in IS NULL",
+                "SELECT sidechain_number, data FROM sidechain_proposals \
+                 WHERE mined_in IS NULL ORDER BY queued_at, rowid",
             )?;
             let proposals = statement
                 .query_map([], |row| {

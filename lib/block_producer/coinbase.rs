@@ -208,20 +208,19 @@ impl BlockProducer {
         (acks, stale_acks)
     }
 
-    /// The one queued proposal to emit as this block's M1: the lowest by
-    /// (sidechain number, proposal hash) among those not yet on chain. Once
-    /// it is mined, [`Self::apply_connected_block_policy`] drops it from the
-    /// queue and the next one becomes eligible.
+    /// The one queued proposal to emit as this block's M1: the first in
+    /// `queued` among those not yet on chain. `queued` is in FIFO order —
+    /// the order the block producer received the proposals in, as ordered by
+    /// `Db::get_our_sidechain_proposals` — so this picks the one received
+    /// first. Once it is mined, the policy-DB reconciliation marks it and
+    /// the next one in the queue becomes eligible.
     fn select_sidechain_proposal(
         queued: Vec<SidechainProposal>,
         proposed: &HashSet<SidechainProposalId>,
     ) -> Option<SidechainProposal> {
         queued
             .into_iter()
-            .map(|proposal| (proposal.compute_id(), proposal))
-            .filter(|(id, _)| !proposed.contains(id))
-            .min_by_key(|(id, _)| *id)
-            .map(|(_, proposal)| proposal)
+            .find(|proposal| !proposed.contains(&proposal.compute_id()))
     }
 
     /// Extend coinbase txouts for a new block with our drivechain messages:

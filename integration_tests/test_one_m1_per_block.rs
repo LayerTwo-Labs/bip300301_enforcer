@@ -1,7 +1,7 @@
 //! A block carries at most one M1, so the block producer emits queued
-//! sidechain proposals one per block, lowest (sidechain number, proposal hash)
-//! first. The one-per-block limit is M1-only: M2s for distinct slots still
-//! share a coinbase.
+//! sidechain proposals one per block, in the FIFO order it received them.
+//! The one-per-block limit is M1-only: M2s for distinct slots still share a
+//! coinbase.
 
 use bip300301_enforcer_lib::{
     messages::{CoinbaseMessage, create_sidechain_proposal},
@@ -23,7 +23,7 @@ pub const TEST_NAME: &str = "one_m1_per_block";
 
 const LOWER_SLOT: SidechainNumber = SidechainNumber(2);
 const HIGHER_SLOT: SidechainNumber = SidechainNumber(3);
-/// Holds two proposals, so their order comes down to the proposal hash.
+/// Holds two proposals, so their order comes down to receipt order alone.
 const TIED_SLOT: SidechainNumber = SidechainNumber(4);
 
 fn declaration(title: String) -> types::SidechainDeclaration {
@@ -110,8 +110,8 @@ pub async fn test_one_m1_per_block(mut post_setup: PostSetup) -> anyhow::Result<
     let (sidechain_res_tx, _sidechain_res_rx) = mpsc::unbounded();
     let _sidechain = DummySidechain::setup((), &post_setup, sidechain_res_tx).await?;
 
-    // Queued in the opposite of emission order, so the order observed below
-    // comes from the producer's selection rather than from the queue.
+    // Queued higher slot first: FIFO emits it first too, where a sort by
+    // (sidechain number, proposal hash) would pick the lower slot.
     let higher = submit_proposal(
         &mut post_setup,
         HIGHER_SLOT,
@@ -124,7 +124,7 @@ pub async fn test_one_m1_per_block(mut post_setup: PostSetup) -> anyhow::Result<
         declaration(format!("slot {LOWER_SLOT}")),
     )
     .await?;
-    let () = expect_m1_emission_order(&mut post_setup, &[lower, higher]).await?;
+    let () = expect_m1_emission_order(&mut post_setup, &[higher, lower]).await?;
 
     // Both proposals are for empty slots, so `VOTE` auto-ACKs them in one
     // coinbase, and the enforcer must accept that block.
@@ -148,9 +148,9 @@ pub async fn test_one_m1_per_block(mut post_setup: PostSetup) -> anyhow::Result<
         "expected both proposals to have gathered the parallel M2s' votes: {proposals:?}"
     );
 
-    // Two proposals for one slot tie on the sidechain number, so the lower
-    // proposal hash goes first. Queued higher hash first, for the same reason
-    // as above.
+    // Two proposals for one slot, queued higher proposal hash first: FIFO
+    // emits the higher hash first, where a sort by (sidechain number,
+    // proposal hash) would pick the lower one.
     let mut tied = ["tie a", "tie b"]
         .into_iter()
         .map(|title| {
@@ -163,6 +163,5 @@ pub async fn test_one_m1_per_block(mut post_setup: PostSetup) -> anyhow::Result<
     for (_, declaration) in tied {
         expected.push(submit_proposal(&mut post_setup, TIED_SLOT, declaration).await?);
     }
-    expected.reverse();
     expect_m1_emission_order(&mut post_setup, &expected).await
 }
