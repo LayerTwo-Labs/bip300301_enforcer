@@ -1,7 +1,8 @@
 //! BIP300 M3: a coinbase carries at most one bundle proposal. With several
-//! bundles stored, the block producer proposes one per block -- lowest slot
-//! first, then lowest m6id within a slot -- and never re-proposes one that is
-//! already pending.
+//! bundles stored, the block producer proposes one per block -- the newest
+//! stored bundle of the sidechain that has waited the longest for a fresh
+//! proposal (since its most recent pending bundle, or since activation when
+//! it has none) -- and never re-proposes one that is already pending.
 
 use bip300301_enforcer_lib::{
     messages::{CoinbaseMessage, M3ProposeBundle},
@@ -147,22 +148,27 @@ pub async fn test_bundle_proposal_order(mut post_setup: PostSetup) -> anyhow::Re
     let high = broadcast_bundle(&mut post_setup, HIGH_SLOT, Amount::from_sat(10_000)).await?;
     let low_a = broadcast_bundle(&mut post_setup, LOW_SLOT, Amount::from_sat(20_000)).await?;
     let low_b = broadcast_bundle(&mut post_setup, LOW_SLOT, Amount::from_sat(30_000)).await?;
-    let (low_first, low_second) = if low_a < low_b {
-        (low_a, low_b)
-    } else {
-        (low_b, low_a)
-    };
 
-    tracing::info!("Mining one M3 per block: low slot by m6id, then high slot");
-    let () = mine_expecting_m3(&mut post_setup, Some((LOW_SLOT, low_first))).await?;
-    let () = mine_expecting_m3(&mut post_setup, Some((LOW_SLOT, low_second))).await?;
+    // Neither slot has a pending bundle, so the wait is measured from
+    // activation. LOW's M1 was mined one block before HIGH's, so it
+    // activated one block earlier and has waited the longest; its *newest*
+    // bundle is proposed.
+    tracing::info!("Mining one M3 per block: newest bundle of the longest-waiting slot");
+    let () = mine_expecting_m3(&mut post_setup, Some((LOW_SLOT, low_b))).await?;
+    // HIGH has still never had a bundle proposed, so its wait (counted from
+    // activation) is longer than LOW's one-block-old pending bundle's.
     let () = mine_expecting_m3(&mut post_setup, Some((HIGH_SLOT, high))).await?;
+    // LOW's pending bundle is one block older than HIGH's, and its remaining
+    // stored bundle is the only one left unproposed.
+    let () = mine_expecting_m3(&mut post_setup, Some((LOW_SLOT, low_a))).await?;
     let () = mine_expecting_m3(&mut post_setup, None).await?;
 
     let mut low_pending = pending_m6ids(&mut post_setup, LOW_SLOT).await?;
     low_pending.sort();
+    let mut expected_low_pending = [low_a, low_b];
+    expected_low_pending.sort();
     anyhow::ensure!(
-        low_pending == [low_first, low_second],
+        low_pending == expected_low_pending,
         "expected both low-slot bundles pending, got `{low_pending:?}`"
     );
     let high_pending = pending_m6ids(&mut post_setup, HIGH_SLOT).await?;

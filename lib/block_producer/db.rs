@@ -15,7 +15,9 @@ use crate::{
     validator::Validator,
 };
 
-/// Bundle proposals for a single sidechain, as stored (no validator filtering).
+/// Bundle proposals for a single sidechain, as stored (no validator
+/// filtering). Ordered by submission, oldest first, so the last entry is the
+/// newest bundle.
 pub(crate) type StoredBundleProposals = Vec<(M6id, BlindedM6<'static>)>;
 
 impl rusqlite::types::ToSql for AckAllProposalsPolicy {
@@ -297,6 +299,10 @@ impl Db {
 
     /// Bundle proposals as stored, with no validator filtering. Callers that need
     /// the active-sidechain filter want [`super::BlockProducer::get_bundle_proposals`].
+    ///
+    /// Each sidechain's bundles are ordered by submission, oldest first
+    /// (`queued_at`, breaking ties by insertion order): a resubmitted bundle
+    /// counts as submitted when it was last requeued.
     pub(crate) async fn get_bundle_proposals(
         &self,
         validator: &Validator,
@@ -304,7 +310,8 @@ impl Db {
         self.reconciled(validator, |tx, _tip_height| {
             let mut statement = tx.prepare(
                 "SELECT sidechain_number, bundle_hash, bundle_tx FROM bundle_proposals \
-                 WHERE settled_in IS NULL",
+                 WHERE settled_in IS NULL \
+                 ORDER BY queued_at, rowid",
             )?;
             let mut bundle_proposals = HashMap::<_, Vec<_>>::new();
             let () = statement
