@@ -503,7 +503,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The glibc of this image is the oldest glibc that the release binary runs on.
+          - os: ubuntu-22.04
             name: x86_64-unknown-linux-gnu
             binary-suffix: ""
             rustflags: ""
