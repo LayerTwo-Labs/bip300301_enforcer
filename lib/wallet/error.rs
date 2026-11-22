@@ -148,7 +148,7 @@ pub enum WalletSignTransaction {
     #[error(transparent)]
     SignerError(#[from] bdk_wallet::signer::SignerError),
     #[error(transparent)]
-    ExtractTx(#[from] bdk_wallet::bitcoin::psbt::ExtractTxError),
+    ExtractTx(Box<bdk_wallet::bitcoin::psbt::ExtractTxError>),
     #[error("unable to sign transaction")]
     #[diagnostic(code(unable_to_sign_transaction))]
     UnableToSign,
@@ -1065,6 +1065,10 @@ pub enum BuildBmmTx {
     NotUnlocked(#[from] NotUnlocked),
     #[error(transparent)]
     Script(#[from] bitcoin::script::PushBytesError),
+    #[error("failed to sign BMM tx")]
+    SignTx(#[from] WalletSignTransaction),
+    #[error("failed to persist wallet after recording BMM tx")]
+    Persist(#[from] Persistence),
 }
 
 impl ToStatus for BuildBmmTx {
@@ -1073,6 +1077,8 @@ impl ToStatus for BuildBmmTx {
             Self::CreateTx(err) => StatusBuilder::new(err),
             Self::NotUnlocked(err) => err.builder(),
             Self::Script(err) => StatusBuilder::new(err),
+            Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
+            Self::Persist(err) => StatusBuilder::new(err),
         }
     }
 }
@@ -1089,8 +1095,6 @@ pub(in crate::wallet) enum CreateBmmRequestInner {
     BroadcastUnsuccessful { txid: bitcoin::Txid },
     #[error(transparent)]
     GetHeaderInfo(#[from] validator::GetHeaderInfoError),
-    #[error("failed to sign BMM tx")]
-    SignTx(#[from] WalletSignTransaction),
 }
 
 impl ToStatus for CreateBmmRequestInner {
@@ -1098,7 +1102,6 @@ impl ToStatus for CreateBmmRequestInner {
         match self {
             Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::GetHeaderInfo(err) => err.builder(),
-            Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
             Self::BroadcastNonstandardTx(_)
             | Self::BroadcastTxRpc(_)
             | Self::BroadcastUnsuccessful { .. } => StatusBuilder::new(self),

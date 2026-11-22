@@ -13,16 +13,19 @@ use bip300301_enforcer_lib::{
         self,
         common::{ConsensusHex, ReverseHex},
         mainchain::{
-            BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, GetChainTipRequest,
-            GetSeenBmmRequestsRequest, GetSeenBmmRequestsResponse, GetSidechainsRequest,
-            ListUnspentOutputsRequest,
+            BlockHeaderInfo, CreateBmmCriticalDataTransactionRequest, CreateNewAddressRequest,
+            GetChainTipRequest, GetSeenBmmRequestsRequest, GetSeenBmmRequestsResponse,
+            GetSidechainsRequest, ListUnspentOutputsRequest,
         },
     },
     types::{BmmCommitment, SidechainNumber},
 };
 use bitcoin::{Amount, BlockHash, OutPoint, Txid, hashes::Hash as _};
 use buffa::MessageField;
-use jsonrpsee::{core::client::ClientT as _, rpc_params};
+use jsonrpsee::{
+    core::{client::ClientT as _, params::ObjectParams},
+    rpc_params,
+};
 
 use crate::{
     block_verdict::wait_for_enforcer_tip_hash,
@@ -65,6 +68,15 @@ const BIG_LOW_FEERATE_BID: u64 = 30_000;
 /// Inflates the big bid to roughly 10x the small bid's size, putting its fee
 /// rate well below the small bid's.
 const BIG_BID_PAD_OUTPUTS: usize = 40;
+
+/// What each slot bids when both bid from the enforcer wallet at one tip.
+/// Equal on purpose: if the second bid spends the first bid's input, Bitcoin
+/// Core must refuse it as a replacement instead of letting it quietly evict
+/// the first.
+const SHARED_WALLET_BID: u64 = 5_000;
+/// The enforcer wallet's whole balance in the shared-wallet test, as a single
+/// UTXO.
+const SINGLE_UTXO_FUNDING: Amount = Amount::ONE_BTC;
 
 fn h_star(label: &str) -> [u8; 32] {
     bitcoin::hashes::sha256::Hash::hash(label.as_bytes()).to_byte_array()
@@ -128,9 +140,10 @@ async fn seen_bids(
         .collect()
 }
 
-/// Create a BMM request via the enforcer wallet gRPC, returning its txid.
-async fn create_wallet_bid(
-    post_setup: &mut PostSetup,
+/// Ask the enforcer wallet for a BMM request, returning its txid as soon as
+/// the wallet answers.
+async fn request_wallet_bid(
+    post_setup: &PostSetup,
     slot: SidechainNumber,
     bid_sats: u64,
     h_star: &[u8; 32],
@@ -139,6 +152,7 @@ async fn create_wallet_bid(
 ) -> anyhow::Result<Txid> {
     let txid = post_setup
         .wallet_service_client
+        .clone()
         .create_bmm_critical_data_transaction(CreateBmmCriticalDataTransactionRequest {
             sidechain_id: proto::wrap_u32(slot.0.into()),
             value_sats: proto::wrap_u64(bid_sats),
@@ -153,6 +167,21 @@ async fn create_wallet_bid(
         .and_then(|txid| proto::unwrap_string(txid.hex))
         .ok_or_else(|| anyhow::anyhow!("expected `txid` in CreateBmmCriticalDataTransaction"))?
         .parse::<Txid>()?;
+    Ok(txid)
+}
+
+/// Create a BMM request via the enforcer wallet gRPC, returning its txid once
+/// Bitcoin Core's mempool holds it.
+async fn create_wallet_bid(
+    post_setup: &mut PostSetup,
+    slot: SidechainNumber,
+    bid_sats: u64,
+    h_star: &[u8; 32],
+    prev_bytes: ReverseHex,
+    tip_height: u32,
+) -> anyhow::Result<Txid> {
+    let txid =
+        request_wallet_bid(post_setup, slot, bid_sats, h_star, prev_bytes, tip_height).await?;
     let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &txid).await?;
     Ok(txid)
 }
@@ -925,5 +954,226 @@ pub async fn test_bmm_stale_request_after_reorg(mut post_setup: PostSetup) -> an
         "the block replacing {tip} must not include the bid on top of it"
     );
     tracing::info!("Mined a valid block on {old_tip} without the stale bid");
+    Ok(())
+}
+
+async fn in_core_mempool(post_setup: &PostSetup, txid: &Txid) -> bool {
+    post_setup
+        .bitcoind_client
+        .request::<serde_json::Value, _>("getmempoolentry", rpc_params![txid])
+        .await
+        .is_ok()
+}
+
+/// Both slots' bids from the enforcer wallet must sit in Bitcoin Core's
+/// mempool together, and one block must commit both.
+async fn expect_both_wallet_bids_mined(
+    post_setup: &mut PostSetup,
+    round: &str,
+    (slot_0_txid, h_slot_0): (Txid, [u8; 32]),
+    (other_txid, h_other): (Txid, [u8; 32]),
+) -> anyhow::Result<()> {
+    for (slot, txid) in [
+        (DummySidechain::SIDECHAIN_NUMBER, slot_0_txid),
+        (OTHER_SLOT, other_txid),
+    ] {
+        anyhow::ensure!(
+            in_core_mempool(post_setup, &txid).await,
+            "{round}: slot {}'s bid {txid} is not in Bitcoin Core's mempool, \
+             though the wallet reported it created",
+            slot.0
+        );
+    }
+    let inputs = |tx: &bitcoin::Transaction| -> Vec<OutPoint> {
+        tx.input.iter().map(|input| input.previous_output).collect()
+    };
+    let slot_0_inputs = inputs(&get_raw_transaction(post_setup, &slot_0_txid).await?);
+    let other_inputs = inputs(&get_raw_transaction(post_setup, &other_txid).await?);
+    anyhow::ensure!(
+        slot_0_inputs
+            .iter()
+            .all(|outpoint| !other_inputs.contains(outpoint)),
+        "{round}: the two bids spend the same output"
+    );
+    if post_setup.mode.enable_block_template_server() {
+        let () = wait_for_template_txs(post_setup, vec![slot_0_txid, other_txid], vec![]).await?;
+    }
+    let (block, _) = mine_and_check_commitment(post_setup, Some(&h_slot_0)).await?;
+    let txids = block_txids(&block);
+    anyhow::ensure!(
+        txids.contains(&slot_0_txid) && txids.contains(&other_txid),
+        "{round}: one block must include both slots' bids"
+    );
+    let m7s = coinbase_m7_accepts(&block)?;
+    for (slot, expected_h_star) in [
+        (DummySidechain::SIDECHAIN_NUMBER, h_slot_0),
+        (OTHER_SLOT, h_other),
+    ] {
+        anyhow::ensure!(
+            m7s.len() == 2
+                && m7s.iter().any(|m7| m7.sidechain_number == slot
+                    && m7.sidechain_block_hash.0 == expected_h_star),
+            "{round}: missing the M7 accept for slot {}",
+            slot.0
+        );
+    }
+    Ok(())
+}
+
+/// Two slots bid from the same enforcer wallet at the same tip. A wallet
+/// whose balance is a single UTXO has to chain those bids: the second spends
+/// the first one's change. If it instead selects the UTXO the first already
+/// spent, Bitcoin Core refuses the second bid as a replacement that pays no
+/// more than the original ("insufficient fee, rejecting replacement"), and
+/// that sidechain misses the block.
+///
+/// * Round 1: slot 1 bids as soon as slot 0's bid is answered
+/// * Round 2: both slots bid at once
+pub async fn test_bmm_wallet_bids_share_a_tip(mut post_setup: PostSetup) -> anyhow::Result<()> {
+    // The wallet is funded by one payment from Core's wallet, not by
+    // `fund_enforcer`: that leaves the wallet a hundred coinbases, and coin
+    // selection would then only rarely pick the same one twice. Core's
+    // coinbases are mined first, so that the blocks mined after them, which
+    // pay the enforcer wallet in GetBlockTemplate mode, stay immature for the
+    // whole test.
+    let core_addr: String = post_setup
+        .bitcoind_client
+        .request("getnewaddress", rpc_params![])
+        .await?;
+    let _mined: Vec<BlockHash> = post_setup
+        .bitcoind_client
+        .request("generatetoaddress", rpc_params![101, core_addr])
+        .await?;
+    let tip = best_block_hash(&post_setup.bitcoind_client).await?;
+    let () = wait_for_enforcer_tip_hash(&post_setup, tip).await?;
+    let () = wait_for_wallet_sync(&mut post_setup).await?;
+    let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
+    let () = propose_sidechain_for_slot::<DummySidechain>(&mut post_setup, OTHER_SLOT, "sidechain")
+        .await?;
+    let () = mine_check_block_events::<_, DummySidechain>(
+        &mut post_setup,
+        6,
+        MiningPolicy::VOTE,
+        |_, _| Ok(()),
+    )
+    .await?;
+
+    let enforcer_addr = post_setup
+        .wallet_service_client
+        .create_new_address(CreateNewAddressRequest::default())
+        .await?
+        .into_owned()
+        .address;
+    let mut params = ObjectParams::new();
+    params.insert("address", enforcer_addr)?;
+    params.insert("amount", SINGLE_UTXO_FUNDING.to_btc())?;
+    // Explicit: a fresh chain gives Core's fee estimator nothing to work from.
+    params.insert("fee_rate", 2)?;
+    let funding_txid: Txid = post_setup
+        .bitcoind_client
+        .request("sendtoaddress", params)
+        .await?;
+    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &funding_txid).await?;
+    if post_setup.mode.enable_block_template_server() {
+        let () = wait_for_template_txs(&post_setup, vec![funding_txid], vec![]).await?;
+    }
+    let (_funding_block, _) = mine_and_check_commitment(&mut post_setup, None).await?;
+    let () = wait_for_wallet_sync(&mut post_setup).await?;
+    let (_, _, tip_height) = chain_tip(&mut post_setup).await?;
+    let unspent = post_setup
+        .wallet_service_client
+        .list_unspent_outputs(ListUnspentOutputsRequest::default())
+        .await?
+        .into_owned()
+        .outputs;
+    // Coinbases this test's own blocks paid the wallet are listed too, but
+    // none is a hundred blocks deep, so none is spendable.
+    let spendable = unspent
+        .iter()
+        .filter(|output| {
+            output.value_sats == SINGLE_UTXO_FUNDING.to_sat()
+                || output.confirmed_at_block + 100 <= tip_height
+        })
+        .count();
+    anyhow::ensure!(
+        spendable == 1,
+        "expected the enforcer wallet to hold a single spendable UTXO, got {spendable}"
+    );
+    tracing::info!("Activated both sidechains; the enforcer wallet holds one UTXO");
+
+    let h_slot_0 = h_star("back to back, slot 0");
+    let h_other = h_star("back to back, slot 1");
+    let (prev_bytes, _, tip_height) = chain_tip(&mut post_setup).await?;
+    let slot_0_txid = request_wallet_bid(
+        &post_setup,
+        DummySidechain::SIDECHAIN_NUMBER,
+        SHARED_WALLET_BID,
+        &h_slot_0,
+        prev_bytes.clone(),
+        tip_height,
+    )
+    .await?;
+    let other_txid = request_wallet_bid(
+        &post_setup,
+        OTHER_SLOT,
+        SHARED_WALLET_BID,
+        &h_other,
+        prev_bytes,
+        tip_height,
+    )
+    .await
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "round 1: slot 1's bid failed right after slot 0's bid {slot_0_txid} at the same \
+             tip: {err:#}"
+        )
+    })?;
+    let () = expect_both_wallet_bids_mined(
+        &mut post_setup,
+        "round 1",
+        (slot_0_txid, h_slot_0),
+        (other_txid, h_other),
+    )
+    .await?;
+    tracing::info!("Round 1: back-to-back bids from one wallet were both committed");
+
+    let () = wait_for_wallet_sync(&mut post_setup).await?;
+    let h_slot_0 = h_star("at once, slot 0");
+    let h_other = h_star("at once, slot 1");
+    let (prev_bytes, _, tip_height) = chain_tip(&mut post_setup).await?;
+    let (slot_0_bid, other_bid) = tokio::join!(
+        request_wallet_bid(
+            &post_setup,
+            DummySidechain::SIDECHAIN_NUMBER,
+            SHARED_WALLET_BID,
+            &h_slot_0,
+            prev_bytes.clone(),
+            tip_height,
+        ),
+        request_wallet_bid(
+            &post_setup,
+            OTHER_SLOT,
+            SHARED_WALLET_BID,
+            &h_other,
+            prev_bytes.clone(),
+            tip_height,
+        ),
+    );
+    let (slot_0_txid, other_txid) = match (slot_0_bid, other_bid) {
+        (Ok(slot_0_txid), Ok(other_txid)) => (slot_0_txid, other_txid),
+        (slot_0_bid, other_bid) => anyhow::bail!(
+            "round 2: both slots bid at once at the same tip, and not both bids were created: \
+             slot 0: {slot_0_bid:?}, slot 1: {other_bid:?}"
+        ),
+    };
+    let () = expect_both_wallet_bids_mined(
+        &mut post_setup,
+        "round 2",
+        (slot_0_txid, h_slot_0),
+        (other_txid, h_other),
+    )
+    .await?;
+    tracing::info!("Round 2: simultaneous bids from one wallet were both committed");
+
     Ok(())
 }
