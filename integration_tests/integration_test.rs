@@ -1187,6 +1187,21 @@ pub fn tests(
             test_bmm_bid_auction::test_bmm_bid_auction,
         )
     }));
+    // Every slot bidding from the one enforcer wallet at the same tip, in
+    // both block production modes.
+    async_trials.extend([Mode::GetBlockTemplate, Mode::Mempool].map(|mode| {
+        new_trial_with_setup(
+            format!("bmm_wallet_bids_share_a_tip (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            test_bmm_bid_auction::test_bmm_wallet_bids_share_a_tip,
+        )
+    }));
     // A BMM request on top of a block a reorg disconnects must leave the
     // template, in both block production modes.
     async_trials.extend([Mode::GetBlockTemplate, Mode::Mempool].map(|mode| {
