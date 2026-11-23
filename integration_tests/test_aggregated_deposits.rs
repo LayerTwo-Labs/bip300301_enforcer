@@ -873,39 +873,6 @@ pub async fn test_restart_with_pending_deposit(mut post_setup: PostSetup) -> any
     Ok(())
 }
 
-/// A small deposit into a sidechain that already has a treasury. The treasury
-/// output used to hold the old treasury plus the deposit, which is far above
-/// the dust limit whatever the deposit. It now holds the deposit alone.
-#[expect(dead_code)]
-pub async fn test_small_deposit_into_existing_treasury(
-    mut post_setup: PostSetup,
-) -> anyhow::Result<()> {
-    const SMALL: Amount = Amount::from_sat(300);
-    let (_sidechain, sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
-    let (_, treasury_before) = treasury_utxo(&mut post_setup).await?;
-    let deposit_txid = post_setup
-        .wallet_service_client
-        .create_deposit_transaction(CreateDepositTransactionRequest {
-            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            address: proto::wrap_string(&sidechain_address),
-            value_sats: proto::wrap_u64(SMALL.to_sat()),
-            fee_sats: proto::wrap_u64(DEPOSIT_FEE.to_sat()),
-        })
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "a deposit of {SMALL} into a sidechain with a treasury of {treasury_before} was \
-                 refused: {err:#}"
-            )
-        })?
-        .into_owned()
-        .txid
-        .ok_or_else(|| proto::Error::missing_field::<CreateDepositTransactionResponse>("txid"))?
-        .decode::<CreateDepositTransactionResponse, Txid>("txid")?;
-    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &deposit_txid).await?;
-    Ok(())
-}
-
 /// A payout returned to the mempool by a reorg is the very transaction block
 /// production rebuilds for the still-approved bundle, so the template holds it
 /// once. With a deposit pending, the rebuilt payout also spends the deposit,

@@ -1599,13 +1599,6 @@ pub fn tests(
         },
         crate::test_aggregated_deposits::test_restart_with_pending_deposit,
     ));
-    /*
-    async_trials.push(new_trial_with_setup(
-        "aggregated_deposits_small_deposit".to_string(),
-        aggregated_deposits_comps(),
-        crate::test_aggregated_deposits::test_small_deposit_into_existing_treasury,
-    ));
-    */
     async_trials.push(new_trial_with_setup(
         "aggregated_deposits_returned_payout_with_pending_deposit".to_string(),
         TestSetupComponents {
