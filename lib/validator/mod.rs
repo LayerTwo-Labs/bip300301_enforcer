@@ -187,10 +187,10 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_ctip_sequence_number(
+    pub fn get_treasury_utxo_sequence_number(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<u64>, error::GetCtipSequenceNumber> {
+    ) -> Result<Option<u64>, error::GetTreasuryUtxoSequenceNumber> {
         let rotxn = self.dbs.read_txn()?;
         let treasury_utxo_count = self
             .dbs
@@ -205,39 +205,44 @@ impl Validator {
         Ok(sequence_number)
     }
 
-    /// Returns `Some` with the Ctip for the given sidechain number. `None`
-    /// if there's no Ctip for the given sidechain number.
-    pub fn try_get_ctip(
+    /// Returns the current treasury utxo for the given sidechain number, if
+    /// it exists.
+    pub fn try_get_treasury_utxo(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<Ctip>, error::TryGetCtip> {
+    ) -> Result<Option<Ctip>, error::TryGetTreasuryUtxo> {
         let rotxn = self.dbs.read_txn()?;
         let ctip = self
             .dbs
             .active_sidechains
-            .ctip()
+            .treasury_utxo()
             .try_get(&rotxn, &sidechain_number)?;
         Ok(ctip)
     }
 
-    /// Returns the Ctip for the specified sidechain, or an error
-    /// if there is no Ctip.
-    pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
+    /// Returns the current treasury utxo for the specified sidechain, or an
+    /// error if no treasury utxo exists.
+    pub fn get_treasury_utxo(
+        &self,
+        sidechain_number: SidechainNumber,
+    ) -> Result<Ctip, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs
             .active_sidechains
-            .ctip()
+            .treasury_utxo()
             .get(&rotxn, &sidechain_number)
             .into_diagnostic()
     }
 
-    /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, error::GetCtips> {
+    /// Returns treasury utxos for each active sidechain with a treasury utxo
+    pub fn get_treasury_utxos(
+        &self,
+    ) -> Result<HashMap<SidechainNumber, Ctip>, error::GetTreasuryUtxos> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
-            .ctip()
+            .treasury_utxo()
             .iter(&rotxn)
             .map_err(db::error::Iter::from)?
             .map_err(db::error::Iter::from)
@@ -245,32 +250,32 @@ impl Validator {
         Ok(res)
     }
 
-    /// Returns the sidechain number, value, and sequence for a Ctip outpoint,
+    /// Returns the sidechain number, value, and sequence for a treasury outpoint,
     /// if it exists
-    pub fn try_get_ctip_value_seq(
+    pub fn try_get_treasury_outpoint_value_seq(
         &self,
         outpoint: &OutPoint,
-    ) -> Result<Option<(SidechainNumber, Amount, u64)>, error::TryGetCtipValueSeq> {
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, error::TryGetTreasuryOutpointValueSeq> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
-            .ctip_outpoint_to_value_seq()
+            .treasury_outpoint_to_value_seq()
             .try_get(&rotxn, outpoint)?;
         Ok(res)
     }
 
-    /// Get treasury UTXO by sequence number
-    pub fn get_treasury_utxo(
+    /// Get treasury TXO by sequence number
+    pub fn get_treasury_txo(
         &self,
         sidechain_number: SidechainNumber,
         sequence: u64,
-    ) -> Result<TreasuryUtxo, error::GetTreasuryUtxo> {
+    ) -> Result<TreasuryUtxo, error::GetTreasuryTxo> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
-            .slot_sequence_to_treasury_utxo()
+            .treasury_utxo_sequence_to_treasury_utxo()
             .get(&rotxn, &(sidechain_number, sequence))?;
         Ok(res)
     }
@@ -608,7 +613,7 @@ mod ctip_sequence_number_tests {
         validator
             .dbs
             .active_sidechains
-            .put_ctip(
+            .put_treasury_utxo(
                 &mut rwtxn,
                 sc,
                 &Ctip {
@@ -623,11 +628,14 @@ mod ctip_sequence_number_tests {
         validator
             .dbs
             .active_sidechains
-            .delete_ctip(&mut rwtxn, sc)
+            .delete_treasury_utxo(&mut rwtxn, sc)
             .unwrap();
         rwtxn.commit().unwrap();
 
-        assert_eq!(validator.get_ctip_sequence_number(sc).unwrap(), None);
+        assert_eq!(
+            validator.get_treasury_utxo_sequence_number(sc).unwrap(),
+            None
+        );
     }
 }
 

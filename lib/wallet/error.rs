@@ -780,9 +780,9 @@ pub enum CreateDeposit {
     #[error(transparent)]
     SignTransaction(#[from] WalletSignTransaction),
     #[error(transparent)]
-    TryGetCtip(#[from] validator::TryGetCtip),
-    #[error(transparent)]
     TryGetMainchainTipHeight(#[from] validator::TryGetMainchainTipHeight),
+    #[error(transparent)]
+    TryGetTreasuryUtxo(#[from] validator::TryGetTreasuryUtxo),
 }
 
 impl ToStatus for CreateDeposit {
@@ -799,8 +799,8 @@ impl ToStatus for CreateDeposit {
             Self::ApplyUnconfirmedTx(err) => err.builder(),
             Self::Psbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
-            Self::TryGetCtip(err) => err.builder(),
             Self::TryGetMainchainTipHeight(err) => err.builder(),
+            Self::TryGetTreasuryUtxo(err) => err.builder(),
         }
     }
 }
@@ -982,22 +982,22 @@ impl ToStatus for ListWalletTransactions {
 #[derive(Diagnostic, Debug, Error)]
 pub enum ListSidechainDepositTransactions {
     #[error(transparent)]
-    GetTreasuryUtxo(#[from] validator::GetTreasuryUtxo),
+    GetTreasuryTxo(#[from] validator::GetTreasuryTxo),
     #[error(transparent)]
     ListWalletTransactions(#[from] ListWalletTransactions),
     #[error(transparent)]
-    TryGetCtip(#[from] validator::TryGetCtip),
+    TryGetTreasuryUtxo(#[from] validator::TryGetTreasuryUtxo),
     #[error(transparent)]
-    TryGetCtipValueSeq(#[from] validator::TryGetCtipValueSeq),
+    TryGetTreasuryOutpointValueSeq(#[from] validator::TryGetTreasuryOutpointValueSeq),
 }
 
 impl ToStatus for ListSidechainDepositTransactions {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::GetTreasuryUtxo(err) => err.builder(),
+            Self::GetTreasuryTxo(err) => err.builder(),
             Self::ListWalletTransactions(err) => err.builder(),
-            Self::TryGetCtip(err) => err.builder(),
-            Self::TryGetCtipValueSeq(err) => err.builder(),
+            Self::TryGetTreasuryUtxo(err) => err.builder(),
+            Self::TryGetTreasuryOutpointValueSeq(err) => err.builder(),
         }
     }
 }

@@ -1542,7 +1542,7 @@ impl Wallet {
                 };
                 let spent_ctip = match self
                     .validator()
-                    .try_get_ctip_value_seq(&treasury_outpoint)?
+                    .try_get_treasury_outpoint_value_seq(&treasury_outpoint)?
                 {
                     // `seq == 0` is the sidechain's first deposit, which created
                     // the first treasury UTXO, so there is no previous spent ctip.
@@ -1550,7 +1550,7 @@ impl Wallet {
                         Some(prev_seq) => {
                             let spent_treasury_utxo = self
                                 .validator()
-                                .get_treasury_utxo(sidechain_number, prev_seq)?;
+                                .get_treasury_txo(sidechain_number, prev_seq)?;
                             Some(crate::types::Ctip {
                                 outpoint: spent_treasury_utxo.outpoint,
                                 value: spent_treasury_utxo.total_value,
@@ -1561,7 +1561,7 @@ impl Wallet {
                     None => {
                         // May be unconfirmed
                         // check if current ctip in inputs
-                        match self.validator().try_get_ctip(sidechain_number)? {
+                        match self.validator().try_get_treasury_utxo(sidechain_number)? {
                             Some(ctip) => {
                                 if bdk_wallet_tx.tx.input.iter().any(|txin: &bitcoin::TxIn| {
                                     txin.previous_output == ctip.outpoint

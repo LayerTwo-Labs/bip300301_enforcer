@@ -20,14 +20,14 @@ pub enum Init {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipSequenceNumber {
+pub enum GetTreasuryUtxoSequenceNumber {
     #[error(transparent)]
     ReadTxn(#[from] env::ReadTxn),
     #[error(transparent)]
     TryGet(#[from] db::TryGet),
 }
 
-impl ToStatus for GetCtipSequenceNumber {
+impl ToStatus for GetTreasuryUtxoSequenceNumber {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -37,14 +37,14 @@ impl ToStatus for GetCtipSequenceNumber {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtip {
+pub enum TryGetTreasuryUtxo {
     #[error(transparent)]
     ReadTxn(#[from] env::ReadTxn),
     #[error(transparent)]
     TryGet(#[from] db::TryGet),
 }
 
-impl ToStatus for TryGetCtip {
+impl ToStatus for TryGetTreasuryUtxo {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -54,14 +54,14 @@ impl ToStatus for TryGetCtip {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetCtips {
+pub enum GetTreasuryUtxos {
     #[error(transparent)]
     DbIter(#[from] db::Iter),
     #[error(transparent)]
     ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetCtips {
+impl ToStatus for GetTreasuryUtxos {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbIter(err) => StatusBuilder::new(err),
@@ -71,14 +71,14 @@ impl ToStatus for GetCtips {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipValueSeq {
+pub enum TryGetTreasuryOutpointValueSeq {
     #[error(transparent)]
     DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
     ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for TryGetCtipValueSeq {
+impl ToStatus for TryGetTreasuryOutpointValueSeq {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbTryGet(err) => StatusBuilder::new(err),
@@ -88,14 +88,14 @@ impl ToStatus for TryGetCtipValueSeq {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetTreasuryUtxo {
+pub enum GetTreasuryTxo {
     #[error(transparent)]
     DbGet(#[from] db::Get),
     #[error(transparent)]
     ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetTreasuryUtxo {
+impl ToStatus for GetTreasuryTxo {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),

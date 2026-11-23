@@ -568,7 +568,7 @@ impl Diff for M5 {
     fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
         let Self { new_ctips } = self;
         for (sidechain_number, new_ctip) in new_ctips {
-            let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
+            let _: u64 = dbs.put_treasury_utxo(rwtxn, *sidechain_number, new_ctip)?;
         }
         Ok(())
     }
@@ -576,7 +576,7 @@ impl Diff for M5 {
     fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
         let Self { new_ctips } = self;
         for sidechain_number in new_ctips.keys().copied() {
-            let () = dbs.delete_ctip(rwtxn, sidechain_number)?;
+            let () = dbs.delete_treasury_utxo(rwtxn, sidechain_number)?;
         }
         Ok(())
     }
@@ -608,7 +608,7 @@ impl Diff for M6 {
             removed_pending_withdrawal_index: _,
             removed_pending_withdrawal_info: _,
         } = self;
-        let _: u64 = dbs.put_ctip(rwtxn, *sidechain_number, new_ctip)?;
+        let _: u64 = dbs.put_treasury_utxo(rwtxn, *sidechain_number, new_ctip)?;
         let () =
             dbs.delete_pending_withdrawal(rwtxn, sidechain_number, *removed_pending_withdrawal)?;
         Ok(())
@@ -622,7 +622,7 @@ impl Diff for M6 {
             removed_pending_withdrawal_index,
             removed_pending_withdrawal_info,
         } = self;
-        let () = dbs.delete_ctip(rwtxn, *sidechain_number)?;
+        let () = dbs.delete_treasury_utxo(rwtxn, *sidechain_number)?;
         // Restore the bundle at its original position. `apply` removed it with
         // a shift-remove, so a plain re-insert would append it at the end and
         // permanently reorder the remaining bundles.

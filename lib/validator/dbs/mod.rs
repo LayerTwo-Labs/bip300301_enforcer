@@ -63,16 +63,16 @@ pub type PendingM6ids = OrderMap<M6id, PendingM6idInfo>;
 /// These DBs should all contain exacty the same keys.
 #[derive(Clone)]
 pub(super) struct ActiveSidechainDbs {
-    ctip: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
-    /// MUST contain ALL keys/values that `ctip` has ever contained.
-    /// Associates Ctip outpoints with their value and sequence number
-    ctip_outpoint_to_value_seq:
-        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
     // ALL active sidechains MUST exist as keys
     pending_m6ids: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>>,
     // ALL active sidechains MUST exist as keys
     sidechain: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
-    slot_sequence_to_treasury_utxo:
+    /// MUST contain ALL keys/values that `treasury_utxo` has ever contained.
+    /// Associates treasury outpoints with their value and sequence number
+    treasury_outpoint_to_value_seq:
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
+    treasury_utxo: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
+    treasury_utxo_sequence_to_treasury_utxo:
         DatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
     pub treasury_utxo_count:
         DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<NonZeroU64>>,
@@ -82,38 +82,44 @@ impl ActiveSidechainDbs {
     const NUM_DBS: u32 = 6;
 
     fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
-        let ctip = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_ctip")?;
-        let ctip_outpoint_to_value_seq =
-            DatabaseUnique::create(env, rwtxn, "active_sidechain_ctip_outpoint_to_value_seq")?;
         let pending_m6ids =
             DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_pending_m6ids")?;
         let sidechain = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_sidechain")?;
-        let slot_sequence_to_treasury_utxo = DatabaseUnique::create(
+        let treasury_outpoint_to_value_seq = DatabaseUnique::create(
             env,
             rwtxn,
-            "active_sidechain_slot_sequence_to_treasury_utxo",
+            "active_sidechain_treasury_outpoint_to_value_seq",
+        )?;
+        let treasury_utxo =
+            DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_treasury_utxo")?;
+        let treasury_utxo_sequence_to_treasury_utxo = DatabaseUnique::create(
+            env,
+            rwtxn,
+            "active_sidechain_treasury_utxo_sequence_to_treasury_utxo",
         )?;
         let treasury_utxo_count =
             DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
         Ok(Self {
-            ctip,
-            ctip_outpoint_to_value_seq,
             pending_m6ids,
             sidechain,
-            slot_sequence_to_treasury_utxo,
+            treasury_utxo,
+            treasury_outpoint_to_value_seq,
+            treasury_utxo_sequence_to_treasury_utxo,
             treasury_utxo_count,
         })
     }
 
-    pub fn ctip(&self) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>> {
-        &self.ctip
+    pub fn treasury_utxo(
+        &self,
+    ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>> {
+        &self.treasury_utxo
     }
 
-    pub fn ctip_outpoint_to_value_seq(
+    pub fn treasury_outpoint_to_value_seq(
         &self,
     ) -> &RoDatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>
     {
-        &self.ctip_outpoint_to_value_seq
+        &self.treasury_outpoint_to_value_seq
     }
 
     pub fn pending_m6ids(
@@ -139,14 +145,14 @@ impl ActiveSidechainDbs {
         Ok(numbers)
     }
 
-    pub fn slot_sequence_to_treasury_utxo(
+    pub fn treasury_utxo_sequence_to_treasury_utxo(
         &self,
     ) -> &RoDatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>> {
-        &self.slot_sequence_to_treasury_utxo
+        &self.treasury_utxo_sequence_to_treasury_utxo
     }
 
-    /// Put ctip, returning the sequence number
-    pub fn put_ctip(
+    /// Put a treasury utxo, returning the treasury utxo sequence number.
+    pub fn put_treasury_utxo(
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: SidechainNumber,
@@ -161,7 +167,7 @@ impl ActiveSidechainDbs {
         // gives us the *next* sequence number.
         let sequence_number = treasury_utxo_count;
         let old_treasury_value = self
-            .ctip()
+            .treasury_utxo()
             .try_get(rwtxn, &sidechain_number)?
             .map(|old_ctip| old_ctip.value)
             .unwrap_or(Amount::ZERO);
@@ -171,7 +177,7 @@ impl ActiveSidechainDbs {
             total_value: ctip.value,
             previous_total_value: old_treasury_value,
         };
-        self.slot_sequence_to_treasury_utxo.put(
+        self.treasury_utxo_sequence_to_treasury_utxo.put(
             rwtxn,
             &(sidechain_number, sequence_number),
             &treasury_utxo,
@@ -179,8 +185,8 @@ impl ActiveSidechainDbs {
         let new_treasury_utxo_count = NonZeroU64::MIN.checked_add(treasury_utxo_count).unwrap();
         self.treasury_utxo_count
             .put(rwtxn, &sidechain_number, &new_treasury_utxo_count)?;
-        self.ctip.put(rwtxn, &sidechain_number, ctip)?;
-        self.ctip_outpoint_to_value_seq.put(
+        self.treasury_utxo.put(rwtxn, &sidechain_number, ctip)?;
+        self.treasury_outpoint_to_value_seq.put(
             rwtxn,
             &ctip.outpoint,
             &(sidechain_number, ctip.value, sequence_number),
@@ -188,15 +194,16 @@ impl ActiveSidechainDbs {
         Ok(sequence_number)
     }
 
-    /// Delete ctip, as part of a block disconnect
-    pub fn delete_ctip(
+    /// Delete the current treasury utxo, as part of a block disconnect,
+    /// restoring the previous treasury utxo.
+    pub fn delete_treasury_utxo(
         &self,
         rwtxn: &mut RwTxn,
         sidechain_number: SidechainNumber,
     ) -> Result<(), db::Error> {
-        let ctip = self.ctip.get(rwtxn, &sidechain_number)?;
+        let ctip = self.treasury_utxo.get(rwtxn, &sidechain_number)?;
         let _ = self
-            .ctip_outpoint_to_value_seq
+            .treasury_outpoint_to_value_seq
             .delete(rwtxn, &ctip.outpoint)?;
         let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
         let sequence_number = treasury_utxo_count.get() - 1;
@@ -207,22 +214,22 @@ impl ActiveSidechainDbs {
             let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
         }
         let _ = self
-            .slot_sequence_to_treasury_utxo
+            .treasury_utxo_sequence_to_treasury_utxo
             .delete(rwtxn, &(sidechain_number, sequence_number))?;
         let prev_ctip_sequence_number = sequence_number.checked_sub(1);
         match prev_ctip_sequence_number {
             Some(prev_ctip_sequence_number) => {
                 let prev_treasury_utxo = self
-                    .slot_sequence_to_treasury_utxo
+                    .treasury_utxo_sequence_to_treasury_utxo
                     .get(rwtxn, &(sidechain_number, prev_ctip_sequence_number))?;
                 let ctip = Ctip {
                     outpoint: prev_treasury_utxo.outpoint,
                     value: prev_treasury_utxo.total_value,
                 };
-                self.ctip.put(rwtxn, &sidechain_number, &ctip)?;
+                self.treasury_utxo.put(rwtxn, &sidechain_number, &ctip)?;
             }
             None => {
-                let _ = self.ctip.delete(rwtxn, &sidechain_number)?;
+                let _ = self.treasury_utxo.delete(rwtxn, &sidechain_number)?;
             }
         }
         Ok(())

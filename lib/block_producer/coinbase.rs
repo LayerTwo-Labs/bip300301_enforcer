@@ -585,9 +585,9 @@ impl BlockProducer {
                 if m6id_info.vote_count <= params.thresholds.withdrawal_bundle_inclusion_threshold {
                     continue;
                 }
-                let current_consolidated_ctip =
-                    if let Some(consolidated_ctip) = ctips.consolidated.get(&sidechain_id) {
-                        *consolidated_ctip
+                let current_treasury_utxo =
+                    if let Some(treasury_utxo) = ctips.treasury.get(&sidechain_id) {
+                        *treasury_utxo
                     } else {
                         // An approved bundle for a sidechain with no treasury has
                         // nothing to spend, so it cannot be paid out. Skip the
@@ -616,12 +616,12 @@ impl BlockProducer {
                     .iter()
                     .flat_map(|ctips| ctips.iter().copied())
                     .collect::<Vec<Ctip>>();
-                let treasury_value_in = current_consolidated_ctip.value
+                let treasury_value_in = current_treasury_utxo.value
                     + unconsolidated_ctips.iter().map(|ctip| ctip.value).sum();
-                let Ok((m6, successor_consolidated_ctip)) = Self::finalize_m6(
+                let Ok((m6, successor_treasury_utxo)) = Self::finalize_m6(
                     params.op_drivechain,
                     sidechain_id,
-                    current_consolidated_ctip,
+                    current_treasury_utxo,
                     unconsolidated_ctips,
                     blinded_m6,
                 ) else {
@@ -636,9 +636,7 @@ impl BlockProducer {
                     continue;
                 };
                 ctips.unconsolidated.remove_sidechain(sidechain_id);
-                ctips
-                    .consolidated
-                    .insert(sidechain_id, successor_consolidated_ctip);
+                ctips.treasury.insert(sidechain_id, successor_treasury_utxo);
                 res.push(m6);
             }
         }
@@ -652,10 +650,10 @@ impl BlockProducer {
             };
             for (sidechain, unconsolidated_ctips) in ctips.unconsolidated.into_iter_by_sidechain() {
                 let mut value_out = Amount::ZERO;
-                if let Some(consolidated_ctip) = ctips.consolidated.remove(&sidechain) {
-                    value_out += consolidated_ctip.value;
+                if let Some(treasury_utxo) = ctips.treasury.remove(&sidechain) {
+                    value_out += treasury_utxo.value;
                     m5_consolidation_tx.input.push(bitcoin::TxIn {
-                        previous_output: consolidated_ctip.outpoint,
+                        previous_output: treasury_utxo.outpoint,
                         ..Default::default()
                     });
                 }
@@ -767,7 +765,7 @@ mod tests {
             let mut ctips = Ctips::default();
             for slot in 0..n_treasuries {
                 let sidechain = SidechainNumber(slot);
-                ctips.consolidated.insert(sidechain, ctip(slot));
+                ctips.treasury.insert(sidechain, ctip(slot));
                 ctips.unconsolidated.insert(sidechain, ctip(100 + slot));
             }
             let suffix_txs =
@@ -795,9 +793,9 @@ mod tests {
         const WITH_CTIP: SidechainNumber = SidechainNumber(1);
         let bundle_proposals =
             HashMap::from_iter([(NO_CTIP, approved_bundle()), (WITH_CTIP, approved_bundle())]);
-        let consolidated_ctips = HashMap::from_iter([(WITH_CTIP, ctip(1))]);
+        let treasury_utxos = HashMap::from_iter([(WITH_CTIP, ctip(1))]);
         let ctips = Ctips {
-            consolidated: consolidated_ctips,
+            treasury: treasury_utxos,
             unconsolidated: Default::default(),
         };
 
@@ -841,9 +839,9 @@ mod tests {
         bundles.extend(approved_bundle_paying(overdrawing_payout));
         bundles.extend(approved_bundle_paying(SECOND_PAYOUT));
         let bundle_proposals = HashMap::from_iter([(SIDECHAIN, bundles)]);
-        let consolidated_ctips = HashMap::from_iter([(SIDECHAIN, ctip(0))]);
+        let treasury_utxos = HashMap::from_iter([(SIDECHAIN, ctip(0))]);
         let ctips = Ctips {
-            consolidated: consolidated_ctips,
+            treasury: treasury_utxos,
             unconsolidated: Default::default(),
         };
 
