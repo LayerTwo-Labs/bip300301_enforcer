@@ -2624,9 +2624,7 @@ impl BlockHandler<'_> {
 mod tests {
     use std::{borrow::Cow, num::NonZeroU64};
 
-    use bitcoin::{
-        Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, hashes::Hash as _,
-    };
+    use bitcoin::{Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
     use error_fatality::Fatality as _;
     use hashlink::LinkedHashMap;
     use miette::{IntoDiagnostic, Result, bail};

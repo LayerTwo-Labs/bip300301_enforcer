@@ -1068,7 +1068,7 @@ impl Enforcer {
             default_args.extend(vec![
                 "--enable-wallet".to_owned(),
                 "--wallet-auto-create".to_owned(),
-                format!("--wallet-electrum-host=127.0.0.1"),
+                "--wallet-electrum-host=127.0.0.1".to_owned(),
                 format!("--wallet-electrum-port={}", self.wallet_electrum_rpc_port),
                 format!(
                     "--wallet-esplora-url=http://{ESPLORA_USER}:{ESPLORA_PASSWORD}@127.0.0.1:{}",
