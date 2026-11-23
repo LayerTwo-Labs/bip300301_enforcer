@@ -982,11 +982,9 @@ impl ToStatus for ListWalletTransactions {
 #[derive(Diagnostic, Debug, Error)]
 pub enum ListSidechainDepositTransactions {
     #[error(transparent)]
-    GetTreasuryTxo(#[from] validator::GetTreasuryTxo),
-    #[error(transparent)]
     ListWalletTransactions(#[from] ListWalletTransactions),
     #[error(transparent)]
-    TryGetTreasuryUtxo(#[from] validator::TryGetTreasuryUtxo),
+    TryGetDepositCtipValueSeq(#[from] validator::TryGetDepositCtipValueSeq),
     #[error(transparent)]
     TryGetTreasuryOutpointValueSeq(#[from] validator::TryGetTreasuryOutpointValueSeq),
 }
@@ -994,9 +992,8 @@ pub enum ListSidechainDepositTransactions {
 impl ToStatus for ListSidechainDepositTransactions {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::GetTreasuryTxo(err) => err.builder(),
             Self::ListWalletTransactions(err) => err.builder(),
-            Self::TryGetTreasuryUtxo(err) => err.builder(),
+            Self::TryGetDepositCtipValueSeq(err) => err.builder(),
             Self::TryGetTreasuryOutpointValueSeq(err) => err.builder(),
         }
     }

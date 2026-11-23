@@ -212,6 +212,13 @@ impl ActiveSidechainDbs {
         &self.treasury_utxo_sequence_to_treasury_utxo
     }
 
+    pub fn deposit_ctip_outpoint_to_value_seq(
+        &self,
+    ) -> &RoDatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>
+    {
+        &self.deposit_ctip_outpoint_to_value_seq
+    }
+
     /// Put a treasury utxo, returning the treasury utxo sequence number.
     pub fn put_treasury_utxo(
         &self,

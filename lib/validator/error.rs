@@ -88,6 +88,23 @@ impl ToStatus for TryGetTreasuryOutpointValueSeq {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum TryGetDepositCtipValueSeq {
+    #[error(transparent)]
+    DbTryGet(#[from] db::TryGet),
+    #[error(transparent)]
+    ReadTxn(#[from] env::ReadTxn),
+}
+
+impl ToStatus for TryGetDepositCtipValueSeq {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::DbTryGet(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum GetTreasuryTxo {
     #[error(transparent)]
     DbGet(#[from] db::Get),

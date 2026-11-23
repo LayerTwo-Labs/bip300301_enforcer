@@ -265,6 +265,21 @@ impl Validator {
         Ok(res)
     }
 
+    /// Returns the sidechain number, value, and deposit sequence number for a
+    /// deposit ctip outpoint, if it exists
+    pub fn try_get_deposit_ctip_value_seq(
+        &self,
+        outpoint: &OutPoint,
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, error::TryGetDepositCtipValueSeq> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
+            .active_sidechains
+            .deposit_ctip_outpoint_to_value_seq()
+            .try_get(&rotxn, outpoint)?;
+        Ok(res)
+    }
+
     /// Get treasury TXO by sequence number
     pub fn get_treasury_txo(
         &self,
