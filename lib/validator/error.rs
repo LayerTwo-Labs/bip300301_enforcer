@@ -1,7 +1,6 @@
 use bitcoin::BlockHash;
-use bitcoin_jsonrpsee::jsonrpsee;
 use miette::Diagnostic;
-use sneed::{db, env};
+use sneed::{db::error as db, env::error as env};
 use thiserror::Error;
 
 use crate::{
@@ -10,7 +9,7 @@ use crate::{
 };
 
 #[derive(Debug, Error)]
-pub enum InitError {
+pub enum Init {
     #[error(transparent)]
     CreateDbs(#[from] dbs::CreateDbsError),
     #[error("JSON RPC error (`{method}`)")]
@@ -21,14 +20,14 @@ pub enum InitError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipSequenceNumberError {
+pub enum GetCtipSequenceNumber {
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
     #[error(transparent)]
-    TryGet(#[from] db::error::TryGet),
+    TryGet(#[from] db::TryGet),
 }
 
-impl ToStatus for GetCtipSequenceNumberError {
+impl ToStatus for GetCtipSequenceNumber {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -38,14 +37,14 @@ impl ToStatus for GetCtipSequenceNumberError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipError {
+pub enum TryGetCtip {
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
     #[error(transparent)]
-    TryGet(#[from] db::error::TryGet),
+    TryGet(#[from] db::TryGet),
 }
 
-impl ToStatus for TryGetCtipError {
+impl ToStatus for TryGetCtip {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ReadTxn(err) => StatusBuilder::new(err),
@@ -55,14 +54,14 @@ impl ToStatus for TryGetCtipError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipsError {
+pub enum GetCtips {
     #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
+    DbIter(#[from] db::Iter),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetCtipsError {
+impl ToStatus for GetCtips {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbIter(err) => StatusBuilder::new(err),
@@ -72,14 +71,14 @@ impl ToStatus for GetCtipsError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipValueSeqError {
+pub enum TryGetCtipValueSeq {
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for TryGetCtipValueSeqError {
+impl ToStatus for TryGetCtipValueSeq {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbTryGet(err) => StatusBuilder::new(err),
@@ -89,14 +88,14 @@ impl ToStatus for TryGetCtipValueSeqError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetTreasuryUtxoError {
+pub enum GetTreasuryUtxo {
     #[error(transparent)]
-    DbGet(#[from] db::error::Get),
+    DbGet(#[from] db::Get),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetTreasuryUtxoError {
+impl ToStatus for GetTreasuryUtxo {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
@@ -106,14 +105,14 @@ impl ToStatus for GetTreasuryUtxoError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub(super) enum GetHeaderInfoErrorInner {
+enum GetHeaderInfoInner {
     #[error(transparent)]
     GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetHeaderInfoErrorInner {
+impl ToStatus for GetHeaderInfoInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::GetHeaderInfo(err) => StatusBuilder::new(err),
@@ -125,39 +124,39 @@ impl ToStatus for GetHeaderInfoErrorInner {
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct GetHeaderInfoError(GetHeaderInfoErrorInner);
+pub struct GetHeaderInfo(GetHeaderInfoInner);
 
-impl<T> From<T> for GetHeaderInfoError
+impl<T> From<T> for GetHeaderInfo
 where
-    GetHeaderInfoErrorInner: From<T>,
+    GetHeaderInfoInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
     }
 }
 
-impl ToStatus for GetHeaderInfoError {
+impl ToStatus for GetHeaderInfo {
     fn builder(&self) -> StatusBuilder<'_> {
         self.0.builder()
     }
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub(super) enum TryGetHeaderInfosErrorInner {
+enum TryGetHeaderInfosInner {
     #[error(transparent)]
     Db(#[from] db::Error),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
 #[derive(Debug, Diagnostic, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct TryGetHeaderInfosError(TryGetHeaderInfosErrorInner);
+pub struct TryGetHeaderInfos(TryGetHeaderInfosInner);
 
-impl<T> From<T> for TryGetHeaderInfosError
+impl<T> From<T> for TryGetHeaderInfos
 where
-    TryGetHeaderInfosErrorInner: From<T>,
+    TryGetHeaderInfosInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -165,9 +164,9 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(super) enum GetBlockInfoErrorInner {
+pub(in crate::validator) enum GetBlockInfoInner {
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
     #[error(transparent)]
     GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
 }
@@ -175,11 +174,11 @@ pub(super) enum GetBlockInfoErrorInner {
 #[derive(Debug, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct GetBlockInfoError(GetBlockInfoErrorInner);
+pub struct GetBlockInfo(GetBlockInfoInner);
 
-impl<T> From<T> for GetBlockInfoError
+impl<T> From<T> for GetBlockInfo
 where
-    GetBlockInfoErrorInner: From<T>,
+    GetBlockInfoInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -187,21 +186,21 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(super) enum TryGetBlockInfosErrorInner {
+pub(in crate::validator) enum TryGetBlockInfosInner {
     #[error(transparent)]
     Db(#[from] db::Error),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
 #[derive(Debug, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct TryGetBlockInfosError(TryGetBlockInfosErrorInner);
+pub struct TryGetBlockInfos(TryGetBlockInfosInner);
 
-impl<T> From<T> for TryGetBlockInfosError
+impl<T> From<T> for TryGetBlockInfos
 where
-    TryGetBlockInfosErrorInner: From<T>,
+    TryGetBlockInfosInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -209,21 +208,21 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(super) enum GetBlockInfosErrorInner {
+pub(in crate::validator) enum GetBlockInfosInner {
     #[error("Missing header or block: {0}")]
     MissingHeaderBlock(BlockHash),
     #[error(transparent)]
-    TryGetBlockInfos(#[from] TryGetBlockInfosError),
+    TryGetBlockInfos(#[from] TryGetBlockInfos),
 }
 
 #[derive(Debug, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct GetBlockInfosError(GetBlockInfosErrorInner);
+pub struct GetBlockInfos(GetBlockInfosInner);
 
-impl<T> From<T> for GetBlockInfosError
+impl<T> From<T> for GetBlockInfos
 where
-    GetBlockInfosErrorInner: From<T>,
+    GetBlockInfosInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -231,9 +230,9 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(super) enum GetTwoWayPegDataRangeErrorInner {
+pub(in crate::validator) enum GetTwoWayPegDataRangeInner {
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
     #[error(transparent)]
     GetTwoWayPegDataRange(#[from] dbs::block_hash_dbs_error::GetTwoWayPegDataRange),
 }
@@ -241,11 +240,11 @@ pub(super) enum GetTwoWayPegDataRangeErrorInner {
 #[derive(Debug, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct GetTwoWayPegDataRangeError(GetTwoWayPegDataRangeErrorInner);
+pub struct GetTwoWayPegDataRange(GetTwoWayPegDataRangeInner);
 
-impl<T> From<T> for GetTwoWayPegDataRangeError
+impl<T> From<T> for GetTwoWayPegDataRange
 where
-    GetTwoWayPegDataRangeErrorInner: From<T>,
+    GetTwoWayPegDataRangeInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -253,29 +252,29 @@ where
 }
 
 #[derive(Debug, Error)]
-pub(super) enum ChainDiffErrorInner {
+pub(in crate::validator) enum ChainDiffInner {
     #[error(transparent)]
     Db(#[from] db::Error),
     #[error(transparent)]
-    DbGet(#[from] db::error::Get),
+    DbGet(#[from] db::Get),
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
     LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
     #[error("missing block info for connected block {0}")]
     MissingBlockInfo(BlockHash),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
 #[derive(Debug, Error)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct ChainDiffError(ChainDiffErrorInner);
+pub struct ChainDiff(ChainDiffInner);
 
-impl<T> From<T> for ChainDiffError
+impl<T> From<T> for ChainDiff
 where
-    ChainDiffErrorInner: From<T>,
+    ChainDiffInner: From<T>,
 {
     fn from(err: T) -> Self {
         Self(err.into())
@@ -283,24 +282,24 @@ where
 }
 
 #[derive(Debug, Error)]
-pub enum ListHeadersError {
+pub enum ListHeaders {
     #[error(transparent)]
-    DbGet(#[from] db::error::Get),
+    DbGet(#[from] db::Get),
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum TryGetMainchainTipError {
+pub enum TryGetMainchainTip {
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for TryGetMainchainTipError {
+impl ToStatus for TryGetMainchainTip {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbTryGet(err) => StatusBuilder::new(err),
@@ -310,14 +309,14 @@ impl ToStatus for TryGetMainchainTipError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetMainchainTipError {
+pub enum GetMainchainTip {
     #[error(transparent)]
-    DbGet(#[from] db::error::Get),
+    DbGet(#[from] db::Get),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetMainchainTipError {
+impl ToStatus for GetMainchainTip {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
@@ -327,16 +326,16 @@ impl ToStatus for GetMainchainTipError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum TryGetMainchainTipHeightError {
+pub enum TryGetMainchainTipHeight {
     #[error(transparent)]
-    DbGet(#[from] db::error::Get),
+    DbGet(#[from] db::Get),
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for TryGetMainchainTipHeightError {
+impl ToStatus for TryGetMainchainTipHeight {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
@@ -347,24 +346,24 @@ impl ToStatus for TryGetMainchainTipHeightError {
 }
 
 #[derive(Debug, Error)]
-pub enum TryGetBmmCommitmentsError {
+pub enum TryGetBmmCommitments {
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetPendingWithdrawalsError {
+pub enum GetPendingWithdrawals {
     #[error(transparent)]
-    DbGet(#[from] db::error::Get),
+    DbGet(#[from] db::Get),
     #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
+    DbTryGet(#[from] db::TryGet),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetPendingWithdrawalsError {
+impl ToStatus for GetPendingWithdrawals {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbGet(err) => StatusBuilder::new(err),
@@ -375,20 +374,20 @@ impl ToStatus for GetPendingWithdrawalsError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetSeenBmmRequestsForParentBlockError {
+pub enum GetSeenBmmRequestsForParentBlock {
     #[error(transparent)]
-    DbRange(#[from] db::error::Range),
+    DbRange(#[from] db::Range),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum EventsStreamError {
+pub enum EventsStream {
     #[error("Events stream closed due to overflow")]
     Overflow,
 }
 
-impl ToStatus for EventsStreamError {
+impl ToStatus for EventsStream {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::Overflow => StatusBuilder::new(self),
@@ -397,14 +396,14 @@ impl ToStatus for EventsStreamError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum GetSidechainsError {
+pub enum GetSidechains {
     #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
+    DbIter(#[from] db::Iter),
     #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
+    ReadTxn(#[from] env::ReadTxn),
 }
 
-impl ToStatus for GetSidechainsError {
+impl ToStatus for GetSidechains {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::DbIter(err) => StatusBuilder::new(err),

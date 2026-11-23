@@ -1801,7 +1801,7 @@ impl Wallet {
     pub fn is_sidechain_active(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<bool, validator::GetSidechainsError> {
+    ) -> Result<bool, validator::error::GetSidechains> {
         let sidechains = self.inner.validator().get_active_sidechains()?;
         let active = sidechains
             .iter()

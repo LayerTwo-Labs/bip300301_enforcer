@@ -8,7 +8,7 @@ use bitcoin::{self, Amount, BlockHash, OutPoint, Txid};
 use bitcoin_jsonrpsee::jsonrpsee;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{StreamExt, stream::FusedStream};
-use miette::IntoDiagnostic;
+use miette::IntoDiagnostic as _;
 use nonempty::NonEmpty;
 use sneed::db;
 use tokio::sync::{broadcast, watch::Receiver as WatchReceiver};
@@ -35,7 +35,6 @@ mod test_utils;
 use self::dbs::Dbs;
 pub use self::{
     dbs::PendingM6ids,
-    error::*,
     sync_state_summary::{
         CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
     },
@@ -90,7 +89,7 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
         network_params: NetworkParams,
-    ) -> Result<Self, InitError> {
+    ) -> Result<Self, error::Init> {
         // Note: this needs to be reasonably big. If set too small,
         // we're going to run into strange issues with the broadcast
         // channel overflowing. This again leads to subscribers not
@@ -120,7 +119,7 @@ impl Validator {
         &self,
         sidechain_number: &SidechainNumber,
         m6id: &crate::types::M6id,
-    ) -> Result<Option<crate::types::PendingM6idInfo>, GetPendingWithdrawalsError> {
+    ) -> Result<Option<crate::types::PendingM6idInfo>, error::GetPendingWithdrawals> {
         let rotxn = self.dbs.read_txn()?;
         Ok(self
             .dbs
@@ -140,12 +139,12 @@ impl Validator {
 
     pub fn subscribe_events(
         &self,
-    ) -> impl FusedStream<Item = Result<Event, EventsStreamError>> + use<> {
+    ) -> impl FusedStream<Item = Result<Event, error::EventsStream>> + use<> {
         futures::stream::try_unfold(self.events_tx.subscribe(), |mut receiver| async {
             match receiver.recv().await {
                 Ok(event) => Ok(Some((event, receiver))),
                 Err(broadcast::error::RecvError::Closed) => Ok(None),
-                Err(broadcast::error::RecvError::Lagged(_)) => Err(EventsStreamError::Overflow),
+                Err(broadcast::error::RecvError::Lagged(_)) => Err(error::EventsStream::Overflow),
             }
         })
         .fuse()
@@ -159,7 +158,7 @@ impl Validator {
     /// Get (possibly unactivated) sidechains
     pub fn get_sidechains(
         &self,
-    ) -> Result<Vec<(SidechainProposalId, Sidechain)>, GetSidechainsError> {
+    ) -> Result<Vec<(SidechainProposalId, Sidechain)>, error::GetSidechains> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -171,7 +170,7 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, GetSidechainsError> {
+    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, error::GetSidechains> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -191,7 +190,7 @@ impl Validator {
     pub fn get_ctip_sequence_number(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<u64>, GetCtipSequenceNumberError> {
+    ) -> Result<Option<u64>, error::GetCtipSequenceNumber> {
         let rotxn = self.dbs.read_txn()?;
         let treasury_utxo_count = self
             .dbs
@@ -211,7 +210,7 @@ impl Validator {
     pub fn try_get_ctip(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<Ctip>, TryGetCtipError> {
+    ) -> Result<Option<Ctip>, error::TryGetCtip> {
         let rotxn = self.dbs.read_txn()?;
         let ctip = self
             .dbs
@@ -233,7 +232,7 @@ impl Validator {
     }
 
     /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
+    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, error::GetCtips> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -251,7 +250,7 @@ impl Validator {
     pub fn try_get_ctip_value_seq(
         &self,
         outpoint: &OutPoint,
-    ) -> Result<Option<(SidechainNumber, Amount, u64)>, TryGetCtipValueSeqError> {
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, error::TryGetCtipValueSeq> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -266,7 +265,7 @@ impl Validator {
         &self,
         sidechain_number: SidechainNumber,
         sequence: u64,
-    ) -> Result<TreasuryUtxo, GetTreasuryUtxoError> {
+    ) -> Result<TreasuryUtxo, error::GetTreasuryUtxo> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -279,7 +278,7 @@ impl Validator {
     pub fn get_header_info(
         &self,
         block_hash: &BlockHash,
-    ) -> Result<HeaderInfo, GetHeaderInfoError> {
+    ) -> Result<HeaderInfo, error::GetHeaderInfo> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
         Ok(res)
@@ -292,7 +291,7 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<Option<NonEmpty<HeaderInfo>>, TryGetHeaderInfosError> {
+    ) -> Result<Option<NonEmpty<HeaderInfo>>, error::TryGetHeaderInfos> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -301,7 +300,7 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, GetBlockInfoError> {
+    pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, error::GetBlockInfo> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
         Ok(res)
@@ -314,7 +313,7 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<Option<NonEmpty<(HeaderInfo, BlockInfo)>>, TryGetBlockInfosError> {
+    ) -> Result<Option<NonEmpty<(HeaderInfo, BlockInfo)>>, error::TryGetBlockInfos> {
         let rotxn = self.dbs.read_txn()?;
         let Some(header_infos) =
             self.dbs
@@ -349,10 +348,10 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, error::GetBlockInfos> {
         match self.try_get_block_infos(block_hash, max_ancestors)? {
             Some(res) => Ok(res),
-            None => Err(GetBlockInfosErrorInner::MissingHeaderBlock(*block_hash).into()),
+            None => Err(error::GetBlockInfosInner::MissingHeaderBlock(*block_hash).into()),
         }
     }
 
@@ -361,7 +360,7 @@ impl Validator {
     pub fn list_headers(
         &self,
         start_height: u32,
-    ) -> Result<Vec<(u32, BlockHash)>, ListHeadersError> {
+    ) -> Result<Vec<(u32, BlockHash)>, error::ListHeaders> {
         let rotxn = self.dbs.read_txn()?;
         // Not synced yet, so there is no active chain to list.
         let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
@@ -391,7 +390,7 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns `None` if not synced
-    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, TryGetMainchainTipError> {
+    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, error::TryGetMainchainTip> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.try_get(&rotxn, &())?;
         Ok(res)
@@ -401,7 +400,10 @@ impl Validator {
     /// current mainchain tip, read in a single snapshot. If `from` is missing
     /// or unknown, e.g. after a resync, every block from the BIP300 activation
     /// height counts as connected. Returns `None` if not synced.
-    pub fn chain_diff(&self, from: Option<BlockHash>) -> Result<Option<ChainDiff>, ChainDiffError> {
+    pub fn chain_diff(
+        &self,
+        from: Option<BlockHash>,
+    ) -> Result<Option<ChainDiff>, error::ChainDiff> {
         let rotxn = self.dbs.read_txn()?;
         let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
             return Ok(None);
@@ -441,8 +443,8 @@ impl Validator {
                     .dbs
                     .block_hashes
                     .try_get_block_info(&rotxn, &block_hash)?
-                    .ok_or(ChainDiffErrorInner::MissingBlockInfo(block_hash))?;
-                Ok::<_, ChainDiffError>((block_hash, block_info))
+                    .ok_or(error::ChainDiffInner::MissingBlockInfo(block_hash))?;
+                Ok::<_, error::ChainDiff>((block_hash, block_info))
             })
             .collect::<Result<_, _>>()?;
         Ok(Some(ChainDiff {
@@ -455,14 +457,14 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns an error if not synced
-    pub fn get_mainchain_tip(&self) -> Result<BlockHash, GetMainchainTipError> {
+    pub fn get_mainchain_tip(&self) -> Result<BlockHash, error::GetMainchainTip> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.get(&rotxn, &())?;
         Ok(res)
     }
 
     /// Get the mainchain tip height. Returns `None` if not synced
-    pub fn try_get_block_height(&self) -> Result<Option<u32>, TryGetMainchainTipHeightError> {
+    pub fn try_get_block_height(&self) -> Result<Option<u32>, error::TryGetMainchainTipHeight> {
         let rotxn = self.dbs.read_txn()?;
         let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
             return Ok(None);
@@ -475,7 +477,7 @@ impl Validator {
         &self,
         start_block: Option<BlockHash>,
         end_block: BlockHash,
-    ) -> Result<Vec<TwoWayPegData>, GetTwoWayPegDataRangeError> {
+    ) -> Result<Vec<TwoWayPegData>, error::GetTwoWayPegDataRange> {
         let rotxn = self.dbs.read_txn()?;
         let res =
             self.dbs
@@ -493,7 +495,7 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<Vec<BmmCommitments>, TryGetBmmCommitmentsError> {
+    ) -> Result<Vec<BmmCommitments>, error::TryGetBmmCommitments> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -520,7 +522,7 @@ impl Validator {
     pub fn get_pending_withdrawals(
         &self,
         sidechain_number: &SidechainNumber,
-    ) -> Result<PendingM6ids, GetPendingWithdrawalsError> {
+    ) -> Result<PendingM6ids, error::GetPendingWithdrawals> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -555,7 +557,7 @@ impl Validator {
         parent_block_hash: BlockHash,
     ) -> Result<
         HashMap<SidechainNumber, HashMap<BmmCommitment, HashSet<Txid>>>,
-        GetSeenBmmRequestsForParentBlockError,
+        error::GetSeenBmmRequestsForParentBlock,
     > {
         let rotxn = self.dbs.read_txn()?;
         let res = self

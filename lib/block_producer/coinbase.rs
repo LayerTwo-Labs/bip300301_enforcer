@@ -129,7 +129,7 @@ impl BlockProducer {
     /// therefore votable.
     fn get_active_sidechain_proposals(
         &self,
-    ) -> Result<HashMap<SidechainNumber, SidechainProposal>, crate::validator::GetSidechainsError>
+    ) -> Result<HashMap<SidechainNumber, SidechainProposal>, crate::validator::error::GetSidechains>
     {
         let pending_proposals = self
             .validator()
@@ -181,7 +181,7 @@ impl BlockProducer {
         coinbase_messages: &CoinbaseMessages,
         used_slots: &HashSet<SidechainNumber>,
         next_height: u32,
-    ) -> Result<bool, crate::validator::GetSidechainsError> {
+    ) -> Result<bool, crate::validator::error::GetSidechains> {
         if coinbase_messages.m2_ack_slots().is_empty() {
             return Ok(false);
         }
@@ -442,7 +442,7 @@ impl BlockProducer {
         bundle_proposals: &HashMap<SidechainNumber, BundleProposals>,
         active_sidechains: &[Sidechain],
         policy: WithdrawalBundlePolicy,
-    ) -> Result<Vec<WithdrawalBundleVote>, crate::validator::GetPendingWithdrawalsError> {
+    ) -> Result<Vec<WithdrawalBundleVote>, crate::validator::error::GetPendingWithdrawals> {
         let mut acked_by_slot: HashMap<SidechainNumber, HashSet<M6id>> = HashMap::new();
         for (sidechain_number, m6id) in &stored_bundle_acks {
             acked_by_slot
