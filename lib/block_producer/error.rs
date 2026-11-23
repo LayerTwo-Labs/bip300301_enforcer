@@ -6,6 +6,7 @@ use crate::{
     errors::ErrorChain,
     messages::CoinbaseMessagesError,
     proto::{StatusBuilder, ToStatus},
+    validator::error as validator,
 };
 
 #[derive(Debug, Diagnostic, Error)]
@@ -15,11 +16,11 @@ pub struct UnknownStoredAckPolicy(pub String);
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitDbConnection {
     #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error(transparent)]
     Migration(#[from] rusqlite_migration::Error),
     #[error(transparent)]
-    MainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+    MainchainTip(#[from] validator::TryGetMainchainTip),
     #[error(transparent)]
     Rusqlite(#[from] rusqlite::Error),
 }
@@ -28,7 +29,7 @@ pub enum InitDbConnection {
 #[derive(Debug, Diagnostic, Error)]
 pub enum Reconcile {
     #[error(transparent)]
-    ChainDiff(#[from] crate::validator::ChainDiffError),
+    ChainDiff(#[from] validator::ChainDiff),
     #[error("invalid stored policy tip")]
     PolicyTip(#[from] bitcoin::hex::HexToArrayError),
     #[error("rusqlite error")]
@@ -61,9 +62,9 @@ enum GetBundleProposalsInner {
     #[error(transparent)]
     DecodeBlindedM6(#[from] crate::types::BlindedM6DecodeError),
     #[error(transparent)]
-    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
+    GetPendingWithdrawals(#[from] validator::GetPendingWithdrawals),
     #[error(transparent)]
-    GetSidechains(#[from] crate::validator::GetSidechainsError),
+    GetSidechains(#[from] validator::GetSidechains),
     #[error("failed to reconcile policy DB with validator chain")]
     Reconcile(#[from] Reconcile),
     #[error("rusqlite error")]
@@ -108,11 +109,11 @@ pub enum GenerateCoinbaseTxouts {
     #[error("transparent")]
     GetBundleProposals(#[from] GetBundleProposals),
     #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error(transparent)]
-    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
+    GetPendingWithdrawals(#[from] validator::GetPendingWithdrawals),
     #[error(transparent)]
-    GetSidechains(#[from] crate::validator::GetSidechainsError),
+    GetSidechains(#[from] validator::GetSidechains),
     #[error(transparent)]
     PushBytes(#[from] bitcoin::script::PushBytesError),
     #[error("failed to reconcile policy DB with validator chain")]
@@ -286,9 +287,9 @@ impl ToStatus for SelectBlockTxs {
 #[derive(Debug, Diagnostic, Error)]
 pub enum FinalizeBlock {
     #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error(transparent)]
-    GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
+    GetMainchainTip(#[from] validator::GetMainchainTip),
     #[error(transparent)]
     SystemTime(#[from] std::time::SystemTimeError),
 }
@@ -316,7 +317,7 @@ pub enum AwaitBlockConnection {
         timeout: std::time::Duration,
     },
     #[error(transparent)]
-    TryGetBlockInfos(#[from] crate::validator::TryGetBlockInfosError),
+    TryGetBlockInfos(#[from] validator::TryGetBlockInfos),
 }
 
 impl ToStatus for AwaitBlockConnection {
@@ -428,7 +429,7 @@ pub enum GenerateBlock {
     #[error(transparent)]
     SelectBlockTxs(#[from] SelectBlockTxs),
     #[error(transparent)]
-    TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+    TryGetMainchainTip(#[from] validator::TryGetMainchainTip),
     #[error("validator is not synced")]
     ValidatorNotSynced,
 }
@@ -449,15 +450,13 @@ pub(in crate::block_producer) enum InitialBlockTemplateInner {
     #[error(transparent)]
     CoinbaseMessages(#[from] CoinbaseMessagesError),
     #[error(transparent)]
-    GetMainchainTip(#[from] crate::validator::GetMainchainTipError),
+    GetMainchainTip(#[from] validator::GetMainchainTip),
     #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error(transparent)]
-    GetPendingWithdrawals(#[from] crate::validator::GetPendingWithdrawalsError),
+    GetPendingWithdrawals(#[from] validator::GetPendingWithdrawals),
     #[error(transparent)]
-    GetSeenBmmRequestsForParentBlock(
-        #[from] crate::validator::GetSeenBmmRequestsForParentBlockError,
-    ),
+    GetSeenBmmRequestsForParentBlock(#[from] validator::GetSeenBmmRequestsForParentBlock),
     #[error(transparent)]
     GenerateCoinbaseTxouts(#[from] GenerateCoinbaseTxouts),
     #[error(transparent)]
@@ -503,9 +502,9 @@ pub(in crate::block_producer) enum FinalizeBlockTemplateInner {
     #[error(transparent)]
     GetWithdrawalStateAfter(#[from] crate::validator::cusf_enforcer::GetWithdrawalStateAfterError),
     #[error(transparent)]
-    GetHeaderInfo(#[from] crate::validator::GetHeaderInfoError),
+    GetHeaderInfo(#[from] validator::GetHeaderInfo),
     #[error(transparent)]
-    TryGetMainchainTip(#[from] crate::validator::TryGetMainchainTipError),
+    TryGetMainchainTip(#[from] validator::TryGetMainchainTip),
 }
 
 #[derive(Debug, Diagnostic, Error)]

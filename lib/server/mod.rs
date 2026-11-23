@@ -56,7 +56,7 @@ pub(crate) async fn store_withdrawal_bundle<Message: buffa::MessageName>(
     }
     // With no treasury UTXO an M6 has nothing to spend, so the bundle could
     // never pay out.
-    match producer.validator().try_get_ctip(sidechain_id) {
+    match producer.validator().try_get_treasury_utxo(sidechain_id) {
         Ok(None) => {
             return Err(ConnectError::failed_precondition(format!(
                 "cannot accept a withdrawal bundle for sidechain {sidechain_id}: no treasury UTXO"

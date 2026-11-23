@@ -254,9 +254,9 @@ pub(in crate::validator) struct PartiallyConnectedBlockInfo {
 
 /// Tx ctips info for a sidechain.
 struct TxCtipsInfo {
-    consolidated_ctip_input: Option<Ctip>,
-    unconsolidated_ctip_inputs: HashSet<Ctip>,
     ctip_output: Ctip,
+    treasury_utxo_input: Option<Ctip>,
+    unconsolidated_ctip_inputs: HashSet<Ctip>,
 }
 
 impl BlockHandler<'_> {
@@ -839,17 +839,18 @@ impl BlockHandler<'_> {
                 }
                 hash_map::Entry::Vacant(entry) => {
                     entry.insert(TxCtipsInfo {
-                        consolidated_ctip_input: None,
-                        unconsolidated_ctip_inputs: HashSet::new(),
                         ctip_output,
+                        treasury_utxo_input: None,
+                        unconsolidated_ctip_inputs: HashSet::new(),
                     });
                 }
             }
         }
         for txin in &transaction.input {
             let outpoint = &txin.previous_output;
-            if let Some((sidechain_number, amount, _)) =
-                dbs.ctip_outpoint_to_value_seq().try_get(rotxn, outpoint)?
+            if let Some((sidechain_number, amount, _)) = dbs
+                .treasury_outpoint_to_value_seq()
+                .try_get(rotxn, outpoint)?
             {
                 let ctip = Ctip {
                     outpoint: *outpoint,
@@ -863,8 +864,8 @@ impl BlockHandler<'_> {
                 let tx_ctips_info = res
                     .get_mut(&sidechain_number)
                     .ok_or(error::HandleM5M6::TreasurySpentWithoutNewCtip { sidechain_number })?;
-                assert!(tx_ctips_info.consolidated_ctip_input.is_none());
-                tx_ctips_info.consolidated_ctip_input = Some(ctip);
+                assert!(tx_ctips_info.treasury_utxo_input.is_none());
+                tx_ctips_info.treasury_utxo_input = Some(ctip);
             } else if let Some((sidechain_number, amount)) =
                 unconsolidated_ctips.by_outpoint.get(outpoint)
             {
@@ -901,17 +902,18 @@ impl BlockHandler<'_> {
         unconsolidated_ctips: &mut UnconsolidatedCtips,
         transaction: Cow<'_, Transaction>,
     ) -> Result<Option<DepositsOrSuccessfulWithdrawal>, error::HandleM5M6> {
+        let txid = transaction.compute_txid();
         let tx_ctips_infos = self.fill_ctips(rotxn, unconsolidated_ctips, &transaction)?;
         let n_ctip_outputs = tx_ctips_infos.len();
         let mut res = Option::<DepositsOrSuccessfulWithdrawal>::None;
         for (sidechain_number, tx_ctips_info) in tx_ctips_infos {
             let TxCtipsInfo {
-                consolidated_ctip_input,
-                unconsolidated_ctip_inputs,
                 ctip_output,
+                treasury_utxo_input,
+                unconsolidated_ctip_inputs,
             } = tx_ctips_info;
             let consolidated_ctip_input_value =
-                consolidated_ctip_input.map_or(Amount::ZERO, |ctip| ctip.value);
+                treasury_utxo_input.map_or(Amount::ZERO, |ctip| ctip.value);
             let unconsolidated_ctip_inputs_value = unconsolidated_ctip_inputs
                 .iter()
                 .map(|ctip| ctip.value)
@@ -929,7 +931,7 @@ impl BlockHandler<'_> {
                 }
                 // M6
                 Ordering::Less => {
-                    let Some(consolidated_ctip_input) = consolidated_ctip_input else {
+                    let Some(treasury_utxo_input) = treasury_utxo_input else {
                         let err = error::InvalidM6::MissingConsolidatedInput { sidechain_number };
                         return Err(err.into());
                     };
@@ -937,7 +939,7 @@ impl BlockHandler<'_> {
                     {
                         let ctip_inputs: HashSet<_> = unconsolidated_ctip_inputs
                             .iter()
-                            .chain(std::iter::once(&consolidated_ctip_input))
+                            .chain(std::iter::once(&treasury_utxo_input))
                             .map(|ctip| ctip.outpoint)
                             .collect();
                         for input in &transaction.input {
@@ -1023,9 +1025,7 @@ impl BlockHandler<'_> {
                         let sequence_number = self
                             .dbs
                             .active_sidechains
-                            .treasury_utxo_count
-                            .try_get(rotxn, &sidechain_number)?
-                            .map_or(0, |count| count.get());
+                            .next_deposit_sequence_number(rotxn, sidechain_number)?;
                         Some(Deposit {
                             sequence_number,
                             outpoint: ctip_output.outpoint,
@@ -1035,20 +1035,20 @@ impl BlockHandler<'_> {
                     } else {
                         None
                     };
+                    let new_ctip = diff::m5::NewCtip {
+                        spends_treasury_utxo: treasury_utxo_input.is_some(),
+                        value: ctip_output.value,
+                        value_deposited: deposit
+                            .as_ref()
+                            .map_or(Amount::ZERO, |deposit| deposit.value),
+                        vout: ctip_output.outpoint.vout,
+                    };
                     match res.as_mut() {
                         None => {
-                            let new_ctips = if consolidated_ctip_input.is_none()
-                                && self
-                                    .dbs
-                                    .active_sidechains
-                                    .ctip()
-                                    .contains_key(rotxn, &sidechain_number)?
-                            {
-                                HashMap::new()
-                            } else {
-                                HashMap::from_iter([(sidechain_number, ctip_output)])
+                            let diff = diff::M5 {
+                                txid,
+                                new_ctips: HashMap::from_iter([(sidechain_number, new_ctip)]),
                             };
-                            let diff = diff::M5 { new_ctips };
                             let deposits = if let Some(deposit) = deposit {
                                 HashMap::from_iter([(sidechain_number, deposit)])
                             } else {
@@ -1061,15 +1061,7 @@ impl BlockHandler<'_> {
                             if let Some(deposit) = deposit {
                                 deposits.insert(sidechain_number, deposit);
                             }
-                            if consolidated_ctip_input.is_some()
-                                || !self
-                                    .dbs
-                                    .active_sidechains
-                                    .ctip()
-                                    .contains_key(rotxn, &sidechain_number)?
-                            {
-                                diff.new_ctips.insert(sidechain_number, ctip_output);
-                            }
+                            diff.new_ctips.insert(sidechain_number, new_ctip);
                         }
                         Some(DepositsOrSuccessfulWithdrawal::M6Withdrawal { .. }) => {
                             return Err(error::HandleM5M6::Ambiguous);
@@ -1080,11 +1072,11 @@ impl BlockHandler<'_> {
             for input in unconsolidated_ctip_inputs {
                 unconsolidated_ctips.remove(&input.outpoint);
             }
-            if consolidated_ctip_input.is_none()
+            if treasury_utxo_input.is_none()
                 && self
                     .dbs
                     .active_sidechains
-                    .ctip()
+                    .treasury_utxo()
                     .contains_key(rotxn, &sidechain_number)?
             {
                 unconsolidated_ctips.insert(sidechain_number, ctip_output)
@@ -2624,9 +2616,7 @@ impl BlockHandler<'_> {
 mod tests {
     use std::{borrow::Cow, num::NonZeroU64};
 
-    use bitcoin::{
-        Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, hashes::Hash as _,
-    };
+    use bitcoin::{Amount, BlockHash, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
     use error_fatality::Fatality as _;
     use hashlink::LinkedHashMap;
     use miette::{IntoDiagnostic, Result, bail};
@@ -3137,7 +3127,7 @@ mod tests {
                 .put_sidechain(&mut rwtxn, &sidechain_number, &test_sidechain(1, 0))
                 .into_diagnostic()?;
             dbs.active_sidechains
-                .put_ctip(
+                .put_treasury_utxo(
                     &mut rwtxn,
                     sidechain_number,
                     &Ctip {
@@ -3378,8 +3368,10 @@ mod tests {
         assert!(deposits.contains_key(&sc));
         assert_eq!(deposits[&sc].value, deposit_amount);
         assert_eq!(deposits[&sc].address, b"sidechain_address");
+        assert_eq!(deposits[&sc].sequence_number, 0);
         assert!(diff.new_ctips.contains_key(&sc));
         assert_eq!(diff.new_ctips[&sc].value, deposit_amount);
+        assert_eq!(diff.new_ctips[&sc].value_deposited, deposit_amount);
         Ok(())
     }
 
@@ -3397,7 +3389,7 @@ mod tests {
         };
         let old_value = Amount::from_sat(5_000);
         dbs.active_sidechains
-            .put_ctip(
+            .put_treasury_utxo(
                 &mut rwtxn,
                 sc,
                 &Ctip {
@@ -3421,7 +3413,10 @@ mod tests {
         // Deposit should be tracked as unconsolidated
         assert!(deposits.contains_key(&sc));
         assert_eq!(deposits[&sc].value, deposit_amount);
-        assert!(!diff.new_ctips.contains_key(&sc));
+        assert!(diff.new_ctips.contains_key(&sc));
+        assert!(!diff.new_ctips[&sc].spends_treasury_utxo);
+        assert_eq!(diff.new_ctips[&sc].value, deposit_amount);
+        assert_eq!(diff.new_ctips[&sc].value_deposited, deposit_amount);
         assert!(unconsolidated_ctips.get_by_sidechain(sc).is_some_and(
             |ctips| ctips.len() == 1 && ctips.front().unwrap().value == deposit_amount
         ));
@@ -3442,7 +3437,7 @@ mod tests {
         };
         let old_value = Amount::from_sat(5_000);
         dbs.active_sidechains
-            .put_ctip(
+            .put_treasury_utxo(
                 &mut rwtxn,
                 sc,
                 &Ctip {
@@ -3491,7 +3486,7 @@ mod tests {
             vout: 0,
         };
         dbs.active_sidechains
-            .put_ctip(
+            .put_treasury_utxo(
                 &mut rwtxn,
                 sc,
                 &Ctip {
@@ -3532,7 +3527,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_ctip_of_last_treasury_utxo_clears_count() -> Result<()> {
+    fn delete_treasury_utxo_of_last_treasury_utxo_clears_count() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let sc = SidechainNumber(1);
@@ -3546,7 +3541,7 @@ mod tests {
             vout: 0,
         };
         dbs.active_sidechains
-            .put_ctip(
+            .put_treasury_utxo(
                 &mut rwtxn,
                 sc,
                 &Ctip {
@@ -3564,23 +3559,23 @@ mod tests {
         );
 
         // Disconnect that only treasury UTXO.
-        dbs.active_sidechains
-            .delete_ctip(&mut rwtxn, sc)
+        let () = dbs
+            .active_sidechains
+            .delete_treasury_utxo(&mut rwtxn, sc)
             .into_diagnostic()?;
 
         // The count key must be gone, and the ctip removed, so a
         // later `get_ctip_sequence_number` sees `None` and cannot underflow.
-        assert_eq!(
-            dbs.active_sidechains
+        assert!(
+            !dbs.active_sidechains
                 .treasury_utxo_count
-                .try_get(&rwtxn, &sc)
+                .contains_key(&rwtxn, &sc)
                 .into_diagnostic()?,
-            None,
-            "treasury_utxo_count must be cleared, not left at Some(0)",
+            "treasury_utxo_count must be cleared",
         );
         assert!(
             dbs.active_sidechains
-                .ctip()
+                .treasury_utxo()
                 .try_get(&rwtxn, &sc)
                 .into_diagnostic()?
                 .is_none()

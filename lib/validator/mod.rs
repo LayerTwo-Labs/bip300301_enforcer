@@ -8,14 +8,13 @@ use bitcoin::{self, Amount, BlockHash, OutPoint, Txid};
 use bitcoin_jsonrpsee::jsonrpsee;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{StreamExt, stream::FusedStream};
-use miette::{Diagnostic, IntoDiagnostic};
+use miette::IntoDiagnostic as _;
 use nonempty::NonEmpty;
-use sneed::{db, env};
-use thiserror::Error;
+use sneed::db;
 use tokio::sync::{broadcast, watch::Receiver as WatchReceiver};
 
 use crate::{
-    proto::{StatusBuilder, ToStatus, mainchain::HeaderSyncProgress},
+    proto::mainchain::HeaderSyncProgress,
     types::{
         BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, NetworkParams,
         Sidechain, SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
@@ -25,6 +24,7 @@ use crate::{
 
 pub mod cusf_enforcer;
 mod dbs;
+pub mod error;
 pub mod main_rest_client;
 pub mod parse_block_files;
 mod sync_state_summary;
@@ -40,279 +40,6 @@ pub use self::{
     },
 };
 
-#[derive(Debug, Error)]
-pub enum InitError {
-    #[error(transparent)]
-    CreateDbs(#[from] dbs::CreateDbsError),
-    #[error("JSON RPC error (`{method}`)")]
-    JsonRpc {
-        method: String,
-        source: jsonrpsee::core::ClientError,
-    },
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipSequenceNumberError {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    TryGet(#[from] db::error::TryGet),
-}
-
-impl ToStatus for GetCtipSequenceNumberError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-            Self::TryGet(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipError {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    TryGet(#[from] db::error::TryGet),
-}
-
-impl ToStatus for TryGetCtipError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-            Self::TryGet(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipsError {
-    #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetCtipsError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbIter(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipValueSeqError {
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for TryGetCtipValueSeqError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbTryGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetTreasuryUtxoError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetTreasuryUtxoError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-enum GetHeaderInfoErrorInner {
-    #[error(transparent)]
-    GetHeaderInfo(#[from] dbs::block_hash_dbs_error::GetHeaderInfo),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetHeaderInfoErrorInner {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::GetHeaderInfo(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct GetHeaderInfoError(GetHeaderInfoErrorInner);
-
-impl<T> From<T> for GetHeaderInfoError
-where
-    GetHeaderInfoErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-impl ToStatus for GetHeaderInfoError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        self.0.builder()
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-enum TryGetHeaderInfosErrorInner {
-    #[error(transparent)]
-    Db(#[from] db::Error),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct TryGetHeaderInfosError(TryGetHeaderInfosErrorInner);
-
-impl<T> From<T> for TryGetHeaderInfosError
-where
-    TryGetHeaderInfosErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
-enum GetBlockInfoErrorInner {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    GetBlockInfo(#[from] dbs::block_hash_dbs_error::GetBlockInfo),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct GetBlockInfoError(GetBlockInfoErrorInner);
-
-impl<T> From<T> for GetBlockInfoError
-where
-    GetBlockInfoErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
-enum TryGetBlockInfosErrorInner {
-    #[error(transparent)]
-    Db(#[from] db::Error),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct TryGetBlockInfosError(TryGetBlockInfosErrorInner);
-
-impl<T> From<T> for TryGetBlockInfosError
-where
-    TryGetBlockInfosErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
-enum GetBlockInfosErrorInner {
-    #[error("Missing header or block: {0}")]
-    MissingHeaderBlock(BlockHash),
-    #[error(transparent)]
-    TryGetBlockInfos(#[from] TryGetBlockInfosError),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct GetBlockInfosError(GetBlockInfosErrorInner);
-
-impl<T> From<T> for GetBlockInfosError
-where
-    GetBlockInfosErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
-enum GetTwoWayPegDataRangeErrorInner {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    GetTwoWayPegDataRange(#[from] dbs::block_hash_dbs_error::GetTwoWayPegDataRange),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct GetTwoWayPegDataRangeError(GetTwoWayPegDataRangeErrorInner);
-
-impl<T> From<T> for GetTwoWayPegDataRangeError
-where
-    GetTwoWayPegDataRangeErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
-enum ChainDiffErrorInner {
-    #[error(transparent)]
-    Db(#[from] db::Error),
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    LastCommonAncestor(#[from] dbs::block_hash_dbs_error::LastCommonAncestor),
-    #[error("missing block info for connected block {0}")]
-    MissingBlockInfo(BlockHash),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct ChainDiffError(ChainDiffErrorInner);
-
-impl<T> From<T> for ChainDiffError
-where
-    ChainDiffErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
 /// How the mainchain changed since some earlier block. See
 /// [`Validator::chain_diff`].
 #[derive(Debug)]
@@ -326,137 +53,6 @@ pub struct ChainDiff {
     pub disconnected: Vec<BlockHash>,
     /// Oldest first, ending at `tip`
     pub connected: Vec<(BlockHash, BlockInfo)>,
-}
-
-#[derive(Debug, Error)]
-pub enum ListHeadersError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryGetMainchainTipError {
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for TryGetMainchainTipError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbTryGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetMainchainTipError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetMainchainTipError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryGetMainchainTipHeightError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for TryGetMainchainTipHeightError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbGet(err) => StatusBuilder::new(err),
-            Self::DbTryGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum TryGetBmmCommitmentsError {
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetPendingWithdrawalsError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetPendingWithdrawalsError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbGet(err) => StatusBuilder::new(err),
-            Self::DbTryGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetSeenBmmRequestsForParentBlockError {
-    #[error(transparent)]
-    DbRange(#[from] db::error::Range),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum EventsStreamError {
-    #[error("Events stream closed due to overflow")]
-    Overflow,
-}
-
-impl ToStatus for EventsStreamError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::Overflow => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetSidechainsError {
-    #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetSidechainsError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbIter(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -493,7 +89,7 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
         network_params: NetworkParams,
-    ) -> Result<Self, InitError> {
+    ) -> Result<Self, error::Init> {
         // Note: this needs to be reasonably big. If set too small,
         // we're going to run into strange issues with the broadcast
         // channel overflowing. This again leads to subscribers not
@@ -523,7 +119,7 @@ impl Validator {
         &self,
         sidechain_number: &SidechainNumber,
         m6id: &crate::types::M6id,
-    ) -> Result<Option<crate::types::PendingM6idInfo>, GetPendingWithdrawalsError> {
+    ) -> Result<Option<crate::types::PendingM6idInfo>, error::GetPendingWithdrawals> {
         let rotxn = self.dbs.read_txn()?;
         Ok(self
             .dbs
@@ -543,12 +139,12 @@ impl Validator {
 
     pub fn subscribe_events(
         &self,
-    ) -> impl FusedStream<Item = Result<Event, EventsStreamError>> + use<> {
+    ) -> impl FusedStream<Item = Result<Event, error::EventsStream>> + use<> {
         futures::stream::try_unfold(self.events_tx.subscribe(), |mut receiver| async {
             match receiver.recv().await {
                 Ok(event) => Ok(Some((event, receiver))),
                 Err(broadcast::error::RecvError::Closed) => Ok(None),
-                Err(broadcast::error::RecvError::Lagged(_)) => Err(EventsStreamError::Overflow),
+                Err(broadcast::error::RecvError::Lagged(_)) => Err(error::EventsStream::Overflow),
             }
         })
         .fuse()
@@ -562,7 +158,7 @@ impl Validator {
     /// Get (possibly unactivated) sidechains
     pub fn get_sidechains(
         &self,
-    ) -> Result<Vec<(SidechainProposalId, Sidechain)>, GetSidechainsError> {
+    ) -> Result<Vec<(SidechainProposalId, Sidechain)>, error::GetSidechains> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -574,7 +170,7 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, GetSidechainsError> {
+    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, error::GetSidechains> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -591,10 +187,10 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_ctip_sequence_number(
+    pub fn get_treasury_utxo_sequence_number(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<u64>, GetCtipSequenceNumberError> {
+    ) -> Result<Option<u64>, error::GetTreasuryUtxoSequenceNumber> {
         let rotxn = self.dbs.read_txn()?;
         let treasury_utxo_count = self
             .dbs
@@ -609,39 +205,44 @@ impl Validator {
         Ok(sequence_number)
     }
 
-    /// Returns `Some` with the Ctip for the given sidechain number. `None`
-    /// if there's no Ctip for the given sidechain number.
-    pub fn try_get_ctip(
+    /// Returns the current treasury utxo for the given sidechain number, if
+    /// it exists.
+    pub fn try_get_treasury_utxo(
         &self,
         sidechain_number: SidechainNumber,
-    ) -> Result<Option<Ctip>, TryGetCtipError> {
+    ) -> Result<Option<Ctip>, error::TryGetTreasuryUtxo> {
         let rotxn = self.dbs.read_txn()?;
         let ctip = self
             .dbs
             .active_sidechains
-            .ctip()
+            .treasury_utxo()
             .try_get(&rotxn, &sidechain_number)?;
         Ok(ctip)
     }
 
-    /// Returns the Ctip for the specified sidechain, or an error
-    /// if there is no Ctip.
-    pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
+    /// Returns the current treasury utxo for the specified sidechain, or an
+    /// error if no treasury utxo exists.
+    pub fn get_treasury_utxo(
+        &self,
+        sidechain_number: SidechainNumber,
+    ) -> Result<Ctip, miette::Report> {
         let rotxn = self.dbs.read_txn().into_diagnostic()?;
         self.dbs
             .active_sidechains
-            .ctip()
+            .treasury_utxo()
             .get(&rotxn, &sidechain_number)
             .into_diagnostic()
     }
 
-    /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
+    /// Returns treasury utxos for each active sidechain with a treasury utxo
+    pub fn get_treasury_utxos(
+        &self,
+    ) -> Result<HashMap<SidechainNumber, Ctip>, error::GetTreasuryUtxos> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
-            .ctip()
+            .treasury_utxo()
             .iter(&rotxn)
             .map_err(db::error::Iter::from)?
             .map_err(db::error::Iter::from)
@@ -649,32 +250,47 @@ impl Validator {
         Ok(res)
     }
 
-    /// Returns the sidechain number, value, and sequence for a Ctip outpoint,
+    /// Returns the sidechain number, value, and sequence for a treasury outpoint,
     /// if it exists
-    pub fn try_get_ctip_value_seq(
+    pub fn try_get_treasury_outpoint_value_seq(
         &self,
         outpoint: &OutPoint,
-    ) -> Result<Option<(SidechainNumber, Amount, u64)>, TryGetCtipValueSeqError> {
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, error::TryGetTreasuryOutpointValueSeq> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
-            .ctip_outpoint_to_value_seq()
+            .treasury_outpoint_to_value_seq()
             .try_get(&rotxn, outpoint)?;
         Ok(res)
     }
 
-    /// Get treasury UTXO by sequence number
-    pub fn get_treasury_utxo(
+    /// Returns the sidechain number, value, and deposit sequence number for a
+    /// deposit ctip outpoint, if it exists
+    pub fn try_get_deposit_ctip_value_seq(
         &self,
-        sidechain_number: SidechainNumber,
-        sequence: u64,
-    ) -> Result<TreasuryUtxo, GetTreasuryUtxoError> {
+        outpoint: &OutPoint,
+    ) -> Result<Option<(SidechainNumber, Amount, u64)>, error::TryGetDepositCtipValueSeq> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
             .active_sidechains
-            .slot_sequence_to_treasury_utxo()
+            .deposit_ctip_outpoint_to_value_seq()
+            .try_get(&rotxn, outpoint)?;
+        Ok(res)
+    }
+
+    /// Get treasury TXO by sequence number
+    pub fn get_treasury_txo(
+        &self,
+        sidechain_number: SidechainNumber,
+        sequence: u64,
+    ) -> Result<TreasuryUtxo, error::GetTreasuryTxo> {
+        let rotxn = self.dbs.read_txn()?;
+        let res = self
+            .dbs
+            .active_sidechains
+            .treasury_utxo_sequence_to_treasury_utxo()
             .get(&rotxn, &(sidechain_number, sequence))?;
         Ok(res)
     }
@@ -682,7 +298,7 @@ impl Validator {
     pub fn get_header_info(
         &self,
         block_hash: &BlockHash,
-    ) -> Result<HeaderInfo, GetHeaderInfoError> {
+    ) -> Result<HeaderInfo, error::GetHeaderInfo> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.block_hashes.get_header_info(&rotxn, block_hash)?;
         Ok(res)
@@ -695,7 +311,7 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<Option<NonEmpty<HeaderInfo>>, TryGetHeaderInfosError> {
+    ) -> Result<Option<NonEmpty<HeaderInfo>>, error::TryGetHeaderInfos> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -704,7 +320,7 @@ impl Validator {
         Ok(res)
     }
 
-    pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, GetBlockInfoError> {
+    pub fn get_block_info(&self, block_hash: &BlockHash) -> Result<BlockInfo, error::GetBlockInfo> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.block_hashes.get_block_info(&rotxn, block_hash)?;
         Ok(res)
@@ -717,7 +333,7 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<Option<NonEmpty<(HeaderInfo, BlockInfo)>>, TryGetBlockInfosError> {
+    ) -> Result<Option<NonEmpty<(HeaderInfo, BlockInfo)>>, error::TryGetBlockInfos> {
         let rotxn = self.dbs.read_txn()?;
         let Some(header_infos) =
             self.dbs
@@ -752,10 +368,10 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, GetBlockInfosError> {
+    ) -> Result<NonEmpty<(HeaderInfo, BlockInfo)>, error::GetBlockInfos> {
         match self.try_get_block_infos(block_hash, max_ancestors)? {
             Some(res) => Ok(res),
-            None => Err(GetBlockInfosErrorInner::MissingHeaderBlock(*block_hash).into()),
+            None => Err(error::GetBlockInfosInner::MissingHeaderBlock(*block_hash).into()),
         }
     }
 
@@ -764,7 +380,7 @@ impl Validator {
     pub fn list_headers(
         &self,
         start_height: u32,
-    ) -> Result<Vec<(u32, BlockHash)>, ListHeadersError> {
+    ) -> Result<Vec<(u32, BlockHash)>, error::ListHeaders> {
         let rotxn = self.dbs.read_txn()?;
         // Not synced yet, so there is no active chain to list.
         let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
@@ -794,7 +410,7 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns `None` if not synced
-    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, TryGetMainchainTipError> {
+    pub fn try_get_mainchain_tip(&self) -> Result<Option<BlockHash>, error::TryGetMainchainTip> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.try_get(&rotxn, &())?;
         Ok(res)
@@ -804,7 +420,10 @@ impl Validator {
     /// current mainchain tip, read in a single snapshot. If `from` is missing
     /// or unknown, e.g. after a resync, every block from the BIP300 activation
     /// height counts as connected. Returns `None` if not synced.
-    pub fn chain_diff(&self, from: Option<BlockHash>) -> Result<Option<ChainDiff>, ChainDiffError> {
+    pub fn chain_diff(
+        &self,
+        from: Option<BlockHash>,
+    ) -> Result<Option<ChainDiff>, error::ChainDiff> {
         let rotxn = self.dbs.read_txn()?;
         let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
             return Ok(None);
@@ -844,8 +463,8 @@ impl Validator {
                     .dbs
                     .block_hashes
                     .try_get_block_info(&rotxn, &block_hash)?
-                    .ok_or(ChainDiffErrorInner::MissingBlockInfo(block_hash))?;
-                Ok::<_, ChainDiffError>((block_hash, block_info))
+                    .ok_or(error::ChainDiffInner::MissingBlockInfo(block_hash))?;
+                Ok::<_, error::ChainDiff>((block_hash, block_info))
             })
             .collect::<Result<_, _>>()?;
         Ok(Some(ChainDiff {
@@ -858,14 +477,14 @@ impl Validator {
     }
 
     /// Get the mainchain tip. Returns an error if not synced
-    pub fn get_mainchain_tip(&self) -> Result<BlockHash, GetMainchainTipError> {
+    pub fn get_mainchain_tip(&self) -> Result<BlockHash, error::GetMainchainTip> {
         let rotxn = self.dbs.read_txn()?;
         let res = self.dbs.current_chain_tip.get(&rotxn, &())?;
         Ok(res)
     }
 
     /// Get the mainchain tip height. Returns `None` if not synced
-    pub fn try_get_block_height(&self) -> Result<Option<u32>, TryGetMainchainTipHeightError> {
+    pub fn try_get_block_height(&self) -> Result<Option<u32>, error::TryGetMainchainTipHeight> {
         let rotxn = self.dbs.read_txn()?;
         let Some(tip) = self.dbs.current_chain_tip.try_get(&rotxn, &())? else {
             return Ok(None);
@@ -878,7 +497,7 @@ impl Validator {
         &self,
         start_block: Option<BlockHash>,
         end_block: BlockHash,
-    ) -> Result<Vec<TwoWayPegData>, GetTwoWayPegDataRangeError> {
+    ) -> Result<Vec<TwoWayPegData>, error::GetTwoWayPegDataRange> {
         let rotxn = self.dbs.read_txn()?;
         let res =
             self.dbs
@@ -896,7 +515,7 @@ impl Validator {
         &self,
         block_hash: &BlockHash,
         max_ancestors: usize,
-    ) -> Result<Vec<BmmCommitments>, TryGetBmmCommitmentsError> {
+    ) -> Result<Vec<BmmCommitments>, error::TryGetBmmCommitments> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -923,7 +542,7 @@ impl Validator {
     pub fn get_pending_withdrawals(
         &self,
         sidechain_number: &SidechainNumber,
-    ) -> Result<PendingM6ids, GetPendingWithdrawalsError> {
+    ) -> Result<PendingM6ids, error::GetPendingWithdrawals> {
         let rotxn = self.dbs.read_txn()?;
         let res = self
             .dbs
@@ -958,7 +577,7 @@ impl Validator {
         parent_block_hash: BlockHash,
     ) -> Result<
         HashMap<SidechainNumber, HashMap<BmmCommitment, HashSet<Txid>>>,
-        GetSeenBmmRequestsForParentBlockError,
+        error::GetSeenBmmRequestsForParentBlock,
     > {
         let rotxn = self.dbs.read_txn()?;
         let res = self
@@ -1009,7 +628,7 @@ mod ctip_sequence_number_tests {
         validator
             .dbs
             .active_sidechains
-            .put_ctip(
+            .put_treasury_utxo(
                 &mut rwtxn,
                 sc,
                 &Ctip {
@@ -1024,11 +643,14 @@ mod ctip_sequence_number_tests {
         validator
             .dbs
             .active_sidechains
-            .delete_ctip(&mut rwtxn, sc)
+            .delete_treasury_utxo(&mut rwtxn, sc)
             .unwrap();
         rwtxn.commit().unwrap();
 
-        assert_eq!(validator.get_ctip_sequence_number(sc).unwrap(), None);
+        assert_eq!(
+            validator.get_treasury_utxo_sequence_number(sc).unwrap(),
+            None
+        );
     }
 }
 

@@ -22,7 +22,7 @@ impl Validator {
             .try_get_block_height()?
             .ok_or_else(|| miette::miette!("cannot summarize state: validator is not synced"))?;
 
-        let ctips = self.get_ctips()?;
+        let ctips = self.get_treasury_utxos()?;
 
         // Activated sidechains and un-activated proposals live in separate DBs:
         // Gather both so the summary reflects the
@@ -50,7 +50,7 @@ impl Validator {
                         outpoint: ctip.outpoint,
                         value_sats: ctip.value.to_sat(),
                     });
-                    let ctip_sequence_number = self.get_ctip_sequence_number(sidechain_number)?;
+                    let ctip_sequence_number = self.get_treasury_utxo_sequence_number(sidechain_number)?;
                     let pending: Vec<_> = self
                         .get_pending_withdrawals(&sidechain_number)?
                         .into_iter()

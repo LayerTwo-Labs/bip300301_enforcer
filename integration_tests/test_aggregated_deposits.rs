@@ -459,7 +459,6 @@ pub async fn test_withdrawal_without_treasury_input(
 
 /// Two deposits into the same treasury, in one block: each gets its own
 /// sequence number, and both show up in the wallet's deposit history.
-#[expect(dead_code)]
 pub async fn test_deposit_sequence_numbers(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (_sidechain, sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
     let deposit_txid_1 = create_deposit(&mut post_setup, &sidechain_address, TREASURY).await?;
@@ -561,7 +560,6 @@ fn missing_from_history(listed: &[Txid], expected: &[Txid]) -> Vec<Txid> {
 
 /// Deposits the wallet makes into a sidechain that already has a treasury
 /// show up in its deposit history, both while unconfirmed and once mined.
-#[expect(dead_code)]
 pub async fn test_wallet_deposit_history(mut post_setup: PostSetup) -> anyhow::Result<()> {
     let (_sidechain, sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
     let listed = listed_deposits(&post_setup).await?;
@@ -872,39 +870,6 @@ pub async fn test_restart_with_pending_deposit(mut post_setup: PostSetup) -> any
         "treasury {treasury_after} after mining the deposit, expected {}",
         treasury_before + TREASURY
     );
-    Ok(())
-}
-
-/// A small deposit into a sidechain that already has a treasury. The treasury
-/// output used to hold the old treasury plus the deposit, which is far above
-/// the dust limit whatever the deposit. It now holds the deposit alone.
-#[expect(dead_code)]
-pub async fn test_small_deposit_into_existing_treasury(
-    mut post_setup: PostSetup,
-) -> anyhow::Result<()> {
-    const SMALL: Amount = Amount::from_sat(300);
-    let (_sidechain, sidechain_address) = activate_funded_sidechain(&mut post_setup).await?;
-    let (_, treasury_before) = treasury_utxo(&mut post_setup).await?;
-    let deposit_txid = post_setup
-        .wallet_service_client
-        .create_deposit_transaction(CreateDepositTransactionRequest {
-            sidechain_id: proto::wrap_u32(DummySidechain::SIDECHAIN_NUMBER.0.into()),
-            address: proto::wrap_string(&sidechain_address),
-            value_sats: proto::wrap_u64(SMALL.to_sat()),
-            fee_sats: proto::wrap_u64(DEPOSIT_FEE.to_sat()),
-        })
-        .await
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "a deposit of {SMALL} into a sidechain with a treasury of {treasury_before} was \
-                 refused: {err:#}"
-            )
-        })?
-        .into_owned()
-        .txid
-        .ok_or_else(|| proto::Error::missing_field::<CreateDepositTransactionResponse>("txid"))?
-        .decode::<CreateDepositTransactionResponse, Txid>("txid")?;
-    let () = wait_for_tx_in_mempool(&post_setup.bitcoind_client, &deposit_txid).await?;
     Ok(())
 }
 
