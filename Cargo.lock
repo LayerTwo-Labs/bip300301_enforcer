@@ -533,6 +533,7 @@ dependencies = [
  "rusqlite",
  "rusqlite_migration",
  "rusty-leveldb",
+ "semver",
  "serde",
  "serde_json",
  "sneed",

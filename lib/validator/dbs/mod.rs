@@ -1,12 +1,14 @@
 use std::{
     num::NonZeroU64,
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use bitcoin::{Amount, OutPoint};
 use fallible_iterator::FallibleIterator;
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
+use serde::{Deserialize, Serialize};
 use sneed::{DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey, db, env, rwtxn};
 use thiserror::Error;
 
@@ -18,6 +20,43 @@ mod block_hashes;
 pub(in crate::validator) mod diff;
 
 pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
+
+/// The enforcer's own version, as written to the validator database.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl From<semver::Version> for Version {
+    fn from(version: semver::Version) -> Self {
+        let semver::Version {
+            major,
+            minor,
+            patch,
+            pre: _,
+            build: _,
+        } = version;
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+// Do not make this public outside of this crate, as it could break semver
+pub(crate) static VERSION: LazyLock<Version> = LazyLock::new(|| {
+    const VERSION_STR: &str = env!("CARGO_PKG_VERSION");
+    semver::Version::parse(VERSION_STR).unwrap().into()
+});
 
 pub type PendingM6ids = OrderMap<M6id, PendingM6idInfo>;
 
@@ -301,6 +340,8 @@ impl ActiveSidechainDbs {
 #[derive(transitive::Transitive, Debug, Error)]
 #[expect(clippy::duplicated_attributes)]
 #[transitive(
+    from(db::error::TryGet, db::Error),
+    from(db::error::Put, db::Error),
     from(env::error::CreateDb, env::Error),
     from(env::error::OpenEnv, env::Error),
     from(env::error::WriteTxn, env::Error)
@@ -314,7 +355,15 @@ pub enum CreateDbsError {
         source: std::io::Error,
     },
     #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error(transparent)]
     Env(#[from] env::Error),
+    #[error(
+        "validator database at `{}` is incompatible; \
+         delete it and re-sync from scratch",
+        .path.display()
+    )]
+    IncompatibleVersion { path: PathBuf },
 }
 
 pub type ProposalIdToSidechain =
@@ -333,10 +382,11 @@ pub(super) struct Dbs {
     /// Used for determining conflicts for mempool txs.
     pub seen_unconsolidated_ctip_outputs:
         DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount)>>,
+    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl Dbs {
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 5;
+    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 6;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -357,15 +407,29 @@ impl Dbs {
             unsafe { Env::open(&env_opts, &db_dir) }?
         };
         let mut rwtxn = env.write_txn()?;
+        let current_chain_tip = DatabaseUnique::create(&env, &mut rwtxn, "current_chain_tip")?;
         let active_sidechains = ActiveSidechainDbs::new(&env, &mut rwtxn)?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
-        let current_chain_tip = DatabaseUnique::create(&env, &mut rwtxn, "current_chain_tip")?;
         let leading_by_50 = DatabaseUnique::create(&env, &mut rwtxn, "leading_by_50")?;
         let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
         let proposal_id_to_sidechain =
             DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
         let seen_unconsolidated_ctip_outputs =
             DatabaseUnique::create(&env, &mut rwtxn, "seen_unconsolidated_ctip_outputs")?;
+        let version = DatabaseUnique::create(&env, &mut rwtxn, "version")?;
+        match version.try_get(&rwtxn, &())? {
+            Some(version) => {
+                if version != *VERSION {
+                    return Err(CreateDbsError::IncompatibleVersion { path: db_dir });
+                }
+            }
+            None => {
+                if current_chain_tip.contains_key(&rwtxn, &())? {
+                    return Err(CreateDbsError::IncompatibleVersion { path: db_dir });
+                }
+                version.put(&mut rwtxn, &(), &*VERSION)?;
+            }
+        }
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -378,6 +442,7 @@ impl Dbs {
             _previous_votes: previous_votes,
             proposal_id_to_sidechain,
             seen_unconsolidated_ctip_outputs,
+            _version: version,
         })
     }
 
