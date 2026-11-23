@@ -902,6 +902,7 @@ impl BlockHandler<'_> {
         unconsolidated_ctips: &mut UnconsolidatedCtips,
         transaction: Cow<'_, Transaction>,
     ) -> Result<Option<DepositsOrSuccessfulWithdrawal>, error::HandleM5M6> {
+        let txid = transaction.compute_txid();
         let tx_ctips_infos = self.fill_ctips(rotxn, unconsolidated_ctips, &transaction)?;
         let n_ctip_outputs = tx_ctips_infos.len();
         let mut res = Option::<DepositsOrSuccessfulWithdrawal>::None;
@@ -1024,9 +1025,7 @@ impl BlockHandler<'_> {
                         let sequence_number = self
                             .dbs
                             .active_sidechains
-                            .treasury_utxo_count
-                            .try_get(rotxn, &sidechain_number)?
-                            .map_or(0, |count| count.get());
+                            .next_deposit_sequence_number(rotxn, sidechain_number)?;
                         Some(Deposit {
                             sequence_number,
                             outpoint: ctip_output.outpoint,
@@ -1036,20 +1035,20 @@ impl BlockHandler<'_> {
                     } else {
                         None
                     };
+                    let new_ctip = diff::m5::NewCtip {
+                        spends_treasury_utxo: treasury_utxo_input.is_some(),
+                        value: ctip_output.value,
+                        value_deposited: deposit
+                            .as_ref()
+                            .map_or(Amount::ZERO, |deposit| deposit.value),
+                        vout: ctip_output.outpoint.vout,
+                    };
                     match res.as_mut() {
                         None => {
-                            let new_ctips = if treasury_utxo_input.is_none()
-                                && self
-                                    .dbs
-                                    .active_sidechains
-                                    .treasury_utxo()
-                                    .contains_key(rotxn, &sidechain_number)?
-                            {
-                                HashMap::new()
-                            } else {
-                                HashMap::from_iter([(sidechain_number, ctip_output)])
+                            let diff = diff::M5 {
+                                txid,
+                                new_ctips: HashMap::from_iter([(sidechain_number, new_ctip)]),
                             };
-                            let diff = diff::M5 { new_ctips };
                             let deposits = if let Some(deposit) = deposit {
                                 HashMap::from_iter([(sidechain_number, deposit)])
                             } else {
@@ -1062,15 +1061,7 @@ impl BlockHandler<'_> {
                             if let Some(deposit) = deposit {
                                 deposits.insert(sidechain_number, deposit);
                             }
-                            if treasury_utxo_input.is_some()
-                                || !self
-                                    .dbs
-                                    .active_sidechains
-                                    .treasury_utxo()
-                                    .contains_key(rotxn, &sidechain_number)?
-                            {
-                                diff.new_ctips.insert(sidechain_number, ctip_output);
-                            }
+                            diff.new_ctips.insert(sidechain_number, new_ctip);
                         }
                         Some(DepositsOrSuccessfulWithdrawal::M6Withdrawal { .. }) => {
                             return Err(error::HandleM5M6::Ambiguous);
@@ -3377,8 +3368,10 @@ mod tests {
         assert!(deposits.contains_key(&sc));
         assert_eq!(deposits[&sc].value, deposit_amount);
         assert_eq!(deposits[&sc].address, b"sidechain_address");
+        assert_eq!(deposits[&sc].sequence_number, 0);
         assert!(diff.new_ctips.contains_key(&sc));
         assert_eq!(diff.new_ctips[&sc].value, deposit_amount);
+        assert_eq!(diff.new_ctips[&sc].value_deposited, deposit_amount);
         Ok(())
     }
 
@@ -3420,7 +3413,10 @@ mod tests {
         // Deposit should be tracked as unconsolidated
         assert!(deposits.contains_key(&sc));
         assert_eq!(deposits[&sc].value, deposit_amount);
-        assert!(!diff.new_ctips.contains_key(&sc));
+        assert!(diff.new_ctips.contains_key(&sc));
+        assert!(!diff.new_ctips[&sc].spends_treasury_utxo);
+        assert_eq!(diff.new_ctips[&sc].value, deposit_amount);
+        assert_eq!(diff.new_ctips[&sc].value_deposited, deposit_amount);
         assert!(unconsolidated_ctips.get_by_sidechain(sc).is_some_and(
             |ctips| ctips.len() == 1 && ctips.front().unwrap().value == deposit_amount
         ));

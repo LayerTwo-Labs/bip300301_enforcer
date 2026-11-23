@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     num::NonZeroU64,
     path::{Path, PathBuf},
     sync::LazyLock,
@@ -6,6 +7,7 @@ use std::{
 
 use bitcoin::{Amount, OutPoint};
 use fallible_iterator::FallibleIterator;
+use heed::{BoxedError, BytesDecode, BytesEncode};
 use heed_types::SerdeBincode;
 use ordermap::OrderMap;
 use serde::{Deserialize, Serialize};
@@ -17,9 +19,48 @@ use crate::types::{
 };
 
 mod block_hashes;
+pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 pub(in crate::validator) mod diff;
 
-pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
+/// Heed codec for deposit sequence keys: `(SidechainNumber, u32)` encoded as
+/// one sidechain number byte followed by the big-endian sequence number, so
+/// that keys sort lexicographically in sequence order.
+struct DepositSequenceKey;
+
+impl<'a> BytesEncode<'a> for DepositSequenceKey {
+    type EItem = (SidechainNumber, u32);
+
+    fn bytes_encode(item: &'a Self::EItem) -> Result<Cow<'a, [u8]>, BoxedError> {
+        let (sidechain_number, sequence_number) = item;
+        let mut bytes = Vec::with_capacity(1 + 4);
+        bytes.push(sidechain_number.0);
+        bytes.extend_from_slice(&sequence_number.to_be_bytes());
+        Ok(Cow::Owned(bytes))
+    }
+}
+
+impl<'a> BytesDecode<'a> for DepositSequenceKey {
+    type DItem = (SidechainNumber, u32);
+
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
+        let (sidechain_number, sequence_number) = bytes.split_first().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "empty deposit sequence key",
+            )
+        })?;
+        let sequence_number: [u8; 4] = sequence_number.try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid deposit sequence key",
+            )
+        })?;
+        Ok((
+            SidechainNumber(*sidechain_number),
+            u32::from_be_bytes(sequence_number),
+        ))
+    }
+}
 
 /// The enforcer's own version, as written to the validator database.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -76,10 +117,18 @@ pub(super) struct ActiveSidechainDbs {
         DatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
     pub treasury_utxo_count:
         DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<NonZeroU64>>,
+    /// Maps each sidechain's deposit sequence numbers to the deposit's ctip.
+    /// Its length for a sidechain is the sidechain's deposit counter.
+    deposit_sequence_to_deposit_ctip: DatabaseUnique<DepositSequenceKey, SerdeBincode<Ctip>>,
+    /// MUST contain ALL keys/values that `deposit_sequence_to_deposit_ctip`
+    /// has ever contained. Associates deposit ctip outpoints with their
+    /// sidechain number, value, and deposit sequence number.
+    deposit_ctip_outpoint_to_value_seq:
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
 }
 
 impl ActiveSidechainDbs {
-    const NUM_DBS: u32 = 6;
+    const NUM_DBS: u32 = 8;
 
     fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
         let pending_m6ids =
@@ -99,6 +148,16 @@ impl ActiveSidechainDbs {
         )?;
         let treasury_utxo_count =
             DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
+        let deposit_sequence_to_deposit_ctip = DatabaseUnique::create(
+            env,
+            rwtxn,
+            "active_sidechain_deposit_sequence_to_deposit_ctip",
+        )?;
+        let deposit_ctip_outpoint_to_value_seq = DatabaseUnique::create(
+            env,
+            rwtxn,
+            "active_sidechain_deposit_ctip_outpoint_to_value_seq",
+        )?;
         Ok(Self {
             pending_m6ids,
             sidechain,
@@ -106,6 +165,8 @@ impl ActiveSidechainDbs {
             treasury_outpoint_to_value_seq,
             treasury_utxo_sequence_to_treasury_utxo,
             treasury_utxo_count,
+            deposit_sequence_to_deposit_ctip,
+            deposit_ctip_outpoint_to_value_seq,
         })
     }
 
@@ -232,6 +293,81 @@ impl ActiveSidechainDbs {
                 let _ = self.treasury_utxo.delete(rwtxn, &sidechain_number)?;
             }
         }
+        Ok(())
+    }
+
+    /// The sequence number the sidechain's next deposit will get: the number
+    /// of deposits so far. Deposit sequence numbers begin at 0.
+    pub(in crate::validator) fn next_deposit_sequence_number(
+        &self,
+        rotxn: &RoTxn,
+        sidechain_number: SidechainNumber,
+    ) -> Result<u64, db::Error> {
+        // The sidechain's deposits sort contiguously by sequence number, so
+        // the latest one is the last of its key range.
+        let last_deposit = self
+            .deposit_sequence_to_deposit_ctip
+            .range(
+                rotxn,
+                &((sidechain_number, u32::MIN)..=(sidechain_number, u32::MAX)),
+            )?
+            .last()?;
+        let next_sequence_number = last_deposit.map_or(0, |((_, sequence_number), _)| {
+            u64::from(sequence_number) + 1
+        });
+        Ok(next_sequence_number)
+    }
+
+    /// Record a deposit, returning its sequence number.
+    pub fn put_deposit(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: SidechainNumber,
+        ctip: &Ctip,
+    ) -> Result<u64, db::Error> {
+        let sequence_number = self.next_deposit_sequence_number(rwtxn, sidechain_number)?;
+        let sequence_number_u32 = u32::try_from(sequence_number).unwrap();
+        self.deposit_sequence_to_deposit_ctip.put(
+            rwtxn,
+            &(sidechain_number, sequence_number_u32),
+            ctip,
+        )?;
+        self.deposit_ctip_outpoint_to_value_seq.put(
+            rwtxn,
+            &ctip.outpoint,
+            &(sidechain_number, ctip.value, sequence_number),
+        )?;
+        Ok(sequence_number)
+    }
+
+    /// Delete the sidechain's latest deposit, as part of a block disconnect.
+    pub fn delete_deposit(
+        &self,
+        rwtxn: &mut RwTxn,
+        sidechain_number: SidechainNumber,
+    ) -> Result<(), db::Error> {
+        // Deposits are undone in reverse order, so the deposit to remove is
+        // the sidechain's latest.
+        let last_deposit = self
+            .deposit_sequence_to_deposit_ctip
+            .range(
+                rwtxn,
+                &((sidechain_number, u32::MIN)..=(sidechain_number, u32::MAX)),
+            )?
+            .last()?;
+        let Some(((_, sequence_number), deposit_ctip)) = last_deposit else {
+            tracing::error!(
+                %sidechain_number,
+                "no deposit to delete; the diff and the deposit records disagree"
+            );
+            return Ok(());
+        };
+        let _ = self
+            .deposit_sequence_to_deposit_ctip
+            .delete(rwtxn, &(sidechain_number, sequence_number))?;
+        let _ = self
+            .deposit_ctip_outpoint_to_value_seq
+            .delete(rwtxn, &deposit_ctip.outpoint)?;
         Ok(())
     }
 
