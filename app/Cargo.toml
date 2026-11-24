@@ -19,9 +19,10 @@ http = { workspace = true }
 jiff = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server"] }
 miette = { workspace = true, features = ["fancy-no-backtrace"] }
+rand = { workspace = true, features = ["sys_rng"] }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tokio-util = { workspace = true }
 connectrpc = { workspace = true, features = ["axum"] }
 connectrpc-health = { workspace = true }

@@ -139,12 +139,17 @@ impl SeedStore {
                 ciphertext_mnemonic,
                 key_salt,
                 kdf,
-            } => Either::Right(EncryptedMnemonic {
-                initialization_vector,
-                ciphertext_mnemonic,
-                key_salt,
-                kdf: kdf.map_or(KdfParams::LEGACY, KdfParams::from),
-            }),
+            } => {
+                let initialization_vector = initialization_vector
+                    .try_into()
+                    .map_err(|iv: Vec<_>| error::ReadSeedInner::Iv { length: iv.len() })?;
+                Either::Right(EncryptedMnemonic {
+                    initialization_vector,
+                    ciphertext_mnemonic,
+                    key_salt,
+                    kdf: kdf.map_or(KdfParams::LEGACY, KdfParams::from),
+                })
+            }
         };
         Ok(Some(seed))
     }
@@ -176,7 +181,7 @@ impl SeedStore {
                     mnemonic: mnemonic.to_string(),
                 },
                 Seed::Encrypted(encrypted) => StoredSeed::Encrypted {
-                    initialization_vector: encrypted.initialization_vector.clone(),
+                    initialization_vector: encrypted.initialization_vector.to_vec(),
                     ciphertext_mnemonic: encrypted.ciphertext_mnemonic.clone(),
                     key_salt: encrypted.key_salt.clone(),
                     kdf: Some(encrypted.kdf.into()),
@@ -524,7 +529,7 @@ mod tests {
             .expect("legacy seed must be migrated")
             .right()
             .expect("legacy seed was encrypted");
-        assert_eq!(encrypted.initialization_vector, vec![1u8; 12]);
+        assert_eq!(encrypted.initialization_vector, [1u8; 12]);
         assert_eq!(encrypted.ciphertext_mnemonic, vec![2u8; 64]);
         assert_eq!(encrypted.key_salt, vec![3u8; 16]);
         assert_eq!(legacy_seed_rows(&dir), 0, "legacy rows must be deleted");
@@ -874,7 +879,9 @@ mod tests {
 
         let dir = temp_dir("kdf-current");
         let store = SeedStore::new(&dir).unwrap();
-        let encrypted = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::CURRENT).unwrap();
+        let mut rng = rand::rng();
+        let encrypted =
+            EncryptedMnemonic::encrypt(&mut rng, &mnemonic, "pw", KdfParams::CURRENT).unwrap();
         store
             .insert_seed(Seed::Encrypted(&encrypted), None)
             .await
@@ -894,7 +901,8 @@ mod tests {
         // old cost, and with no `kdf` field to say so.
         let dir = temp_dir("kdf-legacy");
         let store = SeedStore::new(&dir).unwrap();
-        let legacy = EncryptedMnemonic::encrypt(&mnemonic, "pw", KdfParams::LEGACY).unwrap();
+        let legacy =
+            EncryptedMnemonic::encrypt(&mut rng, &mnemonic, "pw", KdfParams::LEGACY).unwrap();
         store
             .insert_seed(Seed::Encrypted(&legacy), None)
             .await
