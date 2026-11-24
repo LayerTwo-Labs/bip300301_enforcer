@@ -96,6 +96,18 @@ pub type OwnedGetBlockProducerStateResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<GetWithdrawalBundlesRequestView<'static>>`.
+pub type OwnedGetWithdrawalBundlesRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<GetWithdrawalBundlesResponseView<'static>>`.
+pub type OwnedGetWithdrawalBundlesResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesResponseView<
+        'static,
+    >,
+>;
 impl ::connectrpc::Encodable<
     crate::proto::generated::buffa::cusf::mainchain::v1::CreateSidechainProposalResponse,
 >
@@ -432,6 +444,48 @@ for ::buffa::view::OwnedView<
         )
     }
 }
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+    /// An `OwnedView` still holds the buffer it was decoded from, so
+    /// its large fields can be handed to the response body by
+    /// reference count instead of copied. The bare view impl above
+    /// cannot do this: it has borrows but no buffer to name.
+    fn encode_segments(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::connectrpc::EncodedBody, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body_segments(
+            self.reborrow(),
+            self.bytes(),
+            codec,
+        )
+    }
+}
 /// Full service name for this service.
 pub const BLOCK_PRODUCER_SERVICE_SERVICE_NAME: &str = "cusf.mainchain.v1.BlockProducerService";
 /// Static [`Spec`](::connectrpc::Spec) for the `CreateSidechainProposal` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
@@ -479,6 +533,12 @@ pub const BLOCK_PRODUCER_SERVICE_PROPOSE_WITHDRAWAL_BUNDLE_SPEC: ::connectrpc::S
 /// Static [`Spec`](::connectrpc::Spec) for the `GetBlockProducerState` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
 pub const BLOCK_PRODUCER_SERVICE_GET_BLOCK_PRODUCER_STATE_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
         "/cusf.mainchain.v1.BlockProducerService/GetBlockProducerState",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the `GetWithdrawalBundles` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
+pub const BLOCK_PRODUCER_SERVICE_GET_WITHDRAWAL_BUNDLES_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.BlockProducerService/GetWithdrawalBundles",
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
@@ -734,6 +794,32 @@ pub trait BlockProducerService: Send + Sync + 'static {
         Output = ::connectrpc::ServiceResult<
             impl ::connectrpc::Encodable<
                 crate::proto::generated::buffa::cusf::mainchain::v1::GetBlockProducerStateResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// The pending withdrawal bundles of each requested sidechain, with the
+    /// transactions of those stored here via `ProposeWithdrawalBundle`.
+    /// Complements ValidatorService.GetWithdrawalBundleProposals, which only
+    /// reports M6IDs.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn get_withdrawal_bundles<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesResponse,
             > + Send + use<'a, Self>,
         >,
     > + Send;
@@ -1000,6 +1086,35 @@ impl<S: BlockProducerService> BlockProducerServiceExt for S {
                 },
             )
             .with_spec(BLOCK_PRODUCER_SERVICE_GET_BLOCK_PRODUCER_STATE_SPEC)
+            .route_view_idempotent(
+                BLOCK_PRODUCER_SERVICE_SERVICE_NAME,
+                "GetWithdrawalBundles",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.get_withdrawal_bundles(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(BLOCK_PRODUCER_SERVICE_GET_WITHDRAWAL_BUNDLES_SPEC)
     }
 }
 /// Type-inference marker used by [`Router::add_service`](::connectrpc::Router::add_service).
@@ -1105,6 +1220,12 @@ for BlockProducerServiceServer<T> {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
                         .with_spec(BLOCK_PRODUCER_SERVICE_GET_BLOCK_PRODUCER_STATE_SPEC),
+                )
+            }
+            "GetWithdrawalBundles" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(BLOCK_PRODUCER_SERVICE_GET_WITHDRAWAL_BUNDLES_SPEC),
                 )
             }
             _ => None,
@@ -1274,6 +1395,28 @@ for BlockProducerServiceServer<T> {
                         .await?
                         .encode::<
                             crate::proto::generated::buffa::cusf::mainchain::v1::GetBlockProducerStateResponse,
+                        >(format)
+                })
+            }
+            "GetWithdrawalBundles" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                        ctx.decode_options(),
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesRequest,
+                    >::from_parts(&req, &body);
+                    svc.get_withdrawal_bundles(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesResponse,
                         >(format)
                 })
             }
@@ -1786,6 +1929,51 @@ where
                 &self.transport,
                 &self.config,
                 BLOCK_PRODUCER_SERVICE_GET_BLOCK_PRODUCER_STATE_SPEC
+                    .with_origin(::connectrpc::SpecOrigin::Client),
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the GetWithdrawalBundles RPC. Sends a request to /cusf.mainchain.v1.BlockProducerService/GetWithdrawalBundles.
+    pub async fn get_withdrawal_bundles(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.get_withdrawal_bundles_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the GetWithdrawalBundles RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn get_withdrawal_bundles_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::GetWithdrawalBundlesRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::GetWithdrawalBundlesResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                BLOCK_PRODUCER_SERVICE_GET_WITHDRAWAL_BUNDLES_SPEC
                     .with_origin(::connectrpc::SpecOrigin::Client),
                 request,
                 options,

@@ -723,6 +723,7 @@ fn with_connect_middleware(router: axum::Router) -> axum::Router {
 
 /// Endpoints safe for public use
 const PUBLIC_METHODS: &[&str] = &[
+    "/cusf.mainchain.v1.BlockProducerService/GetWithdrawalBundles",
     "/cusf.mainchain.v1.ValidatorService/GetChainInfo",
     "/cusf.mainchain.v1.ValidatorService/GetChainTip",
     "/cusf.mainchain.v1.ValidatorService/GetCoinbasePSBT",
