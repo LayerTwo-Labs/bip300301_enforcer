@@ -26,13 +26,14 @@ libc = { workspace = true }
 thiserror = { workspace = true }
 libtest-mimic = { workspace = true }
 parking_lot = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"] }
 reqwest = { workspace = true }
 reserve-port = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 temp-dir = { workspace = true }
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["process", "signal"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

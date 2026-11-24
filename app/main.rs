@@ -2027,7 +2027,9 @@ async fn main() -> Result<()> {
             }
             WalletStatus::Uninitialized if auto_create => {
                 tracing::info!("auto-creating new wallet");
-                wallet.create_wallet(mnemonic, None).await?;
+                wallet
+                    .create_wallet(&mut rand::rngs::SysRng, mnemonic, None)
+                    .await?;
             }
             WalletStatus::Uninitialized => (),
         }

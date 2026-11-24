@@ -532,12 +532,13 @@ impl WalletService for crate::wallet::Wallet {
         _ctx: RequestContext,
         request: ServiceRequest<'_, CreateWalletRequest>,
     ) -> ServiceResult<CreateWalletResponse> {
+        use crate::proto::mainchain::CreateWalletRequest;
+
         // TODO: needs a way of creating /multiple/ wallets. RPC for unloading/erasing a wallet?
         if self.is_initialized().await {
             let err = WalletInitialization::AlreadyExists;
             return Err(ConnectError::already_exists(format!("{err:#}")));
         }
-        use crate::proto::mainchain::CreateWalletRequest;
         let CreateWalletRequest {
             mut mnemonic_words,
             mnemonic_path,
@@ -576,7 +577,7 @@ impl WalletService for crate::wallet::Wallet {
             Some(password.as_str())
         };
 
-        self.create_wallet(parsed, password)
+        self.create_wallet(&mut rand::rngs::SysRng, parsed, password)
             .await
             .map_err(|err| err.builder().to_connect_error())?;
 

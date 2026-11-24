@@ -61,8 +61,9 @@ fn encrypt_persisted_seed(enforcer_dir: &Path) -> anyhow::Result<()> {
         Mnemonic::parse_in(Language::English, plaintext)
             .map_err(|err| anyhow::anyhow!("parsing the persisted mnemonic: {err}"))?
     };
-    let encrypted = EncryptedMnemonic::encrypt(&mnemonic, PASSWORD, KdfParams::CURRENT)
-        .map_err(|err| anyhow::anyhow!("encrypting the persisted mnemonic: {err}"))?;
+    let encrypted =
+        EncryptedMnemonic::encrypt(&mut rand::rng(), &mnemonic, PASSWORD, KdfParams::CURRENT)
+            .map_err(|err| anyhow::anyhow!("encrypting the persisted mnemonic: {err}"))?;
     let kdf = encrypted.kdf;
     seed_file["seed"] = serde_json::json!({
         "type": "encrypted",

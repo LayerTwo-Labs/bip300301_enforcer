@@ -15,9 +15,8 @@ publish = false
 version = "1.0.1"
 
 [workspace.dependencies]
-aes-gcm = "0.10.3"
 anyhow = "1.0.102"
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 async-lock = "3.4.0"
 axum = { version = "0.8", default-features = false, features = ["tracing"] }
 bdk_chain = "0.23.3"
@@ -54,7 +53,7 @@ nom = "8.0.0"
 nonempty = "0.12.0"
 ordermap = "1.2.0"
 parking_lot = "0.13.0"
-rand = "0.10.1"
+rand = { version = "0.10.1", default-features = false, features = ["std"] }
 reqwest = { version = "0.13.4", default-features = false }
 reserve-port = "2.4.0"
 # needs to line up with BDK version
@@ -84,13 +83,19 @@ url = "2.5.8"
 uuid = "1.23.3"
 zeroize = "1.8.2"
 
+[workspace.dependencies.aes-gcm]
+default-features = false
+features = ["alloc"]
+version = "0.11.1"
+
+
 [workspace.dependencies.bitcoin-jsonrpsee]
 git = "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git"
-rev = "2ec731f3edcbc8fe290060bb9bac760256e03306"
+rev = "a032b78340eb423131381793d74c38b2eba608f0"
 
 [workspace.dependencies.cusf-enforcer-mempool]
 git = "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git"
-rev = "698c6e3899b931fc55d724f8def49f4b5102307a"
+rev = "192bd86619ecb4cfade4155258cfe8eef8e62dd5"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

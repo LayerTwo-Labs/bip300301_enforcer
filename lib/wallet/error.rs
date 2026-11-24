@@ -286,6 +286,8 @@ pub enum InsertSeed {
 pub(crate) enum ReadSeedInner {
     #[error("failed to read the seed file")]
     Io(#[source] std::io::Error),
+    #[error("unexpected seed IV length ({length})")]
+    Iv { length: usize },
     #[error("failed to parse the seed file")]
     Json(#[source] serde_json::Error),
     #[error(transparent)]
@@ -296,7 +298,7 @@ impl ToStatus for ReadSeedInner {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::ParseMnemonic(err) => err.builder(),
-            Self::Io(_) | Self::Json(_) => StatusBuilder::new(self),
+            Self::Io(_) | Self::Iv { .. } | Self::Json(_) => StatusBuilder::new(self),
         }
     }
 }
@@ -336,8 +338,8 @@ impl ToStatus for StretchPassword {
 pub enum EncryptMnemonic {
     #[error("failed to encrypt mnemonic")]
     Encrypt(#[from] aes_gcm::Error),
-    #[error("failed to read from OS RNG")]
-    SysRng(#[from] rand::rngs::SysError),
+    //#[error("failed to read from OS RNG")]
+    //SysRng(#[from] rand::rngs::SysError),
     #[error(transparent)]
     StretchPassword(#[from] StretchPassword),
 }
@@ -345,7 +347,7 @@ pub enum EncryptMnemonic {
 impl ToStatus for EncryptMnemonic {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
-            Self::Encrypt(_) | Self::SysRng(_) => StatusBuilder::new(self),
+            Self::Encrypt(_) => StatusBuilder::new(self),
             Self::StretchPassword(err) => err.builder(),
         }
     }
@@ -517,7 +519,10 @@ impl ToStatus for InitWalletFromMnemonic {
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum CreateNewWallet {
+pub enum CreateNewWallet<RngError>
+where
+    RngError: std::error::Error + 'static,
+{
     #[error(transparent)]
     EncryptMnemonic(#[from] EncryptMnemonic),
     #[error("failed to fetch the node tip for the wallet birthday")]
@@ -530,13 +535,18 @@ pub enum CreateNewWallet {
     InsertSeed(#[source] InsertSeed),
     #[error(transparent)]
     ReadSeed(#[from] ReadSeed),
+    #[error("RNG error")]
+    Rng(#[source] RngError),
     #[error("rusqlite error")]
     Rusqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     WalletInitialization(#[from] WalletInitialization),
 }
 
-impl From<InsertSeed> for CreateNewWallet {
+impl<RngError> From<InsertSeed> for CreateNewWallet<RngError>
+where
+    RngError: std::error::Error + 'static,
+{
     fn from(err: InsertSeed) -> Self {
         // Preserve the `AlreadyExists` gRPC status: a second CreateWallet call
         // must still report that a wallet is already there, not an opaque
@@ -550,13 +560,19 @@ impl From<InsertSeed> for CreateNewWallet {
     }
 }
 
-impl From<InitWalletFromMnemonic> for CreateNewWallet {
+impl<RngError> From<InitWalletFromMnemonic> for CreateNewWallet<RngError>
+where
+    RngError: std::error::Error + 'static,
+{
     fn from(err: InitWalletFromMnemonic) -> Self {
         Self::InitFromMnemonic(Box::new(err))
     }
 }
 
-impl ToStatus for CreateNewWallet {
+impl<RngError> ToStatus for CreateNewWallet<RngError>
+where
+    RngError: std::error::Error + 'static,
+{
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::EncryptMnemonic(err) => err.builder(),
@@ -567,6 +583,7 @@ impl ToStatus for CreateNewWallet {
             // `WalletInitialization`, keeping its status code.
             Self::InsertSeed(_) => StatusBuilder::new(self),
             Self::ReadSeed(err) => err.builder(),
+            Self::Rng(_) => StatusBuilder::new(self),
             Self::Rusqlite(_) => StatusBuilder::new(self),
             Self::WalletInitialization(err) => err.builder(),
         }

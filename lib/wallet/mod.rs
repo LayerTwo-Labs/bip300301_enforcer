@@ -30,6 +30,7 @@ use bitcoin_jsonrpsee::{
 use either::Either;
 use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{TryFutureExt, TryStreamExt};
+use rand::{SeedableRng as _, TryCryptoRng};
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -696,16 +697,28 @@ impl WalletInner {
         Ok(changed)
     }
 
-    pub async fn create_new_wallet(
+    pub async fn create_new_wallet<R>(
         &self,
+        rng: &mut R,
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
-    ) -> Result<(), error::CreateNewWallet> {
+    ) -> Result<(), error::CreateNewWallet<R::Error>>
+    where
+        R: TryCryptoRng,
+        R::Error: 'static,
+    {
+        // use provided RNG iff necessary
+        let mut lazy_rng = None;
+
         let (mnemonic, generated) = match mnemonic {
             Some(mnemonic) => (mnemonic, false),
             None => {
                 tracing::info!("create new wallet: no mnemonic provided, generating fresh");
-                (new_mnemonic()?, true)
+                let rng = lazy_rng.insert(
+                    rand::rngs::ChaCha20Rng::try_from_rng(rng)
+                        .map_err(error::CreateNewWallet::Rng)?,
+                );
+                (new_mnemonic(rng)?, true)
             }
         };
 
@@ -728,8 +741,13 @@ impl WalletInner {
         match password {
             Some(password) => {
                 tracing::info!("create new wallet: persisting encrypted mnemonic");
+                let mut rng = match lazy_rng {
+                    Some(rng) => rng,
+                    None => rand::rngs::ChaCha20Rng::try_from_rng(rng)
+                        .map_err(error::CreateNewWallet::Rng)?,
+                };
                 let encrypted =
-                    EncryptedMnemonic::encrypt(&mnemonic, password, KdfParams::CURRENT)?;
+                    EncryptedMnemonic::encrypt(&mut rng, &mnemonic, password, KdfParams::CURRENT)?;
                 self.seed_store
                     .insert_seed(Seed::Encrypted(&encrypted), birthday_height)
                     .await?;
@@ -2130,11 +2148,16 @@ impl Wallet {
     // Creates a new wallet with a given mnemonic and encryption password.
     // Note that the password is NOT a BIP39 passphrase, but is only used to
     // encrypt the mnemonic in storage.
-    pub async fn create_wallet(
+    pub async fn create_wallet<R>(
         &self,
+        rng: &mut R,
         mnemonic: Option<Mnemonic>,
         password: Option<&str>,
-    ) -> Result<(), error::CreateNewWallet> {
-        self.inner.create_new_wallet(mnemonic, password).await
+    ) -> Result<(), error::CreateNewWallet<R::Error>>
+    where
+        R: TryCryptoRng,
+        R::Error: 'static,
+    {
+        self.inner.create_new_wallet(rng, mnemonic, password).await
     }
 }
