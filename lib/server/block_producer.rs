@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use bitcoin::{
     BlockHash,
@@ -22,7 +25,8 @@ use crate::{
         common::{ConsensusHex, Hex, ReverseHex},
         mainchain::{
             AckAllProposalsPolicy, CreateSidechainProposalRequest, CreateSidechainProposalResponse,
-            GetBlockProducerStateRequest, GetBlockProducerStateResponse, PendingSidechainProposal,
+            GetBlockProducerStateRequest, GetBlockProducerStateResponse,
+            GetWithdrawalBundlesRequest, GetWithdrawalBundlesResponse, PendingSidechainProposal,
             ProposeWithdrawalBundleRequest, ProposeWithdrawalBundleResponse,
             SetAckAllProposalsRequest, SetAckAllProposalsResponse, SetSidechainAckRequest,
             SetSidechainAckResponse, SetWithdrawalBundleAckRequest, SetWithdrawalBundleAckResponse,
@@ -30,6 +34,7 @@ use crate::{
             SidechainAck as SidechainAckMessage, SidechainDeclaration,
             SubmitSidechainProposalRequest, SubmitSidechainProposalResponse, WithdrawalBundleAck,
             WithdrawalBundlePolicy, create_sidechain_proposal_response,
+            get_withdrawal_bundles_response,
         },
         mainchain_service::BlockProducerService,
         wrap_u32,
@@ -38,7 +43,7 @@ use crate::{
         internal_err, invalid_field_value, missing_field, parse_sidechain_id,
         store_withdrawal_bundle,
     },
-    types::{Event, M6id},
+    types::{BlindedM6, Event, M6id, PendingM6idInfo, SidechainNumber},
 };
 
 /// Stream (non-)confirmations for a sidechain proposal
@@ -199,6 +204,35 @@ where
         })?;
     tracing::info!("Persisted sidechain proposal into DB");
     Ok(sidechain_proposal)
+}
+
+/// A sidechain's pending bundles, in the order given. A bundle carries its
+/// transaction if it is among `stored`, unless the caller already knows it.
+fn pending_bundles(
+    pending: impl IntoIterator<Item = (M6id, PendingM6idInfo)>,
+    stored: Vec<(M6id, BlindedM6<'static>)>,
+    known: &HashSet<M6id>,
+) -> Vec<get_withdrawal_bundles_response::Bundle> {
+    let stored: HashMap<_, _> = stored.into_iter().collect();
+    pending
+        .into_iter()
+        .map(|(m6id, info)| {
+            let PendingM6idInfo {
+                vote_count,
+                proposal_height,
+            } = info;
+            let transaction = stored
+                .get(&m6id)
+                .filter(|_| !known.contains(&m6id))
+                .map(|blinded_m6| ConsensusHex::encode(blinded_m6.as_ref()));
+            get_withdrawal_bundles_response::Bundle {
+                m6id: MessageField::some(ConsensusHex::encode(&m6id.0)),
+                vote_count: wrap_u32(vote_count as u32),
+                proposal_height: wrap_u32(proposal_height),
+                transaction: transaction.map(MessageField::some).unwrap_or_default(),
+            }
+        })
+        .collect()
 }
 
 #[expect(refining_impl_trait_reachable)]
@@ -434,5 +468,49 @@ impl BlockProducerService for BlockProducer {
             withdrawal_bundle_policy: WithdrawalBundlePolicy::from(withdrawal_bundle_policy).into(),
             explicit_bundle_acks,
         }))
+    }
+
+    async fn get_withdrawal_bundles(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, GetWithdrawalBundlesRequest>,
+    ) -> ServiceResult<GetWithdrawalBundlesResponse> {
+        // Keyed by sidechain, so one that is listed twice is answered once
+        let mut known_m6ids = BTreeMap::<SidechainNumber, HashSet<M6id>>::new();
+        for sidechain in request.to_owned_message().sidechains {
+            let sidechain_id = parse_sidechain_id::<GetWithdrawalBundlesRequest>(
+                sidechain.sidechain_id,
+                "sidechain_id",
+            )?;
+            let known_m6ids = known_m6ids.entry(sidechain_id).or_default();
+            for m6id in sidechain.known_m6ids {
+                let m6id = m6id
+                    .decode_status::<GetWithdrawalBundlesRequest, bitcoin::Txid>("known_m6ids")?;
+                known_m6ids.insert(m6id.into());
+            }
+        }
+
+        let mut stored = self
+            .db()
+            .get_bundle_proposals(self.validator())
+            .await
+            .map_err(internal_err)?;
+
+        let sidechains = known_m6ids
+            .into_iter()
+            .map(|(sidechain_id, known_m6ids)| {
+                let pending = self
+                    .validator()
+                    .get_pending_withdrawals(&sidechain_id)
+                    .map_err(internal_err)?;
+                let stored = stored.remove(&sidechain_id).unwrap_or_default();
+                Ok(get_withdrawal_bundles_response::Sidechain {
+                    sidechain_id: wrap_u32(sidechain_id.0 as u32),
+                    bundles: pending_bundles(pending, stored, &known_m6ids),
+                })
+            })
+            .collect::<Result<_, ConnectError>>()?;
+
+        Ok(Response::new(GetWithdrawalBundlesResponse { sidechains }))
     }
 }

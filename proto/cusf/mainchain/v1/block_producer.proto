@@ -163,6 +163,32 @@ message ProposeWithdrawalBundleRequest {
 }
 message ProposeWithdrawalBundleResponse {}
 
+message GetWithdrawalBundlesRequest {
+  message Sidechain {
+    google.protobuf.UInt32Value sidechain_id = 1;
+    // Bundles the caller already has the transaction of.
+    repeated cusf.common.v1.ConsensusHex known_m6ids = 2;
+  }
+  repeated Sidechain sidechains = 1;
+}
+
+message GetWithdrawalBundlesResponse {
+  message Bundle {
+    cusf.common.v1.ConsensusHex m6id = 1;
+    google.protobuf.UInt32Value vote_count = 2;
+    google.protobuf.UInt32Value proposal_height = 3;
+    // The blinded M6: it has no inputs, and its txid is the M6ID. Unset if
+    // the request lists the bundle as known, or this node does not hold it.
+    cusf.common.v1.ConsensusHex transaction = 4;
+  }
+  message Sidechain {
+    google.protobuf.UInt32Value sidechain_id = 1;
+    // Every pending bundle, in the order M4 votes index them.
+    repeated Bundle bundles = 2;
+  }
+  repeated Sidechain sidechains = 1;
+}
+
 // Manages drivechain policies for voting on sidechain proposals and withdrawal
 // bundles.
 service BlockProducerService {
@@ -210,6 +236,14 @@ service BlockProducerService {
   // the ACK policy. Complements ValidatorService.GetSidechainProposals, which
   // only reports proposals already on the chain.
   rpc GetBlockProducerState(GetBlockProducerStateRequest) returns (GetBlockProducerStateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // The pending withdrawal bundles of each requested sidechain, with the
+  // transactions of those stored here via `ProposeWithdrawalBundle`.
+  // Complements ValidatorService.GetWithdrawalBundleProposals, which only
+  // reports M6IDs.
+  rpc GetWithdrawalBundles(GetWithdrawalBundlesRequest) returns (GetWithdrawalBundlesResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 }

@@ -721,6 +721,31 @@ fn with_connect_middleware(router: axum::Router) -> axum::Router {
     )
 }
 
+/// Endpoints safe for public use
+const PUBLIC_METHODS: &[&str] = &[
+    "/cusf.mainchain.v1.BlockProducerService/GetWithdrawalBundles",
+    "/cusf.mainchain.v1.ValidatorService/GetChainInfo",
+    "/cusf.mainchain.v1.ValidatorService/GetChainTip",
+    "/cusf.mainchain.v1.ValidatorService/GetCoinbasePSBT",
+    "/cusf.mainchain.v1.ValidatorService/GetCtip",
+    "/cusf.mainchain.v1.ValidatorService/GetSidechainProposals",
+    "/cusf.mainchain.v1.ValidatorService/GetSidechains",
+    "/cusf.mainchain.v1.ValidatorService/GetWithdrawalBundleProposals",
+    "/grpc.health.v1.Health/Check",
+];
+
+/// Answer 403 for every procedure not in [`PUBLIC_METHODS`]
+async fn public_methods_only(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if PUBLIC_METHODS.contains(&req.uri().path()) {
+        next.run(req).await
+    } else {
+        axum::response::IntoResponse::into_response(http::StatusCode::FORBIDDEN)
+    }
+}
+
 /// Which of the optional Connect services to register, alongside the ones that
 /// are always served
 struct ConnectServices {
@@ -742,6 +767,7 @@ async fn run_connect_server(
     services: ConnectServices,
     cancel: CancellationToken,
     addr: SocketAddr,
+    public_addr: Option<SocketAddr>,
 ) -> Result<(), error::ConnectServer> {
     let router = Router::new();
     let router = Arc::new(server::crypto::CryptoServiceServer).register(router);
@@ -792,22 +818,44 @@ async fn run_connect_server(
     let app =
         with_connect_middleware(axum::Router::new().fallback_service(connect_service(router)));
 
+    let serve = serve_connect(app.clone(), addr, cancel.clone());
+    let serve_public = async move {
+        match public_addr {
+            Some(public_addr) => {
+                // Outermost, so a refused request reaches nothing else
+                let app = app.layer(axum::middleware::from_fn(public_methods_only));
+                tracing::info!("Serving only public methods on {public_addr}");
+                serve_connect(app, public_addr, cancel).await
+            }
+            None => Ok(()),
+        }
+    };
+    let res = futures::future::try_join(serve, serve_public)
+        .await
+        .map(|_| ());
+
+    // Mark all services as not serving when we're shutting down
+    health_checker.shutdown();
+
+    res
+}
+
+/// Bind `addr` and serve `app` on it until `cancel` fires
+async fn serve_connect(
+    app: axum::Router,
+    addr: SocketAddr,
+    cancel: CancellationToken,
+) -> Result<(), error::ConnectServer> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|err| error::ConnectServer::Bind { addr, source: err })?;
 
     tracing::info!("Listening for Connect RPC on {addr}");
 
-    let cancel_clone = cancel.clone();
-    let res = axum::serve(listener, app)
-        .with_graceful_shutdown(async move { cancel_clone.cancelled().await })
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { cancel.cancelled().await })
         .await
-        .map_err(|err| error::ConnectServer::Serve { addr, source: err });
-
-    // Mark all services as not serving when we're shutting down
-    health_checker.shutdown();
-
-    res
+        .map_err(|err| error::ConnectServer::Serve { addr, source: err })
 }
 
 async fn spawn_gbt_server<S>(
@@ -2160,8 +2208,9 @@ async fn main() -> Result<()> {
             wallet: enforcer_wallet(&enforcer).cloned(),
         };
         let addr = cli.serve_grpc_addr;
+        let public_addr = cli.serve_public_grpc_addr;
         tasks.spawn(async move {
-            let res = run_connect_server(validator, services, cancel, addr)
+            let res = run_connect_server(validator, services, cancel, addr, public_addr)
                 .await
                 .map_err(miette::Report::from_err);
             ("Connect RPC server", res)

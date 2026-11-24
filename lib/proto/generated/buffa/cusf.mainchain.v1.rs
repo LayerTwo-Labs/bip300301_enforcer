@@ -5625,6 +5625,1128 @@ pub const __PROPOSE_WITHDRAWAL_BUNDLE_RESPONSE_JSON_ANY: ::buffa::type_registry:
 #[derive(Clone, PartialEq, Default)]
 #[derive(::serde::Serialize, ::serde::Deserialize)]
 #[serde(default)]
+pub struct GetWithdrawalBundlesRequest {
+    /// Field 1: `sidechains`
+    #[serde(
+        rename = "sidechains",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+        deserialize_with = "::buffa::json_helpers::null_as_default"
+    )]
+    pub sidechains: ::buffa::alloc::vec::Vec<get_withdrawal_bundles_request::Sidechain>,
+}
+impl ::core::fmt::Debug for GetWithdrawalBundlesRequest {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetWithdrawalBundlesRequest")
+            .field("sidechains", &self.sidechains)
+            .finish()
+    }
+}
+impl GetWithdrawalBundlesRequest {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest";
+}
+::buffa::impl_default_instance!(GetWithdrawalBundlesRequest);
+impl ::buffa_descriptor::reflect::Reflectable for GetWithdrawalBundlesRequest {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa_descriptor::reflect::ReflectElement for GetWithdrawalBundlesRequest {
+    /// Bridge-mode element reflection: each call snapshots this
+    /// element through [`Reflectable::reflect`]
+    /// (one encode/decode round-trip plus an allocation).
+    ///
+    /// [`Reflectable::reflect`]: ::buffa_descriptor::reflect::Reflectable::reflect
+    fn as_value_ref(&self) -> ::buffa_descriptor::reflect::ValueRef<'_> {
+        ::buffa_descriptor::reflect::ValueRef::Message(
+            ::buffa_descriptor::reflect::Reflectable::reflect(self),
+        )
+    }
+}
+impl ::buffa::MessageName for GetWithdrawalBundlesRequest {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetWithdrawalBundlesRequest";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesRequest";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest";
+}
+impl ::buffa::Message for GetWithdrawalBundlesRequest {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// Accumulates in `u64` (which cannot overflow for in-memory
+    /// data) and saturates to `u32` at return, so a message whose
+    /// encoded size exceeds the 2 GiB protobuf limit yields a value
+    /// above [`::buffa::MAX_MESSAGE_BYTES`] that the encode entry
+    /// points reject, never a silently wrapped size.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u64;
+        for v in &self.sidechains {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                    + inner_size as u64;
+        }
+        ::buffa::saturate_size(size)
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::EncodeSink,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        for v in &self.sidechains {
+            ::buffa::types::put_len_delimited_header(
+                1u32,
+                u64::from(__cache.consume_next()),
+                buf,
+            );
+            v.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let mut elem = ::core::default::Default::default();
+                ctx.register_element_memory(
+                    ::buffa::__private::element_footprint(&elem),
+                )?;
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+                self.sidechains.push(elem);
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, ctx.depth())?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.sidechains.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetWithdrawalBundlesRequest {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_WITHDRAWAL_BUNDLES_REQUEST_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest",
+    to_json: ::buffa::type_registry::any_to_json::<GetWithdrawalBundlesRequest>,
+    from_json: ::buffa::type_registry::any_from_json::<GetWithdrawalBundlesRequest>,
+    is_wkt: false,
+};
+pub mod get_withdrawal_bundles_request {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, PartialEq, Default)]
+    #[derive(::serde::Serialize, ::serde::Deserialize)]
+    #[serde(default)]
+    pub struct Sidechain {
+        /// Field 1: `sidechain_id`
+        #[serde(
+            rename = "sidechainId",
+            alias = "sidechain_id",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+        )]
+        pub sidechain_id: ::buffa::MessageField<
+            ::buffa_types::google::protobuf::UInt32Value,
+            ::buffa::Inline<::buffa_types::google::protobuf::UInt32Value>,
+        >,
+        /// Bundles the caller already has the transaction of.
+        ///
+        /// Field 2: `known_m6ids`
+        #[serde(
+            rename = "knownM6ids",
+            alias = "known_m6ids",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+            deserialize_with = "::buffa::json_helpers::null_as_default"
+        )]
+        pub known_m6ids: ::buffa::alloc::vec::Vec<
+            super::super::super::common::v1::ConsensusHex,
+        >,
+    }
+    impl ::core::fmt::Debug for Sidechain {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+            f.debug_struct("Sidechain")
+                .field("sidechain_id", &self.sidechain_id)
+                .field("known_m6ids", &self.known_m6ids)
+                .finish()
+        }
+    }
+    impl Sidechain {
+        /// Protobuf type URL for this message, for use with `Any::pack` and
+        /// `Any::unpack_if`.
+        ///
+        /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+        pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest.Sidechain";
+    }
+    ::buffa::impl_default_instance!(Sidechain);
+    impl ::buffa_descriptor::reflect::Reflectable for Sidechain {
+        /// Bridge-mode reflective handle: encodes `self` and decodes
+        /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+        /// against the package's embedded descriptor pool.
+        ///
+        /// # Performance
+        ///
+        /// One full encode/decode round-trip plus a heap allocation per
+        /// call. Hold onto the returned handle for repeated field reads
+        /// rather than calling `reflect()` per field.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the embedded `FileDescriptorSet` is malformed or
+        /// `Self::FULL_NAME` is not registered. Both indicate codegen
+        /// emitted inconsistent output, not consumer misuse — except
+        /// when this type was re-exported from a different
+        /// `buffa-build` invocation, whose pool is a different
+        /// instance. Each `generate_reflection(true)` codegen run
+        /// embeds its own pool; do not mix `reflect()` calls across
+        /// independently-generated crates.
+        fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+            let pool = __buffa::reflect::descriptor_pool();
+            let idx = pool
+                .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                        < Self as ::buffa::MessageName > ::FULL_NAME,
+                    )
+                });
+            ::buffa_descriptor::reflect::ReflectCow::Owned(
+                ::buffa::alloc::boxed::Box::new(
+                    ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                        self,
+                        ::buffa::alloc::sync::Arc::clone(pool),
+                        idx,
+                    ),
+                ),
+            )
+        }
+    }
+    impl ::buffa_descriptor::reflect::ReflectElement for Sidechain {
+        /// Bridge-mode element reflection: each call snapshots this
+        /// element through [`Reflectable::reflect`]
+        /// (one encode/decode round-trip plus an allocation).
+        ///
+        /// [`Reflectable::reflect`]: ::buffa_descriptor::reflect::Reflectable::reflect
+        fn as_value_ref(&self) -> ::buffa_descriptor::reflect::ValueRef<'_> {
+            ::buffa_descriptor::reflect::ValueRef::Message(
+                ::buffa_descriptor::reflect::Reflectable::reflect(self),
+            )
+        }
+    }
+    impl ::buffa::MessageName for Sidechain {
+        const PACKAGE: &'static str = "cusf.mainchain.v1";
+        const NAME: &'static str = "GetWithdrawalBundlesRequest.Sidechain";
+        const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesRequest.Sidechain";
+        const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest.Sidechain";
+    }
+    impl ::buffa::Message for Sidechain {
+        /// Returns the total encoded size in bytes.
+        ///
+        /// Accumulates in `u64` (which cannot overflow for in-memory
+        /// data) and saturates to `u32` at return, so a message whose
+        /// encoded size exceeds the 2 GiB protobuf limit yields a value
+        /// above [`::buffa::MAX_MESSAGE_BYTES`] that the encode entry
+        /// points reject, never a silently wrapped size.
+        #[allow(clippy::let_and_return)]
+        fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            let mut size = 0u64;
+            if self.sidechain_id.is_set() {
+                let __slot = __cache.reserve();
+                let inner_size = self.sidechain_id.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            for v in &self.known_m6ids {
+                let __slot = __cache.reserve();
+                let inner_size = v.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            ::buffa::saturate_size(size)
+        }
+        fn write_to(
+            &self,
+            __cache: &mut ::buffa::SizeCache,
+            buf: &mut impl ::buffa::EncodeSink,
+        ) {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            if self.sidechain_id.is_set() {
+                ::buffa::types::put_len_delimited_header(
+                    1u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                self.sidechain_id.write_to(__cache, buf);
+            }
+            for v in &self.known_m6ids {
+                ::buffa::types::put_len_delimited_header(
+                    2u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                v.write_to(__cache, buf);
+            }
+        }
+        fn merge_field(
+            &mut self,
+            tag: ::buffa::encoding::Tag,
+            buf: &mut impl ::buffa::bytes::Buf,
+            ctx: ::buffa::DecodeContext<'_>,
+        ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+            #[allow(unused_imports)]
+            use ::buffa::bytes::Buf as _;
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            match tag.field_number() {
+                1u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    ::buffa::Message::merge_length_delimited(
+                        self.sidechain_id.get_or_insert_default(),
+                        buf,
+                        ctx,
+                    )?;
+                }
+                2u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    let mut elem = ::core::default::Default::default();
+                    ctx.register_element_memory(
+                        ::buffa::__private::element_footprint(&elem),
+                    )?;
+                    ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+                    self.known_m6ids.push(elem);
+                }
+                _ => {
+                    ::buffa::encoding::skip_field_depth(tag, buf, ctx.depth())?;
+                }
+            }
+            ::core::result::Result::Ok(())
+        }
+        fn clear(&mut self) {
+            self.sidechain_id = ::buffa::MessageField::none();
+            self.known_m6ids.clear();
+        }
+    }
+    impl ::buffa::json_helpers::ProtoElemJson for Sidechain {
+        fn serialize_proto_json<S: ::serde::Serializer>(
+            v: &Self,
+            s: S,
+        ) -> ::core::result::Result<S::Ok, S::Error> {
+            ::serde::Serialize::serialize(v, s)
+        }
+        fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+            d: D,
+        ) -> ::core::result::Result<Self, D::Error> {
+            <Self as ::serde::Deserialize>::deserialize(d)
+        }
+    }
+    #[doc(hidden)]
+    pub const __SIDECHAIN_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+        type_url: "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest.Sidechain",
+        to_json: ::buffa::type_registry::any_to_json::<Sidechain>,
+        from_json: ::buffa::type_registry::any_from_json::<Sidechain>,
+        is_wkt: false,
+    };
+    #[doc(inline)]
+    pub use super::__buffa::view::get_withdrawal_bundles_request::SidechainView;
+    #[doc(inline)]
+    pub use super::__buffa::view::get_withdrawal_bundles_request::SidechainOwnedView;
+}
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
+pub struct GetWithdrawalBundlesResponse {
+    /// Field 1: `sidechains`
+    #[serde(
+        rename = "sidechains",
+        skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+        deserialize_with = "::buffa::json_helpers::null_as_default"
+    )]
+    pub sidechains: ::buffa::alloc::vec::Vec<get_withdrawal_bundles_response::Sidechain>,
+}
+impl ::core::fmt::Debug for GetWithdrawalBundlesResponse {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("GetWithdrawalBundlesResponse")
+            .field("sidechains", &self.sidechains)
+            .finish()
+    }
+}
+impl GetWithdrawalBundlesResponse {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse";
+}
+::buffa::impl_default_instance!(GetWithdrawalBundlesResponse);
+impl ::buffa_descriptor::reflect::Reflectable for GetWithdrawalBundlesResponse {
+    /// Bridge-mode reflective handle: encodes `self` and decodes
+    /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+    /// against the package's embedded descriptor pool.
+    ///
+    /// # Performance
+    ///
+    /// One full encode/decode round-trip plus a heap allocation per
+    /// call. Hold onto the returned handle for repeated field reads
+    /// rather than calling `reflect()` per field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `FileDescriptorSet` is malformed or
+    /// `Self::FULL_NAME` is not registered. Both indicate codegen
+    /// emitted inconsistent output, not consumer misuse — except
+    /// when this type was re-exported from a different
+    /// `buffa-build` invocation, whose pool is a different
+    /// instance. Each `generate_reflection(true)` codegen run
+    /// embeds its own pool; do not mix `reflect()` calls across
+    /// independently-generated crates.
+    fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+        let pool = __buffa::reflect::descriptor_pool();
+        let idx = pool
+            .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+            .unwrap_or_else(|| {
+                panic!(
+                    "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                    < Self as ::buffa::MessageName > ::FULL_NAME,
+                )
+            });
+        ::buffa_descriptor::reflect::ReflectCow::Owned(
+            ::buffa::alloc::boxed::Box::new(
+                ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                    self,
+                    ::buffa::alloc::sync::Arc::clone(pool),
+                    idx,
+                ),
+            ),
+        )
+    }
+}
+impl ::buffa_descriptor::reflect::ReflectElement for GetWithdrawalBundlesResponse {
+    /// Bridge-mode element reflection: each call snapshots this
+    /// element through [`Reflectable::reflect`]
+    /// (one encode/decode round-trip plus an allocation).
+    ///
+    /// [`Reflectable::reflect`]: ::buffa_descriptor::reflect::Reflectable::reflect
+    fn as_value_ref(&self) -> ::buffa_descriptor::reflect::ValueRef<'_> {
+        ::buffa_descriptor::reflect::ValueRef::Message(
+            ::buffa_descriptor::reflect::Reflectable::reflect(self),
+        )
+    }
+}
+impl ::buffa::MessageName for GetWithdrawalBundlesResponse {
+    const PACKAGE: &'static str = "cusf.mainchain.v1";
+    const NAME: &'static str = "GetWithdrawalBundlesResponse";
+    const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesResponse";
+    const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse";
+}
+impl ::buffa::Message for GetWithdrawalBundlesResponse {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// Accumulates in `u64` (which cannot overflow for in-memory
+    /// data) and saturates to `u32` at return, so a message whose
+    /// encoded size exceeds the 2 GiB protobuf limit yields a value
+    /// above [`::buffa::MAX_MESSAGE_BYTES`] that the encode entry
+    /// points reject, never a silently wrapped size.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u64;
+        for v in &self.sidechains {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                    + inner_size as u64;
+        }
+        ::buffa::saturate_size(size)
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::EncodeSink,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        for v in &self.sidechains {
+            ::buffa::types::put_len_delimited_header(
+                1u32,
+                u64::from(__cache.consume_next()),
+                buf,
+            );
+            v.write_to(__cache, buf);
+        }
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let mut elem = ::core::default::Default::default();
+                ctx.register_element_memory(
+                    ::buffa::__private::element_footprint(&elem),
+                )?;
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+                self.sidechains.push(elem);
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, buf, ctx.depth())?;
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.sidechains.clear();
+    }
+}
+impl ::buffa::json_helpers::ProtoElemJson for GetWithdrawalBundlesResponse {
+    fn serialize_proto_json<S: ::serde::Serializer>(
+        v: &Self,
+        s: S,
+    ) -> ::core::result::Result<S::Ok, S::Error> {
+        ::serde::Serialize::serialize(v, s)
+    }
+    fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+        d: D,
+    ) -> ::core::result::Result<Self, D::Error> {
+        <Self as ::serde::Deserialize>::deserialize(d)
+    }
+}
+#[doc(hidden)]
+pub const __GET_WITHDRAWAL_BUNDLES_RESPONSE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+    type_url: "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse",
+    to_json: ::buffa::type_registry::any_to_json::<GetWithdrawalBundlesResponse>,
+    from_json: ::buffa::type_registry::any_from_json::<GetWithdrawalBundlesResponse>,
+    is_wkt: false,
+};
+pub mod get_withdrawal_bundles_response {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, PartialEq, Default)]
+    #[derive(::serde::Serialize, ::serde::Deserialize)]
+    #[serde(default)]
+    pub struct Bundle {
+        /// Field 1: `m6id`
+        #[serde(
+            rename = "m6id",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+        )]
+        pub m6id: ::buffa::MessageField<
+            super::super::super::common::v1::ConsensusHex,
+            ::buffa::Inline<super::super::super::common::v1::ConsensusHex>,
+        >,
+        /// Field 2: `vote_count`
+        #[serde(
+            rename = "voteCount",
+            alias = "vote_count",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+        )]
+        pub vote_count: ::buffa::MessageField<
+            ::buffa_types::google::protobuf::UInt32Value,
+            ::buffa::Inline<::buffa_types::google::protobuf::UInt32Value>,
+        >,
+        /// Field 3: `proposal_height`
+        #[serde(
+            rename = "proposalHeight",
+            alias = "proposal_height",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+        )]
+        pub proposal_height: ::buffa::MessageField<
+            ::buffa_types::google::protobuf::UInt32Value,
+            ::buffa::Inline<::buffa_types::google::protobuf::UInt32Value>,
+        >,
+        /// The blinded M6: it has no inputs, and its txid is the M6ID. Unset if
+        /// the request lists the bundle as known, or this node does not hold it.
+        ///
+        /// Field 4: `transaction`
+        #[serde(
+            rename = "transaction",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+        )]
+        pub transaction: ::buffa::MessageField<
+            super::super::super::common::v1::ConsensusHex,
+            ::buffa::Inline<super::super::super::common::v1::ConsensusHex>,
+        >,
+    }
+    impl ::core::fmt::Debug for Bundle {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+            f.debug_struct("Bundle")
+                .field("m6id", &self.m6id)
+                .field("vote_count", &self.vote_count)
+                .field("proposal_height", &self.proposal_height)
+                .field("transaction", &self.transaction)
+                .finish()
+        }
+    }
+    impl Bundle {
+        /// Protobuf type URL for this message, for use with `Any::pack` and
+        /// `Any::unpack_if`.
+        ///
+        /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+        pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Bundle";
+    }
+    ::buffa::impl_default_instance!(Bundle);
+    impl ::buffa_descriptor::reflect::Reflectable for Bundle {
+        /// Bridge-mode reflective handle: encodes `self` and decodes
+        /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+        /// against the package's embedded descriptor pool.
+        ///
+        /// # Performance
+        ///
+        /// One full encode/decode round-trip plus a heap allocation per
+        /// call. Hold onto the returned handle for repeated field reads
+        /// rather than calling `reflect()` per field.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the embedded `FileDescriptorSet` is malformed or
+        /// `Self::FULL_NAME` is not registered. Both indicate codegen
+        /// emitted inconsistent output, not consumer misuse — except
+        /// when this type was re-exported from a different
+        /// `buffa-build` invocation, whose pool is a different
+        /// instance. Each `generate_reflection(true)` codegen run
+        /// embeds its own pool; do not mix `reflect()` calls across
+        /// independently-generated crates.
+        fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+            let pool = __buffa::reflect::descriptor_pool();
+            let idx = pool
+                .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                        < Self as ::buffa::MessageName > ::FULL_NAME,
+                    )
+                });
+            ::buffa_descriptor::reflect::ReflectCow::Owned(
+                ::buffa::alloc::boxed::Box::new(
+                    ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                        self,
+                        ::buffa::alloc::sync::Arc::clone(pool),
+                        idx,
+                    ),
+                ),
+            )
+        }
+    }
+    impl ::buffa_descriptor::reflect::ReflectElement for Bundle {
+        /// Bridge-mode element reflection: each call snapshots this
+        /// element through [`Reflectable::reflect`]
+        /// (one encode/decode round-trip plus an allocation).
+        ///
+        /// [`Reflectable::reflect`]: ::buffa_descriptor::reflect::Reflectable::reflect
+        fn as_value_ref(&self) -> ::buffa_descriptor::reflect::ValueRef<'_> {
+            ::buffa_descriptor::reflect::ValueRef::Message(
+                ::buffa_descriptor::reflect::Reflectable::reflect(self),
+            )
+        }
+    }
+    impl ::buffa::MessageName for Bundle {
+        const PACKAGE: &'static str = "cusf.mainchain.v1";
+        const NAME: &'static str = "GetWithdrawalBundlesResponse.Bundle";
+        const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesResponse.Bundle";
+        const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Bundle";
+    }
+    impl ::buffa::Message for Bundle {
+        /// Returns the total encoded size in bytes.
+        ///
+        /// Accumulates in `u64` (which cannot overflow for in-memory
+        /// data) and saturates to `u32` at return, so a message whose
+        /// encoded size exceeds the 2 GiB protobuf limit yields a value
+        /// above [`::buffa::MAX_MESSAGE_BYTES`] that the encode entry
+        /// points reject, never a silently wrapped size.
+        #[allow(clippy::let_and_return)]
+        fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            let mut size = 0u64;
+            if self.m6id.is_set() {
+                let __slot = __cache.reserve();
+                let inner_size = self.m6id.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            if self.vote_count.is_set() {
+                let __slot = __cache.reserve();
+                let inner_size = self.vote_count.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            if self.proposal_height.is_set() {
+                let __slot = __cache.reserve();
+                let inner_size = self.proposal_height.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            if self.transaction.is_set() {
+                let __slot = __cache.reserve();
+                let inner_size = self.transaction.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            ::buffa::saturate_size(size)
+        }
+        fn write_to(
+            &self,
+            __cache: &mut ::buffa::SizeCache,
+            buf: &mut impl ::buffa::EncodeSink,
+        ) {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            if self.m6id.is_set() {
+                ::buffa::types::put_len_delimited_header(
+                    1u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                self.m6id.write_to(__cache, buf);
+            }
+            if self.vote_count.is_set() {
+                ::buffa::types::put_len_delimited_header(
+                    2u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                self.vote_count.write_to(__cache, buf);
+            }
+            if self.proposal_height.is_set() {
+                ::buffa::types::put_len_delimited_header(
+                    3u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                self.proposal_height.write_to(__cache, buf);
+            }
+            if self.transaction.is_set() {
+                ::buffa::types::put_len_delimited_header(
+                    4u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                self.transaction.write_to(__cache, buf);
+            }
+        }
+        fn merge_field(
+            &mut self,
+            tag: ::buffa::encoding::Tag,
+            buf: &mut impl ::buffa::bytes::Buf,
+            ctx: ::buffa::DecodeContext<'_>,
+        ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+            #[allow(unused_imports)]
+            use ::buffa::bytes::Buf as _;
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            match tag.field_number() {
+                1u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    ::buffa::Message::merge_length_delimited(
+                        self.m6id.get_or_insert_default(),
+                        buf,
+                        ctx,
+                    )?;
+                }
+                2u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    ::buffa::Message::merge_length_delimited(
+                        self.vote_count.get_or_insert_default(),
+                        buf,
+                        ctx,
+                    )?;
+                }
+                3u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    ::buffa::Message::merge_length_delimited(
+                        self.proposal_height.get_or_insert_default(),
+                        buf,
+                        ctx,
+                    )?;
+                }
+                4u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    ::buffa::Message::merge_length_delimited(
+                        self.transaction.get_or_insert_default(),
+                        buf,
+                        ctx,
+                    )?;
+                }
+                _ => {
+                    ::buffa::encoding::skip_field_depth(tag, buf, ctx.depth())?;
+                }
+            }
+            ::core::result::Result::Ok(())
+        }
+        fn clear(&mut self) {
+            self.m6id = ::buffa::MessageField::none();
+            self.vote_count = ::buffa::MessageField::none();
+            self.proposal_height = ::buffa::MessageField::none();
+            self.transaction = ::buffa::MessageField::none();
+        }
+    }
+    impl ::buffa::json_helpers::ProtoElemJson for Bundle {
+        fn serialize_proto_json<S: ::serde::Serializer>(
+            v: &Self,
+            s: S,
+        ) -> ::core::result::Result<S::Ok, S::Error> {
+            ::serde::Serialize::serialize(v, s)
+        }
+        fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+            d: D,
+        ) -> ::core::result::Result<Self, D::Error> {
+            <Self as ::serde::Deserialize>::deserialize(d)
+        }
+    }
+    #[doc(hidden)]
+    pub const __BUNDLE_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+        type_url: "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Bundle",
+        to_json: ::buffa::type_registry::any_to_json::<Bundle>,
+        from_json: ::buffa::type_registry::any_from_json::<Bundle>,
+        is_wkt: false,
+    };
+    #[derive(Clone, PartialEq, Default)]
+    #[derive(::serde::Serialize, ::serde::Deserialize)]
+    #[serde(default)]
+    pub struct Sidechain {
+        /// Field 1: `sidechain_id`
+        #[serde(
+            rename = "sidechainId",
+            alias = "sidechain_id",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_unset_message_field"
+        )]
+        pub sidechain_id: ::buffa::MessageField<
+            ::buffa_types::google::protobuf::UInt32Value,
+            ::buffa::Inline<::buffa_types::google::protobuf::UInt32Value>,
+        >,
+        /// Every pending bundle, in the order M4 votes index them.
+        ///
+        /// Field 2: `bundles`
+        #[serde(
+            rename = "bundles",
+            skip_serializing_if = "::buffa::json_helpers::skip_if::is_empty_vec",
+            deserialize_with = "::buffa::json_helpers::null_as_default"
+        )]
+        pub bundles: ::buffa::alloc::vec::Vec<
+            super::get_withdrawal_bundles_response::Bundle,
+        >,
+    }
+    impl ::core::fmt::Debug for Sidechain {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+            f.debug_struct("Sidechain")
+                .field("sidechain_id", &self.sidechain_id)
+                .field("bundles", &self.bundles)
+                .finish()
+        }
+    }
+    impl Sidechain {
+        /// Protobuf type URL for this message, for use with `Any::pack` and
+        /// `Any::unpack_if`.
+        ///
+        /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+        pub const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Sidechain";
+    }
+    ::buffa::impl_default_instance!(Sidechain);
+    impl ::buffa_descriptor::reflect::Reflectable for Sidechain {
+        /// Bridge-mode reflective handle: encodes `self` and decodes
+        /// it into a [`DynamicMessage`](::buffa_descriptor::reflect::DynamicMessage)
+        /// against the package's embedded descriptor pool.
+        ///
+        /// # Performance
+        ///
+        /// One full encode/decode round-trip plus a heap allocation per
+        /// call. Hold onto the returned handle for repeated field reads
+        /// rather than calling `reflect()` per field.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the embedded `FileDescriptorSet` is malformed or
+        /// `Self::FULL_NAME` is not registered. Both indicate codegen
+        /// emitted inconsistent output, not consumer misuse — except
+        /// when this type was re-exported from a different
+        /// `buffa-build` invocation, whose pool is a different
+        /// instance. Each `generate_reflection(true)` codegen run
+        /// embeds its own pool; do not mix `reflect()` calls across
+        /// independently-generated crates.
+        fn reflect(&self) -> ::buffa_descriptor::reflect::ReflectCow<'_> {
+            let pool = __buffa::reflect::descriptor_pool();
+            let idx = pool
+                .message_index(<Self as ::buffa::MessageName>::FULL_NAME)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "type {:?} not registered in this package's descriptor pool (cross-crate reflect()?)",
+                        < Self as ::buffa::MessageName > ::FULL_NAME,
+                    )
+                });
+            ::buffa_descriptor::reflect::ReflectCow::Owned(
+                ::buffa::alloc::boxed::Box::new(
+                    ::buffa_descriptor::reflect::DynamicMessage::from_message(
+                        self,
+                        ::buffa::alloc::sync::Arc::clone(pool),
+                        idx,
+                    ),
+                ),
+            )
+        }
+    }
+    impl ::buffa_descriptor::reflect::ReflectElement for Sidechain {
+        /// Bridge-mode element reflection: each call snapshots this
+        /// element through [`Reflectable::reflect`]
+        /// (one encode/decode round-trip plus an allocation).
+        ///
+        /// [`Reflectable::reflect`]: ::buffa_descriptor::reflect::Reflectable::reflect
+        fn as_value_ref(&self) -> ::buffa_descriptor::reflect::ValueRef<'_> {
+            ::buffa_descriptor::reflect::ValueRef::Message(
+                ::buffa_descriptor::reflect::Reflectable::reflect(self),
+            )
+        }
+    }
+    impl ::buffa::MessageName for Sidechain {
+        const PACKAGE: &'static str = "cusf.mainchain.v1";
+        const NAME: &'static str = "GetWithdrawalBundlesResponse.Sidechain";
+        const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesResponse.Sidechain";
+        const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Sidechain";
+    }
+    impl ::buffa::Message for Sidechain {
+        /// Returns the total encoded size in bytes.
+        ///
+        /// Accumulates in `u64` (which cannot overflow for in-memory
+        /// data) and saturates to `u32` at return, so a message whose
+        /// encoded size exceeds the 2 GiB protobuf limit yields a value
+        /// above [`::buffa::MAX_MESSAGE_BYTES`] that the encode entry
+        /// points reject, never a silently wrapped size.
+        #[allow(clippy::let_and_return)]
+        fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            let mut size = 0u64;
+            if self.sidechain_id.is_set() {
+                let __slot = __cache.reserve();
+                let inner_size = self.sidechain_id.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            for v in &self.bundles {
+                let __slot = __cache.reserve();
+                let inner_size = v.compute_size(__cache);
+                __cache.set(__slot, inner_size);
+                size
+                    += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                        + inner_size as u64;
+            }
+            ::buffa::saturate_size(size)
+        }
+        fn write_to(
+            &self,
+            __cache: &mut ::buffa::SizeCache,
+            buf: &mut impl ::buffa::EncodeSink,
+        ) {
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            if self.sidechain_id.is_set() {
+                ::buffa::types::put_len_delimited_header(
+                    1u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                self.sidechain_id.write_to(__cache, buf);
+            }
+            for v in &self.bundles {
+                ::buffa::types::put_len_delimited_header(
+                    2u32,
+                    u64::from(__cache.consume_next()),
+                    buf,
+                );
+                v.write_to(__cache, buf);
+            }
+        }
+        fn merge_field(
+            &mut self,
+            tag: ::buffa::encoding::Tag,
+            buf: &mut impl ::buffa::bytes::Buf,
+            ctx: ::buffa::DecodeContext<'_>,
+        ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+            #[allow(unused_imports)]
+            use ::buffa::bytes::Buf as _;
+            #[allow(unused_imports)]
+            use ::buffa::Enumeration as _;
+            match tag.field_number() {
+                1u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    ::buffa::Message::merge_length_delimited(
+                        self.sidechain_id.get_or_insert_default(),
+                        buf,
+                        ctx,
+                    )?;
+                }
+                2u32 => {
+                    ::buffa::encoding::check_wire_type(
+                        tag,
+                        ::buffa::encoding::WireType::LengthDelimited,
+                    )?;
+                    let mut elem = ::core::default::Default::default();
+                    ctx.register_element_memory(
+                        ::buffa::__private::element_footprint(&elem),
+                    )?;
+                    ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+                    self.bundles.push(elem);
+                }
+                _ => {
+                    ::buffa::encoding::skip_field_depth(tag, buf, ctx.depth())?;
+                }
+            }
+            ::core::result::Result::Ok(())
+        }
+        fn clear(&mut self) {
+            self.sidechain_id = ::buffa::MessageField::none();
+            self.bundles.clear();
+        }
+    }
+    impl ::buffa::json_helpers::ProtoElemJson for Sidechain {
+        fn serialize_proto_json<S: ::serde::Serializer>(
+            v: &Self,
+            s: S,
+        ) -> ::core::result::Result<S::Ok, S::Error> {
+            ::serde::Serialize::serialize(v, s)
+        }
+        fn deserialize_proto_json<'de, D: ::serde::Deserializer<'de>>(
+            d: D,
+        ) -> ::core::result::Result<Self, D::Error> {
+            <Self as ::serde::Deserialize>::deserialize(d)
+        }
+    }
+    #[doc(hidden)]
+    pub const __SIDECHAIN_JSON_ANY: ::buffa::type_registry::JsonAnyEntry = ::buffa::type_registry::JsonAnyEntry {
+        type_url: "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Sidechain",
+        to_json: ::buffa::type_registry::any_to_json::<Sidechain>,
+        from_json: ::buffa::type_registry::any_from_json::<Sidechain>,
+        is_wkt: false,
+    };
+    #[doc(inline)]
+    pub use super::__buffa::view::get_withdrawal_bundles_response::BundleView;
+    #[doc(inline)]
+    pub use super::__buffa::view::get_withdrawal_bundles_response::BundleOwnedView;
+    #[doc(inline)]
+    pub use super::__buffa::view::get_withdrawal_bundles_response::SidechainView;
+    #[doc(inline)]
+    pub use super::__buffa::view::get_withdrawal_bundles_response::SidechainOwnedView;
+}
+#[derive(Clone, PartialEq, Default)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
+#[serde(default)]
 pub struct GenerateToAddressRequest {
     /// Number of blocks to generate. Defaults to 1.
     ///
@@ -36264,6 +37386,1908 @@ pub mod __buffa {
                 __s: __S,
             ) -> ::core::result::Result<__S::Ok, __S::Error> {
                 ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetWithdrawalBundlesRequestView<'a> {
+            /// Field 1: `sidechains`
+            pub sidechains: ::buffa::RepeatedView<
+                'a,
+                super::super::__buffa::view::get_withdrawal_bundles_request::SidechainView<
+                    'a,
+                >,
+            >,
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetWithdrawalBundlesRequestView<'a> {
+            type Owned = super::super::GetWithdrawalBundlesRequest;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let __limit = ::core::cell::Cell::new(
+                    ::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT,
+                );
+                <Self as ::buffa::MessageView>::decode_view_ctx(
+                    buf,
+                    ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+                )
+            }
+            fn decode_view_with_ctx(
+                buf: &'a [u8],
+                ctx: ::buffa::DecodeContext<'_>,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+            }
+            #[inline]
+            fn merge_view_field(
+                &mut self,
+                tag: ::buffa::encoding::Tag,
+                cur: &'a [u8],
+                _before_tag: &'a [u8],
+                ctx: ::buffa::DecodeContext<'_>,
+            ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+                let _ = ctx;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur = cur;
+                match tag.field_number() {
+                    1u32 => {
+                        ::buffa::encoding::check_wire_type(
+                            tag,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )?;
+                        let __sub_ctx = ctx.descend()?;
+                        let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                        ctx.register_element_memory(
+                            ::core::mem::size_of::<
+                                super::super::__buffa::view::get_withdrawal_bundles_request::SidechainView,
+                            >(),
+                        )?;
+                        view.sidechains
+                            .push(
+                                <super::super::__buffa::view::get_withdrawal_bundles_request::SidechainView as ::buffa::MessageView>::decode_view_ctx(
+                                    sub,
+                                    __sub_ctx,
+                                )?,
+                            );
+                    }
+                    _ => {
+                        ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
+                    }
+                }
+                ::core::result::Result::Ok(cur)
+            }
+            fn to_owned_message(
+                &self,
+            ) -> ::core::result::Result<
+                super::super::GetWithdrawalBundlesRequest,
+                ::buffa::DecodeError,
+            > {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> ::core::result::Result<
+                super::super::GetWithdrawalBundlesRequest,
+                ::buffa::DecodeError,
+            > {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                ::core::result::Result::Ok(super::super::GetWithdrawalBundlesRequest {
+                    sidechains: self
+                        .sidechains
+                        .iter()
+                        .map(|v| v.to_owned_from_source(__buffa_src))
+                        .collect::<::core::result::Result<_, ::buffa::DecodeError>>()?,
+                    ..::core::default::Default::default()
+                })
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetWithdrawalBundlesRequestView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u64;
+                for v in &self.sidechains {
+                    let __slot = __cache.reserve();
+                    let inner_size = v.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                            + inner_size as u64;
+                }
+                ::buffa::saturate_size(size)
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::EncodeSink,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                for v in &self.sidechains {
+                    ::buffa::types::put_len_delimited_header(
+                        1u32,
+                        u64::from(__cache.consume_next()),
+                        buf,
+                    );
+                    v.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetWithdrawalBundlesRequestView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !self.sidechains.is_empty() {
+                    __map.serialize_entry("sidechains", &*self.sidechains)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetWithdrawalBundlesRequestView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetWithdrawalBundlesRequest";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesRequest";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest";
+        }
+        ::buffa::impl_default_view_instance!(GetWithdrawalBundlesRequestView);
+        ::buffa::impl_view_reborrow!(GetWithdrawalBundlesRequestView);
+        /** Self-contained, `'static` owned view of a `GetWithdrawalBundlesRequest` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetWithdrawalBundlesRequestView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetWithdrawalBundlesRequestView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetWithdrawalBundlesRequestOwnedView(
+            ::buffa::OwnedView<GetWithdrawalBundlesRequestView<'static>>,
+        );
+        impl GetWithdrawalBundlesRequestOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetWithdrawalBundlesRequestOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetWithdrawalBundlesRequestOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError::MessageTooLarge`] if the
+            /// message's encoded size exceeds the 2 GiB protobuf limit, or
+            /// another [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetWithdrawalBundlesRequest,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetWithdrawalBundlesRequestOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetWithdrawalBundlesRequestView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetWithdrawalBundlesRequestView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            ///
+            /// Infallible: this type's constructors wire-decode their
+            /// buffer, and a view produced by wire decoding always
+            /// converts. Delegates to [`::buffa::OwnedView::to_owned_message`],
+            /// whose contract also governs handles converted from a raw
+            /// [`::buffa::OwnedView`].
+            #[must_use]
+            pub fn to_owned_message(&self) -> super::super::GetWithdrawalBundlesRequest {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `sidechains`
+            #[must_use]
+            pub fn sidechains(
+                &self,
+            ) -> &::buffa::RepeatedView<
+                '_,
+                super::super::__buffa::view::get_withdrawal_bundles_request::SidechainView<
+                    '_,
+                >,
+            > {
+                &self.0.reborrow().sidechains
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetWithdrawalBundlesRequestView<'static>>,
+        > for GetWithdrawalBundlesRequestOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetWithdrawalBundlesRequestView<'static>>,
+            ) -> Self {
+                GetWithdrawalBundlesRequestOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetWithdrawalBundlesRequestOwnedView>
+        for ::buffa::OwnedView<GetWithdrawalBundlesRequestView<'static>> {
+            fn from(wrapper: GetWithdrawalBundlesRequestOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetWithdrawalBundlesRequestView<'static>>,
+        > for GetWithdrawalBundlesRequestOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetWithdrawalBundlesRequestView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetWithdrawalBundlesRequest {
+            type View<'a> = GetWithdrawalBundlesRequestView<'a>;
+            type ViewHandle = GetWithdrawalBundlesRequestOwnedView;
+        }
+        impl ::serde::Serialize for GetWithdrawalBundlesRequestOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        pub mod get_withdrawal_bundles_request {
+            #[allow(unused_imports)]
+            use super::*;
+            #[derive(Clone, Debug, Default)]
+            pub struct SidechainView<'a> {
+                /// Field 1: `sidechain_id`
+                pub sidechain_id: ::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'a>,
+                >,
+                /// Bundles the caller already has the transaction of.
+                ///
+                /// Field 2: `known_m6ids`
+                pub known_m6ids: ::buffa::RepeatedView<
+                    'a,
+                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView<
+                        'a,
+                    >,
+                >,
+            }
+            impl<'a> ::buffa::MessageView<'a> for SidechainView<'a> {
+                type Owned = super::super::super::get_withdrawal_bundles_request::Sidechain;
+                fn decode_view(
+                    buf: &'a [u8],
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    let __limit = ::core::cell::Cell::new(
+                        ::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT,
+                    );
+                    <Self as ::buffa::MessageView>::decode_view_ctx(
+                        buf,
+                        ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+                    )
+                }
+                fn decode_view_with_ctx(
+                    buf: &'a [u8],
+                    ctx: ::buffa::DecodeContext<'_>,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+                }
+                #[inline]
+                fn merge_view_field(
+                    &mut self,
+                    tag: ::buffa::encoding::Tag,
+                    cur: &'a [u8],
+                    _before_tag: &'a [u8],
+                    ctx: ::buffa::DecodeContext<'_>,
+                ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+                    let _ = ctx;
+                    #[allow(unused_variables)]
+                    let view = self;
+                    let mut cur = cur;
+                    match tag.field_number() {
+                        1u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.sidechain_id.as_mut() {
+                                Some(existing) => {
+                                    ::buffa::MessageView::merge_into_view(
+                                        existing,
+                                        sub,
+                                        __sub_ctx,
+                                    )?
+                                }
+                                None => {
+                                    view.sidechain_id = ::buffa::MessageFieldView::set(
+                                        <::buffa_types::google::protobuf::__buffa::view::UInt32ValueView as ::buffa::MessageView>::decode_view_ctx(
+                                            sub,
+                                            __sub_ctx,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        2u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            ctx.register_element_memory(
+                                ::core::mem::size_of::<
+                                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView,
+                                >(),
+                            )?;
+                            view.known_m6ids
+                                .push(
+                                    <super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView as ::buffa::MessageView>::decode_view_ctx(
+                                        sub,
+                                        __sub_ctx,
+                                    )?,
+                                );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(
+                                tag,
+                                &mut cur,
+                                ctx.depth(),
+                            )?;
+                        }
+                    }
+                    ::core::result::Result::Ok(cur)
+                }
+                fn to_owned_message(
+                    &self,
+                ) -> ::core::result::Result<
+                    super::super::super::get_withdrawal_bundles_request::Sidechain,
+                    ::buffa::DecodeError,
+                > {
+                    self.to_owned_from_source(None)
+                }
+                #[allow(clippy::useless_conversion, clippy::needless_update)]
+                fn to_owned_from_source(
+                    &self,
+                    __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+                ) -> ::core::result::Result<
+                    super::super::super::get_withdrawal_bundles_request::Sidechain,
+                    ::buffa::DecodeError,
+                > {
+                    #[allow(unused_imports)]
+                    use ::buffa::alloc::string::ToString as _;
+                    let _ = __buffa_src;
+                    ::core::result::Result::Ok(super::super::super::get_withdrawal_bundles_request::Sidechain {
+                        sidechain_id: match self.sidechain_id.as_option() {
+                            Some(v) => {
+                                ::buffa::MessageField::<
+                                    ::buffa_types::google::protobuf::UInt32Value,
+                                    ::buffa::Inline<
+                                        ::buffa_types::google::protobuf::UInt32Value,
+                                    >,
+                                >::some(v.to_owned_from_source(__buffa_src)?)
+                            }
+                            None => ::buffa::MessageField::none(),
+                        },
+                        known_m6ids: self
+                            .known_m6ids
+                            .iter()
+                            .map(|v| v.to_owned_from_source(__buffa_src))
+                            .collect::<
+                                ::core::result::Result<_, ::buffa::DecodeError>,
+                            >()?,
+                        ..::core::default::Default::default()
+                    })
+                }
+            }
+            impl<'a> ::buffa::ViewEncode<'a> for SidechainView<'a> {
+                #[allow(clippy::needless_borrow, clippy::let_and_return)]
+                fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    let mut size = 0u64;
+                    if self.sidechain_id.is_set() {
+                        let __slot = __cache.reserve();
+                        let inner_size = self.sidechain_id.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    for v in &self.known_m6ids {
+                        let __slot = __cache.reserve();
+                        let inner_size = v.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    ::buffa::saturate_size(size)
+                }
+                #[allow(clippy::needless_borrow)]
+                fn write_to(
+                    &self,
+                    __cache: &mut ::buffa::SizeCache,
+                    buf: &mut impl ::buffa::EncodeSink,
+                ) {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    if self.sidechain_id.is_set() {
+                        ::buffa::types::put_len_delimited_header(
+                            1u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        self.sidechain_id.write_to(__cache, buf);
+                    }
+                    for v in &self.known_m6ids {
+                        ::buffa::types::put_len_delimited_header(
+                            2u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        v.write_to(__cache, buf);
+                    }
+                }
+            }
+            /// Serializes this view as protobuf JSON.
+            ///
+            /// Implicit-presence fields with default values are omitted, `required`
+            /// fields are always emitted, explicit-presence (`optional`) fields are
+            /// emitted only when set, bytes fields are base64-encoded, and enum
+            /// values are their proto name strings.
+            ///
+            /// This impl uses `serialize_map(None)` because the number of emitted
+            /// fields depends on default-omission rules; serializers that require
+            /// known map lengths (e.g. `bincode`) will return a runtime error.
+            /// Use the owned message type for those formats.
+            impl<'__a> ::serde::Serialize for SidechainView<'__a> {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    use ::serde::ser::SerializeMap as _;
+                    let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                    {
+                        if let ::core::option::Option::Some(__v) = self
+                            .sidechain_id
+                            .as_option()
+                        {
+                            __map.serialize_entry("sidechainId", __v)?;
+                        }
+                    }
+                    if !self.known_m6ids.is_empty() {
+                        __map.serialize_entry("knownM6ids", &*self.known_m6ids)?;
+                    }
+                    __map.end()
+                }
+            }
+            impl<'a> ::buffa::MessageName for SidechainView<'a> {
+                const PACKAGE: &'static str = "cusf.mainchain.v1";
+                const NAME: &'static str = "GetWithdrawalBundlesRequest.Sidechain";
+                const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesRequest.Sidechain";
+                const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesRequest.Sidechain";
+            }
+            ::buffa::impl_default_view_instance!(SidechainView);
+            ::buffa::impl_view_reborrow!(SidechainView);
+            /** Self-contained, `'static` owned view of a `Sidechain` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SidechainView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SidechainView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+            #[derive(Clone, Debug)]
+            pub struct SidechainOwnedView(::buffa::OwnedView<SidechainView<'static>>);
+            impl SidechainOwnedView {
+                /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+                ///
+                /// The view borrows directly from the buffer's data; the buffer is
+                /// retained inside the returned handle.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+                /// protobuf data.
+                pub fn decode(
+                    bytes: ::buffa::bytes::Bytes,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        SidechainOwnedView(::buffa::OwnedView::decode(bytes)?),
+                    )
+                }
+                /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+                /// max message size).
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+                /// exceeds the configured limits.
+                pub fn decode_with_options(
+                    bytes: ::buffa::bytes::Bytes,
+                    opts: &::buffa::DecodeOptions,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        SidechainOwnedView(
+                            ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                        ),
+                    )
+                }
+                /// Build from an owned message via an encode → decode round-trip.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError::MessageTooLarge`] if the
+                /// message's encoded size exceeds the 2 GiB protobuf limit, or
+                /// another [`::buffa::DecodeError`] if the re-encoded bytes are
+                /// somehow invalid (should not happen for well-formed messages).
+                pub fn from_owned(
+                    msg: &super::super::super::get_withdrawal_bundles_request::Sidechain,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        SidechainOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                    )
+                }
+                /// Borrow the full [`SidechainView`] with its lifetime tied to `&self`.
+                #[must_use]
+                pub fn view(&self) -> &SidechainView<'_> {
+                    self.0.reborrow()
+                }
+                /// Convert to the owned message type.
+                ///
+                /// Infallible: this type's constructors wire-decode their
+                /// buffer, and a view produced by wire decoding always
+                /// converts. Delegates to [`::buffa::OwnedView::to_owned_message`],
+                /// whose contract also governs handles converted from a raw
+                /// [`::buffa::OwnedView`].
+                #[must_use]
+                pub fn to_owned_message(
+                    &self,
+                ) -> super::super::super::get_withdrawal_bundles_request::Sidechain {
+                    self.0.to_owned_message()
+                }
+                /// The underlying bytes buffer.
+                #[must_use]
+                pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                    self.0.bytes()
+                }
+                /// Consume the handle, returning the underlying bytes buffer.
+                #[must_use]
+                pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                    self.0.into_bytes()
+                }
+                /// Field 1: `sidechain_id`
+                #[must_use]
+                pub fn sidechain_id(
+                    &self,
+                ) -> &::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'_>,
+                > {
+                    &self.0.reborrow().sidechain_id
+                }
+                /// Bundles the caller already has the transaction of.
+                ///
+                /// Field 2: `known_m6ids`
+                #[must_use]
+                pub fn known_m6ids(
+                    &self,
+                ) -> &::buffa::RepeatedView<
+                    '_,
+                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView<
+                        '_,
+                    >,
+                > {
+                    &self.0.reborrow().known_m6ids
+                }
+            }
+            impl ::core::convert::From<::buffa::OwnedView<SidechainView<'static>>>
+            for SidechainOwnedView {
+                fn from(inner: ::buffa::OwnedView<SidechainView<'static>>) -> Self {
+                    SidechainOwnedView(inner)
+                }
+            }
+            impl ::core::convert::From<SidechainOwnedView>
+            for ::buffa::OwnedView<SidechainView<'static>> {
+                fn from(wrapper: SidechainOwnedView) -> Self {
+                    wrapper.0
+                }
+            }
+            impl ::core::convert::AsRef<::buffa::OwnedView<SidechainView<'static>>>
+            for SidechainOwnedView {
+                fn as_ref(&self) -> &::buffa::OwnedView<SidechainView<'static>> {
+                    &self.0
+                }
+            }
+            impl ::buffa::HasMessageView
+            for super::super::super::get_withdrawal_bundles_request::Sidechain {
+                type View<'a> = SidechainView<'a>;
+                type ViewHandle = SidechainOwnedView;
+            }
+            impl ::serde::Serialize for SidechainOwnedView {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    ::serde::Serialize::serialize(&self.0, __s)
+                }
+            }
+        }
+        #[derive(Clone, Debug, Default)]
+        pub struct GetWithdrawalBundlesResponseView<'a> {
+            /// Field 1: `sidechains`
+            pub sidechains: ::buffa::RepeatedView<
+                'a,
+                super::super::__buffa::view::get_withdrawal_bundles_response::SidechainView<
+                    'a,
+                >,
+            >,
+        }
+        impl<'a> ::buffa::MessageView<'a> for GetWithdrawalBundlesResponseView<'a> {
+            type Owned = super::super::GetWithdrawalBundlesResponse;
+            fn decode_view(
+                buf: &'a [u8],
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                let __limit = ::core::cell::Cell::new(
+                    ::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT,
+                );
+                <Self as ::buffa::MessageView>::decode_view_ctx(
+                    buf,
+                    ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+                )
+            }
+            fn decode_view_with_ctx(
+                buf: &'a [u8],
+                ctx: ::buffa::DecodeContext<'_>,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+            }
+            #[inline]
+            fn merge_view_field(
+                &mut self,
+                tag: ::buffa::encoding::Tag,
+                cur: &'a [u8],
+                _before_tag: &'a [u8],
+                ctx: ::buffa::DecodeContext<'_>,
+            ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+                let _ = ctx;
+                #[allow(unused_variables)]
+                let view = self;
+                let mut cur = cur;
+                match tag.field_number() {
+                    1u32 => {
+                        ::buffa::encoding::check_wire_type(
+                            tag,
+                            ::buffa::encoding::WireType::LengthDelimited,
+                        )?;
+                        let __sub_ctx = ctx.descend()?;
+                        let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                        ctx.register_element_memory(
+                            ::core::mem::size_of::<
+                                super::super::__buffa::view::get_withdrawal_bundles_response::SidechainView,
+                            >(),
+                        )?;
+                        view.sidechains
+                            .push(
+                                <super::super::__buffa::view::get_withdrawal_bundles_response::SidechainView as ::buffa::MessageView>::decode_view_ctx(
+                                    sub,
+                                    __sub_ctx,
+                                )?,
+                            );
+                    }
+                    _ => {
+                        ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
+                    }
+                }
+                ::core::result::Result::Ok(cur)
+            }
+            fn to_owned_message(
+                &self,
+            ) -> ::core::result::Result<
+                super::super::GetWithdrawalBundlesResponse,
+                ::buffa::DecodeError,
+            > {
+                self.to_owned_from_source(None)
+            }
+            #[allow(clippy::useless_conversion, clippy::needless_update)]
+            fn to_owned_from_source(
+                &self,
+                __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+            ) -> ::core::result::Result<
+                super::super::GetWithdrawalBundlesResponse,
+                ::buffa::DecodeError,
+            > {
+                #[allow(unused_imports)]
+                use ::buffa::alloc::string::ToString as _;
+                let _ = __buffa_src;
+                ::core::result::Result::Ok(super::super::GetWithdrawalBundlesResponse {
+                    sidechains: self
+                        .sidechains
+                        .iter()
+                        .map(|v| v.to_owned_from_source(__buffa_src))
+                        .collect::<::core::result::Result<_, ::buffa::DecodeError>>()?,
+                    ..::core::default::Default::default()
+                })
+            }
+        }
+        impl<'a> ::buffa::ViewEncode<'a> for GetWithdrawalBundlesResponseView<'a> {
+            #[allow(clippy::needless_borrow, clippy::let_and_return)]
+            fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                let mut size = 0u64;
+                for v in &self.sidechains {
+                    let __slot = __cache.reserve();
+                    let inner_size = v.compute_size(__cache);
+                    __cache.set(__slot, inner_size);
+                    size
+                        += 1u64 + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                            + inner_size as u64;
+                }
+                ::buffa::saturate_size(size)
+            }
+            #[allow(clippy::needless_borrow)]
+            fn write_to(
+                &self,
+                __cache: &mut ::buffa::SizeCache,
+                buf: &mut impl ::buffa::EncodeSink,
+            ) {
+                #[allow(unused_imports)]
+                use ::buffa::Enumeration as _;
+                for v in &self.sidechains {
+                    ::buffa::types::put_len_delimited_header(
+                        1u32,
+                        u64::from(__cache.consume_next()),
+                        buf,
+                    );
+                    v.write_to(__cache, buf);
+                }
+            }
+        }
+        /// Serializes this view as protobuf JSON.
+        ///
+        /// Implicit-presence fields with default values are omitted, `required`
+        /// fields are always emitted, explicit-presence (`optional`) fields are
+        /// emitted only when set, bytes fields are base64-encoded, and enum
+        /// values are their proto name strings.
+        ///
+        /// This impl uses `serialize_map(None)` because the number of emitted
+        /// fields depends on default-omission rules; serializers that require
+        /// known map lengths (e.g. `bincode`) will return a runtime error.
+        /// Use the owned message type for those formats.
+        impl<'__a> ::serde::Serialize for GetWithdrawalBundlesResponseView<'__a> {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                use ::serde::ser::SerializeMap as _;
+                let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                if !self.sidechains.is_empty() {
+                    __map.serialize_entry("sidechains", &*self.sidechains)?;
+                }
+                __map.end()
+            }
+        }
+        impl<'a> ::buffa::MessageName for GetWithdrawalBundlesResponseView<'a> {
+            const PACKAGE: &'static str = "cusf.mainchain.v1";
+            const NAME: &'static str = "GetWithdrawalBundlesResponse";
+            const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesResponse";
+            const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse";
+        }
+        ::buffa::impl_default_view_instance!(GetWithdrawalBundlesResponseView);
+        ::buffa::impl_view_reborrow!(GetWithdrawalBundlesResponseView);
+        /** Self-contained, `'static` owned view of a `GetWithdrawalBundlesResponse` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`GetWithdrawalBundlesResponseView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`GetWithdrawalBundlesResponseView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+        #[derive(Clone, Debug)]
+        pub struct GetWithdrawalBundlesResponseOwnedView(
+            ::buffa::OwnedView<GetWithdrawalBundlesResponseView<'static>>,
+        );
+        impl GetWithdrawalBundlesResponseOwnedView {
+            /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+            ///
+            /// The view borrows directly from the buffer's data; the buffer is
+            /// retained inside the returned handle.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+            /// protobuf data.
+            pub fn decode(
+                bytes: ::buffa::bytes::Bytes,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetWithdrawalBundlesResponseOwnedView(
+                        ::buffa::OwnedView::decode(bytes)?,
+                    ),
+                )
+            }
+            /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+            /// max message size).
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+            /// exceeds the configured limits.
+            pub fn decode_with_options(
+                bytes: ::buffa::bytes::Bytes,
+                opts: &::buffa::DecodeOptions,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetWithdrawalBundlesResponseOwnedView(
+                        ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                    ),
+                )
+            }
+            /// Build from an owned message via an encode → decode round-trip.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`::buffa::DecodeError::MessageTooLarge`] if the
+            /// message's encoded size exceeds the 2 GiB protobuf limit, or
+            /// another [`::buffa::DecodeError`] if the re-encoded bytes are
+            /// somehow invalid (should not happen for well-formed messages).
+            pub fn from_owned(
+                msg: &super::super::GetWithdrawalBundlesResponse,
+            ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                ::core::result::Result::Ok(
+                    GetWithdrawalBundlesResponseOwnedView(
+                        ::buffa::OwnedView::from_owned(msg)?,
+                    ),
+                )
+            }
+            /// Borrow the full [`GetWithdrawalBundlesResponseView`] with its lifetime tied to `&self`.
+            #[must_use]
+            pub fn view(&self) -> &GetWithdrawalBundlesResponseView<'_> {
+                self.0.reborrow()
+            }
+            /// Convert to the owned message type.
+            ///
+            /// Infallible: this type's constructors wire-decode their
+            /// buffer, and a view produced by wire decoding always
+            /// converts. Delegates to [`::buffa::OwnedView::to_owned_message`],
+            /// whose contract also governs handles converted from a raw
+            /// [`::buffa::OwnedView`].
+            #[must_use]
+            pub fn to_owned_message(
+                &self,
+            ) -> super::super::GetWithdrawalBundlesResponse {
+                self.0.to_owned_message()
+            }
+            /// The underlying bytes buffer.
+            #[must_use]
+            pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                self.0.bytes()
+            }
+            /// Consume the handle, returning the underlying bytes buffer.
+            #[must_use]
+            pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                self.0.into_bytes()
+            }
+            /// Field 1: `sidechains`
+            #[must_use]
+            pub fn sidechains(
+                &self,
+            ) -> &::buffa::RepeatedView<
+                '_,
+                super::super::__buffa::view::get_withdrawal_bundles_response::SidechainView<
+                    '_,
+                >,
+            > {
+                &self.0.reborrow().sidechains
+            }
+        }
+        impl ::core::convert::From<
+            ::buffa::OwnedView<GetWithdrawalBundlesResponseView<'static>>,
+        > for GetWithdrawalBundlesResponseOwnedView {
+            fn from(
+                inner: ::buffa::OwnedView<GetWithdrawalBundlesResponseView<'static>>,
+            ) -> Self {
+                GetWithdrawalBundlesResponseOwnedView(inner)
+            }
+        }
+        impl ::core::convert::From<GetWithdrawalBundlesResponseOwnedView>
+        for ::buffa::OwnedView<GetWithdrawalBundlesResponseView<'static>> {
+            fn from(wrapper: GetWithdrawalBundlesResponseOwnedView) -> Self {
+                wrapper.0
+            }
+        }
+        impl ::core::convert::AsRef<
+            ::buffa::OwnedView<GetWithdrawalBundlesResponseView<'static>>,
+        > for GetWithdrawalBundlesResponseOwnedView {
+            fn as_ref(
+                &self,
+            ) -> &::buffa::OwnedView<GetWithdrawalBundlesResponseView<'static>> {
+                &self.0
+            }
+        }
+        impl ::buffa::HasMessageView for super::super::GetWithdrawalBundlesResponse {
+            type View<'a> = GetWithdrawalBundlesResponseView<'a>;
+            type ViewHandle = GetWithdrawalBundlesResponseOwnedView;
+        }
+        impl ::serde::Serialize for GetWithdrawalBundlesResponseOwnedView {
+            fn serialize<__S: ::serde::Serializer>(
+                &self,
+                __s: __S,
+            ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                ::serde::Serialize::serialize(&self.0, __s)
+            }
+        }
+        pub mod get_withdrawal_bundles_response {
+            #[allow(unused_imports)]
+            use super::*;
+            #[derive(Clone, Debug, Default)]
+            pub struct BundleView<'a> {
+                /// Field 1: `m6id`
+                pub m6id: ::buffa::MessageFieldView<
+                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView<
+                        'a,
+                    >,
+                >,
+                /// Field 2: `vote_count`
+                pub vote_count: ::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'a>,
+                >,
+                /// Field 3: `proposal_height`
+                pub proposal_height: ::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'a>,
+                >,
+                /// The blinded M6: it has no inputs, and its txid is the M6ID. Unset if
+                /// the request lists the bundle as known, or this node does not hold it.
+                ///
+                /// Field 4: `transaction`
+                pub transaction: ::buffa::MessageFieldView<
+                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView<
+                        'a,
+                    >,
+                >,
+            }
+            impl<'a> ::buffa::MessageView<'a> for BundleView<'a> {
+                type Owned = super::super::super::get_withdrawal_bundles_response::Bundle;
+                fn decode_view(
+                    buf: &'a [u8],
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    let __limit = ::core::cell::Cell::new(
+                        ::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT,
+                    );
+                    <Self as ::buffa::MessageView>::decode_view_ctx(
+                        buf,
+                        ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+                    )
+                }
+                fn decode_view_with_ctx(
+                    buf: &'a [u8],
+                    ctx: ::buffa::DecodeContext<'_>,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+                }
+                #[inline]
+                fn merge_view_field(
+                    &mut self,
+                    tag: ::buffa::encoding::Tag,
+                    cur: &'a [u8],
+                    _before_tag: &'a [u8],
+                    ctx: ::buffa::DecodeContext<'_>,
+                ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+                    let _ = ctx;
+                    #[allow(unused_variables)]
+                    let view = self;
+                    let mut cur = cur;
+                    match tag.field_number() {
+                        1u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.m6id.as_mut() {
+                                Some(existing) => {
+                                    ::buffa::MessageView::merge_into_view(
+                                        existing,
+                                        sub,
+                                        __sub_ctx,
+                                    )?
+                                }
+                                None => {
+                                    view.m6id = ::buffa::MessageFieldView::set(
+                                        <super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView as ::buffa::MessageView>::decode_view_ctx(
+                                            sub,
+                                            __sub_ctx,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        2u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.vote_count.as_mut() {
+                                Some(existing) => {
+                                    ::buffa::MessageView::merge_into_view(
+                                        existing,
+                                        sub,
+                                        __sub_ctx,
+                                    )?
+                                }
+                                None => {
+                                    view.vote_count = ::buffa::MessageFieldView::set(
+                                        <::buffa_types::google::protobuf::__buffa::view::UInt32ValueView as ::buffa::MessageView>::decode_view_ctx(
+                                            sub,
+                                            __sub_ctx,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        3u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.proposal_height.as_mut() {
+                                Some(existing) => {
+                                    ::buffa::MessageView::merge_into_view(
+                                        existing,
+                                        sub,
+                                        __sub_ctx,
+                                    )?
+                                }
+                                None => {
+                                    view.proposal_height = ::buffa::MessageFieldView::set(
+                                        <::buffa_types::google::protobuf::__buffa::view::UInt32ValueView as ::buffa::MessageView>::decode_view_ctx(
+                                            sub,
+                                            __sub_ctx,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        4u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.transaction.as_mut() {
+                                Some(existing) => {
+                                    ::buffa::MessageView::merge_into_view(
+                                        existing,
+                                        sub,
+                                        __sub_ctx,
+                                    )?
+                                }
+                                None => {
+                                    view.transaction = ::buffa::MessageFieldView::set(
+                                        <super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView as ::buffa::MessageView>::decode_view_ctx(
+                                            sub,
+                                            __sub_ctx,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(
+                                tag,
+                                &mut cur,
+                                ctx.depth(),
+                            )?;
+                        }
+                    }
+                    ::core::result::Result::Ok(cur)
+                }
+                fn to_owned_message(
+                    &self,
+                ) -> ::core::result::Result<
+                    super::super::super::get_withdrawal_bundles_response::Bundle,
+                    ::buffa::DecodeError,
+                > {
+                    self.to_owned_from_source(None)
+                }
+                #[allow(clippy::useless_conversion, clippy::needless_update)]
+                fn to_owned_from_source(
+                    &self,
+                    __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+                ) -> ::core::result::Result<
+                    super::super::super::get_withdrawal_bundles_response::Bundle,
+                    ::buffa::DecodeError,
+                > {
+                    #[allow(unused_imports)]
+                    use ::buffa::alloc::string::ToString as _;
+                    let _ = __buffa_src;
+                    ::core::result::Result::Ok(super::super::super::get_withdrawal_bundles_response::Bundle {
+                        m6id: match self.m6id.as_option() {
+                            Some(v) => {
+                                ::buffa::MessageField::<
+                                    super::super::super::super::super::common::v1::ConsensusHex,
+                                    ::buffa::Inline<
+                                        super::super::super::super::super::common::v1::ConsensusHex,
+                                    >,
+                                >::some(v.to_owned_from_source(__buffa_src)?)
+                            }
+                            None => ::buffa::MessageField::none(),
+                        },
+                        vote_count: match self.vote_count.as_option() {
+                            Some(v) => {
+                                ::buffa::MessageField::<
+                                    ::buffa_types::google::protobuf::UInt32Value,
+                                    ::buffa::Inline<
+                                        ::buffa_types::google::protobuf::UInt32Value,
+                                    >,
+                                >::some(v.to_owned_from_source(__buffa_src)?)
+                            }
+                            None => ::buffa::MessageField::none(),
+                        },
+                        proposal_height: match self.proposal_height.as_option() {
+                            Some(v) => {
+                                ::buffa::MessageField::<
+                                    ::buffa_types::google::protobuf::UInt32Value,
+                                    ::buffa::Inline<
+                                        ::buffa_types::google::protobuf::UInt32Value,
+                                    >,
+                                >::some(v.to_owned_from_source(__buffa_src)?)
+                            }
+                            None => ::buffa::MessageField::none(),
+                        },
+                        transaction: match self.transaction.as_option() {
+                            Some(v) => {
+                                ::buffa::MessageField::<
+                                    super::super::super::super::super::common::v1::ConsensusHex,
+                                    ::buffa::Inline<
+                                        super::super::super::super::super::common::v1::ConsensusHex,
+                                    >,
+                                >::some(v.to_owned_from_source(__buffa_src)?)
+                            }
+                            None => ::buffa::MessageField::none(),
+                        },
+                        ..::core::default::Default::default()
+                    })
+                }
+            }
+            impl<'a> ::buffa::ViewEncode<'a> for BundleView<'a> {
+                #[allow(clippy::needless_borrow, clippy::let_and_return)]
+                fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    let mut size = 0u64;
+                    if self.m6id.is_set() {
+                        let __slot = __cache.reserve();
+                        let inner_size = self.m6id.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    if self.vote_count.is_set() {
+                        let __slot = __cache.reserve();
+                        let inner_size = self.vote_count.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    if self.proposal_height.is_set() {
+                        let __slot = __cache.reserve();
+                        let inner_size = self.proposal_height.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    if self.transaction.is_set() {
+                        let __slot = __cache.reserve();
+                        let inner_size = self.transaction.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    ::buffa::saturate_size(size)
+                }
+                #[allow(clippy::needless_borrow)]
+                fn write_to(
+                    &self,
+                    __cache: &mut ::buffa::SizeCache,
+                    buf: &mut impl ::buffa::EncodeSink,
+                ) {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    if self.m6id.is_set() {
+                        ::buffa::types::put_len_delimited_header(
+                            1u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        self.m6id.write_to(__cache, buf);
+                    }
+                    if self.vote_count.is_set() {
+                        ::buffa::types::put_len_delimited_header(
+                            2u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        self.vote_count.write_to(__cache, buf);
+                    }
+                    if self.proposal_height.is_set() {
+                        ::buffa::types::put_len_delimited_header(
+                            3u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        self.proposal_height.write_to(__cache, buf);
+                    }
+                    if self.transaction.is_set() {
+                        ::buffa::types::put_len_delimited_header(
+                            4u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        self.transaction.write_to(__cache, buf);
+                    }
+                }
+            }
+            /// Serializes this view as protobuf JSON.
+            ///
+            /// Implicit-presence fields with default values are omitted, `required`
+            /// fields are always emitted, explicit-presence (`optional`) fields are
+            /// emitted only when set, bytes fields are base64-encoded, and enum
+            /// values are their proto name strings.
+            ///
+            /// This impl uses `serialize_map(None)` because the number of emitted
+            /// fields depends on default-omission rules; serializers that require
+            /// known map lengths (e.g. `bincode`) will return a runtime error.
+            /// Use the owned message type for those formats.
+            impl<'__a> ::serde::Serialize for BundleView<'__a> {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    use ::serde::ser::SerializeMap as _;
+                    let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                    {
+                        if let ::core::option::Option::Some(__v) = self.m6id.as_option()
+                        {
+                            __map.serialize_entry("m6id", __v)?;
+                        }
+                    }
+                    {
+                        if let ::core::option::Option::Some(__v) = self
+                            .vote_count
+                            .as_option()
+                        {
+                            __map.serialize_entry("voteCount", __v)?;
+                        }
+                    }
+                    {
+                        if let ::core::option::Option::Some(__v) = self
+                            .proposal_height
+                            .as_option()
+                        {
+                            __map.serialize_entry("proposalHeight", __v)?;
+                        }
+                    }
+                    {
+                        if let ::core::option::Option::Some(__v) = self
+                            .transaction
+                            .as_option()
+                        {
+                            __map.serialize_entry("transaction", __v)?;
+                        }
+                    }
+                    __map.end()
+                }
+            }
+            impl<'a> ::buffa::MessageName for BundleView<'a> {
+                const PACKAGE: &'static str = "cusf.mainchain.v1";
+                const NAME: &'static str = "GetWithdrawalBundlesResponse.Bundle";
+                const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesResponse.Bundle";
+                const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Bundle";
+            }
+            ::buffa::impl_default_view_instance!(BundleView);
+            ::buffa::impl_view_reborrow!(BundleView);
+            /** Self-contained, `'static` owned view of a `Bundle` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`BundleView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`BundleView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+            #[derive(Clone, Debug)]
+            pub struct BundleOwnedView(::buffa::OwnedView<BundleView<'static>>);
+            impl BundleOwnedView {
+                /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+                ///
+                /// The view borrows directly from the buffer's data; the buffer is
+                /// retained inside the returned handle.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+                /// protobuf data.
+                pub fn decode(
+                    bytes: ::buffa::bytes::Bytes,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        BundleOwnedView(::buffa::OwnedView::decode(bytes)?),
+                    )
+                }
+                /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+                /// max message size).
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+                /// exceeds the configured limits.
+                pub fn decode_with_options(
+                    bytes: ::buffa::bytes::Bytes,
+                    opts: &::buffa::DecodeOptions,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        BundleOwnedView(
+                            ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                        ),
+                    )
+                }
+                /// Build from an owned message via an encode → decode round-trip.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError::MessageTooLarge`] if the
+                /// message's encoded size exceeds the 2 GiB protobuf limit, or
+                /// another [`::buffa::DecodeError`] if the re-encoded bytes are
+                /// somehow invalid (should not happen for well-formed messages).
+                pub fn from_owned(
+                    msg: &super::super::super::get_withdrawal_bundles_response::Bundle,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        BundleOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                    )
+                }
+                /// Borrow the full [`BundleView`] with its lifetime tied to `&self`.
+                #[must_use]
+                pub fn view(&self) -> &BundleView<'_> {
+                    self.0.reborrow()
+                }
+                /// Convert to the owned message type.
+                ///
+                /// Infallible: this type's constructors wire-decode their
+                /// buffer, and a view produced by wire decoding always
+                /// converts. Delegates to [`::buffa::OwnedView::to_owned_message`],
+                /// whose contract also governs handles converted from a raw
+                /// [`::buffa::OwnedView`].
+                #[must_use]
+                pub fn to_owned_message(
+                    &self,
+                ) -> super::super::super::get_withdrawal_bundles_response::Bundle {
+                    self.0.to_owned_message()
+                }
+                /// The underlying bytes buffer.
+                #[must_use]
+                pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                    self.0.bytes()
+                }
+                /// Consume the handle, returning the underlying bytes buffer.
+                #[must_use]
+                pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                    self.0.into_bytes()
+                }
+                /// Field 1: `m6id`
+                #[must_use]
+                pub fn m6id(
+                    &self,
+                ) -> &::buffa::MessageFieldView<
+                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView<
+                        '_,
+                    >,
+                > {
+                    &self.0.reborrow().m6id
+                }
+                /// Field 2: `vote_count`
+                #[must_use]
+                pub fn vote_count(
+                    &self,
+                ) -> &::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'_>,
+                > {
+                    &self.0.reborrow().vote_count
+                }
+                /// Field 3: `proposal_height`
+                #[must_use]
+                pub fn proposal_height(
+                    &self,
+                ) -> &::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'_>,
+                > {
+                    &self.0.reborrow().proposal_height
+                }
+                /// The blinded M6: it has no inputs, and its txid is the M6ID. Unset if
+                /// the request lists the bundle as known, or this node does not hold it.
+                ///
+                /// Field 4: `transaction`
+                #[must_use]
+                pub fn transaction(
+                    &self,
+                ) -> &::buffa::MessageFieldView<
+                    super::super::super::super::super::common::v1::__buffa::view::ConsensusHexView<
+                        '_,
+                    >,
+                > {
+                    &self.0.reborrow().transaction
+                }
+            }
+            impl ::core::convert::From<::buffa::OwnedView<BundleView<'static>>>
+            for BundleOwnedView {
+                fn from(inner: ::buffa::OwnedView<BundleView<'static>>) -> Self {
+                    BundleOwnedView(inner)
+                }
+            }
+            impl ::core::convert::From<BundleOwnedView>
+            for ::buffa::OwnedView<BundleView<'static>> {
+                fn from(wrapper: BundleOwnedView) -> Self {
+                    wrapper.0
+                }
+            }
+            impl ::core::convert::AsRef<::buffa::OwnedView<BundleView<'static>>>
+            for BundleOwnedView {
+                fn as_ref(&self) -> &::buffa::OwnedView<BundleView<'static>> {
+                    &self.0
+                }
+            }
+            impl ::buffa::HasMessageView
+            for super::super::super::get_withdrawal_bundles_response::Bundle {
+                type View<'a> = BundleView<'a>;
+                type ViewHandle = BundleOwnedView;
+            }
+            impl ::serde::Serialize for BundleOwnedView {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    ::serde::Serialize::serialize(&self.0, __s)
+                }
+            }
+            #[derive(Clone, Debug, Default)]
+            pub struct SidechainView<'a> {
+                /// Field 1: `sidechain_id`
+                pub sidechain_id: ::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'a>,
+                >,
+                /// Every pending bundle, in the order M4 votes index them.
+                ///
+                /// Field 2: `bundles`
+                pub bundles: ::buffa::RepeatedView<
+                    'a,
+                    super::super::super::__buffa::view::get_withdrawal_bundles_response::BundleView<
+                        'a,
+                    >,
+                >,
+            }
+            impl<'a> ::buffa::MessageView<'a> for SidechainView<'a> {
+                type Owned = super::super::super::get_withdrawal_bundles_response::Sidechain;
+                fn decode_view(
+                    buf: &'a [u8],
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    let __limit = ::core::cell::Cell::new(
+                        ::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT,
+                    );
+                    <Self as ::buffa::MessageView>::decode_view_ctx(
+                        buf,
+                        ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+                    )
+                }
+                fn decode_view_with_ctx(
+                    buf: &'a [u8],
+                    ctx: ::buffa::DecodeContext<'_>,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+                }
+                #[inline]
+                fn merge_view_field(
+                    &mut self,
+                    tag: ::buffa::encoding::Tag,
+                    cur: &'a [u8],
+                    _before_tag: &'a [u8],
+                    ctx: ::buffa::DecodeContext<'_>,
+                ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+                    let _ = ctx;
+                    #[allow(unused_variables)]
+                    let view = self;
+                    let mut cur = cur;
+                    match tag.field_number() {
+                        1u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            match view.sidechain_id.as_mut() {
+                                Some(existing) => {
+                                    ::buffa::MessageView::merge_into_view(
+                                        existing,
+                                        sub,
+                                        __sub_ctx,
+                                    )?
+                                }
+                                None => {
+                                    view.sidechain_id = ::buffa::MessageFieldView::set(
+                                        <::buffa_types::google::protobuf::__buffa::view::UInt32ValueView as ::buffa::MessageView>::decode_view_ctx(
+                                            sub,
+                                            __sub_ctx,
+                                        )?,
+                                    );
+                                }
+                            }
+                        }
+                        2u32 => {
+                            ::buffa::encoding::check_wire_type(
+                                tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            let __sub_ctx = ctx.descend()?;
+                            let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                            ctx.register_element_memory(
+                                ::core::mem::size_of::<
+                                    super::super::super::__buffa::view::get_withdrawal_bundles_response::BundleView,
+                                >(),
+                            )?;
+                            view.bundles
+                                .push(
+                                    <super::super::super::__buffa::view::get_withdrawal_bundles_response::BundleView as ::buffa::MessageView>::decode_view_ctx(
+                                        sub,
+                                        __sub_ctx,
+                                    )?,
+                                );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(
+                                tag,
+                                &mut cur,
+                                ctx.depth(),
+                            )?;
+                        }
+                    }
+                    ::core::result::Result::Ok(cur)
+                }
+                fn to_owned_message(
+                    &self,
+                ) -> ::core::result::Result<
+                    super::super::super::get_withdrawal_bundles_response::Sidechain,
+                    ::buffa::DecodeError,
+                > {
+                    self.to_owned_from_source(None)
+                }
+                #[allow(clippy::useless_conversion, clippy::needless_update)]
+                fn to_owned_from_source(
+                    &self,
+                    __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+                ) -> ::core::result::Result<
+                    super::super::super::get_withdrawal_bundles_response::Sidechain,
+                    ::buffa::DecodeError,
+                > {
+                    #[allow(unused_imports)]
+                    use ::buffa::alloc::string::ToString as _;
+                    let _ = __buffa_src;
+                    ::core::result::Result::Ok(super::super::super::get_withdrawal_bundles_response::Sidechain {
+                        sidechain_id: match self.sidechain_id.as_option() {
+                            Some(v) => {
+                                ::buffa::MessageField::<
+                                    ::buffa_types::google::protobuf::UInt32Value,
+                                    ::buffa::Inline<
+                                        ::buffa_types::google::protobuf::UInt32Value,
+                                    >,
+                                >::some(v.to_owned_from_source(__buffa_src)?)
+                            }
+                            None => ::buffa::MessageField::none(),
+                        },
+                        bundles: self
+                            .bundles
+                            .iter()
+                            .map(|v| v.to_owned_from_source(__buffa_src))
+                            .collect::<
+                                ::core::result::Result<_, ::buffa::DecodeError>,
+                            >()?,
+                        ..::core::default::Default::default()
+                    })
+                }
+            }
+            impl<'a> ::buffa::ViewEncode<'a> for SidechainView<'a> {
+                #[allow(clippy::needless_borrow, clippy::let_and_return)]
+                fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    let mut size = 0u64;
+                    if self.sidechain_id.is_set() {
+                        let __slot = __cache.reserve();
+                        let inner_size = self.sidechain_id.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    for v in &self.bundles {
+                        let __slot = __cache.reserve();
+                        let inner_size = v.compute_size(__cache);
+                        __cache.set(__slot, inner_size);
+                        size
+                            += 1u64
+                                + ::buffa::encoding::varint_len(inner_size as u64) as u64
+                                + inner_size as u64;
+                    }
+                    ::buffa::saturate_size(size)
+                }
+                #[allow(clippy::needless_borrow)]
+                fn write_to(
+                    &self,
+                    __cache: &mut ::buffa::SizeCache,
+                    buf: &mut impl ::buffa::EncodeSink,
+                ) {
+                    #[allow(unused_imports)]
+                    use ::buffa::Enumeration as _;
+                    if self.sidechain_id.is_set() {
+                        ::buffa::types::put_len_delimited_header(
+                            1u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        self.sidechain_id.write_to(__cache, buf);
+                    }
+                    for v in &self.bundles {
+                        ::buffa::types::put_len_delimited_header(
+                            2u32,
+                            u64::from(__cache.consume_next()),
+                            buf,
+                        );
+                        v.write_to(__cache, buf);
+                    }
+                }
+            }
+            /// Serializes this view as protobuf JSON.
+            ///
+            /// Implicit-presence fields with default values are omitted, `required`
+            /// fields are always emitted, explicit-presence (`optional`) fields are
+            /// emitted only when set, bytes fields are base64-encoded, and enum
+            /// values are their proto name strings.
+            ///
+            /// This impl uses `serialize_map(None)` because the number of emitted
+            /// fields depends on default-omission rules; serializers that require
+            /// known map lengths (e.g. `bincode`) will return a runtime error.
+            /// Use the owned message type for those formats.
+            impl<'__a> ::serde::Serialize for SidechainView<'__a> {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    use ::serde::ser::SerializeMap as _;
+                    let mut __map = __s.serialize_map(::core::option::Option::None)?;
+                    {
+                        if let ::core::option::Option::Some(__v) = self
+                            .sidechain_id
+                            .as_option()
+                        {
+                            __map.serialize_entry("sidechainId", __v)?;
+                        }
+                    }
+                    if !self.bundles.is_empty() {
+                        __map.serialize_entry("bundles", &*self.bundles)?;
+                    }
+                    __map.end()
+                }
+            }
+            impl<'a> ::buffa::MessageName for SidechainView<'a> {
+                const PACKAGE: &'static str = "cusf.mainchain.v1";
+                const NAME: &'static str = "GetWithdrawalBundlesResponse.Sidechain";
+                const FULL_NAME: &'static str = "cusf.mainchain.v1.GetWithdrawalBundlesResponse.Sidechain";
+                const TYPE_URL: &'static str = "type.googleapis.com/cusf.mainchain.v1.GetWithdrawalBundlesResponse.Sidechain";
+            }
+            ::buffa::impl_default_view_instance!(SidechainView);
+            ::buffa::impl_view_reborrow!(SidechainView);
+            /** Self-contained, `'static` owned view of a `Sidechain` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`SidechainView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`SidechainView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+            #[derive(Clone, Debug)]
+            pub struct SidechainOwnedView(::buffa::OwnedView<SidechainView<'static>>);
+            impl SidechainOwnedView {
+                /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+                ///
+                /// The view borrows directly from the buffer's data; the buffer is
+                /// retained inside the returned handle.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+                /// protobuf data.
+                pub fn decode(
+                    bytes: ::buffa::bytes::Bytes,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        SidechainOwnedView(::buffa::OwnedView::decode(bytes)?),
+                    )
+                }
+                /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+                /// max message size).
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+                /// exceeds the configured limits.
+                pub fn decode_with_options(
+                    bytes: ::buffa::bytes::Bytes,
+                    opts: &::buffa::DecodeOptions,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        SidechainOwnedView(
+                            ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+                        ),
+                    )
+                }
+                /// Build from an owned message via an encode → decode round-trip.
+                ///
+                /// # Errors
+                ///
+                /// Returns [`::buffa::DecodeError::MessageTooLarge`] if the
+                /// message's encoded size exceeds the 2 GiB protobuf limit, or
+                /// another [`::buffa::DecodeError`] if the re-encoded bytes are
+                /// somehow invalid (should not happen for well-formed messages).
+                pub fn from_owned(
+                    msg: &super::super::super::get_withdrawal_bundles_response::Sidechain,
+                ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+                    ::core::result::Result::Ok(
+                        SidechainOwnedView(::buffa::OwnedView::from_owned(msg)?),
+                    )
+                }
+                /// Borrow the full [`SidechainView`] with its lifetime tied to `&self`.
+                #[must_use]
+                pub fn view(&self) -> &SidechainView<'_> {
+                    self.0.reborrow()
+                }
+                /// Convert to the owned message type.
+                ///
+                /// Infallible: this type's constructors wire-decode their
+                /// buffer, and a view produced by wire decoding always
+                /// converts. Delegates to [`::buffa::OwnedView::to_owned_message`],
+                /// whose contract also governs handles converted from a raw
+                /// [`::buffa::OwnedView`].
+                #[must_use]
+                pub fn to_owned_message(
+                    &self,
+                ) -> super::super::super::get_withdrawal_bundles_response::Sidechain {
+                    self.0.to_owned_message()
+                }
+                /// The underlying bytes buffer.
+                #[must_use]
+                pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+                    self.0.bytes()
+                }
+                /// Consume the handle, returning the underlying bytes buffer.
+                #[must_use]
+                pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+                    self.0.into_bytes()
+                }
+                /// Field 1: `sidechain_id`
+                #[must_use]
+                pub fn sidechain_id(
+                    &self,
+                ) -> &::buffa::MessageFieldView<
+                    ::buffa_types::google::protobuf::__buffa::view::UInt32ValueView<'_>,
+                > {
+                    &self.0.reborrow().sidechain_id
+                }
+                /// Every pending bundle, in the order M4 votes index them.
+                ///
+                /// Field 2: `bundles`
+                #[must_use]
+                pub fn bundles(
+                    &self,
+                ) -> &::buffa::RepeatedView<
+                    '_,
+                    super::super::super::__buffa::view::get_withdrawal_bundles_response::BundleView<
+                        '_,
+                    >,
+                > {
+                    &self.0.reborrow().bundles
+                }
+            }
+            impl ::core::convert::From<::buffa::OwnedView<SidechainView<'static>>>
+            for SidechainOwnedView {
+                fn from(inner: ::buffa::OwnedView<SidechainView<'static>>) -> Self {
+                    SidechainOwnedView(inner)
+                }
+            }
+            impl ::core::convert::From<SidechainOwnedView>
+            for ::buffa::OwnedView<SidechainView<'static>> {
+                fn from(wrapper: SidechainOwnedView) -> Self {
+                    wrapper.0
+                }
+            }
+            impl ::core::convert::AsRef<::buffa::OwnedView<SidechainView<'static>>>
+            for SidechainOwnedView {
+                fn as_ref(&self) -> &::buffa::OwnedView<SidechainView<'static>> {
+                    &self.0
+                }
+            }
+            impl ::buffa::HasMessageView
+            for super::super::super::get_withdrawal_bundles_response::Sidechain {
+                type View<'a> = SidechainView<'a>;
+                type ViewHandle = SidechainOwnedView;
+            }
+            impl ::serde::Serialize for SidechainOwnedView {
+                fn serialize<__S: ::serde::Serializer>(
+                    &self,
+                    __s: __S,
+                ) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    ::serde::Serialize::serialize(&self.0, __s)
+                }
             }
         }
         #[derive(Clone, Debug, Default)]
@@ -71707,6 +74731,15 @@ pub mod __buffa {
         reg.register_json_any(super::__GET_BLOCK_PRODUCER_STATE_RESPONSE_JSON_ANY);
         reg.register_json_any(super::__PROPOSE_WITHDRAWAL_BUNDLE_REQUEST_JSON_ANY);
         reg.register_json_any(super::__PROPOSE_WITHDRAWAL_BUNDLE_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__GET_WITHDRAWAL_BUNDLES_REQUEST_JSON_ANY);
+        reg.register_json_any(
+            super::get_withdrawal_bundles_request::__SIDECHAIN_JSON_ANY,
+        );
+        reg.register_json_any(super::__GET_WITHDRAWAL_BUNDLES_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::get_withdrawal_bundles_response::__BUNDLE_JSON_ANY);
+        reg.register_json_any(
+            super::get_withdrawal_bundles_response::__SIDECHAIN_JSON_ANY,
+        );
         reg.register_json_any(super::__GENERATE_TO_ADDRESS_REQUEST_JSON_ANY);
         reg.register_json_any(super::__GENERATE_TO_ADDRESS_RESPONSE_JSON_ANY);
         reg.register_json_any(super::__BLOCK_HEADER_INFO_JSON_ANY);
@@ -72116,7 +75149,7 @@ pub mod __buffa {
             50u8, 66u8, 23u8, 10u8, 21u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
             105u8, 110u8, 95u8, 100u8, 101u8, 99u8, 108u8, 97u8, 114u8, 97u8, 116u8,
             105u8, 111u8, 110u8, 98u8, 6u8, 112u8, 114u8, 111u8, 116u8, 111u8, 51u8,
-            10u8, 198u8, 37u8, 10u8, 38u8, 99u8, 117u8, 115u8, 102u8, 47u8, 109u8, 97u8,
+            10u8, 234u8, 44u8, 10u8, 38u8, 99u8, 117u8, 115u8, 102u8, 47u8, 109u8, 97u8,
             105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 47u8, 118u8, 49u8, 47u8, 98u8,
             108u8, 111u8, 99u8, 107u8, 95u8, 112u8, 114u8, 111u8, 100u8, 117u8, 99u8,
             101u8, 114u8, 46u8, 112u8, 114u8, 111u8, 116u8, 111u8, 18u8, 17u8, 99u8,
@@ -72411,97 +75444,167 @@ pub mod __buffa {
             33u8, 10u8, 31u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 101u8, 87u8,
             105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
             110u8, 100u8, 108u8, 101u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
-            101u8, 42u8, 174u8, 1u8, 10u8, 21u8, 65u8, 99u8, 107u8, 65u8, 108u8, 108u8,
-            80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 115u8, 80u8, 111u8,
-            108u8, 105u8, 99u8, 121u8, 18u8, 40u8, 10u8, 36u8, 65u8, 67u8, 75u8, 95u8,
-            65u8, 76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8, 79u8, 83u8, 65u8, 76u8, 83u8,
-            95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 85u8, 78u8, 83u8, 80u8, 69u8,
-            67u8, 73u8, 70u8, 73u8, 69u8, 68u8, 16u8, 0u8, 18u8, 33u8, 10u8, 29u8, 65u8,
-            67u8, 75u8, 95u8, 65u8, 76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8, 79u8, 83u8,
-            65u8, 76u8, 83u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 78u8, 79u8,
-            78u8, 69u8, 16u8, 1u8, 18u8, 38u8, 10u8, 34u8, 65u8, 67u8, 75u8, 95u8, 65u8,
-            76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8, 79u8, 83u8, 65u8, 76u8, 83u8, 95u8,
-            80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 78u8, 69u8, 87u8, 95u8, 83u8, 76u8,
-            79u8, 84u8, 83u8, 16u8, 2u8, 18u8, 32u8, 10u8, 28u8, 65u8, 67u8, 75u8, 95u8,
-            65u8, 76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8, 79u8, 83u8, 65u8, 76u8, 83u8,
-            95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 65u8, 76u8, 76u8, 16u8, 3u8,
-            42u8, 207u8, 1u8, 10u8, 22u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8,
-            119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 80u8, 111u8,
-            108u8, 105u8, 99u8, 121u8, 18u8, 40u8, 10u8, 36u8, 87u8, 73u8, 84u8, 72u8,
-            68u8, 82u8, 65u8, 87u8, 65u8, 76u8, 95u8, 66u8, 85u8, 78u8, 68u8, 76u8, 69u8,
-            95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 85u8, 78u8, 83u8, 80u8, 69u8,
-            67u8, 73u8, 70u8, 73u8, 69u8, 68u8, 16u8, 0u8, 18u8, 33u8, 10u8, 29u8, 87u8,
-            73u8, 84u8, 72u8, 68u8, 82u8, 65u8, 87u8, 65u8, 76u8, 95u8, 66u8, 85u8, 78u8,
-            68u8, 76u8, 69u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 78u8, 79u8,
-            78u8, 69u8, 16u8, 1u8, 18u8, 34u8, 10u8, 30u8, 87u8, 73u8, 84u8, 72u8, 68u8,
-            82u8, 65u8, 87u8, 65u8, 76u8, 95u8, 66u8, 85u8, 78u8, 68u8, 76u8, 69u8, 95u8,
-            80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 75u8, 78u8, 79u8, 87u8, 78u8, 16u8,
-            2u8, 18u8, 32u8, 10u8, 28u8, 87u8, 73u8, 84u8, 72u8, 68u8, 82u8, 65u8, 87u8,
+            101u8, 34u8, 133u8, 2u8, 10u8, 27u8, 71u8, 101u8, 116u8, 87u8, 105u8, 116u8,
+            104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8,
+            108u8, 101u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 18u8,
+            88u8, 10u8, 10u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 115u8, 24u8, 1u8, 32u8, 3u8, 40u8, 11u8, 50u8, 56u8, 46u8, 99u8,
+            117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 87u8, 105u8,
+            116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8,
+            100u8, 108u8, 101u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8,
+            46u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 82u8, 10u8,
+            115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 115u8, 26u8,
+            139u8, 1u8, 10u8, 9u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 18u8, 63u8, 10u8, 12u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 95u8, 105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8,
+            28u8, 46u8, 103u8, 111u8, 111u8, 103u8, 108u8, 101u8, 46u8, 112u8, 114u8,
+            111u8, 116u8, 111u8, 98u8, 117u8, 102u8, 46u8, 85u8, 73u8, 110u8, 116u8,
+            51u8, 50u8, 86u8, 97u8, 108u8, 117u8, 101u8, 82u8, 11u8, 115u8, 105u8, 100u8,
+            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 73u8, 100u8, 18u8, 61u8, 10u8, 11u8,
+            107u8, 110u8, 111u8, 119u8, 110u8, 95u8, 109u8, 54u8, 105u8, 100u8, 115u8,
+            24u8, 2u8, 32u8, 3u8, 40u8, 11u8, 50u8, 28u8, 46u8, 99u8, 117u8, 115u8,
+            102u8, 46u8, 99u8, 111u8, 109u8, 109u8, 111u8, 110u8, 46u8, 118u8, 49u8,
+            46u8, 67u8, 111u8, 110u8, 115u8, 101u8, 110u8, 115u8, 117u8, 115u8, 72u8,
+            101u8, 120u8, 82u8, 10u8, 107u8, 110u8, 111u8, 119u8, 110u8, 77u8, 54u8,
+            105u8, 100u8, 115u8, 34u8, 155u8, 4u8, 10u8, 28u8, 71u8, 101u8, 116u8, 87u8,
+            105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
+            110u8, 100u8, 108u8, 101u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
+            115u8, 101u8, 18u8, 89u8, 10u8, 10u8, 115u8, 105u8, 100u8, 101u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 115u8, 24u8, 1u8, 32u8, 3u8, 40u8, 11u8, 50u8,
+            57u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 87u8,
+            105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
+            110u8, 100u8, 108u8, 101u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
+            115u8, 101u8, 46u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 82u8, 10u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
+            110u8, 115u8, 26u8, 254u8, 1u8, 10u8, 6u8, 66u8, 117u8, 110u8, 100u8, 108u8,
+            101u8, 18u8, 48u8, 10u8, 4u8, 109u8, 54u8, 105u8, 100u8, 24u8, 1u8, 32u8,
+            1u8, 40u8, 11u8, 50u8, 28u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 99u8,
+            111u8, 109u8, 109u8, 111u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 111u8,
+            110u8, 115u8, 101u8, 110u8, 115u8, 117u8, 115u8, 72u8, 101u8, 120u8, 82u8,
+            4u8, 109u8, 54u8, 105u8, 100u8, 18u8, 59u8, 10u8, 10u8, 118u8, 111u8, 116u8,
+            101u8, 95u8, 99u8, 111u8, 117u8, 110u8, 116u8, 24u8, 2u8, 32u8, 1u8, 40u8,
+            11u8, 50u8, 28u8, 46u8, 103u8, 111u8, 111u8, 103u8, 108u8, 101u8, 46u8,
+            112u8, 114u8, 111u8, 116u8, 111u8, 98u8, 117u8, 102u8, 46u8, 85u8, 73u8,
+            110u8, 116u8, 51u8, 50u8, 86u8, 97u8, 108u8, 117u8, 101u8, 82u8, 9u8, 118u8,
+            111u8, 116u8, 101u8, 67u8, 111u8, 117u8, 110u8, 116u8, 18u8, 69u8, 10u8,
+            15u8, 112u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 95u8, 104u8,
+            101u8, 105u8, 103u8, 104u8, 116u8, 24u8, 3u8, 32u8, 1u8, 40u8, 11u8, 50u8,
+            28u8, 46u8, 103u8, 111u8, 111u8, 103u8, 108u8, 101u8, 46u8, 112u8, 114u8,
+            111u8, 116u8, 111u8, 98u8, 117u8, 102u8, 46u8, 85u8, 73u8, 110u8, 116u8,
+            51u8, 50u8, 86u8, 97u8, 108u8, 117u8, 101u8, 82u8, 14u8, 112u8, 114u8, 111u8,
+            112u8, 111u8, 115u8, 97u8, 108u8, 72u8, 101u8, 105u8, 103u8, 104u8, 116u8,
+            18u8, 62u8, 10u8, 11u8, 116u8, 114u8, 97u8, 110u8, 115u8, 97u8, 99u8, 116u8,
+            105u8, 111u8, 110u8, 24u8, 4u8, 32u8, 1u8, 40u8, 11u8, 50u8, 28u8, 46u8,
+            99u8, 117u8, 115u8, 102u8, 46u8, 99u8, 111u8, 109u8, 109u8, 111u8, 110u8,
+            46u8, 118u8, 49u8, 46u8, 67u8, 111u8, 110u8, 115u8, 101u8, 110u8, 115u8,
+            117u8, 115u8, 72u8, 101u8, 120u8, 82u8, 11u8, 116u8, 114u8, 97u8, 110u8,
+            115u8, 97u8, 99u8, 116u8, 105u8, 111u8, 110u8, 26u8, 158u8, 1u8, 10u8, 9u8,
+            83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 18u8, 63u8, 10u8,
+            12u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 95u8,
+            105u8, 100u8, 24u8, 1u8, 32u8, 1u8, 40u8, 11u8, 50u8, 28u8, 46u8, 103u8,
+            111u8, 111u8, 103u8, 108u8, 101u8, 46u8, 112u8, 114u8, 111u8, 116u8, 111u8,
+            98u8, 117u8, 102u8, 46u8, 85u8, 73u8, 110u8, 116u8, 51u8, 50u8, 86u8, 97u8,
+            108u8, 117u8, 101u8, 82u8, 11u8, 115u8, 105u8, 100u8, 101u8, 99u8, 104u8,
+            97u8, 105u8, 110u8, 73u8, 100u8, 18u8, 80u8, 10u8, 7u8, 98u8, 117u8, 110u8,
+            100u8, 108u8, 101u8, 115u8, 24u8, 2u8, 32u8, 3u8, 40u8, 11u8, 50u8, 54u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8, 87u8,
+            105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
+            110u8, 100u8, 108u8, 101u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
+            115u8, 101u8, 46u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 82u8, 7u8, 98u8,
+            117u8, 110u8, 100u8, 108u8, 101u8, 115u8, 42u8, 174u8, 1u8, 10u8, 21u8, 65u8,
+            99u8, 107u8, 65u8, 108u8, 108u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8,
+            97u8, 108u8, 115u8, 80u8, 111u8, 108u8, 105u8, 99u8, 121u8, 18u8, 40u8, 10u8,
+            36u8, 65u8, 67u8, 75u8, 95u8, 65u8, 76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8,
+            79u8, 83u8, 65u8, 76u8, 83u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8,
+            85u8, 78u8, 83u8, 80u8, 69u8, 67u8, 73u8, 70u8, 73u8, 69u8, 68u8, 16u8, 0u8,
+            18u8, 33u8, 10u8, 29u8, 65u8, 67u8, 75u8, 95u8, 65u8, 76u8, 76u8, 95u8, 80u8,
+            82u8, 79u8, 80u8, 79u8, 83u8, 65u8, 76u8, 83u8, 95u8, 80u8, 79u8, 76u8, 73u8,
+            67u8, 89u8, 95u8, 78u8, 79u8, 78u8, 69u8, 16u8, 1u8, 18u8, 38u8, 10u8, 34u8,
+            65u8, 67u8, 75u8, 95u8, 65u8, 76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8, 79u8,
+            83u8, 65u8, 76u8, 83u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 78u8,
+            69u8, 87u8, 95u8, 83u8, 76u8, 79u8, 84u8, 83u8, 16u8, 2u8, 18u8, 32u8, 10u8,
+            28u8, 65u8, 67u8, 75u8, 95u8, 65u8, 76u8, 76u8, 95u8, 80u8, 82u8, 79u8, 80u8,
+            79u8, 83u8, 65u8, 76u8, 83u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8,
+            65u8, 76u8, 76u8, 16u8, 3u8, 42u8, 207u8, 1u8, 10u8, 22u8, 87u8, 105u8,
+            116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8,
+            100u8, 108u8, 101u8, 80u8, 111u8, 108u8, 105u8, 99u8, 121u8, 18u8, 40u8,
+            10u8, 36u8, 87u8, 73u8, 84u8, 72u8, 68u8, 82u8, 65u8, 87u8, 65u8, 76u8, 95u8,
+            66u8, 85u8, 78u8, 68u8, 76u8, 69u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8,
+            95u8, 85u8, 78u8, 83u8, 80u8, 69u8, 67u8, 73u8, 70u8, 73u8, 69u8, 68u8, 16u8,
+            0u8, 18u8, 33u8, 10u8, 29u8, 87u8, 73u8, 84u8, 72u8, 68u8, 82u8, 65u8, 87u8,
             65u8, 76u8, 95u8, 66u8, 85u8, 78u8, 68u8, 76u8, 69u8, 95u8, 80u8, 79u8, 76u8,
-            73u8, 67u8, 89u8, 95u8, 65u8, 76u8, 76u8, 16u8, 3u8, 18u8, 34u8, 10u8, 30u8,
-            87u8, 73u8, 84u8, 72u8, 68u8, 82u8, 65u8, 87u8, 65u8, 76u8, 95u8, 66u8, 85u8,
-            78u8, 68u8, 76u8, 69u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 65u8,
-            76u8, 65u8, 82u8, 77u8, 16u8, 4u8, 50u8, 140u8, 8u8, 10u8, 20u8, 66u8, 108u8,
-            111u8, 99u8, 107u8, 80u8, 114u8, 111u8, 100u8, 117u8, 99u8, 101u8, 114u8,
-            83u8, 101u8, 114u8, 118u8, 105u8, 99u8, 101u8, 18u8, 130u8, 1u8, 10u8, 23u8,
-            67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 83u8, 105u8, 100u8, 101u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8,
-            108u8, 18u8, 49u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
-            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8,
-            101u8, 97u8, 116u8, 101u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
-            105u8, 110u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 82u8,
-            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 50u8, 46u8, 99u8, 117u8,
+            73u8, 67u8, 89u8, 95u8, 78u8, 79u8, 78u8, 69u8, 16u8, 1u8, 18u8, 34u8, 10u8,
+            30u8, 87u8, 73u8, 84u8, 72u8, 68u8, 82u8, 65u8, 87u8, 65u8, 76u8, 95u8, 66u8,
+            85u8, 78u8, 68u8, 76u8, 69u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8,
+            75u8, 78u8, 79u8, 87u8, 78u8, 16u8, 2u8, 18u8, 32u8, 10u8, 28u8, 87u8, 73u8,
+            84u8, 72u8, 68u8, 82u8, 65u8, 87u8, 65u8, 76u8, 95u8, 66u8, 85u8, 78u8, 68u8,
+            76u8, 69u8, 95u8, 80u8, 79u8, 76u8, 73u8, 67u8, 89u8, 95u8, 65u8, 76u8, 76u8,
+            16u8, 3u8, 18u8, 34u8, 10u8, 30u8, 87u8, 73u8, 84u8, 72u8, 68u8, 82u8, 65u8,
+            87u8, 65u8, 76u8, 95u8, 66u8, 85u8, 78u8, 68u8, 76u8, 69u8, 95u8, 80u8, 79u8,
+            76u8, 73u8, 67u8, 89u8, 95u8, 65u8, 76u8, 65u8, 82u8, 77u8, 16u8, 4u8, 50u8,
+            138u8, 9u8, 10u8, 20u8, 66u8, 108u8, 111u8, 99u8, 107u8, 80u8, 114u8, 111u8,
+            100u8, 117u8, 99u8, 101u8, 114u8, 83u8, 101u8, 114u8, 118u8, 105u8, 99u8,
+            101u8, 18u8, 130u8, 1u8, 10u8, 23u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8,
+            83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 80u8, 114u8,
+            111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 18u8, 49u8, 46u8, 99u8, 117u8,
             115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
             110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8, 101u8, 97u8, 116u8, 101u8, 83u8,
             105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 80u8, 114u8, 111u8,
-            112u8, 111u8, 115u8, 97u8, 108u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
-            115u8, 101u8, 48u8, 1u8, 18u8, 128u8, 1u8, 10u8, 23u8, 83u8, 117u8, 98u8,
-            109u8, 105u8, 116u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 18u8, 49u8,
-            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
-            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8,
-            105u8, 116u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8,
-            80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 82u8, 101u8, 113u8,
-            117u8, 101u8, 115u8, 116u8, 26u8, 50u8, 46u8, 99u8, 117u8, 115u8, 102u8,
-            46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8,
-            118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 83u8, 105u8,
-            100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 80u8, 114u8, 111u8, 112u8,
-            111u8, 115u8, 97u8, 108u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8,
-            101u8, 18u8, 104u8, 10u8, 15u8, 83u8, 101u8, 116u8, 83u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 65u8, 99u8, 107u8, 18u8, 41u8, 46u8,
+            112u8, 111u8, 115u8, 97u8, 108u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8,
+            116u8, 26u8, 50u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
+            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 67u8, 114u8,
+            101u8, 97u8, 116u8, 101u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 82u8,
+            101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 48u8, 1u8, 18u8, 128u8, 1u8,
+            10u8, 23u8, 83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 83u8, 105u8, 100u8,
+            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 80u8, 114u8, 111u8, 112u8, 111u8,
+            115u8, 97u8, 108u8, 18u8, 49u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8,
+            97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8,
+            83u8, 117u8, 98u8, 109u8, 105u8, 116u8, 83u8, 105u8, 100u8, 101u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8,
+            108u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 50u8, 46u8,
             99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8,
-            97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 83u8, 105u8,
-            100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 65u8, 99u8, 107u8, 82u8,
-            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 42u8, 46u8, 99u8, 117u8,
-            115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 83u8, 105u8, 100u8,
-            101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 65u8, 99u8, 107u8, 82u8, 101u8,
-            115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 113u8, 10u8, 18u8, 83u8,
-            101u8, 116u8, 65u8, 99u8, 107u8, 65u8, 108u8, 108u8, 80u8, 114u8, 111u8,
-            112u8, 111u8, 115u8, 97u8, 108u8, 115u8, 18u8, 44u8, 46u8, 99u8, 117u8,
-            115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 65u8, 99u8, 107u8, 65u8,
-            108u8, 108u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 115u8,
-            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 45u8, 46u8, 99u8,
+            97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 117u8, 98u8, 109u8, 105u8,
+            116u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 80u8,
+            114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 82u8, 101u8, 115u8, 112u8,
+            111u8, 110u8, 115u8, 101u8, 18u8, 104u8, 10u8, 15u8, 83u8, 101u8, 116u8,
+            83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 65u8, 99u8,
+            107u8, 18u8, 41u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8,
+            110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8,
+            116u8, 83u8, 105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 65u8,
+            99u8, 107u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 42u8,
+            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 83u8,
+            105u8, 100u8, 101u8, 99u8, 104u8, 97u8, 105u8, 110u8, 65u8, 99u8, 107u8,
+            82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 113u8, 10u8,
+            18u8, 83u8, 101u8, 116u8, 65u8, 99u8, 107u8, 65u8, 108u8, 108u8, 80u8, 114u8,
+            111u8, 112u8, 111u8, 115u8, 97u8, 108u8, 115u8, 18u8, 44u8, 46u8, 99u8,
             117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
             105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 65u8, 99u8, 107u8,
             65u8, 108u8, 108u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8, 108u8,
-            115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8, 125u8,
-            10u8, 22u8, 83u8, 101u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8,
-            97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 65u8,
-            99u8, 107u8, 18u8, 48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8,
-            105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8,
-            101u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8,
-            108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 65u8, 99u8, 107u8, 82u8,
-            101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 49u8, 46u8, 99u8, 117u8,
-            115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8,
-            110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 87u8, 105u8, 116u8,
-            104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8,
-            108u8, 101u8, 65u8, 99u8, 107u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8,
-            115u8, 101u8, 18u8, 134u8, 1u8, 10u8, 25u8, 83u8, 101u8, 116u8, 87u8, 105u8,
+            115u8, 82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 45u8, 46u8,
+            99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8,
+            97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 65u8, 99u8,
+            107u8, 65u8, 108u8, 108u8, 80u8, 114u8, 111u8, 112u8, 111u8, 115u8, 97u8,
+            108u8, 115u8, 82u8, 101u8, 115u8, 112u8, 111u8, 110u8, 115u8, 101u8, 18u8,
+            125u8, 10u8, 22u8, 83u8, 101u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8,
+            114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8,
+            65u8, 99u8, 107u8, 18u8, 48u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8,
+            97u8, 105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8,
+            83u8, 101u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8,
+            97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 65u8, 99u8, 107u8,
+            82u8, 101u8, 113u8, 117u8, 101u8, 115u8, 116u8, 26u8, 49u8, 46u8, 99u8,
+            117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
+            105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 87u8, 105u8,
             116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8,
-            100u8, 108u8, 101u8, 80u8, 111u8, 108u8, 105u8, 99u8, 121u8, 18u8, 51u8,
-            46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
+            100u8, 108u8, 101u8, 65u8, 99u8, 107u8, 82u8, 101u8, 115u8, 112u8, 111u8,
+            110u8, 115u8, 101u8, 18u8, 134u8, 1u8, 10u8, 25u8, 83u8, 101u8, 116u8, 87u8,
+            105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
+            110u8, 100u8, 108u8, 101u8, 80u8, 111u8, 108u8, 105u8, 99u8, 121u8, 18u8,
+            51u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8, 99u8,
             104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 83u8, 101u8, 116u8, 87u8,
             105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8, 117u8,
             110u8, 100u8, 108u8, 101u8, 80u8, 111u8, 108u8, 105u8, 99u8, 121u8, 82u8,
@@ -72533,6 +75636,17 @@ pub mod __buffa {
             110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8,
             116u8, 66u8, 108u8, 111u8, 99u8, 107u8, 80u8, 114u8, 111u8, 100u8, 117u8,
             99u8, 101u8, 114u8, 83u8, 116u8, 97u8, 116u8, 101u8, 82u8, 101u8, 115u8,
+            112u8, 111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 18u8, 124u8,
+            10u8, 20u8, 71u8, 101u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8,
+            97u8, 119u8, 97u8, 108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 115u8,
+            18u8, 46u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8, 105u8, 110u8,
+            99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8, 101u8, 116u8,
+            87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8, 108u8, 66u8,
+            117u8, 110u8, 100u8, 108u8, 101u8, 115u8, 82u8, 101u8, 113u8, 117u8, 101u8,
+            115u8, 116u8, 26u8, 47u8, 46u8, 99u8, 117u8, 115u8, 102u8, 46u8, 109u8, 97u8,
+            105u8, 110u8, 99u8, 104u8, 97u8, 105u8, 110u8, 46u8, 118u8, 49u8, 46u8, 71u8,
+            101u8, 116u8, 87u8, 105u8, 116u8, 104u8, 100u8, 114u8, 97u8, 119u8, 97u8,
+            108u8, 66u8, 117u8, 110u8, 100u8, 108u8, 101u8, 115u8, 82u8, 101u8, 115u8,
             112u8, 111u8, 110u8, 115u8, 101u8, 34u8, 3u8, 144u8, 2u8, 1u8, 98u8, 6u8,
             112u8, 114u8, 111u8, 116u8, 111u8, 51u8, 10u8, 193u8, 3u8, 10u8, 30u8, 99u8,
             117u8, 115u8, 102u8, 47u8, 109u8, 97u8, 105u8, 110u8, 99u8, 104u8, 97u8,
@@ -74295,6 +77409,14 @@ pub use self::__buffa::view::ProposeWithdrawalBundleRequestOwnedView;
 pub use self::__buffa::view::ProposeWithdrawalBundleResponseView;
 #[doc(inline)]
 pub use self::__buffa::view::ProposeWithdrawalBundleResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetWithdrawalBundlesRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::GetWithdrawalBundlesRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::GetWithdrawalBundlesResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::GetWithdrawalBundlesResponseOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::GenerateToAddressRequestView;
 #[doc(inline)]
