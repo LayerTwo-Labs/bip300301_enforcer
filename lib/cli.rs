@@ -462,6 +462,10 @@ pub struct Config {
     /// Serve gRPCs on this address
     #[arg(default_value_t = DEFAULT_SERVE_GRPC_ADDR, long)]
     pub serve_grpc_addr: SocketAddr,
+    /// Also serve the gRPCs safe for public use
+    /// Every other method answers 403 there
+    #[arg(long)]
+    pub serve_public_grpc_addr: Option<SocketAddr>,
     #[command(flatten)]
     pub wallet_opts: WalletConfig,
 
