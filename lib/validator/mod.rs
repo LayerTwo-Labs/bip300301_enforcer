@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use bitcoin::{self, Amount, BlockHash, OutPoint, Txid};
@@ -60,6 +63,9 @@ pub struct Validator {
     dbs: Dbs,
     events_tx: broadcast::Sender<Event>,
     header_sync_progress_rx: Arc<parking_lot::RwLock<Option<WatchReceiver<HeaderSyncProgress>>>>,
+    /// Shared by every clone, so a reader can tell a replay of the chain apart
+    /// from the state at a tip. See [`Self::is_synced_to_tip`].
+    synced_to_tip: Arc<AtomicBool>,
     mainchain_client: jsonrpsee::http_client::HttpClient,
     mainchain_rest_client: Option<MainRestClient>,
     mainchain_blocks_dir: Option<PathBuf>,
@@ -105,6 +111,7 @@ impl Validator {
             dbs,
             events_tx,
             header_sync_progress_rx: Arc::new(parking_lot::RwLock::new(None)),
+            synced_to_tip: Arc::new(AtomicBool::new(false)),
             mainchain_client,
             mainchain_rest_client,
             mainchain_blocks_dir,
@@ -153,6 +160,21 @@ impl Validator {
     /// Returns `None` if there is not a header sync in progress
     pub fn subscribe_header_sync_progress(&self) -> Option<WatchReceiver<HeaderSyncProgress>> {
         self.header_sync_progress_rx.read().clone()
+    }
+
+    /// `true` once a sync has run to completion, and `false` again for as long
+    /// as the next one runs. While a sync is in progress the databases hold a
+    /// replay of the chain rather than the state at a tip: a tip is stored for
+    /// every block connected so far, so reads such as [`Self::try_get_ctip`]
+    /// answer for a past height, and cannot be told apart from the same read
+    /// against a synced tip. A resync can also disconnect blocks, so this is
+    /// cleared for every sync, not just the first.
+    pub fn is_synced_to_tip(&self) -> bool {
+        self.synced_to_tip.load(Ordering::Acquire)
+    }
+
+    pub(in crate::validator) fn set_synced_to_tip(&self, synced_to_tip: bool) {
+        self.synced_to_tip.store(synced_to_tip, Ordering::Release);
     }
 
     /// Get (possibly unactivated) sidechains
@@ -742,5 +764,26 @@ mod tests {
         assert!(!absent_from_mempool(&ClientError::Call(
             ErrorObjectOwned::from(ErrorCode::InternalError)
         )));
+    }
+
+    #[tokio::test]
+    async fn ctip_reads_are_not_answerable_while_syncing() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let validator = dummy_validator(dir.path());
+
+        // A validator that has not synced holds a replay of the chain, so a
+        // `None` Ctip does not mean "unfunded slot".
+        assert!(!validator.is_synced_to_tip());
+
+        // The sync runs against one clone while the gRPC server reads another,
+        // so the signal has to be shared between them.
+        let reader = validator.clone();
+        validator.set_synced_to_tip(true);
+        assert!(reader.is_synced_to_tip());
+
+        // A resync can rewind the stored chain, so it must take the signal back
+        // down rather than leave the first sync's `true` standing.
+        validator.set_synced_to_tip(false);
+        assert!(!reader.is_synced_to_tip());
     }
 }
